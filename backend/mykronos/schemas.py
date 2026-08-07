@@ -166,11 +166,17 @@ class FindingBatch(BaseModel):
 
     `max_length` here is the spec 05 §6 backpressure ceiling; exceeding it is a
     422 from Pydantic rather than a partial ingest.
+
+    Note what is and is not a field. `capability` must be declared, because one
+    token now spans several capabilities (D-009) — the server checks it against
+    the token's grant set. `repo_full_name` is *not* a field and never will be:
+    it comes from the token, so there is nowhere to name another repo.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     scan_run_id: str = Field(min_length=1, max_length=64)
+    capability: Capability
     findings: list[FindingSubmission] = Field(default_factory=list, max_length=10_000)
 
 
@@ -193,3 +199,7 @@ class HealthResponse(BaseModel):
     datalake_writable: bool
     buffered_segments: int
     detail: str = ""
+    #: Echoed back so a workflow's pre-scan probe also confirms what this
+    #: token is scoped to and currently allowed to write.
+    repo_full_name: str = ""
+    granted_capabilities: list[str] = Field(default_factory=list)

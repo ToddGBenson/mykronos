@@ -9,6 +9,16 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "duckdb>=1.1",
+    # Operational state (RepoOnboarding, tokens, audit log). Separate from the
+    # data lake by design -- see docs/DECISIONS.md D-010.
+    "sqlalchemy>=2.0",
+    # GitHub App auth: RS256 JWT -> installation access token.
+    "pyjwt[crypto]>=2.9",
+    # libsodium sealed box, required by GitHub's Secrets API (spec 03 §4a).
+    "pynacl>=1.5",
+    # Workflow template rendering (spec 03 §2).
+    "jinja2>=3.1",
+    "httpx2>=2.9",
 ]
 
 [project.optional-dependencies]

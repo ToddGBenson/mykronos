@@ -16,8 +16,8 @@ from fastapi import FastAPI
 
 from mykronos import __version__
 from mykronos.api.ingest import router as ingest_router
-from mykronos.auth import TokenRegistry
 from mykronos.config import Settings, get_settings
+from mykronos.db import Database
 from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.ratelimit import SlidingWindowLimiter
 
@@ -56,7 +56,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.catalog = Catalog(settings.datalake_dir)
     app.state.catalog.initialise()
     app.state.buffer = WriteAheadBuffer(settings.buffer_dir)
-    app.state.tokens = TokenRegistry(settings.token_registry_path)
+    app.state.db = Database(settings.database_url)
+    app.state.db.create_all()
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
 
     task: asyncio.Task[None] | None = None
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Final drain, so a clean shutdown leaves nothing sitting in the buffer.
         with suppress(Exception):
             await asyncio.to_thread(compact, app.state.catalog, app.state.buffer)
+        app.state.db.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mykronos.lake import Catalog
-from tests.conftest import finding_payload, post_findings, post_scan
+from tests.conftest import finding_payload, issue_token, post_findings, post_scan
 
 BATCH = 10_000
 BUDGET_SECONDS = 30.0
@@ -106,13 +106,12 @@ def test_portfolio_scale_query_stays_interactive(
     aggregate over a portfolio-shaped lake is not itself the bottleneck —
     before anyone builds materialized views to paper over a slow base query.
     """
-    registry = client.app.state.tokens  # type: ignore[attr-defined]
     repos = 40
     per_repo = 250
 
     for r in range(repos):
         repo = f"example-org/service-{r:03d}"
-        headers = {"Authorization": f"Bearer {registry.issue(repo, 'sast')}"}
+        headers = {"Authorization": f"Bearer {issue_token(client, repo, 'sast')}"}
         post_findings(
             client,
             headers,

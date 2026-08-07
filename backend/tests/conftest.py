@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from mykronos.auth import TokenRegistry
 from mykronos.config import Settings
 from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.main import create_app
@@ -20,7 +21,7 @@ CAPABILITY = "sast"
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         datalake_dir=tmp_path / "datalake",
-        token_registry_path=tmp_path / "tokens.json",
+        database_url=f"sqlite:///{(tmp_path / 'mykronos.db').as_posix()}",
         # Compaction is driven explicitly in tests so assertions never race a timer.
         run_compaction_in_background=False,
     )
@@ -50,9 +51,19 @@ def run_compaction(catalog: Catalog, buffer: WriteAheadBuffer) -> Callable[[], A
     return _run
 
 
+def issue_token(client: TestClient, repo: str, *capabilities: str) -> str:
+    """Mint a repo token and grant it capabilities (D-009)."""
+    with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+        registry = TokenRegistry(session)
+        plaintext = registry.issue(repo)
+        for capability in capabilities:
+            registry.grant(repo, capability)
+    return plaintext
+
+
 @pytest.fixture
 def token(client: TestClient) -> str:
-    return str(client.app.state.tokens.issue(REPO, CAPABILITY))  # type: ignore[attr-defined]
+    return issue_token(client, REPO, CAPABILITY)
 
 
 @pytest.fixture
@@ -131,10 +142,15 @@ def post_findings(
     auth: dict[str, str],
     findings: list[dict[str, Any]],
     scan_run_id: str = "11111111-1111-1111-1111-111111111111",
+    capability: str = CAPABILITY,
 ) -> Any:
     return client.post(
         "/api/ingest/findings",
-        json={"scan_run_id": scan_run_id, "findings": findings},
+        json={
+            "scan_run_id": scan_run_id,
+            "capability": capability,
+            "findings": findings,
+        },
         headers=auth,
     )
 

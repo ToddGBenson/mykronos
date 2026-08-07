@@ -50,11 +50,20 @@ class Settings(BaseSettings):
         description="Per-token ingestion rate limit. spec 05 §6.",
     )
 
-    token_registry_path: Path = Field(
-        default=Path("tokens.json"),
+    database_url: str = Field(
+        default="sqlite:///mykronos.db",
         description=(
-            "Ingestion token registry. Holds SHA-256 hashes and scope metadata only — "
-            "never a plaintext token. spec 12 §2."
+            "Operational state: onboarding, capability config, ingestion tokens, "
+            "audit log. Separate from the data lake by design (D-010)."
+        ),
+    )
+
+    token_overlap_hours: int = Field(
+        default=24,
+        ge=0,
+        description=(
+            "Dual-validity window during token rotation. A job that read the old "
+            "secret before the swap still completes. spec 05 §4."
         ),
     )
 

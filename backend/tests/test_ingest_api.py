@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from mykronos.auth import TokenRegistry
 from tests.conftest import (
     CAPABILITY,
     REPO,
     dependency_finding,
     finding_payload,
+    issue_token,
     post_findings,
     post_scan,
     scan_run_payload,
@@ -27,11 +29,11 @@ class TestAuth:
     def test_revoked_token_is_rejected_immediately(
         self, client: TestClient, auth: dict[str, str]
     ) -> None:
-        """spec 05 §9: revoking a capability's token blocks the very next
-        request, with no grace period."""
+        """spec 05 §9: offboarding a repo blocks the very next request."""
         assert post_scan(client, auth).status_code == 200
 
-        client.app.state.tokens.revoke(REPO, CAPABILITY)  # type: ignore[attr-defined]
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            TokenRegistry(session).revoke_repo(REPO)
 
         assert post_scan(client, auth).status_code == 401
 
@@ -44,14 +46,34 @@ class TestAuth:
         assert response.status_code == 403
         assert "scoped to" in response.json()["detail"]
 
-    def test_token_cannot_write_another_capability(
+    def test_token_cannot_write_an_ungranted_capability(
         self, client: TestClient, auth: dict[str, str]
     ) -> None:
+        """One token spans capabilities now (D-009), so the grant set is what
+        enforces the boundary rather than the credential itself."""
         response = post_scan(client, auth, capability="secrets")
         assert response.status_code == 403
+        assert "not enabled" in response.json()["detail"]
+
+    def test_revoking_one_grant_leaves_the_others_working(
+        self, client: TestClient
+    ) -> None:
+        """The property that makes a shared per-repo token acceptable: grants
+        are revocable independently, immediately, and locally."""
+        token = issue_token(client, REPO, "sast", "secrets")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        assert post_findings(client, headers, [], capability="sast").status_code == 200
+        assert post_findings(client, headers, [], capability="secrets").status_code == 200
+
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            TokenRegistry(session).revoke_grant(REPO, "secrets")
+
+        assert post_findings(client, headers, [], capability="secrets").status_code == 403
+        assert post_findings(client, headers, [], capability="sast").status_code == 200
 
     def test_findings_are_attributed_from_the_token_not_the_payload(
-        self, client: TestClient, auth: dict[str, str], run_compaction
+        self, client: TestClient, auth: dict[str, str], catalog, run_compaction
     ) -> None:
         """A findings batch carries no repo or capability field at all, so a
         workflow cannot file findings against someone else's repo."""
@@ -59,9 +81,7 @@ class TestAuth:
         post_findings(client, auth, [finding_payload()])
         run_compaction()
 
-        rows = client.app.state.catalog.query(  # type: ignore[attr-defined]
-            "SELECT repo_full_name, capability FROM findings"
-        )
+        rows = catalog.query("SELECT repo_full_name, capability FROM findings")
         assert rows == [(REPO, CAPABILITY)]
 
     def test_health_requires_a_token(self, client: TestClient) -> None:
@@ -142,9 +162,12 @@ class TestIngestion:
     ) -> None:
         """The route is in spec 05 §4; its tables arrive in later phases.
         501 keeps the contract visible instead of looking like a routing bug."""
-        response = client.post("/api/ingest/aegis", headers=auth)
+        token = issue_token(client, REPO, "aegis")
+        response = client.post(
+            "/api/ingest/aegis", headers={"Authorization": f"Bearer {token}"}
+        )
         assert response.status_code == 501
-        assert "Phase 0" in response.json()["detail"]
+        assert "not implemented yet" in response.json()["detail"]
 
 
 class TestRateLimiting:
@@ -157,8 +180,7 @@ class TestRateLimiting:
         from mykronos.main import create_app
 
         with TestClient(create_app(settings)) as client:
-            token = client.app.state.tokens.issue(REPO, CAPABILITY)  # type: ignore[attr-defined]
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = {"Authorization": f"Bearer {issue_token(client, REPO, CAPABILITY)}"}
 
             for _ in range(3):
                 assert post_findings(client, headers, []).status_code == 200
@@ -172,9 +194,10 @@ class TestRateLimiting:
         from mykronos.main import create_app
 
         with TestClient(create_app(settings)) as client:
-            registry = client.app.state.tokens  # type: ignore[attr-defined]
-            first = {"Authorization": f"Bearer {registry.issue(REPO, 'sast')}"}
-            second = {"Authorization": f"Bearer {registry.issue('example-org/other', 'sast')}"}
+            first = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
+            second = {
+                "Authorization": f"Bearer {issue_token(client, 'example-org/other', 'sast')}"
+            }
 
             for _ in range(2):
                 assert post_findings(client, first, []).status_code == 200

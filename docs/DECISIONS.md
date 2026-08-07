@@ -182,6 +182,28 @@ Tracked as the first task of Phase 1.
 
 ---
 
+## D-010 — Operational state lives in SQLite, not the data lake
+
+**Status:** Decided, **spec follow-up needed**
+**Spec:** [01 §3](../specs/01-architecture.md)
+
+Spec 01 §3 names DuckDB + Parquet for the data lake but never says where
+*operational* state lives — `RepoOnboarding`, `CapabilityConfig`, ingestion
+tokens, the audit log. A gap, not a contradiction.
+
+These are small, transactional, frequently-updated rows with foreign keys and
+uniqueness constraints. DuckDB is an OLAP engine: single-writer, columnar,
+tuned for scans. Row-level updates there would also land in the path of the
+compaction job. So: SQLite through SQLAlchemy, in `mykronos.db`.
+
+Same local-first argument as the lake, and the same upgrade path — everything
+goes through SQLAlchemy, so Postgres is a URL change.
+
+**Spec follow-up:** add a row to spec 01 §3's tech-stack table for the
+operational store, so the next reader does not have to infer it from the code.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
