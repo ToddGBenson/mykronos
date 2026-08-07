@@ -204,6 +204,34 @@ operational store, so the next reader does not have to infer it from the code.
 
 ---
 
+## D-011 — `repo_full_name` becomes `asset_id`, when the second asset type arrives
+
+**Status:** Decided, spec written, **migration not yet applied**
+**Spec:** [14 §5](../specs/14-network-scanning.md), [05 §3](../specs/05-datalake.md)
+
+Network scanning (spec 14) examines running infrastructure, not a codebase, so
+it is the first capability whose findings have no repository. `Finding` gains
+`asset_type` (`repo` | `network`) and `asset_id`, and `repo_full_name` is
+retired rather than kept alongside — two columns meaning the same thing is how
+a data model rots.
+
+Rejected: registering networks as pseudo-repos so `repo_full_name` could hold
+`network/home-lab`. Zero migration, and that is its only merit. It leaves the
+column storing your network called `repo_full_name` forever, makes every
+repo-scoped query silently match networks, and makes D-009's token scoping
+incoherent.
+
+**Timing.** Nothing needs this until the network capability is built. The
+rename touches the finding schema, compaction, the ingestion API and the token
+grant model, and its cost grows with the codebase — so it is the *first* task
+of whichever phase builds spec 14, not something deferred inside it.
+
+Doing it now would be cheaper in isolation but would stall Phase 1 for a
+capability with no consumers yet. Doing it after Phase 4 would be materially
+more expensive. The trigger is spec 14 entering a phase, whenever that is.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.

@@ -54,6 +54,7 @@ Read the specs in this order:
 | 11 | [Knowledge Store & RAG Learning](specs/11-knowledge-rag-learning.md) | Cross-repo retro learning |
 | 12 | [Security & Secrets Management](specs/12-security-and-secrets-management.md) | Token handling, encryption, least privilege |
 | 13 | [Build Roadmap](specs/13-build-roadmap.md) | Phased delivery plan |
+| 14 | [Network Scanning](specs/14-network-scanning.md) | Active scanning of operator-owned networks; the Asset model |
 
 ## Provenance
 

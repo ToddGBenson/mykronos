@@ -44,6 +44,7 @@ as it evolves.
 | **Containers** | Trivy (image + Dockerfile scan) | `pull_request` touching Dockerfile/image build paths, `push`, scheduled re-scan of latest published image | SARIF (Trivy supports native SARIF output) |
 | **IaC** | Checkov | `pull_request` touching IaC paths (`*.tf`, `cloudformation/**`, `k8s/**`, etc.), `push` | SARIF (Checkov supports native SARIF output) |
 | **Cloud** | Cloud-provider posture scan (e.g., a Prowler/ScoutSuite-style scan against the account(s) tied to the repo's declared environment) | scheduled (daily) | Tool-native JSON |
+| **Network** | Active scan of operator-owned network ranges — see **[spec 14](14-network-scanning.md)**. Listed here for completeness only: it is *not* a workflow template, because a GitHub-hosted runner cannot reach a private network. It is orchestrated by the backend | scheduled (weekly) | nmap XML / nuclei JSON |
 
 Tool choice per capability is a **configurable default**, not hardcoded —
 `CapabilityConfig.config_json` (spec 02 §3) may override the tool, its
