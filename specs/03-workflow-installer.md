@@ -56,7 +56,11 @@ target repo. Templates are parameterized with:
       client-side per GitHub's API requirement — never sent in plaintext).
    b. Creates a branch `mykronos/enable-workflows-<timestamp>` off the
       repo's `default_branch`.
-   c. Commits the staged file additions/deletions to that branch.
+   c. Commits the staged file additions/deletions to that branch. Because the
+      staged paths are all under `.github/workflows/`, this step requires the
+      App's `workflows: write` permission (spec 02 §4) — `contents: write`
+      alone is refused by GitHub for these paths, and the failure surfaces
+      here rather than at install time.
    d. Opens a PR titled `Mykronos: update security workflows` with a body
       listing exactly which capabilities were added/removed and links to
       this spec set for context.

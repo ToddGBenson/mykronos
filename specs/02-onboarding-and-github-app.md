@@ -66,7 +66,11 @@ capability's spec (04, 06, 07, 08, 09).
 1. Create a GitHub App in the `example-org` GitHub organization (or the relevant
    org) named e.g. `mykronos-platform`.
 2. Required permissions:
-   - Repository contents: **Read & write** (to open workflow-install PRs)
+   - Repository contents: **Read & write** (to create branches and commit
+     non-workflow files)
+   - Workflows: **Write** (to commit and delete files under
+     `.github/workflows/`) — see the note below; this is **not** covered by
+     `contents: write`
    - Pull requests: **Read & write** (to open/comment on PRs)
    - Checks: **Read & write** (for Aegis/Oracle to post check runs)
    - Actions: **Read & write** (to enable/monitor workflow runs)
@@ -75,6 +79,18 @@ capability's spec (04, 06, 07, 08, 09).
      directly; workflow-level secrets needed by scanners (e.g., a Snyk token)
      remain the repo owner's responsibility to configure, or are proxied
      through the ingestion API pattern in spec 05 §4.
+   > **Why `workflows: write` is listed separately.** GitHub treats files under
+   > `.github/workflows/` as privileged and gates them behind their own
+   > permission. An installation token holding only `contents: write` is
+   > refused when it tries to create, update or delete a workflow file — the
+   > Contents API rejects the write outright. Since committing workflow YAML is
+   > the Workflow Installer's entire purpose (spec 03), the App is inoperable
+   > without this permission: onboarding would complete, capabilities would
+   > save, and every install PR would then fail at the commit step.
+   >
+   > The permission is write-only in GitHub's model (there is no
+   > `workflows: read`); reading workflow files is covered by `contents: read`.
+
 3. Webhook URL → Mykronos backend `/webhooks/github`.
 4. Subscribe to events: `installation`, `installation_repositories`,
    `pull_request`, `workflow_run`, `check_run`.
@@ -143,6 +159,13 @@ admin auth — out of scope of GitHub App auth, which is service-to-service).
   in Mykronos within 24 hours (webhook-driven, with daily reconciliation as
   a fallback).
 - No GitHub PAT is ever stored in the Mykronos database or logs.
+- **Permission smoke test.** Before any other Phase 1 work is accepted, the
+  registered App must be shown to commit a workflow file to a scratch repo and
+  create an Actions secret on it, using nothing but an installation token.
+  Both operations depend on permissions this spec previously omitted (§4), and
+  both fail late and confusingly — at PR-commit time, per repo — if the App is
+  registered with the wrong set. Verifying the grant directly is cheaper than
+  diagnosing it through the installer.
 
 ## 9. Edge cases
 

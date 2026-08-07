@@ -72,13 +72,14 @@ security-relevant details point back here as the source of truth.
 
 ## 6. Least privilege — GitHub App permission review
 
-Restated from spec 02 §4 for completeness: the App requests only
-`contents: write`, `pull_requests: write`, `checks: write`, `actions:
-write`, `metadata: read`. It explicitly does **not** request `secrets:
-write` at the App level for *reading* existing repo secrets — it can only
-*create/update* specific named secrets it manages (the ingestion token
-secrets), via the dedicated Secrets API, which does not require broader
-secrets-read permission.
+Restated from spec 02 §4 for completeness: the App requests
+`contents: write`, `workflows: write`, `pull_requests: write`,
+`checks: write`, `actions: write`, `metadata: read`.
+
+`workflows: write` is required because GitHub gates files under
+`.github/workflows/` behind their own permission — `contents: write` is
+refused for those paths. Committing workflow YAML is the Workflow Installer's
+entire purpose, so this is not an optional addition (spec 02 §4, spec 03 §3).
 
 ## 7. Auditability
 
