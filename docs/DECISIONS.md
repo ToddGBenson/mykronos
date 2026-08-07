@@ -113,6 +113,75 @@ Overturning them would also generate a spurious retro signal in Phase 5.
 
 ---
 
+## D-008 — GitHub App permission set corrected
+
+**Status:** Decided, spec updated
+**Spec:** [02 §4](../specs/02-onboarding-and-github-app.md), [12 §6](../specs/12-security-and-secrets-management.md)
+
+Added `workflows: write` and changed Secrets from "No access" to `write`.
+
+**Why:** the App as originally specified could not do its job. GitHub gates
+`.github/workflows/` behind its own permission and refuses a `contents: write`
+token there, so no install PR could ever commit. And the Actions Secrets API
+requires `secrets: write` for any create-or-update — there is no create-only
+tier, so the ingestion secret could not be provisioned either.
+
+Spec 12 §6 had justified withholding Secrets on the grounds that Mykronos must
+never read repo secrets. That goal survives, guaranteed by GitHub rather than
+by the grant: the Secrets API never returns a value to any caller.
+
+Both failures would have surfaced late — after the App was registered and
+installed by repo owners, at per-repo PR-commit time — and re-registering a
+permission set forces every installation to re-consent. Hence the smoke test
+now gating Phase 1 (spec 02 §8).
+
+Also added spec 12 §6.1, stating the App key's blast radius plainly: the key
+can write workflows into every onboarded repo, and code in CI can read that
+repo's secrets, so the indirect path to secrets exists even though the API
+path does not. Inherent to any tool that installs CI workflows elsewhere, but
+understating it made §2's key handling read as bureaucratic.
+
+---
+
+## D-009 — One ingestion token per repo, with capability grants
+
+**Status:** Decided, spec updated. **Supersedes part of D-004.**
+**Spec:** [05 §4](../specs/05-datalake.md), [03 §5](../specs/03-workflow-installer.md), [12 §4](../specs/12-security-and-secrets-management.md)
+
+One token per repo, carrying server-side capability grants, instead of one
+token per `(repo, capability)` pair.
+
+**Why:** the per-capability boundary was not real. GitHub Actions repository
+secrets are readable by every workflow in the repo, so a compromised runner
+already holds all of that repo's tokens regardless of which workflow each was
+provisioned for. The repo is the smallest boundary GitHub enforces. The split
+cost a tenth of each customer repo's 100-secret budget and put 2,000 secrets
+on independent 90-day clocks at 200 repos, for containment that did not exist.
+
+Revocation gets *stronger*: dropping a registry grant is local, immediate and
+cannot partially apply, where deleting a GitHub secret is an API call that can
+fail and leave a live credential behind.
+
+**Correction to earlier analysis.** I previously characterised the rotation
+load as "~22 rotation PRs/day." That was wrong — rotation updates a secret
+through the Secrets API and opens no PRs at all. The real costs are the ones
+above, plus the rotation race the spec omitted entirely (below). The
+conclusion holds; the stated reason for it was partly incorrect.
+
+**Rotation overlap.** A job reads the secret when it starts and may post
+findings many minutes later, so a naive swap `401`s runs already in flight.
+Rotation is now dual-validity: both tokens accepted for a configurable window
+(default 24h), then the superseded hash is purged.
+
+**Code impact, not yet applied.** Phase 0 infers `capability` from the token
+scope (D-004). With one token spanning capabilities that no longer works:
+`FindingBatch` needs an explicit `capability`, validated against the grant
+set, and `TokenRegistry` needs grants plus superseded-token handling. Repo
+attribution stays structural — there is still no request field naming a repo.
+Tracked as the first task of Phase 1.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -123,19 +192,22 @@ Recorded so they are not mistaken for oversights.
 | `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
 | `POST /api/ingest/{capability}` bodies | Route returns 501 naming the phase; the target tables belong to Aegis/Atlas/Patchwork/Oracle | Phases 3–6 |
 | Raw tool output archival (`raw_output_ref`, spec 05 §7) | Field is carried through the schema; the upload path and retention sweep are not built | Phase 1 |
-| 90-day token rotation job | Registry records `rotate_after`; nothing acts on it. See the open question below | Phase 1 |
+| 90-day token rotation job, incl. the dual-validity overlap window (D-009) | Registry records `rotate_after`; nothing acts on it, and superseded-token acceptance is not implemented | Phase 1 |
+| Capability grants on the token registry (D-009) | Phase 0 stores one scope per token; grants and the explicit batch `capability` field are the first Phase 1 task | Phase 1 |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
 
 ---
 
 ## Open questions carried from the spec review
 
-Not yet decided; each needs an answer before the phase named.
+| # | Question | Blocks | Status |
+|---|---|---|---|
+| 1 | GitHub App needs `workflows: write` — absent from spec 02 §4 / 12 §6. Without it the installer cannot commit workflow files at all | Phase 1 | **Resolved** — D-008 |
+| 2 | GitHub App needs `secrets: write` — spec 12 §6 claims otherwise | Phase 1 | **Resolved** — D-008 |
+| 3 | Ten tokens per repo on ten independent 90-day clocks | Phase 1 | **Resolved** — D-009 |
+| 4 | Oracle's score saturates: criticals weigh 40, clamped at 100, so three of them pins every repo at 100 forever | Phase 3 | Open |
+| 5 | "Advisory by default" has no stated path to ever turning blocking on. Needs a shadow-mode metric to make the case with data | Phase 3 | Open |
 
-| # | Question | Blocks |
-|---|---|---|
-| 1 | GitHub App needs `workflows:write` — absent from spec 02 §4 / 12 §6. Without it the installer cannot commit workflow files at all | Phase 1 |
-| 2 | GitHub App needs `secrets:write` — spec 12 §6 claims otherwise. The security *intent* holds (GitHub never returns secret values) but the stated mechanism is wrong | Phase 1 |
-| 3 | Ten tokens per repo on ten independent 90-day clocks is ~2,000 secrets and ~22 rotation PRs/day at 200 repos. Keep the scoping, change the rotation shape | Phase 1 |
-| 4 | Oracle's score saturates: criticals weigh 40, clamped at 100, so three of them pins every repo at 100 forever | Phase 3 |
-| 5 | "Advisory by default" has no stated path to ever turning blocking on. Needs a shadow-mode metric to make the case with data | Phase 3 |
+Nothing now blocks Phase 1. Questions 4 and 5 are Oracle's, and are best
+answered with real findings in the lake — defer until Phase 2 has produced
+some.
