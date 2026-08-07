@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.3",
     # starlette's TestClient requires httpx2; plain httpx is deprecated there.
     "httpx2>=2.9",
+    "pytest-asyncio>=0.24",
     "ruff>=0.7",
     "mypy>=1.13",
 ]
@@ -44,6 +45,9 @@ include = ["mykronos*"]
 testpaths = ["tests"]
 filterwarnings = ["error"]
 markers = ["slow: performance checks against spec 05 §9 acceptance criteria"]
+# The GitHub client is async; every async test is a coroutine test.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

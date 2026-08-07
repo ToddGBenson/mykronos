@@ -1,0 +1,371 @@
+"""GitHub API surface the platform actually uses (spec 02, spec 03).
+
+Kept deliberately narrow. Only the operations the Workflow Installer and
+onboarding need appear here, so the App's permission set stays reviewable
+against a short list rather than against "whatever the client library can do".
+
+`FakeGitHubClient` is a real in-memory implementation, not a stub of
+convenience: it enforces the same preconditions the API does — a workflow
+file write requires `workflows: write`, a secret write requires
+`secrets: write`, a branch must exist before you commit to it. Installer
+logic tested against it is tested against the rules that actually bite.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+import httpx2
+
+from mykronos.github.auth import AppCredentials, InstallationTokenCache
+from mykronos.github.secrets import RepoPublicKey
+from mykronos.schemas import utcnow
+
+GITHUB_API = "https://api.github.com"
+
+#: The permission set spec 02 §4 requires, after D-008. `workflows` and
+#: `secrets` were both missing from the original spec and are both mandatory:
+#: without them the installer cannot commit a workflow file or provision the
+#: ingestion secret.
+REQUIRED_PERMISSIONS = {
+    "contents": "write",
+    "workflows": "write",
+    "secrets": "write",
+    "pull_requests": "write",
+    "checks": "write",
+    "actions": "write",
+    "metadata": "read",
+}
+
+WORKFLOW_PATH_PREFIX = ".github/workflows/"
+
+
+class GitHubError(RuntimeError):
+    """A GitHub API call failed in a way the caller must handle."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class PermissionDeniedError(GitHubError):
+    """The installation lacks a permission the operation requires.
+
+    Raised separately because this is the D-008 failure mode: it means the App
+    is registered wrong, and no amount of retrying will help.
+    """
+
+
+@dataclass
+class FileChange:
+    """One staged file addition, update or deletion."""
+
+    path: str
+    content: str | None
+    """None means delete."""
+
+    @property
+    def is_delete(self) -> bool:
+        return self.content is None
+
+    @property
+    def is_workflow(self) -> bool:
+        return self.path.startswith(WORKFLOW_PATH_PREFIX)
+
+
+@dataclass
+class PullRequest:
+    number: int
+    url: str
+    head_branch: str
+    state: str = "open"
+    merged: bool = False
+
+
+class GitHubClient(Protocol):
+    """What the platform needs from GitHub. Nothing more."""
+
+    async def get_repo(self, repo_full_name: str) -> dict[str, Any]: ...
+
+    async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
+        """Return file contents, or None if it does not exist."""
+
+    async def create_branch(self, repo_full_name: str, branch: str, from_ref: str) -> None: ...
+
+    async def commit_files(
+        self, repo_full_name: str, branch: str, message: str, changes: list[FileChange]
+    ) -> str:
+        """Commit staged changes to a branch. Returns the commit SHA."""
+
+    async def find_open_pull_request(
+        self, repo_full_name: str, head_branch_prefix: str
+    ) -> PullRequest | None: ...
+
+    async def create_pull_request(
+        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+    ) -> PullRequest: ...
+
+    async def update_pull_request(
+        self, repo_full_name: str, number: int, *, title: str, body: str
+    ) -> PullRequest: ...
+
+    async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey: ...
+
+    async def put_actions_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None: ...
+
+    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None: ...
+
+    async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
+
+
+# ---------------------------------------------------------------------------
+# Fake
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeRepo:
+    full_name: str
+    default_branch: str = "main"
+    files: dict[str, str] = field(default_factory=dict)
+    branches: dict[str, dict[str, str]] = field(default_factory=dict)
+    secrets: dict[str, str] = field(default_factory=dict)
+    pull_requests: list[PullRequest] = field(default_factory=list)
+
+
+class FakeGitHubClient:
+    """In-memory GitHub, enforcing the preconditions that actually bite.
+
+    `permissions` defaults to the correct post-D-008 set. Narrowing it is how
+    the tests prove the installer fails loudly — and says why — when the App
+    is registered without `workflows: write` or `secrets: write`.
+    """
+
+    def __init__(
+        self,
+        repos: dict[str, FakeRepo] | None = None,
+        permissions: dict[str, str] | None = None,
+    ) -> None:
+        self.repos = repos or {}
+        self.permissions = dict(REQUIRED_PERMISSIONS if permissions is None else permissions)
+        self.calls: list[tuple[str, str]] = []
+        self._next_pr_number = 1
+        self.installations: dict[int, dict[str, Any]] = {}
+
+    # -- helpers --------------------------------------------------------
+
+    def add_repo(self, full_name: str, **kwargs: Any) -> FakeRepo:
+        repo = FakeRepo(full_name=full_name, **kwargs)
+        repo.branches.setdefault(repo.default_branch, dict(repo.files))
+        self.repos[full_name] = repo
+        return repo
+
+    def _repo(self, full_name: str) -> FakeRepo:
+        try:
+            return self.repos[full_name]
+        except KeyError:
+            raise GitHubError(f"Repository {full_name} not found", status=404) from None
+
+    def _require(self, permission: str, level: str, operation: str) -> None:
+        held = self.permissions.get(permission)
+        if held != level and not (level == "read" and held == "write"):
+            raise PermissionDeniedError(
+                f"{operation} requires '{permission}: {level}'. The Mykronos GitHub App "
+                f"holds '{permission}: {held or 'none'}'. See spec 02 §4 — the App must be "
+                "re-registered with the corrected permission set (D-008).",
+                status=403,
+            )
+
+    # -- protocol -------------------------------------------------------
+
+    async def get_repo(self, repo_full_name: str) -> dict[str, Any]:
+        self.calls.append(("get_repo", repo_full_name))
+        repo = self._repo(repo_full_name)
+        return {"full_name": repo.full_name, "default_branch": repo.default_branch}
+
+    async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
+        self.calls.append(("get_file", f"{repo_full_name}:{path}@{ref}"))
+        repo = self._repo(repo_full_name)
+        return repo.branches.get(ref, repo.files).get(path)
+
+    async def create_branch(self, repo_full_name: str, branch: str, from_ref: str) -> None:
+        self.calls.append(("create_branch", f"{repo_full_name}:{branch}"))
+        self._require("contents", "write", "Creating a branch")
+        repo = self._repo(repo_full_name)
+        if from_ref not in repo.branches:
+            raise GitHubError(f"Base ref {from_ref} does not exist", status=422)
+        repo.branches[branch] = dict(repo.branches[from_ref])
+
+    async def commit_files(
+        self, repo_full_name: str, branch: str, message: str, changes: list[FileChange]
+    ) -> str:
+        self.calls.append(("commit_files", f"{repo_full_name}:{branch}"))
+        self._require("contents", "write", "Committing files")
+        if any(change.is_workflow for change in changes):
+            # The D-008 failure: GitHub gates .github/workflows/ behind its own
+            # permission and refuses a contents-only token for those paths.
+            self._require("workflows", "write", "Committing a GitHub Actions workflow file")
+
+        repo = self._repo(repo_full_name)
+        if branch not in repo.branches:
+            raise GitHubError(f"Branch {branch} does not exist", status=422)
+
+        tree = repo.branches[branch]
+        for change in changes:
+            if change.is_delete:
+                tree.pop(change.path, None)
+            else:
+                assert change.content is not None
+                tree[change.path] = change.content
+        return f"sha-{abs(hash((branch, len(tree), message))) % 10**7:07d}"
+
+    async def find_open_pull_request(
+        self, repo_full_name: str, head_branch_prefix: str
+    ) -> PullRequest | None:
+        self.calls.append(("find_open_pull_request", repo_full_name))
+        repo = self._repo(repo_full_name)
+        for pr in repo.pull_requests:
+            if pr.state == "open" and pr.head_branch.startswith(head_branch_prefix):
+                return pr
+        return None
+
+    async def create_pull_request(
+        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+    ) -> PullRequest:
+        self.calls.append(("create_pull_request", repo_full_name))
+        self._require("pull_requests", "write", "Opening a pull request")
+        repo = self._repo(repo_full_name)
+        pr = PullRequest(
+            number=self._next_pr_number,
+            url=f"https://github.com/{repo_full_name}/pull/{self._next_pr_number}",
+            head_branch=head,
+        )
+        self._next_pr_number += 1
+        repo.pull_requests.append(pr)
+        return pr
+
+    async def update_pull_request(
+        self, repo_full_name: str, number: int, *, title: str, body: str
+    ) -> PullRequest:
+        self.calls.append(("update_pull_request", f"{repo_full_name}#{number}"))
+        self._require("pull_requests", "write", "Updating a pull request")
+        repo = self._repo(repo_full_name)
+        for pr in repo.pull_requests:
+            if pr.number == number:
+                return pr
+        raise GitHubError(f"Pull request #{number} not found", status=404)
+
+    async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:
+        self.calls.append(("get_actions_public_key", repo_full_name))
+        self._require("secrets", "write", "Reading the Actions public key")
+        self._repo(repo_full_name)
+        # A fixed, published test key. Real sealing is exercised in
+        # tests/test_github.py against a generated keypair.
+        return RepoPublicKey(
+            key_id="568250167242549743",
+            key_base64="2Sg8iYjAxxmI2LvUXpJjkYrMxURPc8r+dB7TJyvvcCU=",
+        )
+
+    async def put_actions_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        self.calls.append(("put_actions_secret", f"{repo_full_name}:{name}"))
+        self._require("secrets", "write", "Creating an Actions secret")
+        self._repo(repo_full_name).secrets[name] = encrypted_value
+
+    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None:
+        self.calls.append(("delete_actions_secret", f"{repo_full_name}:{name}"))
+        self._require("secrets", "write", "Deleting an Actions secret")
+        self._repo(repo_full_name).secrets.pop(name, None)
+
+    async def get_installation(self, installation_id: int) -> dict[str, Any]:
+        self.calls.append(("get_installation", str(installation_id)))
+        try:
+            return self.installations[installation_id]
+        except KeyError:
+            raise GitHubError(f"Installation {installation_id} not found", status=404) from None
+
+
+# ---------------------------------------------------------------------------
+# Real
+# ---------------------------------------------------------------------------
+
+
+class RestGitHubClient:
+    """The live client. Mints installation tokens on demand and caches them.
+
+    Not exercised by the test suite — there is nothing meaningful to assert
+    about it without a registered App, and asserting against a mocked
+    transport would only test the mock. It is covered by the permission smoke
+    test in spec 02 §8, which is a Phase 1 entry gate precisely because this
+    code cannot be proven correct any other way.
+    """
+
+    def __init__(
+        self,
+        credentials: AppCredentials,
+        installation_id: int,
+        cache: InstallationTokenCache | None = None,
+        base_url: str = GITHUB_API,
+    ) -> None:
+        self.credentials = credentials
+        self.installation_id = installation_id
+        self.cache = cache or InstallationTokenCache()
+        self.base_url = base_url
+
+    async def _token(self) -> str:
+        cached = self.cache.get(self.installation_id)
+        if cached is not None:
+            return cached
+
+        async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
+            response = await http.post(
+                f"/app/installations/{self.installation_id}/access_tokens",
+                headers={
+                    "Authorization": f"Bearer {self.credentials.app_jwt()}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Could not mint an installation token: {response.text}",
+                status=response.status_code,
+            )
+        payload = response.json()
+        expires = payload.get("expires_at", "")
+        expires_at = (
+            __import__("datetime").datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            .replace(tzinfo=None)
+            if expires
+            else utcnow()
+        )
+        self.cache.put(self.installation_id, payload["token"], expires_at)
+        return str(payload["token"])
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx2.Response:
+        token = await self._token()
+        async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
+            response = await http.request(
+                method,
+                path,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                **kwargs,
+            )
+        if response.status_code == 401:
+            # The cached token was revoked or rotated early; drop it so the
+            # next attempt mints a fresh one rather than looping on a dead one.
+            self.cache.invalidate(self.installation_id)
+        if response.status_code == 403 and "workflow" in response.text.lower():
+            raise PermissionDeniedError(
+                "GitHub refused a workflow-file write. The App is missing "
+                "'workflows: write' (spec 02 §4, D-008).",
+                status=403,
+            )
+        return response
