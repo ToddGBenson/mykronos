@@ -1,0 +1,42 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Node ---
+node_modules/
+.next/
+dist/
+
+# --- Mykronos runtime state ---
+# The data lake is local operational data, never source. See specs/05-datalake.md.
+datalake/
+*.duckdb
+*.duckdb.wal
+
+# Ingestion token registry holds token hashes + metadata (spec 12 §2).
+# Never committed even though it contains no plaintext secrets.
+tokens.json
+
+# --- Secrets (spec 12 §8: no real secret is ever committed) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Local scratch ---
+Archive.zip
