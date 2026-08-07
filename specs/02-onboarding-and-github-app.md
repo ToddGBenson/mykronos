@@ -75,10 +75,11 @@ capability's spec (04, 06, 07, 08, 09).
    - Checks: **Read & write** (for Aegis/Oracle to post check runs)
    - Actions: **Read & write** (to enable/monitor workflow runs)
    - Metadata: **Read-only** (mandatory baseline)
-   - Secrets: **No access** — Mykronos never reads or writes repo secrets
-     directly; workflow-level secrets needed by scanners (e.g., a Snyk token)
-     remain the repo owner's responsibility to configure, or are proxied
-     through the ingestion API pattern in spec 05 §4.
+   - Secrets: **Write** (to create and update the ingestion token secret it
+     manages, spec 05 §4) — see the note below. Mykronos never *reads* a repo
+     secret's value, and GitHub's API makes that structural rather than a
+     promise. Workflow-level secrets needed by scanners (e.g. a Snyk token)
+     remain the repo owner's responsibility to configure.
    > **Why `workflows: write` is listed separately.** GitHub treats files under
    > `.github/workflows/` as privileged and gates them behind their own
    > permission. An installation token holding only `contents: write` is
@@ -90,6 +91,26 @@ capability's spec (04, 06, 07, 08, 09).
    >
    > The permission is write-only in GitHub's model (there is no
    > `workflows: read`); reading workflow files is covered by `contents: read`.
+
+   > **Why `secrets: write` cannot be avoided.** An earlier draft of this spec
+   > claimed the App could create named secrets with "no access" to Secrets,
+   > on the reasoning that it only needed to *write* the ones it manages. That
+   > is not how the permission is shaped: the Actions Secrets API requires
+   > `secrets: write` for any create-or-update, and GitHub grants Secrets as a
+   > single permission with no create-only tier.
+   >
+   > The security *intent* of that draft still holds, but for a better reason
+   > than withholding the permission. GitHub's Secrets API never returns a
+   > secret's value to anyone — `GET .../actions/secrets/{name}` returns the
+   > name and timestamps only. So `secrets: write` genuinely does not confer
+   > read: Mykronos cannot exfiltrate a repo's existing secrets even holding
+   > it. Values are also libsodium-sealed against the repo's public key before
+   > upload (spec 03 §4a), so plaintext never crosses the wire.
+   >
+   > What the permission *does* confer is the ability to overwrite any named
+   > secret in an onboarded repo. See spec 12 §6 for the resulting blast
+   > radius, which is the honest reason the App private key is handled the way
+   > spec 12 §2 requires.
 
 3. Webhook URL → Mykronos backend `/webhooks/github`.
 4. Subscribe to events: `installation`, `installation_repositories`,

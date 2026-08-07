@@ -81,6 +81,55 @@ Restated from spec 02 §4 for completeness: the App requests
 refused for those paths. Committing workflow YAML is the Workflow Installer's
 entire purpose, so this is not an optional addition (spec 02 §4, spec 03 §3).
 
+`secrets: write` is required to provision the ingestion token secret (spec 05
+§4). An earlier draft of this section asserted the App could do that with no
+Secrets permission; it cannot — the Actions Secrets API requires
+`secrets: write` for any create-or-update, and GitHub offers no create-only
+tier. The claim that Mykronos never reads repo secrets is still true, but it
+is guaranteed by GitHub rather than by the permission grant: the Secrets API
+never returns a value to any caller, so `write` here does not imply read.
+
+### 6.1 Blast radius of the App private key
+
+Stating this plainly because §2 calls the App private key the only long-lived
+secret in the system, and the permission set above determines what its
+compromise actually costs.
+
+An attacker holding the App private key can mint installation tokens for every
+onboarded repo, and with them:
+
+| Can | Cannot |
+|---|---|
+| Commit arbitrary workflow files to any onboarded repo (`workflows: write`) | Read any existing repo secret's value — the API does not return them |
+| Overwrite any named Actions secret, including ones Mykronos does not manage (`secrets: write`) | Merge a pull request, or administer the repo |
+| Commit arbitrary non-workflow code (`contents: write`) | Reach the data lake's contents — ingestion tokens are write-only and per-repo |
+| Open PRs and post checks | Act on a repo that has not installed the App |
+
+The first row is the serious one, and the combination is worse than either
+alone: an attacker who can write a workflow can run arbitrary code in that
+repo's CI, and code running in CI *can* read that repo's secrets. So while
+Mykronos cannot read secrets through the API, a compromised App key can reach
+them indirectly, in any onboarded repo, by writing a workflow that does.
+
+Three consequences, all already required elsewhere and restated here as the
+reasons they exist rather than as house style:
+
+1. The private key lives in a secret manager or KMS and never in the database,
+   application config, or logs (§4.2). Rotation on suspected compromise is
+   immediate, not scheduled (§2).
+2. Every installation-token mint is logged with the repo and the operation it
+   was minted for, so anomalous minting is detectable in the audit log (§7).
+   Tokens themselves stay in memory and are never persisted (§2).
+3. Repo owners retain unilateral revocation: uninstalling the App from
+   GitHub's side cuts access immediately and independently of Mykronos
+   (spec 02 §6). This is a real control, not a formality — it is the only one
+   that works if the platform itself is the thing compromised.
+
+This blast radius is inherent to any tool that installs CI workflows into
+other people's repositories. It is not a reason to reject the design, but it
+must be stated accurately rather than understated, or the key handling in §2
+reads as bureaucratic instead of load-bearing.
+
 ## 7. Auditability
 
 - Every write to `RepoOnboarding`, `CapabilityConfig`, `RiskDecision`
@@ -96,6 +145,11 @@ entire purpose, so this is not an optional addition (spec 02 §4, spec 03 §3).
 
 - A code/config review confirms no PAT-shaped credential exists anywhere
   in the codebase, database schema, or default configuration.
+- No code path calls the Actions Secrets API for anything other than
+  creating, updating or deleting a secret whose name Mykronos owns — asserted
+  by test, since `secrets: write` grants the ability to overwrite any named
+  secret in an onboarded repo (§6.1) and nothing in the grant itself prevents
+  a future change from doing so by accident.
 - Revoking a single repo's ingestion token (via disabling its capability,
   spec 03 §5) immediately prevents further writes from that repo/capability
   pair, without affecting any other repo.
