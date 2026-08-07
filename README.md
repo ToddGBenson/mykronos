@@ -9,10 +9,30 @@ engine, and view everything — across every onboarded repo — in one unified d
 A learning/RAG layer captures retro feedback over time so the whole system gets smarter
 about false positives, recurring issues, and process changes.
 
-This repository contains **specifications only** — no prior implementation exists.
-It is written for a developer with no prior context on any of the source projects
-referenced below. Build order and milestones are in
-[`specs/13-build-roadmap.md`](specs/13-build-roadmap.md).
+Build order and milestones are in [`specs/13-build-roadmap.md`](specs/13-build-roadmap.md).
+The specs are written for a developer with no prior context on any of the source
+projects referenced below.
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 0 | Data lake + Ingestion API | **Done** — see [`backend/`](backend/README.md) |
+| 1 | Onboarding, GitHub App, workflow installer, SAST | Not started |
+| 2 | Remaining five scanners + first dashboard views | Not started |
+| 3 | Oracle v1 (deterministic policy) | Not started |
+| 4 | Aegis + Atlas | Not started |
+| 5 | Knowledge Store + RAG | Not started |
+| 6 | Patchwork | Not started |
+| 7 | Trend/retro reporting, maturity view, hardening | Not started |
+
+Implementation decisions the specs do not settle — and the ones that should
+become spec changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+Five open questions carried from the spec review are listed there too; items
+1–3 block Phase 1.
+
+Spec changes land as their own commits before the code that depends on them.
+`specs/05-datalake.md` §3/§5/§9 have been amended once so far (D-001).
 
 ## Start here
 

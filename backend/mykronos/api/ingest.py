@@ -1,0 +1,226 @@
+"""Ingestion API — the single write path into the data lake (spec 05 §4).
+
+Two properties this module is responsible for:
+
+1. **A 200 is a durability guarantee.** Every write goes to the fsync'd
+   write-ahead buffer before the response is returned, so a workflow that saw
+   a 200 can be certain its findings survive a crash. Nothing is acknowledged
+   from memory.
+
+2. **Attribution comes from the token, not the payload.** `repo_full_name` and
+   `capability` are stamped from the authenticated token's scope and are not
+   accepted as client input on the findings path. A workflow therefore cannot
+   file findings against another repo even if it tries.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from mykronos.auth import TokenRegistry, TokenScope
+from mykronos.fingerprint import compute_finding_id
+from mykronos.schemas import (
+    Capability,
+    FindingBatch,
+    FindingStatus,
+    HealthResponse,
+    IngestAccepted,
+    ScanRunSubmission,
+    utcnow,
+)
+
+router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
+
+_bearer = HTTPBearer(auto_error=False, description="Per-(repo, capability) ingestion token.")
+
+
+async def require_scope(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> TokenScope:
+    """Resolve and rate-limit the presented ingestion token."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing ingestion token. Send 'Authorization: Bearer <token>'.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    registry: TokenRegistry = request.app.state.tokens
+    scope = registry.resolve(credentials.credentials)
+    if scope is None:
+        # Same response for unknown and revoked: a caller learns only that this
+        # token does not work now, not whether it ever did.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ingestion token is unknown or revoked.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    allowed, retry_after = request.app.state.limiter.check(scope.token_sha256)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Ingestion rate limit exceeded for this token. Back off and retry — "
+                "do not drop findings."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+    return scope
+
+
+ScopeDep = Annotated[TokenScope, Depends(require_scope)]
+
+
+def _assert_scope_matches(scope: TokenScope, repo_full_name: str, capability: str) -> None:
+    if not scope.permits(repo_full_name, capability):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"This token is scoped to ({scope.repo_full_name}, {scope.capability}) "
+                f"and cannot write ({repo_full_name}, {capability})."
+            ),
+        )
+
+
+@router.get("/health", response_model=HealthResponse)
+async def health(request: Request, scope: ScopeDep) -> HealthResponse:
+    """Called by a workflow before scanning so it can fail fast (spec 05 §4).
+
+    Reports whether the lake is actually writable rather than merely whether
+    the process is up — an unwritable disk is the failure this exists to catch.
+    """
+    buffer = request.app.state.buffer
+    try:
+        buffer.root.mkdir(parents=True, exist_ok=True)
+        probe = buffer.root / ".health"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        writable = True
+        detail = ""
+    except OSError as exc:
+        writable = False
+        detail = f"Data lake is not writable: {exc}"
+
+    return HealthResponse(
+        status="ok" if writable else "degraded",
+        datalake_writable=writable,
+        buffered_segments=buffer.count_sealed(),
+        detail=detail,
+    )
+
+
+@router.post("/scan-run", response_model=IngestAccepted)
+async def ingest_scan_run(
+    request: Request,
+    submission: ScanRunSubmission,
+    scope: ScopeDep,
+) -> IngestAccepted:
+    """Register or finalise a ScanRun.
+
+    Posted once at workflow start and again at completion with
+    `completed_at`/`scan_status`/`finding_count`; the second post upserts onto
+    the first by `scan_run_id` (see docs/DECISIONS.md D-002).
+
+    Every run is registered — success, no-op and failure alike — so scan
+    coverage and freshness are auditable from the lake alone (spec 04 §7).
+    """
+    _assert_scope_matches(scope, submission.repo_full_name, submission.capability.value)
+
+    row = submission.model_dump(mode="python")
+    row["capability"] = submission.capability.value
+    row["triggered_by"] = submission.triggered_by.value
+    row["scan_status"] = submission.scan_status.value
+    row["ingested_at"] = utcnow()
+
+    request.app.state.buffer.append("scan_runs", [row])
+    return IngestAccepted(accepted=1, scan_run_id=submission.scan_run_id)
+
+
+@router.post("/findings", response_model=IngestAccepted)
+async def ingest_findings(
+    request: Request,
+    batch: FindingBatch,
+    scope: ScopeDep,
+) -> IngestAccepted:
+    """Submit a batch of normalized findings for a scan run.
+
+    An empty batch is valid and meaningful: it is how a scanner reports
+    "I ran and found nothing," which the lake must be able to tell apart from
+    "never ran" (spec 04 §6).
+    """
+    now = utcnow()
+    rows: list[dict[str, Any]] = []
+
+    for finding in batch.findings:
+        finding_id, fingerprint_version = compute_finding_id(
+            repo_full_name=scope.repo_full_name,
+            capability=scope.capability,
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+            package_name=finding.package_name,
+            title=finding.title,
+        )
+        rows.append(
+            {
+                "finding_id": finding_id,
+                "scan_run_id": batch.scan_run_id,
+                # Attribution from the token, never the payload.
+                "repo_full_name": scope.repo_full_name,
+                "capability": scope.capability,
+                "rule_id": finding.rule_id,
+                "title": finding.title,
+                "description": finding.description,
+                "severity": finding.severity.value,
+                "cvss_score": finding.cvss_score,
+                "file_path": finding.file_path,
+                "line_start": finding.line_start,
+                "line_end": finding.line_end,
+                "symbol": finding.symbol,
+                "code_snippet": finding.code_snippet,
+                "fingerprint_version": fingerprint_version,
+                "package_name": finding.package_name,
+                "package_version": finding.package_version,
+                # Provisional: compaction keeps the stored first_seen_* when
+                # this finding_id turns out to already exist.
+                "status": FindingStatus.OPEN.value,
+                "first_seen_scan_run_id": batch.scan_run_id,
+                "last_seen_scan_run_id": batch.scan_run_id,
+                "first_seen_at": now,
+                "last_seen_at": now,
+                "resolved_at": None,
+                "raw_finding_json": json.dumps(finding.raw_finding_json, ensure_ascii=False),
+            }
+        )
+
+    request.app.state.buffer.append("findings", rows)
+    return IngestAccepted(accepted=len(rows), scan_run_id=batch.scan_run_id)
+
+
+@router.post("/{capability}", response_model=IngestAccepted)
+async def ingest_capability_payload(
+    capability: Capability,
+    scope: ScopeDep,
+) -> IngestAccepted:
+    """Capability-specific tables: InsiderRiskSignal, SscsEvidence,
+    RemediationEvent, RiskDecision.
+
+    Declared here because spec 05 §4 defines the route, but the target tables
+    arrive with their capabilities in Phases 3-6. Returning 501 rather than 404
+    keeps the contract visible instead of looking like a routing bug.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            f"Ingestion for '{capability.value}' is not implemented yet. "
+            "Phase 0 covers scan_runs and findings only (specs/13-build-roadmap.md §3)."
+        ),
+    )

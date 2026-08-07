@@ -1,0 +1,91 @@
+# CI for the Mykronos platform itself.
+#
+# Not to be confused with `workflow-templates/`, which are the workflows
+# Mykronos installs into *onboarded* repos. This one guards our own code.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Types
+        run: mypy mykronos
+
+      # Includes the spec 05 §9 performance criteria (marked `slow`):
+      # 10,000 findings ingested and compacted inside 30 seconds.
+      - name: Tests
+        run: pytest -q --durations=10
+
+  secrets:
+    name: No committed secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # spec 12 §8 asks a human review to confirm no PAT-shaped credential
+      # exists anywhere in the codebase. That is a machine's job.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  specs:
+    name: Spec links resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The specs are the contract and the code cites them by section. A dead
+      # cross-reference means a spec was renamed without the citations moving.
+      - name: Check relative markdown links
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' file; do
+            dir=$(dirname "$file")
+            grep -oE '\]\(([^)#]+\.md)(#[^)]*)?\)' "$file" \
+              | sed -E 's/^\]\(//; s/(#.*)?\)$//' \
+              | while read -r link; do
+                  case "$link" in
+                    http*) continue ;;
+                  esac
+                  if [ ! -f "$dir/$link" ]; then
+                    echo "::error file=$file::broken link -> $link"
+                    exit 1
+                  fi
+                done || fail=1
+          done < <(find . -name '*.md' -not -path './node_modules/*' -print0)
+          exit $fail
