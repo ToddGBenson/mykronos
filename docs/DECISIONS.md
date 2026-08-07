@@ -232,6 +232,60 @@ more expensive. The trigger is spec 14 entering a phase, whenever that is.
 
 ---
 
+## D-012 — Adapters return `FindingSubmission`, and live in the package
+
+**Status:** Decided, **spec follow-up needed**
+**Spec:** [04 §4](../specs/04-scanner-workflows.md)
+
+Two small departures from spec 04 §4, both in service of one thing: a single
+definition of the finding schema.
+
+**Return type.** The spec writes the adapter signature as
+`normalize(...) -> list[Finding]`. A `Finding` (spec 05 §3) carries
+server-assigned fields — `finding_id`, `status`, `first_seen_at` — that an
+adapter must not supply and could not compute. Adapters return
+`FindingSubmission`.
+
+**Location.** The spec sketches a top-level `adapters/` directory. They live
+in `backend/mykronos/adapters/` instead, and the composite action installs the
+package in CI. A separate copy of `FindingSubmission` that could drift from
+the server's is a worse trade than the directory layout.
+
+**Spec follow-up:** correct the §4 signature. Low priority — it is imprecision
+rather than a contradiction, and nothing is blocked by it.
+
+---
+
+## D-013 — Snippet capture is layered, and its degradation is reported
+
+**Status:** Decided
+**Spec:** [05 §5](../specs/05-datalake.md), [04 §4](../specs/04-scanner-workflows.md)
+
+D-001 made `finding_id` depend on the code snippet. That only pays off if
+adapters actually supply one, so capture tries four tiers in order of
+reliability: SARIF `contextRegion.snippet`, SARIF `region.snippet`, reading
+the file from the working tree, then nothing.
+
+The fourth tier is the failure D-001 exists to prevent, and the important
+design choice is that it is **counted and reported** in the step summary
+rather than silently accepted. A run that quietly fell back to positional
+identity would otherwise only become visible weeks later as an unexplained
+break in the trend line — by which time `first_seen_at` is already destroyed
+for those findings.
+
+Two supporting decisions:
+
+- **Symbol inference is a heuristic, not a parser.** It scans backwards for a
+  declaration. Being occasionally wrong is acceptable because `symbol` is one
+  input among several and only disambiguates identical snippets in one file.
+  What matters is that it is *deterministic* — a consistently-wrong symbol
+  still yields a stable fingerprint; an inconsistent one would not.
+- **Reads are confined to the workspace.** A SARIF result naming
+  `../../../../etc/passwd` is refused rather than pulling host files into
+  stored, displayed finding records.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
