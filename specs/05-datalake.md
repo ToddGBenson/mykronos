@@ -68,7 +68,7 @@ results siloed in its own tool's UI only.
 ### `Finding` (one row per normalized security issue)
 | Field | Type | Notes |
 |---|---|---|
-| `finding_id` | UUID | PK — deterministic hash of (repo, capability, rule_id, location, commit_sha) for natural dedup, see §5 |
+| `finding_id` | string (hex) | PK — deterministic hash over a *stable location fingerprint*, computed server-side by the Ingestion API, never supplied by the client. See §5 for the exact input tuple. |
 | `scan_run_id` | UUID | FK → ScanRun |
 | `repo_full_name` | string | |
 | `capability` | enum | |
@@ -78,7 +78,10 @@ results siloed in its own tool's UI only.
 | `severity` | enum | `info, low, medium, high, critical` (normalized from tool-native scale) |
 | `cvss_score` | float, nullable | |
 | `file_path` | string, nullable | |
-| `line_start` / `line_end` | int, nullable | |
+| `line_start` / `line_end` | int, nullable | **Display metadata only — not part of `finding_id`.** Updated in place each time the finding is re-observed, so the dashboard always deep-links to the current location. |
+| `symbol` | string, nullable | Enclosing function/class/resource name at the finding's location, where the tool reports one. Part of the fingerprint (§5). |
+| `code_snippet` | text, nullable | The few lines of source at the finding's location, captured by the adapter at scan time while the repo is checked out. Normalized and hashed into the fingerprint (§5); retained for display and for re-fingerprinting during a future migration. |
+| `fingerprint_version` | string | Which fingerprint rule produced `finding_id` (e.g. `v2-snippet`, `v1-line`). Required so a future change to the rule is detectable and migratable rather than silently re-identifying every finding. |
 | `package_name` / `package_version` | string, nullable | for SCA/dependency findings |
 | `status` | enum | `open, fixed, false_positive, accepted_risk, suppressed` |
 | `first_seen_scan_run_id` | UUID | |
@@ -128,11 +131,50 @@ Every write endpoint:
 
 ## 5. Deduplication
 
-- `Finding.finding_id` is a deterministic hash (e.g., SHA-256) of
-  `(repo_full_name, capability, rule_id, file_path, line_start, package_name)`
-  — **not** including `commit_sha`, so the same underlying issue found
-  again on a later commit updates the existing row's `last_seen_at`/
-  `last_seen_scan_run_id` rather than creating a duplicate.
+`Finding.finding_id` is a SHA-256 over a **stable location fingerprint**,
+computed by the Ingestion API (never by the client, so the rule has exactly
+one implementation). It never includes `commit_sha` — the same underlying
+issue found again on a later commit must update the existing row's
+`last_seen_at`/`last_seen_scan_run_id`, not create a duplicate.
+
+**It also never includes `line_start`.** An earlier draft of this spec hashed
+the line number, which meant any unrelated edit above a finding — adding an
+import, reformatting — shifted it, retired the original row as `fixed`, and
+re-reported the identical issue as newly discovered. That silently destroys
+`first_seen_at`, and with it finding age, mean-time-to-fix, the age-escalation
+term in Oracle's policy (spec 09 §5) and every trend line in the dashboard
+(spec 10 §2.3). Line numbers are display metadata, updated in place.
+
+The fingerprint tuple depends on what kind of finding it is:
+
+| Kind | Condition | Fingerprint inputs |
+|---|---|---|
+| **Dependency** | `package_name` is set | `repo_full_name`, `capability`, `rule_id`, `package_name` |
+| **Code** | `file_path` is set | `repo_full_name`, `capability`, `rule_id`, `file_path`, `symbol`, `normalize(code_snippet)` |
+| **Repo-level** | neither is set | `repo_full_name`, `capability`, `rule_id`, `title` |
+
+Notes on each:
+
+- **Dependency findings exclude `package_version`.** A CVE that still applies
+  after a version bump is the same finding; one that no longer applies is
+  resolved by the normal absence-reconciliation path below.
+- **`normalize(code_snippet)`** strips leading/trailing whitespace from each
+  line, collapses internal whitespace runs to a single space, and drops blank
+  lines. It is deliberately *not* language-aware: no comment stripping, no
+  parsing, no case folding. A finding survives reindentation and code motion,
+  and is correctly retired when the vulnerable code itself changes.
+- **`symbol` is included but tolerated as null**, since not every tool reports
+  one. Where present it disambiguates identical snippets appearing twice in a
+  file (two copies of the same unsafe call in different functions).
+- **Degradation is explicit, not silent.** If an adapter supplies neither
+  `code_snippet` nor `symbol` for a code finding, the API falls back to
+  hashing `line_start` and stamps `fingerprint_version = "v1-line"`. Those
+  rows are known to be churn-prone and are reportable as a data-quality
+  metric; the intended path stamps `v2-snippet`.
+- Changing the fingerprint rule in future requires a new
+  `fingerprint_version` and a migration that re-derives `finding_id` from the
+  retained `code_snippet`, carrying `first_seen_at` across. Changing it in
+  place is prohibited.
 - If a finding_id previously marked `fixed` reappears, flip its `status`
   back to `open` and log a `finding_reopened` event (feeds spec 11 retro
   signals — a reopened finding is a useful learning signal).
@@ -174,6 +216,12 @@ Every write endpoint:
   under 30 seconds against a locally running instance.
 - Re-ingesting identical findings from a re-run of the same commit does not
   increase `Finding` row count — only updates `last_seen_at`.
+- **Fingerprint stability:** re-ingesting a finding whose `line_start` has
+  shifted (unrelated lines inserted above it) but whose `code_snippet`,
+  `symbol` and `file_path` are unchanged resolves to the *same* `finding_id`,
+  preserves `first_seen_at`, and updates `line_start` in place. This is a
+  required regression test, not an aspiration — it is the behaviour §5 exists
+  to guarantee.
 - Disabling a capability's ingestion token immediately (within one request)
   rejects further ingestion attempts with `401`.
 - All data lake writes are queryable via DuckDB SQL within 5 minutes of
