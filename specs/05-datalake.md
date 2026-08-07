@@ -99,19 +99,100 @@ lake but follows the same base fields (`repo_full_name`, `commit_sha` or
 ## 4. Ingestion API
 
 ### Auth
-- Every onboarded repo's workflows authenticate to the Ingestion API using
-  a **per-repo, per-capability scoped token** (a Mykronos-issued opaque
-  bearer token, not a GitHub token), stored as a GitHub Actions repo secret
-  by the Workflow Installer (spec 03 §3). This token:
-  - Is scoped to exactly one `(repo_full_name, capability)` pair.
-  - Can only call `POST /api/ingest/{capability}` for that repo.
-  - Is rotated automatically every 90 days by a scheduled job (re-issues
-    the secret via the same mechanism used to create it).
-  - Can be revoked instantly by disabling the capability (spec 03 §5).
-- This design means a compromised repo's CI can only ever pollute that
-  repo's own findings for its enabled capabilities — it cannot read or
-  write another repo's data, and it cannot access the GitHub App's
-  credentials at all.
+
+Every onboarded repo's workflows authenticate to the Ingestion API with **one
+Mykronos-issued opaque bearer token per repo** (not a GitHub token), stored as
+a single GitHub Actions repo secret named `MYKRONOS_INGESTION_TOKEN` by the
+Workflow Installer (spec 03 §4a). The token:
+
+- Is bound to exactly one `repo_full_name`. This is the isolation boundary.
+- Carries a set of **capability grants**, held server-side in the token
+  registry rather than encoded in the token string, so grants can change
+  without reissuing the secret.
+- May call the ingestion endpoints only for its own repo, and only for
+  capabilities currently granted to it.
+- Is rotated every 90 days by a scheduled job, with an overlap window (below).
+
+Only the token's SHA-256 and its metadata are persisted; the plaintext exists
+once, at issuance, on its way into the repo secret (spec 12 §2).
+
+#### Why one token per repo, and not one per capability
+
+An earlier draft scoped a separate token to each `(repo, capability)` pair.
+That boundary does not exist at runtime: **GitHub Actions repository secrets
+are readable by every workflow in the repo.** A compromised runner in repo X
+can read all of repo X's secrets regardless of which workflow they were
+provisioned for, so it already holds every one of that repo's capability
+tokens. Splitting them bought no containment while costing:
+
+- **Secret budget.** GitHub caps repository secrets at 100 per repo. Ten
+  Mykronos secrets consume a tenth of a customer repo's budget for a boundary
+  that is not enforced.
+- **Rotation surface.** 200 repos × up to 10 capabilities is 2,000 secrets on
+  2,000 independent 90-day clocks — roughly 22 Secrets API calls a day, each
+  of which can fail, and each failure becomes a silent future `401` in
+  someone's CI unless separately tracked and reconciled. One token per repo
+  reduces this to ~2 a day.
+
+The security property the earlier draft claimed is preserved exactly, because
+it was always a repo-level property: a compromised repo's CI can pollute that
+repo's own findings and nothing else. It cannot read or write another repo's
+data, and it cannot reach the GitHub App's credentials at all.
+
+What is *not* preserved is the ability to distinguish which capability's
+workflow made a given call, since they now share a credential. That
+distinction was never enforceable anyway (any workflow could read any of the
+tokens), so relying on it would have been false assurance.
+
+#### Capability grants and revocation
+
+Grants live in the registry, keyed by `(repo_full_name, capability)`:
+
+- Enabling a capability adds a grant. No secret is written, so no GitHub API
+  call is involved and nothing can half-succeed.
+- Disabling a capability removes the grant (spec 03 §5). Further ingestion for
+  that capability is rejected with `403` from the very next request, while the
+  repo's other capabilities keep working on the same token.
+- Offboarding a repo revokes the token itself, so every capability stops at
+  once.
+
+This is a stronger revocation guarantee than the earlier design, which had to
+delete a GitHub secret to revoke — an API call that can fail, leaving a live
+credential behind. Registry-side revocation is local, immediate, and cannot
+partially apply.
+
+#### Rotation, and the overlap window
+
+Rotation reissues the token and updates the repo secret. A workflow reads that
+secret when its job starts and may not post findings until many minutes later,
+so a naive swap will `401` runs that were already in flight through no fault
+of their own — turning CI red for a reason that has nothing to do with the
+code under scan, which is exactly the kind of noise that gets a security
+platform switched off.
+
+Therefore rotation is dual-validity:
+
+1. Issue the new token, mark the previous one `superseded` with an expiry of
+   `now + overlap_window` (deployment-configurable, default 24 hours).
+2. Update the repo secret to the new value.
+3. Accept **both** tokens until the superseded one expires, then purge its
+   hash.
+
+A rotation that fails at step 2 leaves the old token valid and is retried;
+nothing is stranded. Ingestion responses carry an advisory
+`X-Mykronos-Token-Rotated: true` header while a superseded token is still
+being accepted, so a repo still presenting an old token after the window is
+diagnosable from logs rather than only from its eventual `401`.
+
+#### Attribution
+
+`repo_full_name` is taken from the authenticated token and is **not** accepted
+as a request field on the findings path — a workflow cannot file findings
+against another repo because there is no field in which to say so. Because one
+token now covers several capabilities, a findings batch must declare its
+`capability` explicitly; the server rejects it with `403` unless that
+capability is currently granted to the token, and it must match the
+`capability` of the `ScanRun` it references.
 
 ### Endpoints
 | Method | Path | Purpose |
@@ -222,8 +303,16 @@ Notes on each:
   preserves `first_seen_at`, and updates `line_start` in place. This is a
   required regression test, not an aspiration — it is the behaviour §5 exists
   to guarantee.
-- Disabling a capability's ingestion token immediately (within one request)
-  rejects further ingestion attempts with `401`.
+- Disabling a capability revokes its grant immediately: the next ingestion
+  attempt for that capability is rejected with `403`, while the same repo's
+  other granted capabilities continue to succeed on the same token.
+  Offboarding a repo revokes the token itself and rejects everything with
+  `401`.
+- **Rotation does not break in-flight workflows.** A token rotated after a job
+  has read the secret but before it posts its findings still succeeds, for the
+  duration of the overlap window; once the window passes, the superseded token
+  is rejected. Both halves are required — an overlap that never expires is not
+  a rotation.
 - All data lake writes are queryable via DuckDB SQL within 5 minutes of
   ingestion (matching the compaction interval, §2).
 - No component other than the Ingestion API ever writes to the Parquet

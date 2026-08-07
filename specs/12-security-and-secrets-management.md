@@ -18,7 +18,7 @@ security-relevant details point back here as the source of truth.
 |---|---|---|---|
 | **GitHub App private key** | Minting installation access tokens (spec 02 §4) | Long-lived (rotated on a schedule, e.g. annually, or immediately on suspected compromise) | Deployment secret manager / KMS — **never** in the database, never in logs, never in a repo |
 | **GitHub App installation access tokens** | All GitHub API calls the platform makes on behalf of an onboarded repo (opening PRs, creating secrets, posting checks) | ~1 hour, minted on demand | In-memory only, never persisted |
-| **Per-repo, per-capability ingestion tokens** | Workflow → Ingestion API auth (spec 05 §4) | 90-day rotation | Stored **only** as a GitHub Actions repo secret (encrypted by GitHub, only the workflow can read it); the platform stores a hash of the token (for validation) and metadata, never the plaintext token, after issuance |
+| **Per-repo ingestion token** (one per repo, carrying capability grants) | Workflow → Ingestion API auth (spec 05 §4) | 90-day rotation, with a 24h dual-validity overlap so in-flight workflows are not broken | Stored **only** as a GitHub Actions repo secret (encrypted by GitHub, readable by that repo's workflows); the platform stores the token's SHA-256 and metadata, never the plaintext, after issuance |
 | **Admin/human user sessions** | Dashboard/admin UI access | Session-length (SSO-backed, see §3) | Standard session/JWT handling; no long-lived admin API keys in v1 |
 | **AI gateway credentials** (for Aegis/Patchwork/RAG embeddings) | LLM calls | Deployment-managed, org-provided | Deployment secret manager, injected as environment variables to the backend service only — never exposed to onboarded-repo workflows directly |
 
@@ -42,16 +42,27 @@ security-relevant details point back here as the source of truth.
    choice: HashiCorp Vault, cloud KMS + Secrets Manager, or equivalent) —
    never in application config files, environment variable dumps in logs,
    or the application database.
-3. Ingestion tokens (spec 05 §4) are the **only** secret ever placed inside
-   a customer/onboarded repo (as a GitHub Actions secret), and each one is
-   scoped to exactly one `(repo, capability)` pair — compromise of one
-   repo's CI cannot read or write another repo's data, and cannot reach
-   the GitHub App's own credentials.
+3. The ingestion token (spec 05 §4) is the **only** secret Mykronos ever
+   places inside a customer/onboarded repo, one per repo, bound to that repo.
+   Compromise of one repo's CI cannot read or write another repo's data and
+   cannot reach the GitHub App's own credentials.
+
+   Note what this deliberately does *not* claim. Scoping below the repo — a
+   separate token per capability — would be decorative, because GitHub
+   Actions repository secrets are readable by every workflow in the repo: a
+   compromised runner holds all of that repo's secrets whatever they were
+   provisioned for. The repo is the smallest boundary GitHub actually
+   enforces, so it is the boundary the design uses. Capability granularity is
+   retained where it *is* enforceable — server-side grants, revocable
+   independently (spec 05 §4).
 4. All secrets in transit use TLS; the Ingestion API and admin API are
    never exposed without TLS termination.
 5. Secret rotation is automatic and does not require manual intervention
    for the 90-day ingestion token cycle (spec 05 §4) — manual intervention
-   is reserved for the rare GitHub App key rotation.
+   is reserved for the rare GitHub App key rotation. Automatic also means
+   *non-disruptive*: rotation uses a dual-validity overlap window so a
+   workflow that read the old secret before the swap still completes. A
+   rotation scheme that reddens CI is one operators will disable.
 
 ## 5. Data handling & privacy
 

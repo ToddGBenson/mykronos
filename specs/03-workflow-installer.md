@@ -34,9 +34,11 @@ Each template renders to `.github/workflows/mykronos-<capability>.yml` in the
 target repo. Templates are parameterized with:
 
 - `${INGESTION_API_URL}` — Mykronos backend ingestion endpoint (spec 05)
-- `${REPO_TOKEN_SECRET_NAME}` — name of the repo secret holding the scoped
-  ingestion token (see spec 05 §4) that the Workflow Installer also creates
-  via the GitHub API as part of the same PR-prep step
+- `${REPO_TOKEN_SECRET_NAME}` — name of the repo secret holding the repo's
+  ingestion token (see spec 05 §4), fixed at `MYKRONOS_INGESTION_TOKEN`. Every
+  capability's workflow references the same secret; the Workflow Installer
+  creates it once, on first onboarding. Parameterised rather than hardcoded
+  only so a deployment can avoid a name collision with an existing secret.
 - Capability-specific config values pulled from `CapabilityConfig.config_json`
   (spec 02 §3), e.g. branch triggers, severity thresholds, tool version pins
 
@@ -51,9 +53,13 @@ target repo. Templates are parameterized with:
    leave the file, depending on the `--soft-disable` deployment setting —
    default is delete the file so the Actions tab stays clean).
 4. Using an installation access token (spec 02 §5), the Workflow Installer:
-   a. Creates/updates the necessary repo secret (`REPO_TOKEN_SECRET_NAME`,
-      spec 05 §4) via the GitHub Secrets API (values are libsodium-sealed
-      client-side per GitHub's API requirement — never sent in plaintext).
+   a. Ensures the repo's single ingestion secret
+      (`MYKRONOS_INGESTION_TOKEN`, spec 05 §4) exists, creating it via the
+      GitHub Secrets API on first onboarding only (values are
+      libsodium-sealed client-side per GitHub's API requirement — never sent
+      in plaintext). Enabling further capabilities adds a **grant** in the
+      token registry and touches no secret, so a capability change involves
+      no GitHub Secrets call at all and cannot half-apply.
    b. Creates a branch `mykronos/enable-workflows-<timestamp>` off the
       repo's `default_branch`.
    c. Commits the staged file additions/deletions to that branch. Because the
@@ -88,9 +94,19 @@ target repo. Templates are parameterized with:
 
 ## 5. Disabling a capability
 
-Same PR mechanism as enabling (§3), but the diff removes the workflow file
-and revokes the associated repo secret (secrets are capability-scoped, not
-one shared secret for all capabilities — see spec 05 §4) once the PR merges.
+Same PR mechanism as enabling (§3), but the diff removes the workflow file.
+
+Revocation is decoupled from the PR and happens **immediately**, not on merge:
+the capability's grant is removed from the token registry as soon as the admin
+disables it (spec 05 §4). The repo's `MYKRONOS_INGESTION_TOKEN` secret is left
+in place, since the repo's other capabilities still use it — it is deleted
+only on full offboarding.
+
+Decoupling matters: an unmerged removal PR must not leave a capability able to
+keep writing findings for days. Conversely a still-installed workflow whose
+grant is gone fails loudly with `403` rather than writing quietly, which is
+the correct signal that the PR is outstanding.
+
 Historical data lake rows for that capability are retained.
 
 ## 6. Updating templates (versioning)
