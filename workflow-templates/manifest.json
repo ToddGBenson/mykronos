@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "Template registry for the Workflow Installer (spec 03 §2, §6).",
+    "",
+    "`version` is the template semver stamped into every rendered file's header.",
+    "Bumping it is what makes a bulk resync (spec 03 §6) open update PRs across",
+    "every repo with that capability enabled. Resync compares rendered content",
+    "against what is actually in the repo rather than trusting this string, in",
+    "case someone hand-edited the file -- but the version is what tells an",
+    "operator, and a PR reviewer, that something changed and why."
+  ],
+  "templates": {
+    "sast": {
+      "template": "sast.yml.j2",
+      "target": ".github/workflows/mykronos-sast.yml",
+      "version": "1.0.0",
+      "summary": "Static analysis with CodeQL"
+    }
+  }
+}

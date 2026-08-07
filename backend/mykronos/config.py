@@ -58,6 +58,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    workflow_templates_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "workflow-templates",
+        description=(
+            "Template library the installer renders from (spec 03 §2). Lives at the "
+            "repo root, not inside the package: templates ship into customer repos "
+            "and are versioned independently of the service that renders them."
+        ),
+    )
+
+    ingestion_api_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL rendered into workflow templates so repos can reach us.",
+    )
+
+    upload_action_ref: str = Field(
+        default="ToddGBenson/mykronos/actions/upload-results@v1",
+        description=(
+            "Semver-pinned reference to the shared upload composite action "
+            "(spec 04 §2). Never a branch: every onboarded repo depends on it."
+        ),
+    )
+
     token_overlap_hours: int = Field(
         default=24,
         ge=0,
