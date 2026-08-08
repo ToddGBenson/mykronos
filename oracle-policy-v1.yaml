@@ -1,0 +1,110 @@
+# Oracle scoring policy (spec 09 §5).
+#
+# Versioned configuration, not code, and deliberately readable: an admin
+# should be able to reproduce any score by hand from this file and the
+# decision's inputs_snapshot. spec 09 calls that "explainability over
+# sophistication", and it is the reason there is no model here.
+#
+# Changing this file changes what Oracle decides. Two rules:
+#
+#   1. Bump `version`. Historical decisions keep the version they were scored
+#      with, so a past decision stays reproducible after a policy change
+#      (spec 09 §10).
+#   2. Re-baseline the golden files. `tests/test_oracle_golden.py` pins exact
+#      scores; a policy edit that does not update them fails the build, which
+#      is the point — nobody should change how risk is scored by accident.
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Findings
+# ---------------------------------------------------------------------------
+#
+# The original draft of spec 09 §5 weighted each finding linearly — 40 points
+# per critical, clamped to 100. Three open criticals therefore pinned a repo
+# at 100 forever, and so did three hundred. Every vulnerable repo scored
+# identically, the portfolio view could not rank anything, the trend line
+# flatlined, and `no_go` stopped carrying information. See docs/DECISIONS.md
+# D-018.
+#
+# Each severity band now contributes `weight × log2(1 + count)`, so:
+#
+#     criticals:  1 → 40    2 → 63    4 → 93    8 → 127    32 → 200
+#
+# More findings always score higher — ranking is preserved — but the curve
+# flattens, so the difference between "a few" and "some" matters more than
+# the difference between "many" and "very many". Which is how a human triages.
+findings:
+  curve: log2          # weight × log2(1 + count). The only curve v1 implements.
+  weights:
+    critical: 40
+    high: 20
+    medium: 5
+    low: 1
+    info: 0            # Ingested for trend data; never contributes to risk.
+
+# ---------------------------------------------------------------------------
+# Modifiers
+# ---------------------------------------------------------------------------
+#
+# Inputs that adjust the finding-derived score rather than replacing it.
+# Every one of these must appear in inputs_snapshot even when its source does
+# not exist yet, carrying an explicit null (spec 09 §9) — "not available" and
+# "zero" are different facts, and a snapshot that omits the category cannot
+# tell you which one you are looking at.
+modifiers:
+  # Aegis (spec 06). Arrives in Phase 4; null until then.
+  insider_risk:
+    multiplier: 0.3          # insider_risk_score (0-100) × 0.3
+
+  # Atlas (spec 07). Arrives in Phase 4; null until then.
+  sscs_trust:
+    penalty_cap: 20          # min(100 - trust_score, cap)
+
+  # Patchwork (spec 08). Arrives in Phase 6; null until then.
+  #
+  # Lowers urgency, not the underlying risk: a fix already in flight means
+  # someone is on it, but the vulnerability is still there.
+  remediation_in_flight:
+    discount: 0.5            # multiplies the contribution of covered findings
+
+  # An unresolved critical is worse at 90 days than at 9. Aging is what stops
+  # "accepted for now" quietly becoming "accepted forever".
+  finding_age:
+    over_30_days_critical: 15
+    over_90_days_high: 10
+
+  # Knowledge Store (spec 11). Arrives in Phase 5; null until then.
+  #
+  # A rule that humans keep dismissing on this repo should stop shouting.
+  false_positive_dampening:
+    threshold: 0.5           # historical FP rate above which dampening applies
+    dampening_factor: 0.5    # severity weight × (1 - factor)
+
+# ---------------------------------------------------------------------------
+# Thresholds
+# ---------------------------------------------------------------------------
+#
+# Applied to the clamped 0-100 score.
+thresholds:
+  no_go: 70                  # >= 70
+  review_recommended: 30     # >= 30 and < 70
+                             # < 30 => go
+
+# ---------------------------------------------------------------------------
+# Scope
+# ---------------------------------------------------------------------------
+scope:
+  # Findings below this never contribute, whatever their weight. Ingested for
+  # trend data regardless (spec 04 §5).
+  minimum_severity: low
+
+  # Human dispositions are decisions already taken. Re-scoring a finding
+  # somebody accepted would mean Oracle overruling them every night.
+  statuses_considered: [open]
+
+  # Network findings are excluded from PR and release gates by spec 14 §7:
+  # blocking a pull request because an unrelated host has an open port is
+  # incoherent, since the PR neither caused it nor fixes it. They still count
+  # toward the portfolio decision.
+  capabilities_excluded_from_gates: [network]

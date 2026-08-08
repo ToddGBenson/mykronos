@@ -64,6 +64,14 @@ _UPDATE_SETS: dict[str, str] = {
         status      = CASE WHEN part.status = 'fixed' THEN 'open' ELSE part.status END,
         resolved_at = CASE WHEN part.status = 'fixed' THEN NULL ELSE part.resolved_at END
     """,
+    # A decision is immutable once made -- re-evaluating produces a *new*
+    # decision, because spec 09 §10 requires past decisions to stay
+    # reproducible. The only thing that changes afterwards is a human
+    # override, and the check run id once it is posted.
+    "risk_decisions": """
+        human_override      = coalesce(i.human_override, part.human_override),
+        github_check_run_id = coalesce(i.github_check_run_id, part.github_check_run_id)
+    """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,
         capability             = i.capability,

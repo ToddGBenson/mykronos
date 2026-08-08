@@ -392,6 +392,64 @@ dashboard. The Python join is measured as part of the 0.145s above.
 
 ---
 
+## D-018 — Finding contributions follow a curve, and the raw score is kept
+
+**Status:** Decided, spec follow-up needed
+**Spec:** [09 §5](../specs/09-oracle-risk-decision-engine.md) — closes open question 4
+
+Spec 09 §5 weighted findings linearly — 40 points per critical, summed, then
+clamped to 100. Three open criticals reached the clamp. So did three hundred.
+
+Every vulnerable repo therefore scored exactly 100: the portfolio view could
+not rank anything, the trend line was flat by construction, and `no_go`
+stopped distinguishing "two aged criticals" from "a catastrophe". The
+deliberately-vulnerable demo apps make this immediate rather than theoretical
+— Juice Shop alone produces dozens of criticals.
+
+Two changes:
+
+**A curve per severity band.** `weight × log2(1 + count)`, so criticals score
+40 / 63 / 80 / 93 for 1 / 2 / 3 / 4. Strictly increasing, so ranking is
+preserved, but flattening — the gap between "a few" and "some" matters more
+than between "many" and "very many", which is how a person triages.
+
+**The unclamped total is recorded.** `inputs_snapshot.totals.raw_score` keeps
+the pre-clamp value, so two repos that both display 100 can still be ordered.
+Without it every repo past the ceiling ties and sorting by risk silently stops
+working.
+
+**What this does not do.** The displayed score still clamps, and a genuinely
+bad repo still shows 100 — that is correct, and the thresholds are doing their
+job. What changed is that 100 is now reached by repos that deserve it rather
+than by any repo with three findings, and that ranking survives the ceiling.
+
+**Spec follow-up:** replace §5's linear formula and worked example with the
+curve. Not done yet — the policy file documents the change and the golden
+tests pin it, but §5 still shows the superseded arithmetic.
+
+---
+
+## D-019 — A decision is immutable; re-evaluating creates a new one
+
+**Status:** Decided
+**Spec:** [09 §10](../specs/09-oracle-risk-decision-engine.md)
+
+`risk_decisions` upserts only `human_override` and `github_check_run_id`.
+Everything else — score, recommendation, snapshot, reasoning, policy version —
+is write-once.
+
+Spec 09 §10 requires a past decision to stay reproducible after a policy
+change. That only holds if the row is not rewritten: a decision that quietly
+re-scored under a new policy would make the audit trail a record of the
+present rather than of what was decided at the time. Re-evaluating the same
+commit produces a *new* decision row, and the history shows both.
+
+The two mutable fields are the exceptions that prove it. An override is a
+human acting on the decision that was made, and the check run id is
+bookkeeping about where it was published — neither changes what was decided.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -412,7 +470,7 @@ Recorded so they are not mistaken for oversights.
 | 1 | GitHub App needs `workflows: write` — absent from spec 02 §4 / 12 §6. Without it the installer cannot commit workflow files at all | Phase 1 | **Resolved** — D-008 |
 | 2 | GitHub App needs `secrets: write` — spec 12 §6 claims otherwise | Phase 1 | **Resolved** — D-008 |
 | 3 | Ten tokens per repo on ten independent 90-day clocks | Phase 1 | **Resolved** — D-009 |
-| 4 | Oracle's score saturates: criticals weigh 40, clamped at 100, so three of them pins every repo at 100 forever | Phase 3 | Open |
+| 4 | Oracle's score saturates: criticals weigh 40, clamped at 100, so three of them pins every repo at 100 forever | Phase 3 | **Resolved** — D-018 |
 | 5 | "Advisory by default" has no stated path to ever turning blocking on. Needs a shadow-mode metric to make the case with data | Phase 3 | Open |
 
 Nothing now blocks Phase 1. Questions 4 and 5 are Oracle's, and are best

@@ -168,6 +168,15 @@ class Settings(BaseSettings):
         ),
     )
 
+    oracle_policy_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "oracle-policy-v1.yaml",
+        description=(
+            "Versioned scoring policy (spec 09 §5). Lives at the repo root so it "
+            "is reviewed as configuration in a pull request, not edited in a "
+            "database."
+        ),
+    )
+
     ingestion_api_url: str = Field(
         default="http://localhost:8000",
         description="Base URL rendered into workflow templates so repos can reach us.",

@@ -62,15 +62,39 @@ SCAN_RUNS_COLUMNS: Final[list[Column]] = [
     ("ingested_at", "TIMESTAMP"),
 ]
 
+RISK_DECISIONS_COLUMNS: Final[list[Column]] = [
+    ("decision_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    ("decision_type", "VARCHAR"),
+    ("pr_number", "INTEGER"),
+    ("release_tag", "VARCHAR"),
+    ("commit_sha", "VARCHAR"),
+    ("overall_risk_score", "INTEGER"),
+    ("recommendation", "VARCHAR"),
+    # The explainability record (spec 09 §3). Stored as JSON text: it is read
+    # whole and rendered, never filtered on, so a column-per-term would be
+    # schema churn for nothing.
+    ("inputs_snapshot", "VARCHAR"),
+    ("reasoning", "VARCHAR"),
+    ("policy_version", "VARCHAR"),
+    ("evaluated_at", "TIMESTAMP"),
+    # Populated when a human overrides the recommendation (spec 09 §6). The
+    # single highest-value retro signal in the system, per spec 11 §4.
+    ("human_override", "VARCHAR"),
+    ("github_check_run_id", "VARCHAR"),
+]
+
 TABLES: Final[dict[str, list[Column]]] = {
     "findings": FINDINGS_COLUMNS,
     "scan_runs": SCAN_RUNS_COLUMNS,
+    "risk_decisions": RISK_DECISIONS_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
 PRIMARY_KEY: Final[dict[str, str]] = {
     "findings": "finding_id",
     "scan_runs": "scan_run_id",
+    "risk_decisions": "decision_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -79,6 +103,7 @@ PRIMARY_KEY: Final[dict[str, str]] = {
 PARTITION_SOURCE: Final[dict[str, str]] = {
     "findings": "first_seen_at",
     "scan_runs": "started_at",
+    "risk_decisions": "evaluated_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -87,6 +112,7 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
 MUTATION_TS: Final[dict[str, str]] = {
     "findings": "last_seen_at",
     "scan_runs": "ingested_at",
+    "risk_decisions": "evaluated_at",
 }
 
 
