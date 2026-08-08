@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from typing import Any
 import duckdb
 
 from mykronos.lake.catalog import Catalog, sql_path
-from mykronos.lake.tables import column_names
+from mykronos.lake.tables import TABLES, column_names
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,72 @@ def update_findings(
         catalog.refresh_views(con)
 
     return result
+
+
+def purge_rows(
+    catalog: Catalog, table: str, where: str, params: list[Any]
+) -> tuple[int, int]:
+    """Delete rows matching `where`, rewriting each affected partition.
+
+    Real deletion, not a tombstone column. This exists for spec 06 §9's
+    retention rule, and a "deleted" flag on a row that is still in the file
+    would not honour a deletion request — it would just stop the dashboard
+    from showing what the system still holds.
+
+    A partition emptied entirely has its directory removed, so an expired day
+    leaves nothing behind rather than an empty Parquet file that still
+    announces the date somebody was assessed.
+
+    Returns (rows_deleted, partitions_rewritten).
+    """
+    if table not in TABLES:
+        raise ValueError(f"Unknown table {table!r}.")
+
+    projection = ", ".join(column_names(table))
+    deleted = 0
+    rewritten = 0
+
+    with catalog.connect() as con:
+        for directory in sorted(catalog.table_dir(table).glob("dt=*")):
+            files = sorted(directory.glob("*.parquet"))
+            if not files:
+                continue
+            pattern = sql_path(directory / "*.parquet")
+
+            con.execute("DROP TABLE IF EXISTS part")
+            con.execute(
+                f"CREATE TEMP TABLE part AS "
+                f"SELECT {projection} FROM read_parquet('{pattern}', union_by_name = 1)"
+            )
+            before = con.execute("SELECT count(*) FROM part").fetchone()
+            con.execute(f"DELETE FROM part WHERE {where}", params)
+            after = con.execute("SELECT count(*) FROM part").fetchone()
+
+            removed = int(before[0]) - int(after[0]) if before and after else 0
+            if removed == 0:
+                con.execute("DROP TABLE part")
+                continue
+
+            deleted += removed
+            rewritten += 1
+            remaining = int(after[0]) if after else 0
+
+            if remaining == 0:
+                for stale in files:
+                    stale.unlink(missing_ok=True)
+                with suppress(OSError):
+                    directory.rmdir()
+            else:
+                target = directory / "part-0000.parquet"
+                write_parquet_atomically(con, f"SELECT {projection} FROM part", target)
+                for stale in files:
+                    if stale != target:
+                        stale.unlink(missing_ok=True)
+            con.execute("DROP TABLE part")
+
+        catalog.refresh_views(con)
+
+    return deleted, rewritten
 
 
 def locate_findings(catalog: Catalog, finding_ids: list[str]) -> dict[str, list[str]]:

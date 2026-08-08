@@ -30,7 +30,12 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.config import get_settings
 from mykronos.db import Database
-from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens, score_portfolio
+from mykronos.jobs import (
+    purge_expired_insider_risk,
+    reconcile_installations,
+    rotate_ingestion_tokens,
+    score_portfolio,
+)
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.oracle import load_policy
@@ -101,6 +106,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "score-portfolio",
         help="Give every Oracle-enabled repo a fresh standing risk decision",
+    )
+    sub.add_parser(
+        "purge-insider-risk",
+        help="Delete insider-risk rows past their retention window (spec 06 §9)",
     )
     sub.add_parser("stats", help="Row counts and buffer depth")
 
@@ -267,6 +276,23 @@ def main(argv: list[str] | None = None) -> int:
                 "\nDecisions are in the write-ahead buffer; run `compact` to "
                 "make them queryable."
             )
+            return 0
+
+        if args.command == "purge-insider-risk":
+            db.create_all()
+            purge = purge_expired_insider_risk(
+                db,
+                catalog,
+                default_retention_days=settings.insider_risk_default_retention_days,
+            )
+            print(
+                f"Deleted {purge.rows_deleted} insider-risk row(s) across "
+                f"{purge.partitions_rewritten} partition(s)."
+            )
+            if purge.applied:
+                _print_table(
+                    ["repo", "retention days"], sorted(purge.applied.items())
+                )
             return 0
 
         if args.command == "stats":

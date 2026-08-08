@@ -294,6 +294,7 @@ async def update_capabilities(
             request.app.state.templates,
             ingestion_api_url=settings.ingestion_api_url,
             upload_action_ref=settings.upload_action_ref,
+            package_spec=settings.mykronos_package_spec,
             token_overlap_hours=settings.token_overlap_hours,
         )
         registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)

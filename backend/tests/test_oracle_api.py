@@ -12,7 +12,14 @@ from mykronos.config import get_settings
 from mykronos.db.models import AuditLogEntry, CapabilityConfig
 from mykronos.installer import TemplateLibrary
 from mykronos.oracle.service import render_check_run_summary
-from tests.conftest import REPO, finding_payload, issue_token, post_findings, post_scan
+from tests.conftest import (
+    REPO,
+    finding_payload,
+    issue_token,
+    post_findings,
+    post_scan,
+    render_context,
+)
 from tests.test_onboarding import onboard
 
 
@@ -377,14 +384,7 @@ class TestGateTemplate:
 
     def render(self, library, depends_on):
         return library.render(
-            "oracle",
-            repo_full_name=REPO,
-            default_branch="main",
-            ingestion_api_url="https://mykronos.internal",
-            token_secret_name="MYKRONOS_INGESTION_TOKEN",
-            upload_action_ref="x@v1",
-            config={},
-            gate_depends_on=depends_on,
+            "oracle", **render_context(gate_depends_on=depends_on)
         ).content
 
     def test_it_waits_on_the_scanners(self, library) -> None:
@@ -407,14 +407,17 @@ class TestGateTemplate:
         compile. This guards the whole template directory against the next
         person reaching for one."""
         for capability in library.available:
-            content = library.render(
-                capability,
-                repo_full_name=REPO,
-                default_branch="main",
-                ingestion_api_url="https://x",
-                token_secret_name="T",
-                upload_action_ref="x@v1",
-                config={"target_url": "https://s.test", "aws_role_arn": "arn:aws:iam::1:role/r"},
-                gate_depends_on=["Mykronos sast"],
-            ).content
+            content = library.render(capability, **render_context()).content
             assert "<<" not in content, f"{capability} rendered an unresolved << delimiter"
+
+    def test_every_template_compiles_and_is_valid_yaml(self, library) -> None:
+        """Cheap, and it catches the whole class of mistake that only shows up
+        when a repo's install PR merges and the workflow refuses to start."""
+        for capability in library.available:
+            content = library.render(capability, **render_context()).content
+            parsed = yaml.safe_load(content)
+
+            assert parsed.get("jobs"), f"{capability} has no jobs"
+            # YAML 1.1 parses a bare `on:` as the boolean True, which is why
+            # this checks both spellings rather than the obvious one.
+            assert "on" in parsed or True in parsed, f"{capability} has no triggers"

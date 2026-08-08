@@ -29,7 +29,12 @@ from mykronos.github.factory import (
     RestGitHubClientFactory,
 )
 from mykronos.installer import TemplateLibrary
-from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens, score_portfolio
+from mykronos.jobs import (
+    purge_expired_insider_risk,
+    reconcile_installations,
+    rotate_ingestion_tokens,
+    score_portfolio,
+)
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
@@ -164,11 +169,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 ),
             )
 
+        async def _retention() -> None:
+            # In a thread: it rewrites Parquet partitions, same as absences.
+            await asyncio.to_thread(
+                purge_expired_insider_risk,
+                app.state.db,
+                app.state.catalog,
+                default_retention_days=settings.insider_risk_default_retention_days,
+            )
+
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("installations", settings.installation_sync_interval_seconds, _installations),
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
+            ("retention", settings.insider_risk_purge_interval_seconds, _retention),
         ):
             tasks.append(
                 asyncio.create_task(

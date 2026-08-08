@@ -97,6 +97,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    insider_risk_purge_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "Retention sweep for insider-risk rows (spec 06 §9). Daily, "
+            "matching the granularity of the retention window itself. This is "
+            "the job that makes the retention policy real rather than stated."
+        ),
+    )
+
+    insider_risk_default_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description=(
+            "Applied to any repo whose Aegis config does not set its own, and "
+            "to rows whose repo has been offboarded. The absence of a setting "
+            "is not consent to keep the data forever."
+        ),
+    )
+
     run_jobs_in_background: bool = Field(
         default=True,
         description="Disable so tests and one-shot CLI runs drive jobs explicitly.",
@@ -185,6 +206,19 @@ class Settings(BaseSettings):
             "Versioned scoring policy (spec 09 §5). Lives at the repo root so it "
             "is reviewed as configuration in a pull request, not edited in a "
             "database."
+        ),
+    )
+
+    mykronos_package_spec: str = Field(
+        default=(
+            "mykronos @ git+https://github.com/ToddGBenson/mykronos"
+            "@v1#subdirectory=backend"
+        ),
+        description=(
+            "pip requirement the Aegis and Atlas workflows install to get the "
+            "signal collectors and adapters (spec 04 §4). Pinned to a tag for "
+            "the same reason the upload action is: every onboarded repo "
+            "depends on it, so it must never resolve to a moving branch."
         ),
     )
 

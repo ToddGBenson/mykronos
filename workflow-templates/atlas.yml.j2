@@ -1,0 +1,179 @@
+{%- extends "_base.yml.j2" -%}
+{#-
+  Atlas — supply-chain evidence (spec 07 §4).
+
+  The only capability that writes to two places, and the reason `_base` has a
+  post_upload block. Per-dependency vulnerabilities go in as ordinary Finding
+  rows through the shared upload action, so they appear in the same portfolio
+  views as SAST and DAST (spec 07 §3); the aggregate SscsEvidence summary is
+  posted afterwards. Afterwards deliberately: a trust score recorded for
+  findings that failed to upload would be evidence of a scan that did not
+  land.
+
+  Triggers differ from the base. A dependency tree does not change unless a
+  manifest does, so pull requests are path-filtered — running osv-scanner on
+  every documentation change would be minutes of runner time to re-derive an
+  identical answer. Releases trigger too, for the SBOM and provenance that
+  §2 requires on every tag.
+
+  NOTE ON SHELL SYNTAX: no heredocs (see _base.yml.j2). `jq -n` builds JSON.
+-#}
+
+{% block triggers %}
+  pull_request:
+    # Manifests only. The dependency tree cannot change without one of these
+    # changing, so anything else would re-derive the same answer (spec 07 §4).
+    paths:
+      - "**/package.json"
+      - "**/package-lock.json"
+      - "**/pnpm-lock.yaml"
+      - "**/yarn.lock"
+      - "**/requirements*.txt"
+      - "**/pyproject.toml"
+      - "**/poetry.lock"
+      - "**/uv.lock"
+      - "**/go.mod"
+      - "**/go.sum"
+      - "**/Gemfile.lock"
+      - "**/Cargo.lock"
+      - "**/pom.xml"
+      - "**/build.gradle*"
+  push:
+    branches: ["<< default_branch >>"]
+  release:
+    types: [published]
+  schedule:
+    # New advisories land against dependencies that have not changed, which is
+    # the one way this capability's answer goes stale without a commit.
+    - cron: "<< config.schedule_cron | default('23 4 * * 1') >>"
+  workflow_dispatch:
+{% endblock %}
+
+{% block job_name %}Supply chain{% endblock %}
+{% block tool_name %}osv-scanner{% endblock %}
+{% block results_path %}${{ runner.temp }}/mykronos-results{% endblock %}
+
+{% block scan_steps %}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Mykronos and the scanners
+        run: |
+          set -euo pipefail
+          pip install --quiet '<< mykronos_package_spec >>'
+          pip install --quiet osv-scanner cyclonedx-bom
+
+      - name: Scan dependencies
+        id: sca
+        # `|| true` because osv-scanner exits non-zero when it finds
+        # vulnerabilities, which is the normal case and not an error. The
+        # upload step reports the ScanRun either way (spec 04 §7), so a real
+        # failure is still visible as a failed run rather than as silence.
+        run: |
+          set -uo pipefail
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          osv-scanner scan source \
+            --format sarif \
+            --output "${{ runner.temp }}/mykronos-results/osv.sarif" \
+            . || true
+
+          osv-scanner scan source --format json --output osv.json . || true
+          test -f osv.json || echo '{"results":[]}' > osv.json
+
+      - name: Generate the SBOM
+        # Only on a release: §2 requires one per tag, and producing one on
+        # every pull request would archive thousands of near-identical files
+        # for no additional evidence.
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          cyclonedx-py environment \
+            --output-format "<< config.sbom_format | default('cyclonedx') | upper >>" \
+            --outfile sbom.json || cyclonedx-py environment --outfile sbom.json
+
+      - name: Archive the SBOM
+        id: sbom
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          REF=$(curl --fail --silent --show-error --max-time 60 \
+            -X POST "<< ingestion_api_url >>/api/ingest/raw?scan_run_id=${{ github.run_id }}&filename=sbom.json" \
+            -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @sbom.json | jq -r '.raw_output_ref')
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+{% endblock %}
+
+{% block post_upload %}
+      - name: Report supply-chain evidence
+        # Always, so a scan that failed still records what it managed to see
+        # rather than leaving the repo with stale evidence and no sign of it.
+        if: always()
+        env:
+          SBOM_REF: ${{ steps.sbom.outputs.ref }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Counts, not a score. The trust formula lives in the platform so it
+          # is reproducible and cannot drift between action versions
+          # (spec 07 §5, §7).
+          ECOSYSTEMS=$(python -m mykronos.atlas_counts osv.json)
+
+          PROVENANCE=$(jq -nc \
+            --arg builder "github-actions" \
+            --arg repo "${{ github.repository }}" \
+            --arg commit "${{ github.sha }}" \
+            --arg run_id "${{ github.run_id }}" \
+            --arg runner "${{ runner.os }}-${{ runner.arch }}" \
+            --arg workflow "${{ github.workflow }}" \
+            '{builder_id: $builder, source_repo: $repo, source_commit: $commit,
+              build_run_id: $run_id, runner: $runner, workflow: $workflow}')
+
+          BODY=$(jq -nc \
+            --arg commit "${{ github.sha }}" \
+            --arg tag "$TAG" \
+            --arg sbom "$SBOM_REF" \
+            --argjson ecosystems "$ECOSYSTEMS" \
+            --argjson provenance "$PROVENANCE" \
+            '{commit_sha: $commit, ecosystems: $ecosystems, provenance: $provenance}
+             + (if $tag == "" then {} else {tag_or_release: $tag} end)
+             + (if $sbom == "" then {} else {sbom_ref: $sbom} end)')
+
+          curl --fail --silent --show-error --max-time 60 \
+            -X POST "<< ingestion_api_url >>/api/ingest/atlas" \
+            -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" > evidence.json
+
+          TRUST=$(jq -r '.trust_score' evidence.json)
+          MINIMUM=$(jq -r '.min_trust_score' evidence.json)
+          BELOW=$(jq -r '.below_minimum' evidence.json)
+          BLOCKING=$(jq -r '.blocking' evidence.json)
+          DEPS=$(jq -r '.dependency_count' evidence.json)
+          VULN=$(jq -r '.vulnerable_dependency_count' evidence.json)
+
+          echo "Supply-chain trust: $TRUST/100 ($VULN vulnerable of $DEPS dependencies)"
+
+          {
+            echo "## Mykronos Atlas — trust $TRUST/100"
+            echo
+            echo "$VULN vulnerable of $DEPS dependencies. Repository floor: $MINIMUM."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # spec 07 §6: with blocking on, a release below the floor fails.
+          # Only a release — failing a pull request because a transitive
+          # dependency has an advisory nobody on this PR introduced is how
+          # this capability gets switched off.
+          if [ "$BLOCKING" = "true" ] && [ "$BELOW" = "true" ] \
+             && [ "${{ github.event_name }}" = "release" ]; then
+            echo "::error::Trust score $TRUST is below this repository's floor of $MINIMUM."
+            exit 1
+          fi
+
+          if [ "$BELOW" = "true" ]; then
+            echo "::warning::Trust score $TRUST is below this repository's floor of $MINIMUM (advisory)."
+          fi
+{% endblock %}

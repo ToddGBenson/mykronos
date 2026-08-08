@@ -1,9 +1,12 @@
 """Scheduled maintenance jobs.
 
-Four things that have to happen on a timer rather than in response to a
+Five things that have to happen on a timer rather than in response to a
 request: rotating ingestion tokens, noticing that a repo uninstalled the App
-behind our back, closing findings that stopped being reported, and scoring
-the portfolio.
+behind our back, closing findings that stopped being reported, scoring the
+portfolio, and deleting insider-risk rows past their retention period.
+
+That last one is not housekeeping. Spec 06 §9 makes it normative, on the
+grounds that an unenforced retention policy is just a sentence.
 
 Every job here is safe to run twice and safe to interrupt. They run
 unattended, so "crashed halfway and left something inconsistent" is not an
@@ -15,16 +18,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from sqlalchemy import select
 
 from mykronos.auth import TokenRegistry
 from mykronos.db import Database
-from mykronos.db.models import RepoOnboarding
+from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import seal_secret
 from mykronos.installer import DEFAULT_SECRET_NAME
+from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import purge_rows
 from mykronos.oracle.service import OracleService
 from mykronos.schemas import utcnow
 
@@ -211,6 +217,87 @@ async def reconcile_installations(
         len(result.suspended),
         len(result.unreachable),
     )
+    return result
+
+
+@dataclass
+class PurgeResult:
+    rows_deleted: int = 0
+    partitions_rewritten: int = 0
+    #: Per-repo retention, so the log shows what was applied rather than
+    #: implying one global number.
+    applied: dict[str, int] = field(default_factory=dict)
+
+
+def purge_expired_insider_risk(
+    db: Database, catalog: Catalog, *, default_retention_days: int = 90
+) -> PurgeResult:
+    """Delete insider-risk rows past their retention period (spec 06 §9).
+
+    This job is the difference between a retention policy and a sentence about
+    one. Every other table in the lake is kept indefinitely — findings, scan
+    runs, decisions are all evidence about code. These rows are about people,
+    and their usefulness expires with the pull request they describe. After
+    that they are only a record of somebody having been suspected.
+
+    Retention is per-repo, from that repo's Aegis config, because a repo can
+    reasonably want a shorter window than the default and none should be able
+    to opt out of having one. A repo with no config gets the default rather
+    than being skipped — the absence of a setting is not consent to keep the
+    data forever.
+
+    Rows for repos that have been offboarded entirely are purged at the
+    default too: nobody is left to configure a window, and leaving them would
+    make deletion depend on an onboarding record that no longer exists.
+    """
+    result = PurgeResult()
+    if not catalog.all_files("insider_risk_signals"):
+        return result
+
+    with db.session() as session:
+        configured: dict[str, int] = {}
+        for row in session.execute(select(RepoOnboarding)).scalars():
+            config = capability_config_for(
+                session, row.github_repo_full_name, "aegis"
+            )
+            configured[row.github_repo_full_name] = int(
+                config.get("retention_days", default_retention_days)
+            )
+
+    known = {
+        str(repo)
+        for (repo,) in catalog.query(
+            "SELECT DISTINCT repo_full_name FROM insider_risk_signals"
+        )
+    }
+
+    # Grouped by window so a hundred repos sharing the default cost one
+    # rewrite pass rather than a hundred.
+    by_window: dict[int, list[str]] = {}
+    for repo in sorted(known):
+        window = configured.get(repo, default_retention_days)
+        by_window.setdefault(window, []).append(repo)
+        result.applied[repo] = window
+
+    now = utcnow()
+    for window, repos in sorted(by_window.items()):
+        cutoff = now - timedelta(days=window)
+        placeholders = ", ".join("?" for _ in repos)
+        deleted, rewritten = purge_rows(
+            catalog,
+            "insider_risk_signals",
+            f"repo_full_name IN ({placeholders}) AND evaluated_at < ?",
+            [*repos, cutoff],
+        )
+        result.rows_deleted += deleted
+        result.partitions_rewritten += rewritten
+
+    if result.rows_deleted:
+        logger.info(
+            "Insider-risk retention: deleted %s row(s) across %s partition(s)",
+            result.rows_deleted,
+            result.partitions_rewritten,
+        )
     return result
 
 

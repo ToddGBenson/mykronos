@@ -94,3 +94,9 @@ jobs:
           token: ${{ secrets.<< token_secret_name >> }}
           severity-threshold: << config.severity_threshold | default('low') >>
           blocking: "<< config.blocking | default(false) | lower >>"
+
+{# A capability with an aggregate record as well as findings hangs it here:
+   Atlas writes per-dependency Finding rows through the upload action above and
+   its SscsEvidence summary after (spec 07 §3). Deliberately after, so a
+   summary can never be recorded for findings that failed to upload. #}
+{% block post_upload %}{% endblock %}

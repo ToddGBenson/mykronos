@@ -188,6 +188,35 @@ def post_findings(
     )
 
 
+def render_context(**overrides: Any) -> dict[str, Any]:
+    """Every variable a template may reference.
+
+    One definition, because the installer renders with a complete context and
+    the library runs with `StrictUndefined` — so a template that adds a
+    variable fails loudly, and it should fail in one place rather than in
+    however many tests happen to render it.
+
+    The config carries every capability's required fields at once. Slightly
+    nonsensical as a single repo's configuration, and exactly right for
+    "render everything and check it compiles".
+    """
+    context: dict[str, Any] = {
+        "repo_full_name": REPO,
+        "default_branch": "main",
+        "ingestion_api_url": "https://mykronos.test",
+        "token_secret_name": "MYKRONOS_INGESTION_TOKEN",
+        "upload_action_ref": "ToddGBenson/mykronos/actions/upload-results@v1",
+        "mykronos_package_spec": "mykronos @ git+https://github.com/x/y@v1#subdirectory=backend",
+        "gate_depends_on": ["Mykronos sast"],
+        "config": {
+            "target_url": "https://staging.test",
+            "aws_role_arn": "arn:aws:iam::1:role/r",
+        },
+    }
+    context.update(overrides)
+    return context
+
+
 def later(minutes: int) -> str:
     return (
         (datetime.now(UTC) + timedelta(minutes=minutes))

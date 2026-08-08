@@ -108,6 +108,7 @@ class WorkflowInstaller:
         *,
         ingestion_api_url: str,
         upload_action_ref: str,
+        package_spec: str = "",
         secret_name: str = DEFAULT_SECRET_NAME,
         token_overlap_hours: int = 24,
     ) -> None:
@@ -115,6 +116,7 @@ class WorkflowInstaller:
         self.templates = templates
         self.ingestion_api_url = ingestion_api_url
         self.upload_action_ref = upload_action_ref
+        self.package_spec = package_spec
         self.secret_name = secret_name
         self.token_overlap_hours = token_overlap_hours
 
@@ -183,6 +185,7 @@ class WorkflowInstaller:
                 ingestion_api_url=self.ingestion_api_url,
                 token_secret_name=self.secret_name,
                 upload_action_ref=self.upload_action_ref,
+                mykronos_package_spec=self.package_spec,
                 config=configs.get(capability, {}),
                 gate_depends_on=gate_depends_on,
             )
