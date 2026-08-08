@@ -31,3 +31,16 @@
 # documentation is a worse trade than one audited allowlist entry.
 # ---------------------------------------------------------------------------
 e1ac3c03f606b90174e29e33742ec8aa59ff88fa:backend/tests/test_adapters_phase2.py:aws-access-token:26
+
+# ---------------------------------------------------------------------------
+# 736b0d4 — the same non-secret, in the first version of this file.
+#
+# The justification comment above originally quoted the literal key, so the
+# allowlist became a finding. Fixed in 3280561, but the value stays in
+# 736b0d4's history and full-history scanning still sees it.
+#
+# Two entries for one non-secret is the honest cost of fixing forward rather
+# than rewriting shared history, and it is a smaller cost than the habit of
+# force-pushing a public branch whenever the scanner is inconvenient.
+# ---------------------------------------------------------------------------
+736b0d43c94f87462a4a9d603457e3bc570d0c8b:.gitleaksignore:aws-access-token:13
