@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 
 from mykronos import __version__
+from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.webhooks import router as webhooks_router
@@ -188,6 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings or get_settings()
     app.include_router(ingest_router)
+    app.include_router(dashboard_router)
     app.include_router(repos_router)
     app.include_router(webhooks_router)
 

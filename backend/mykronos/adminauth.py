@@ -20,6 +20,7 @@ built. Two properties make the stub safe to have in the tree:
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
 
@@ -35,15 +36,40 @@ class Role(StrEnum):
     REPO_SCOPED = "repo_scoped"
 
 
+@dataclass(frozen=True)
+class Principal:
+    """Who is calling, and what they may see."""
+
+    actor: str
+    role: Role
+
+    @property
+    def may_see_raw_output(self) -> bool:
+        """spec 12 §5: raw tool output is admin-only.
+
+        A Secrets finding's raw record necessarily quotes context around the
+        secret, and the archived output is worse. Withheld from viewers at the
+        query layer rather than hidden in the UI, because "not rendered" is
+        not "not sent".
+        """
+        return self.role is Role.ADMIN
+
+    @property
+    def may_write(self) -> bool:
+        return self.role is Role.ADMIN
+
+
 _bearer = HTTPBearer(auto_error=False, description="Admin API token (Phase 1 stub).")
 
 
-async def require_admin(
+async def require_principal(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> str:
-    """Authenticate an admin caller. Returns the actor identity for the audit log."""
-    configured: str = request.app.state.settings.admin_token
+) -> Principal:
+    """Authenticate a caller and resolve their role."""
+    settings = request.app.state.settings
+    configured: str = settings.admin_token
+    viewer_token: str = settings.viewer_token
 
     if not configured:
         # Fail closed. An unconfigured deployment must not expose repo
@@ -66,14 +92,35 @@ async def require_admin(
 
     # Constant-time: a timing oracle on an admin token is worth avoiding even
     # in a stub, because stubs outlive their intended lifespan.
-    if not secrets.compare_digest(credentials.credentials, configured):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Admin token is not valid.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    presented = credentials.credentials
 
-    return str(request.app.state.settings.admin_identity or "admin")
+    if secrets.compare_digest(presented, configured):
+        return Principal(actor=str(settings.admin_identity or "admin"), role=Role.ADMIN)
+
+    if viewer_token and secrets.compare_digest(presented, viewer_token):
+        return Principal(actor=str(settings.viewer_identity or "viewer"), role=Role.VIEWER)
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token is not valid.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def require_admin(
+    principal: Annotated[Principal, Depends(require_principal)],
+) -> str:
+    """Admin-only endpoints. Returns the actor identity for the audit log."""
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"This action requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+    return principal.actor
 
 
 AdminDep = Annotated[str, Depends(require_admin)]
+PrincipalDep = Annotated[Principal, Depends(require_principal)]

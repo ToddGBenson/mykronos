@@ -97,6 +97,68 @@ def test_rescanning_ten_thousand_findings_updates_rather_than_grows(
 
 
 @pytest.mark.slow
+def test_portfolio_endpoint_stays_within_budget(
+    client: TestClient, admin_auth: dict[str, str], catalog: Catalog, run_compaction
+) -> None:
+    """spec 10 §6: the portfolio view loads in under 2 seconds for 200 repos.
+
+    This test is why the materialized views spec 10 §3 describes are deferred
+    rather than skipped (docs/DECISIONS.md D-016). It measures the *endpoint*,
+    not just the SQL — onboarding rows, the DuckDB aggregate, the Python join
+    and serialisation — against the real budget. If the live query ever
+    outgrows it, this fails and the cache stops being premature.
+    """
+    from tests.test_onboarding import onboard
+
+    repos = 200
+    per_repo = 25
+
+    for index in range(repos):
+        repo = f"example-org/service-{index:03d}"
+        onboard(client, admin_auth, repo=repo)
+        headers = {"Authorization": f"Bearer {issue_token(client, repo, 'sast')}"}
+        post_scan(client, headers, repo_full_name=repo, scan_run_id=f"run-{index}")
+        post_findings(
+            client,
+            headers,
+            [
+                finding_payload(
+                    rule_id=f"CWE-{i % 40}",
+                    file_path=f"src/m{i}.py",
+                    symbol=f"fn_{i}",
+                    code_snippet=f"call_{i}()",
+                    severity=["critical", "high", "medium", "low"][i % 4],
+                )
+                for i in range(per_repo)
+            ],
+            scan_run_id=f"run-{index}",
+        )
+    run_compaction()
+
+    assert catalog.count("findings") == repos * per_repo
+
+    started = time.perf_counter()
+    response = client.get("/api/dashboard/portfolio", headers=admin_auth)
+    elapsed = time.perf_counter() - started
+
+    assert response.status_code == 200
+    body = response.json()
+    # Printed so the headroom is visible in CI output, not just the pass/fail.
+    print(
+        f"\nportfolio endpoint: {elapsed:.3f}s for {repos} repos / "
+        f"{repos * per_repo} findings (budget 2.000s)"
+    )
+    assert len(body["repos"]) == repos
+    assert body["summary"]["open_critical"] > 0
+    assert elapsed < 2.0, (
+        f"portfolio endpoint took {elapsed:.2f}s for {repos} repos and "
+        f"{repos * per_repo} findings; spec 10 §6 budget is 2s. Materialized "
+        "views (spec 10 §3) are deferred on the strength of this measurement — "
+        "if it no longer holds, build them."
+    )
+
+
+@pytest.mark.slow
 def test_portfolio_scale_query_stays_interactive(
     client: TestClient, catalog: Catalog, run_compaction
 ) -> None:

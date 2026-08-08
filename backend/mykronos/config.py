@@ -131,6 +131,16 @@ class Settings(BaseSettings):
         description="Actor name recorded in the audit log for admin actions.",
     )
 
+    viewer_token: str = Field(
+        default="",
+        description=(
+            "Read-only token. Viewers see findings but never raw tool output "
+            "(spec 12 §5). Empty means no viewer access exists at all."
+        ),
+    )
+
+    viewer_identity: str = Field(default="viewer", description="Audit-log actor name.")
+
     database_url: str = Field(
         default="sqlite:///mykronos.db",
         description=(

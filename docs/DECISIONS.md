@@ -345,6 +345,53 @@ every other repo from rotating.
 
 ---
 
+## D-016 — Dashboard aggregates are computed live, not materialized
+
+**Status:** Decided, revisit on measurement
+**Spec:** [10 §3, §6](../specs/10-jded-dashboard.md)
+
+Spec 10 §3 calls for heavy aggregates pre-computed on a 15-minute schedule
+into materialized DuckDB views, so that §6's budget — the portfolio view
+loading in under two seconds for 200 repos — is met.
+
+The live query already meets it with room to spare. Measured end to end
+through the HTTP endpoint, including the DuckDB aggregate, the SQLite
+onboarding join and JSON serialisation:
+
+> **0.145s for 200 repos and 5,000 findings.** Budget: 2.000s.
+
+Building a cache for that would add a staleness window, a refresh job, and a
+second source of truth for numbers the dashboard claims are traceable to the
+lake (spec 10 §6 requires exactly that traceability). All in exchange for
+1.85 seconds nobody is waiting on.
+
+So it is deferred — but on evidence, not by omission. The measurement is an
+enforced test, `test_portfolio_endpoint_stays_within_budget`, which fails the
+build if the live query ever outgrows the budget. At that point materialization
+stops being premature and the test says so in its failure message.
+
+What would change this: findings growing by an order of magnitude, trend
+queries over long histories (spec 10 §2.3, Phase 7), or Oracle's portfolio
+decisions joining in per-repo. Each is a reason to re-measure, not a reason to
+build the cache now.
+
+---
+
+## D-017 — The lake and the operational database are joined in Python
+
+**Status:** Decided
+**Spec:** [10 §3](../specs/10-jded-dashboard.md)
+
+A portfolio row needs finding aggregates from DuckDB and onboarding state from
+SQLite (D-010). DuckDB can attach SQLite directly and do it in one query.
+
+It is not worth it. The join is a few hundred rows against a few hundred rows,
+and pulling in a DuckDB extension for that adds a dependency that can fail at
+runtime, in a deployment, for reasons that have nothing to do with the
+dashboard. The Python join is measured as part of the 0.145s above.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.

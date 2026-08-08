@@ -23,14 +23,10 @@ wrong: that path means "I observed this again", and its upsert would flip a
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
-import duckdb
-
-from mykronos.lake.catalog import Catalog, sql_path
-from mykronos.lake.tables import column_names
+from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import update_findings
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -59,9 +55,6 @@ class ReconcileResult:
 def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> ReconcileResult:
     """Close findings that have been absent from `required` consecutive scans."""
     result = ReconcileResult()
-    names = column_names("findings")
-    projection = ", ".join(names)
-
     if not catalog.all_files("findings"):
         return result
 
@@ -128,50 +121,26 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
         for finding_id, dt in candidates:
             by_partition.setdefault(str(dt), []).append(str(finding_id))
 
-        resolved_at = utcnow()
-        for dt, finding_ids in by_partition.items():
-            files = catalog.partition_files("findings", dt)
-            if not files:
-                continue
-            pattern = sql_path(catalog.partition_dir("findings", dt) / "*.parquet")
-
-            con.execute("DROP TABLE IF EXISTS part")
-            con.execute(
-                f"CREATE TEMP TABLE part AS "
-                f"SELECT {projection} FROM read_parquet('{pattern}', union_by_name = 1)"
-            )
-            placeholders = ", ".join(["?"] * len(finding_ids))
-            con.execute(
-                f"UPDATE part SET status = 'fixed', resolved_at = ? "
-                f"WHERE finding_id IN ({placeholders}) AND status = 'open'",
-                [resolved_at, *finding_ids],
-            )
-
-            target = catalog.partition_dir("findings", dt) / "part-0000.parquet"
-            _write_parquet(con, f"SELECT {projection} FROM part", target)
-            for stale in files:
-                if stale != target:
-                    stale.unlink(missing_ok=True)
-            con.execute("DROP TABLE part")
-
-            result.fixed.extend(finding_ids)
-            result.partitions_written += 1
-
         con.execute("DROP TABLE IF EXISTS recent_runs")
-        catalog.refresh_views(con)
 
+    # Outside the connection: the shared helper opens its own, and holding two
+    # writable handles to the same catalog is asking for a lock fight.
+    outcome = update_findings(
+        catalog,
+        by_partition,
+        "status = 'fixed', resolved_at = ?",
+        [utcnow()],
+        # A human disposition set between the read and the write wins. Absence
+        # is an observation; false_positive is a decision.
+        only_if_status="open",
+    )
+    result.fixed.extend(outcome.updated)
+    result.partitions_written += outcome.partitions_written
     if result.fixed:
         logger.info("Reconciliation closed %s absent finding(s)", result.total_fixed)
     return result
 
 
-def _write_parquet(
-    con: duckdb.DuckDBPyConnection, select_sql: str, destination: Path
-) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    pending = destination.with_suffix(".parquet.tmp")
-    con.execute(f"COPY ({select_sql}) TO '{sql_path(pending)}' (FORMAT PARQUET)")
-    os.replace(pending, destination)
 
 
 __all__ = ["REQUIRED_ABSENCES", "ReconcileResult", "reconcile_absences"]

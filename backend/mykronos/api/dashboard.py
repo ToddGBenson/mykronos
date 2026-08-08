@@ -1,0 +1,298 @@
+"""Dashboard API (spec 10 §4).
+
+Read-only except for one endpoint: marking a finding as a false positive or
+accepted risk. That write is the seed of the whole learning loop — spec 11 §4
+turns it into a retro signal that eventually dampens the rule in Oracle's
+policy — which is why it demands a reason.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Annotated, Any
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field
+
+from mykronos.adminauth import PrincipalDep
+from mykronos.dashboard import DashboardQueries, PortfolioSummary
+from mykronos.lake.mutate import locate_findings, update_findings
+from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+#: Dispositions a human may set from the dashboard (spec 10 §2.2).
+#:
+#: `open` and `fixed` are deliberately absent: those are observations the
+#: scanners and the reconciler own. Letting a person hand-set `fixed` would
+#: put a claim in the lake that no scan supports, and mean-time-to-fix would
+#: start measuring opinions.
+HUMAN_DISPOSITIONS = {
+    FindingStatus.FALSE_POSITIVE,
+    FindingStatus.ACCEPTED_RISK,
+    FindingStatus.SUPPRESSED,
+}
+
+
+class CapabilityStateOut(BaseModel):
+    capability: str
+    has_scanned: bool
+    last_scan_at: datetime | None = None
+    last_scan_status: str | None = None
+    open_findings: int = 0
+
+
+class PortfolioRowOut(BaseModel):
+    repo_id: str
+    repo_full_name: str
+    status: str
+    enabled_capabilities: list[str]
+    pending_capabilities: list[str] | None
+    severity_counts: dict[str, int]
+    total_open: int
+    last_scan_at: datetime | None
+    awaiting_first_scan: bool
+    is_stale: bool
+    capability_states: list[CapabilityStateOut]
+    risk_score: int | None = Field(
+        default=None,
+        description=(
+            "Oracle's score. Null until Phase 3 — deliberately not 0, which "
+            "would read as 'assessed, no risk' rather than 'not assessed'."
+        ),
+    )
+    recommendation: str | None = None
+
+
+class PortfolioOut(BaseModel):
+    summary: PortfolioSummary
+    repos: list[PortfolioRowOut]
+
+
+class FindingsPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    findings: list[dict[str, Any]]
+    raw_output_included: bool = Field(
+        description="False for viewer roles; raw output is admin-only (spec 12 §5)."
+    )
+
+
+class StatusChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: FindingStatus
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Why. spec 11 §4: a bare click with no reason is recorded but "
+            "flagged low-confidence and barred from promotion, because reasons "
+            "are what make a learning actionable rather than a statistic."
+        ),
+    )
+
+
+class StatusChangeResult(BaseModel):
+    finding_id: str
+    status: str
+    reason_supplied: bool
+    retro_signal: str
+
+
+def _queries(request: Request) -> DashboardQueries:
+    return DashboardQueries(request.app.state.catalog)
+
+
+@router.get("/portfolio", response_model=PortfolioOut)
+async def portfolio(
+    request: Request,
+    principal: PrincipalDep,
+    include_removed: Annotated[bool, Query()] = False,
+) -> PortfolioOut:
+    """The landing page (spec 10 §2.1)."""
+    with request.app.state.db.session() as session:
+        rows, summary = _queries(request).portfolio(
+            session, include_removed=include_removed
+        )
+
+    return PortfolioOut(
+        summary=summary,
+        repos=[
+            PortfolioRowOut(
+                repo_id=row.repo_id,
+                repo_full_name=row.repo_full_name,
+                status=row.status,
+                enabled_capabilities=row.enabled_capabilities,
+                pending_capabilities=row.pending_capabilities,
+                severity_counts=row.severity_counts,
+                total_open=row.total_open,
+                last_scan_at=row.last_scan_at,
+                awaiting_first_scan=row.awaiting_first_scan,
+                is_stale=row.is_stale,
+                capability_states=[
+                    CapabilityStateOut(**vars(state)) for state in row.capability_states
+                ],
+            )
+            for row in rows
+        ],
+    )
+
+
+@router.get("/repos/{repo_id}/findings", response_model=FindingsPage)
+async def repo_findings(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    capability: Annotated[Capability | None, Query()] = None,
+    severity: Annotated[Severity | None, Query()] = None,
+    finding_status: Annotated[FindingStatus | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FindingsPage:
+    """Filterable finding list for one repo (spec 10 §2.2)."""
+    repo_full_name = _resolve_repo(request, repo_id)
+
+    findings, total = _queries(request).findings(
+        repo_full_name,
+        capability=capability.value if capability else None,
+        severity=severity.value if severity else None,
+        finding_status=finding_status.value if finding_status else None,
+        limit=limit,
+        offset=offset,
+        include_raw=principal.may_see_raw_output,
+    )
+    return FindingsPage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        findings=findings,
+        raw_output_included=principal.may_see_raw_output,
+    )
+
+
+@router.get("/repos/{repo_id}/scan-health")
+async def scan_health(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    """Per-capability run history and freshness (spec 10 §2.2).
+
+    Auditable from the lake alone, which is the point of writing a ScanRun for
+    every run including the ones that found nothing (spec 04 §7).
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return {
+        "repo_full_name": repo_full_name,
+        "capabilities": _queries(request).scan_health(repo_full_name),
+    }
+
+
+@router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)
+async def set_finding_status(
+    request: Request, finding_id: str, body: StatusChange, principal: PrincipalDep
+) -> StatusChangeResult:
+    """Record a human disposition (spec 10 §2.2).
+
+    Admin-only: this changes what Oracle will decide, so it is a write, not a
+    view. Viewers can read every finding and change none of them.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Changing a finding's status requires the 'admin' role; you "
+                f"have '{principal.role.value}'."
+            ),
+        )
+
+    if body.status not in HUMAN_DISPOSITIONS:
+        allowed = ", ".join(sorted(s.value for s in HUMAN_DISPOSITIONS))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"'{body.status.value}' is not a disposition a person may set. "
+                f"Allowed: {allowed}. 'open' and 'fixed' are observations owned "
+                "by the scanners and the reconciler — hand-setting 'fixed' would "
+                "put a claim in the lake that no scan supports."
+            ),
+        )
+
+    catalog = request.app.state.catalog
+    existing = DashboardQueries(catalog).finding(finding_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, [finding_id]),
+        "status = ?, resolved_at = ?",
+        [body.status.value, utcnow()],
+    )
+    if not outcome.count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The finding could not be updated; it may have just been compacted.",
+        )
+
+    # spec 12 §7: who changed a finding's disposition, and why.
+    with request.app.state.db.session() as session:
+        request.app.state.db.audit(
+            session,
+            actor=principal.actor,
+            action="finding.status",
+            entity_type="finding",
+            entity_id=finding_id,
+            repo=existing.get("repo_full_name"),
+            capability=existing.get("capability"),
+            new_status=body.status.value,
+            reason=body.reason,
+        )
+
+    # spec 11 §4 turns this into a KnowledgeEntry once the store exists in
+    # Phase 5. Captured now so the Phase 5 backfill has something to read.
+    signal = (
+        "recorded"
+        if body.reason.strip()
+        else "recorded without a reason — will be low-confidence and barred "
+        "from promotion (spec 11 §4)"
+    )
+    logger.info(
+        "Finding %s -> %s by %s (%s)", finding_id, body.status.value, principal.actor, signal
+    )
+
+    return StatusChangeResult(
+        finding_id=finding_id,
+        status=body.status.value,
+        reason_supplied=bool(body.reason.strip()),
+        retro_signal=signal,
+    )
+
+
+def _resolve_repo(request: Request, repo_id: str) -> str:
+    """Map an onboarding id to its repo full name.
+
+    Deliberately id-only. `owner/repo` contains a slash and cannot be a single
+    path segment, and the alternatives — percent-encoding, which plenty of
+    proxies normalise away, or a catch-all route — trade a real correctness
+    risk for a convenience the callers do not need: every response that links
+    here already carries `repo_id`.
+    """
+    from mykronos.db.models import RepoOnboarding
+
+    with request.app.state.db.session() as session:
+        row = session.get(RepoOnboarding, repo_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"No repo {repo_id!r}. This takes the onboarding id from "
+                    "/api/dashboard/portfolio, not an owner/repo name."
+                ),
+            )
+        return str(row.github_repo_full_name)

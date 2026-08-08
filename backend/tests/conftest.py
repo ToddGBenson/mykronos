@@ -18,6 +18,7 @@ from mykronos.main import create_app
 REPO = "example-org/payments-api"
 CAPABILITY = "sast"
 ADMIN_TOKEN = "test-admin-token"
+VIEWER_TOKEN = "test-viewer-token"
 WEBHOOK_SECRET = "test-webhook-secret"
 INSTALLATION = 4242
 
@@ -33,6 +34,7 @@ def settings(tmp_path: Path) -> Settings:
         run_jobs_in_background=False,
         admin_token=ADMIN_TOKEN,
         github_webhook_secret=WEBHOOK_SECRET,
+        viewer_token=VIEWER_TOKEN,
     )
 
 
@@ -57,6 +59,11 @@ def client(settings: Settings, github: FakeGitHubClient) -> Iterator[TestClient]
 @pytest.fixture
 def admin_auth() -> dict[str, str]:
     return {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+
+
+@pytest.fixture
+def viewer_auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {VIEWER_TOKEN}"}
 
 
 @pytest.fixture
