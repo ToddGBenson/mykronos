@@ -163,6 +163,18 @@ class WorkflowInstaller:
             return plan
 
         configs = configs or {}
+
+        # Workflow names the Oracle gate must wait for. Derived from what this
+        # repo will actually have enabled after this change, not from the full
+        # capability list: a workflow_run trigger naming a workflow that does
+        # not exist never fires, so an over-broad list would silently stop the
+        # gate producing decisions at all.
+        gate_depends_on = [
+            f"Mykronos {capability}"
+            for capability in sorted(requested)
+            if capability != "oracle" and capability in self.templates.available
+        ]
+
         for capability in plan.added:
             rendered = self.templates.render(
                 capability,
@@ -172,6 +184,7 @@ class WorkflowInstaller:
                 token_secret_name=self.secret_name,
                 upload_action_ref=self.upload_action_ref,
                 config=configs.get(capability, {}),
+                gate_depends_on=gate_depends_on,
             )
             await self._assert_no_collision(onboarding, rendered.path)
             plan.rendered.append(rendered)

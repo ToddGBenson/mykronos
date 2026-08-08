@@ -70,7 +70,8 @@ _UPDATE_SETS: dict[str, str] = {
     # override, and the check run id once it is posted.
     "risk_decisions": """
         human_override      = coalesce(i.human_override, part.human_override),
-        github_check_run_id = coalesce(i.github_check_run_id, part.github_check_run_id)
+        github_check_run_id = coalesce(i.github_check_run_id, part.github_check_run_id),
+        gate_outcome        = coalesce(i.gate_outcome, part.gate_outcome)
     """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,

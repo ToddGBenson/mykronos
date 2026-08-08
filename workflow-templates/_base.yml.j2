@@ -11,6 +11,13 @@
   one of them. Block tags keep their default {% %} syntax, which does not
   collide with anything in Actions.
 
+  The one cost of that choice: **no shell heredocs in these templates.**
+  `cat <<JSON` opens with the same `<<` that starts a Jinja expression, and
+  the template fails to compile with a syntax error pointing at the line
+  after. Build strings with `printf` or `jq -n` instead — both are on every
+  GitHub runner, and neither has the YAML indentation problems a heredoc
+  inside a block scalar brings anyway.
+
   Children override: triggers, job_permissions, scan_steps, and optionally
   results_path / tool_name / job_name.
 -#}

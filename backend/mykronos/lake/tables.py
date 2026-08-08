@@ -82,6 +82,13 @@ RISK_DECISIONS_COLUMNS: Final[list[Column]] = [
     # single highest-value retro signal in the system, per spec 11 §4.
     ("human_override", "VARCHAR"),
     ("github_check_run_id", "VARCHAR"),
+    # What happened to the change this gate judged: merged, closed_unmerged,
+    # or null while still open. Filled in by the pull_request webhook.
+    #
+    # This is the shadow-mode evidence (spec 09 §6, open question 5): a
+    # no_go decision on a PR that merged anyway is exactly the data that
+    # argues for -- or against -- ever turning blocking on.
+    ("gate_outcome", "VARCHAR"),
 ]
 
 TABLES: Final[dict[str, list[Column]]] = {

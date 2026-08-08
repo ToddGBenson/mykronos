@@ -134,6 +134,12 @@ class TemplateLibrary:
             "config": config or {},
             # CodeQL needs an explicit language matrix; the config may override.
             "languages": (config or {}).get("languages") or ["javascript-typescript", "python"],
+            # The Oracle gate waits on these before deciding (spec 09 §8).
+            # Rendered from the repo's *enabled* capabilities, so the gate
+            # never waits for a scanner that will never run -- a workflow_run
+            # trigger naming an absent workflow simply never fires, and the
+            # gate would silently stop producing decisions.
+            "gate_depends_on": extra.pop("gate_depends_on", []),
         }
         context.update(extra)
 

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from mykronos import __version__
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
+from mykronos.api.oracle import router as oracle_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
@@ -30,6 +31,7 @@ from mykronos.github.factory import (
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.oracle import load_policy
 from mykronos.ratelimit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
+    # Loaded once at startup and held: spec 09 §10 requires an evaluation
+    # to use whichever version was active when it began, so the file
+    # changing under a running request must not change its result.
+    app.state.oracle_policy = load_policy(settings.oracle_policy_path)
 
     tasks: list[asyncio.Task[None]] = []
 
@@ -194,6 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings or get_settings()
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
+    app.include_router(oracle_router)
     app.include_router(repos_router)
     app.include_router(webhooks_router)
 

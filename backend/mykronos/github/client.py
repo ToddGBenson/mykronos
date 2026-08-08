@@ -124,6 +124,22 @@ class GitHubClient(Protocol):
 
     async def delete_actions_secret(self, repo_full_name: str, name: str) -> None: ...
 
+    async def create_check_run(
+        self,
+        repo_full_name: str,
+        *,
+        name: str,
+        head_sha: str,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> str:
+        """Publish a Check Run. Returns its id.
+
+        This is the only Mykronos surface most developers ever see, so the
+        summary is the product, not a log line.
+        """
+
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
 
@@ -140,6 +156,7 @@ class FakeRepo:
     branches: dict[str, dict[str, str]] = field(default_factory=dict)
     secrets: dict[str, str] = field(default_factory=dict)
     pull_requests: list[PullRequest] = field(default_factory=list)
+    check_runs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FakeGitHubClient:
@@ -298,6 +315,32 @@ class FakeGitHubClient:
         self.calls.append(("delete_actions_secret", f"{repo_full_name}:{name}"))
         self._require("secrets", "write", "Deleting an Actions secret")
         self._repo(repo_full_name).secrets.pop(name, None)
+
+    async def create_check_run(
+        self,
+        repo_full_name: str,
+        *,
+        name: str,
+        head_sha: str,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> str:
+        self.calls.append(("create_check_run", f"{repo_full_name}@{head_sha}"))
+        self._require("checks", "write", "Posting a check run")
+        repo = self._repo(repo_full_name)
+        check_id = f"check-{len(repo.check_runs) + 1}"
+        repo.check_runs.append(
+            {
+                "id": check_id,
+                "name": name,
+                "head_sha": head_sha,
+                "conclusion": conclusion,
+                "title": title,
+                "summary": summary,
+            }
+        )
+        return check_id
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         self.calls.append(("get_installation", str(installation_id)))
@@ -559,6 +602,34 @@ class RestGitHubClient:
                 f"Deleting secret {name} failed: {response.text[:200]}",
                 status=response.status_code,
             )
+
+    async def create_check_run(
+        self,
+        repo_full_name: str,
+        *,
+        name: str,
+        head_sha: str,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> str:
+        item = await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/check-runs",
+            json={
+                "name": name,
+                "head_sha": head_sha,
+                "status": "completed",
+                "conclusion": conclusion,
+                "output": {
+                    "title": title,
+                    # GitHub truncates past 65535; do it ourselves so the cut
+                    # is at a sensible place rather than mid-sentence.
+                    "summary": summary[:60000],
+                },
+            },
+        )
+        return str(item["id"])
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         """Installation metadata, for the daily reconciliation (spec 02 §5.6).
