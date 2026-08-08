@@ -17,6 +17,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned deliberately: an unpinned security scanner means the build can
+  # start failing on a ruleset change nobody chose.
+  GITLEAKS_VERSION: "8.18.4"
+
 jobs:
   backend:
     name: Backend (lint, types, tests)
@@ -53,14 +58,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history: the point is that no secret was *ever* committed,
+          # not merely that none is present at HEAD.
           fetch-depth: 0
 
       # spec 12 §8 asks a human review to confirm no PAT-shaped credential
       # exists anywhere in the codebase. That is a machine's job.
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # Run the binary directly rather than gitleaks-action, which derives a
+      # commit range from the push event and asks git for `<root-commit>^`.
+      # The initial commit has no parent, so that range is invalid and the
+      # scan silently degrades to zero bytes scanned while still failing.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan full history
+        run: gitleaks detect --source . --redact --verbose
 
   specs:
     name: Spec links resolve
@@ -68,24 +86,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The specs are the contract and the code cites them by section. A dead
-      # cross-reference means a spec was renamed without the citations moving.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # A script rather than inline shell, so this and a developer's local run
+      # are byte-identical.
       - name: Check relative markdown links
-        run: |
-          set -euo pipefail
-          fail=0
-          while IFS= read -r -d '' file; do
-            dir=$(dirname "$file")
-            grep -oE '\]\(([^)#]+\.md)(#[^)]*)?\)' "$file" \
-              | sed -E 's/^\]\(//; s/(#.*)?\)$//' \
-              | while read -r link; do
-                  case "$link" in
-                    http*) continue ;;
-                  esac
-                  if [ ! -f "$dir/$link" ]; then
-                    echo "::error file=$file::broken link -> $link"
-                    exit 1
-                  fi
-                done || fail=1
-          done < <(find . -name '*.md' -not -path './node_modules/*' -print0)
-          exit $fail
+        run: python scripts/check_links.py .

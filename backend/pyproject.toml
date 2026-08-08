@@ -43,6 +43,11 @@ include = ["mykronos*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put `backend/` on sys.path so `from tests.conftest import ...` resolves.
+# It worked locally only as a side effect of the editable install exposing
+# the project root; modern setuptools editable finders expose just the
+# configured packages, so CI could not import `tests` at all.
+pythonpath = ["."]
 filterwarnings = ["error"]
 markers = ["slow: performance checks against spec 05 §9 acceptance criteria"]
 # The GitHub client is async; every async test is a coroutine test.
