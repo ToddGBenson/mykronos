@@ -214,6 +214,126 @@ export interface paths {
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
         trace?: never;
     };
+    "/api/oracle/evaluate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate
+         * @description Score a commit and publish the result (spec 09 §7, §8).
+         */
+        post: operations["evaluate_api_oracle_evaluate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oracle/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active Policy
+         * @description The policy currently in force, verbatim (spec 09 §7).
+         *
+         *     Readable by viewers as well as admins. Anyone whose pull request Oracle
+         *     judges is entitled to see how the number was produced — a risk score you
+         *     are not allowed to inspect is one people learn to route around.
+         */
+        get: operations["active_policy_api_oracle_policy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oracle/shadow-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Shadow Mode
+         * @description What blocking mode would have done, had it been on (spec 09 §6).
+         *
+         *     Advisory-by-default is not just a safety choice, it is a measurement: every
+         *     `no_go` that merged anyway is a merge blocking mode would have stopped.
+         *     This endpoint is the evidence anyone should have to produce before
+         *     proposing that the gate start failing builds.
+         *
+         *     Ordered before `/decisions/{repo_id}` because a literal path must not be
+         *     shadowed by the parameterised one.
+         */
+        get: operations["shadow_mode_api_oracle_shadow_mode_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oracle/decisions/{repo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Decisions For Repo
+         * @description Decision history for one repo, newest first (spec 09 §7).
+         */
+        get: operations["decisions_for_repo_api_oracle_decisions__repo_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oracle/decisions/{decision_id}/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Override Decision
+         * @description Record a human overriding a recommendation (spec 09 §6).
+         *
+         *     The decision itself is never rewritten — spec 09 §10 needs past decisions
+         *     to stay reproducible. The override is recorded *alongside* it, so the
+         *     history shows both what Oracle said and what the human did about it.
+         *
+         *     spec 09 §6 calls these "exactly the data that should most influence policy
+         *     tuning over time", which is why the reason is mandatory rather than
+         *     encouraged.
+         */
+        post: operations["override_decision_api_oracle_decisions__decision_id__override_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -404,6 +524,42 @@ export interface components {
             secret_provisioned: boolean;
             /** Detail */
             detail: string;
+        };
+        /**
+         * EvaluateRequest
+         * @description What the gate workflow sends.
+         *
+         *     No `repo_full_name`: it comes from the ingestion token, so a workflow
+         *     cannot request a decision about somebody else's repository.
+         */
+        EvaluateRequest: {
+            /** Decision Type */
+            decision_type: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Pr Number */
+            pr_number?: number | null;
+            /** Release Tag */
+            release_tag?: string | null;
+        };
+        /** EvaluateResult */
+        EvaluateResult: {
+            /** Decision Id */
+            decision_id: string;
+            /** Overall Risk Score */
+            overall_risk_score: number;
+            /** Recommendation */
+            recommendation: string;
+            /** Reasoning */
+            reasoning: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Blocking */
+            blocking: boolean;
+            /** Check Run Id */
+            check_run_id?: string | null;
+            /** Check Run Error */
+            check_run_error?: string | null;
         };
         /**
          * FindingBatch
@@ -614,6 +770,35 @@ export interface components {
              * @default
              */
             org_login: string;
+        };
+        /** OverrideRequest */
+        OverrideRequest: {
+            /**
+             * Reason
+             * @description Required, and validated as non-empty (spec 09 §9). An override without a reason is the single most valuable retro signal in the system thrown away (spec 11 §4).
+             */
+            reason: string;
+            /**
+             * Accepted Recommendation
+             * @description What the human decided instead. Defaults to 'go'.
+             */
+            accepted_recommendation?: string | null;
+        };
+        /** OverrideResult */
+        OverrideResult: {
+            /** Decision Id */
+            decision_id: string;
+            /** Original Recommendation */
+            original_recommendation: string;
+            /** Accepted Recommendation */
+            accepted_recommendation: string;
+            /** Overridden By */
+            overridden_by: string;
+            /**
+             * Overridden At
+             * Format: date-time
+             */
+            overridden_at: string;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -1144,6 +1329,165 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusChangeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evaluate_api_oracle_evaluate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_policy_api_oracle_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    shadow_mode_api_oracle_shadow_mode_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decisions_for_repo_api_oracle_decisions__repo_id__get: {
+        parameters: {
+            query?: {
+                decision_type?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    override_decision_api_oracle_decisions__decision_id__override_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                decision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OverrideRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OverrideResult"];
                 };
             };
             /** @description Validation Error */
