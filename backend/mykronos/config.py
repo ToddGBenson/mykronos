@@ -118,6 +118,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    knowledge_half_life_days: int = Field(
+        default=180,
+        ge=1,
+        description=(
+            "Confidence half-life for Knowledge Store entries (spec 11 §5). "
+            "An entry nobody reconfirms in this window is worth about half "
+            "what it was, which is what stops a two-year-old opinion carrying "
+            "the same weight as last week's."
+        ),
+    )
+
     run_jobs_in_background: bool = Field(
         default=True,
         description="Disable so tests and one-shot CLI runs drive jobs explicitly.",

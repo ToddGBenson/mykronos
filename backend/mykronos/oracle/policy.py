@@ -38,6 +38,10 @@ class AgePolicy:
 class DampeningPolicy:
     threshold: float
     dampening_factor: float
+    #: Reasoned dismissals required before a rule is dampened at all
+    #: (spec 11 §6.1). Without it, one dismissal of a rule seen once is a 100%
+    #: false-positive rate and a single click quietens the rule.
+    min_observations: int
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,12 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             threshold=_number(dampening_raw.get("threshold", 0.5), "dampening.threshold"),
             dampening_factor=_number(
                 dampening_raw.get("dampening_factor", 0.5), "dampening.dampening_factor"
+            ),
+            min_observations=int(
+                _number(
+                    dampening_raw.get("min_observations", 3),
+                    "dampening.min_observations",
+                )
             ),
         ),
         no_go=no_go,

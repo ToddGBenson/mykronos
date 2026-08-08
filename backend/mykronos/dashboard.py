@@ -557,7 +557,19 @@ class DashboardQueries:
         return health
 
     def finding(self, finding_id: str, *, include_raw: bool = False) -> dict[str, Any] | None:
-        columns = ["finding_id", "repo_full_name", "capability", "status", "severity", "title"]
+        # `rule_id` is here because the disposition endpoint turns a dismissal
+        # into a KnowledgeEntry keyed on it (spec 11 §3). Omitting it produced
+        # entries with an empty subject that could never match a rule, so
+        # dampening silently never fired.
+        columns = [
+            "finding_id",
+            "repo_full_name",
+            "capability",
+            "rule_id",
+            "status",
+            "severity",
+            "title",
+        ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
         rows = self.catalog.query(

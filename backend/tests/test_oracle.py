@@ -311,8 +311,9 @@ class TestSnapshotCompleteness:
     ]
 
     #: Capabilities that do not exist yet, as opposed to ones that exist and
-    #: had nothing to say for this particular decision.
-    NOT_BUILT = ["remediation_in_flight", "false_positive_dampening"]
+    #: had nothing to say for this particular decision. Shrinks by one each
+    #: phase; when it empties, every input spec 09 §4 names is real.
+    NOT_BUILT = ["remediation_in_flight"]
 
     def test_unavailable_categories_are_present_and_explicitly_null(
         self, client, auth, catalog, run_compaction, engine

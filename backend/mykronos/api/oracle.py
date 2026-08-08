@@ -28,6 +28,7 @@ from sqlalchemy import select
 from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
+from mykronos.knowledge.capture import capture_override, safe_capture
 from mykronos.oracle.service import OracleService, decision_to_row
 from mykronos.schemas import utcnow
 
@@ -94,6 +95,7 @@ def _service(request: Request) -> OracleService:
         request.app.state.catalog,
         request.app.state.buffer,
         request.app.state.oracle_policy,
+        request.app.state.knowledge,
     )
 
 
@@ -301,6 +303,20 @@ async def override_decision(
             accepted=accepted,
             reason=body.reason,
         )
+
+    # spec 11 §4. spec 09 §6 calls overrides "exactly the data that should
+    # most influence policy tuning over time"; this is what makes that true
+    # rather than aspirational.
+    safe_capture(
+        capture_override,
+        request.app.state.knowledge,
+        repo_full_name=existing["repo_full_name"],
+        decision_id=decision_id,
+        original_recommendation=existing["recommendation"],
+        accepted_recommendation=accepted,
+        reason=body.reason,
+        score=int(existing["overall_risk_score"]),
+    )
 
     logger.info(
         "Oracle decision %s overridden by %s: %s -> %s",

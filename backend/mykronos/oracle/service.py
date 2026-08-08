@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from mykronos.github.client import GitHubClient, GitHubError
+from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.oracle.engine import Decision, OracleEngine
@@ -152,11 +153,12 @@ class OracleService:
         catalog: Catalog,
         buffer: WriteAheadBuffer,
         policy: Policy,
+        store: KnowledgeStore | None = None,
     ) -> None:
         self.catalog = catalog
         self.buffer = buffer
         self.policy = policy
-        self.engine = OracleEngine(catalog, policy)
+        self.engine = OracleEngine(catalog, policy, store)
 
     async def evaluate_and_publish(
         self,

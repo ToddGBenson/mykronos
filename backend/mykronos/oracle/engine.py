@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from mykronos.knowledge.dampening import dampened_rules
+from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
@@ -70,7 +72,7 @@ class Decision:
         return f"{self.recommendation} ({self.overall_risk_score}/100)"
 
 
-def _band_contribution(weight: float, count: int) -> float:
+def _band_contribution(weight: float, count: float) -> float:
     """`weight × log2(1 + count)` — the saturation fix (D-018).
 
     Linear weighting pinned every vulnerable repo at the clamp: three open
@@ -79,10 +81,59 @@ def _band_contribution(weight: float, count: int) -> float:
     strictly increasing in findings while flattening, so the gap between "a
     few" and "some" matters more than between "many" and "very many" — which
     is how a person triages.
+
+    `count` is a float rather than an int because false-positive dampening
+    (spec 11 §6.1) makes a dismissed-often finding count for a fraction of one.
     """
     if count <= 0:
         return 0.0
     return weight * math.log2(1 + count)
+
+
+def _dampening_snapshot(
+    dampened: dict[str, Any] | None,
+    *,
+    store_configured: bool,
+    factor: float,
+    min_observations: int,
+) -> dict[str, Any]:
+    """The dampening category, with the evidence for every rule it quietened.
+
+    A weight that quietly halved is exactly the kind of hidden input spec 09
+    exists to prevent, so each dampened rule travels with its rate, its counts
+    and the human reasons that earned it.
+
+    Note this is *not* a contribution: dampening reduces other terms rather
+    than adding one of its own, so the figure reported is the multiplier that
+    was applied, and the reduction is visible in the finding bands themselves.
+    """
+    if not store_configured:
+        return {
+            "available": False,
+            "dampened_rules": None,
+            "contribution": 0.0,
+            "reason": "No Knowledge Store is configured for this deployment.",
+        }
+    if not dampened:
+        return {
+            "available": True,
+            "dampened_rules": [],
+            "contribution": 0.0,
+            "reason": (
+                f"No rule has reached {min_observations} reasoned dismissals "
+                "at or above the policy's false-positive threshold."
+            ),
+        }
+    return {
+        "available": True,
+        "dampened_rules": [
+            entry.as_snapshot(factor) for entry in sorted(
+                dampened.values(), key=lambda d: d.rule_id
+            )
+        ],
+        "weight_multiplier": round(1.0 - factor, 3),
+        "contribution": 0.0,
+    }
 
 
 def _insider_snapshot(
@@ -149,15 +200,25 @@ def _sscs_snapshot(sscs: dict[str, Any] | None, *, cap: float) -> dict[str, Any]
 
 
 class OracleEngine:
-    def __init__(self, catalog: Catalog, policy: Policy) -> None:
+    def __init__(
+        self,
+        catalog: Catalog,
+        policy: Policy,
+        store: KnowledgeStore | None = None,
+    ) -> None:
         self.catalog = catalog
         self.policy = policy
+        # Optional on purpose (spec 11 §6): dampening is an adjustment on top
+        # of a correct score. A deployment with no Knowledge Store, or one
+        # whose store is unreadable, gets undampened scores rather than no
+        # scores.
+        self.store = store
 
     # -- inputs ---------------------------------------------------------
 
     def _finding_counts(
-        self, repo_full_name: str, *, for_gate: bool
-    ) -> tuple[dict[str, int], dict[str, int]]:
+        self, repo_full_name: str, *, for_gate: bool, dampened: list[str] | None = None
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
         """Open findings by severity, and the aged subset.
 
         `for_gate` excludes capabilities spec 14 §7 keeps out of PR and
@@ -174,9 +235,24 @@ class OracleEngine:
             )
             excluded = f"AND capability NOT IN ({names})"
 
+        # Parameters are bound in the order their placeholders appear in the
+        # SQL *text*, and this one's are in the SELECT clause — before the
+        # WHERE. Getting that backwards silently asks for
+        # `rule_id IN (<repo name>)`, which matches nothing and returns no
+        # findings at all rather than erroring.
+        dampened_clause = ""
+        dampened_params: list[Any] = []
+        if dampened:
+            placeholders = ", ".join("?" for _ in dampened)
+            dampened_clause = (
+                f", count(*) FILTER (WHERE rule_id IN ({placeholders})) AS dampened"
+            )
+            dampened_params = list(dampened)
+        params: list[Any] = [*dampened_params, repo_full_name]
+
         rows = self.catalog.query(
             f"""
-            SELECT severity, count(*)
+            SELECT severity, count(*) AS total{dampened_clause}
             FROM findings
             WHERE repo_full_name = ?
               AND status IN ({statuses})
@@ -184,9 +260,12 @@ class OracleEngine:
               {excluded}
             GROUP BY severity
             """,
-            [repo_full_name],
+            params,
         )
-        counts = {str(severity): int(count) for severity, count in rows}
+        counts = {str(row[0]): int(row[1]) for row in rows}
+        dampened_counts = (
+            {str(row[0]): int(row[2]) for row in rows} if dampened else {}
+        )
 
         # Age is measured against first_seen_at, which only survives because
         # finding identity is anchored to code rather than line numbers
@@ -212,7 +291,7 @@ class OracleEngine:
             ],
         )
         aged = {str(severity): int(count) for severity, count in aged_rows}
-        return counts, aged
+        return counts, aged, dampened_counts
 
     def _insider_risk(
         self, repo_full_name: str, pr_number: int | None
@@ -281,6 +360,24 @@ class OracleEngine:
             "evaluated_at": evaluated_at,
         }
 
+    def _dampened_rules(self, repo_full_name: str) -> dict[str, Any]:
+        """Rules this repo has dismissed often enough, with reasons, to quieten.
+
+        Returns `{}` when there is no store — the ordinary case for a
+        deployment that has not accumulated any learnings yet, and not an
+        error.
+        """
+        if self.store is None:
+            return {}
+        return dampened_rules(
+            self.catalog,
+            self.store,
+            repo_full_name,
+            threshold=self.policy.dampening.threshold,
+            min_observations=self.policy.dampening.min_observations,
+            as_of=self._as_of,
+        )
+
     # -- scoring --------------------------------------------------------
 
     def evaluate(
@@ -303,24 +400,54 @@ class OracleEngine:
         self._as_of = as_of or utcnow()
         for_gate = decision_type in ("pr_gate", "release_gate")
 
-        counts, aged = self._finding_counts(repo_full_name, for_gate=for_gate)
+        # Which rules this repo has earned the right to quieten (spec 11
+        # §6.1). Looked up before the counts so the query can split each
+        # severity band into dampened and undampened in one pass.
+        dampened = self._dampened_rules(repo_full_name)
+        counts, aged, dampened_counts = self._finding_counts(
+            repo_full_name, for_gate=for_gate, dampened=sorted(dampened)
+        )
         terms: list[Term] = []
 
         # 1. Findings, worst band first so the reasoning reads in the order a
         #    person would care about.
+        factor = self.policy.dampening.dampening_factor
         for severity in reversed(self.policy.severities_in_scope()):
             count = counts.get(severity, 0)
             weight = self.policy.severity_weights.get(severity, 0.0)
             if count == 0 or weight == 0:
                 continue
-            contribution = _band_contribution(weight, count)
+
+            # A dismissed-often rule counts for less, not for nothing. Applied
+            # to the *count* inside the curve rather than to the band's weight
+            # outside it, because only some of a band's findings are dampened
+            # and halving the whole band would quieten the real ones too.
+            quiet = dampened_counts.get(severity, 0)
+            effective = (count - quiet) + quiet * (1.0 - factor)
+            contribution = _band_contribution(weight, effective)
+
+            detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
+            label = f"{count} open {severity} finding{'s' if count != 1 else ''}"
+            if quiet:
+                detail = (
+                    f"{weight:g} × log2(1 + {effective:g}) = {contribution:.1f} "
+                    f"({quiet} of {count} from dampened rules, counted at "
+                    f"{1.0 - factor:g}×)"
+                )
+                label += f", {quiet} from dampened rule{'s' if quiet != 1 else ''}"
+
             terms.append(
                 Term(
                     key=f"findings.{severity}",
-                    label=f"{count} open {severity} finding{'s' if count != 1 else ''}",
+                    label=label,
                     contribution=contribution,
-                    detail=f"{weight:g} × log2(1 + {count}) = {contribution:.1f}",
-                    inputs={"count": count, "weight": weight},
+                    detail=detail,
+                    inputs={
+                        "count": count,
+                        "weight": weight,
+                        "dampened": quiet,
+                        "effective_count": round(effective, 2),
+                    },
                 )
             )
 
@@ -399,6 +526,7 @@ class OracleEngine:
             for_gate=for_gate,
             insider=insider,
             sscs=sscs,
+            dampened=dampened,
         )
 
         decision = Decision(
@@ -431,6 +559,7 @@ class OracleEngine:
         for_gate: bool,
         insider: dict[str, Any] | None = None,
         sscs: dict[str, Any] | None = None,
+        dampened: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -471,12 +600,12 @@ class OracleEngine:
                 "contribution": 0.0,
                 "reason": "Patchwork is not implemented yet (spec 08, Phase 6).",
             },
-            "false_positive_dampening": {
-                "available": False,
-                "dampened_rules": None,
-                "contribution": 0.0,
-                "reason": "The Knowledge Store is not implemented yet (spec 11, Phase 5).",
-            },
+            "false_positive_dampening": _dampening_snapshot(
+                dampened,
+                store_configured=self.store is not None,
+                factor=self.policy.dampening.dampening_factor,
+                min_observations=self.policy.dampening.min_observations,
+            ),
             "terms": [
                 {
                     "key": term.key,

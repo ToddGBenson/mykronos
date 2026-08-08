@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mykronos.adminauth import PrincipalDep
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
+from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
@@ -496,14 +497,43 @@ async def set_finding_status(
             reason=body.reason,
         )
 
-    # spec 11 §4 turns this into a KnowledgeEntry once the store exists in
-    # Phase 5. Captured now so the Phase 5 backfill has something to read.
-    signal = (
-        "recorded"
-        if body.reason.strip()
-        else "recorded without a reason — will be low-confidence and barred "
-        "from promotion (spec 11 §4)"
+    # spec 11 §4. Wrapped, because the disposition has already succeeded by
+    # the time we get here — the lake is written — and failing the request
+    # because a JSONL file could not be opened would undo a real thing to
+    # protect a derived one.
+    captured = safe_capture(
+        capture_dismissal,
+        request.app.state.knowledge,
+        repo_full_name=str(existing.get("repo_full_name") or ""),
+        rule_id=str(existing.get("rule_id") or ""),
+        finding_id=finding_id,
+        status=body.status.value,
+        reason=body.reason,
+        capability=str(existing.get("capability") or ""),
+        actor=principal.actor,
     )
+
+    if captured is None and body.status is not FindingStatus.FALSE_POSITIVE:
+        # Not a failure: only a false positive says anything about the rule.
+        # `accepted_risk` means the finding is real and we are living with it,
+        # which is a statement about appetite, not detection quality.
+        signal = f"recorded; '{body.status.value}' teaches nothing about the rule"
+    elif captured is None:
+        signal = "recorded, but the learning could not be stored — see the logs"
+    elif not body.reason.strip():
+        signal = (
+            "recorded without a reason — low-confidence and barred from "
+            "promotion or dampening (spec 11 §4)"
+        )
+    elif captured.reconfirmed:
+        signal = (
+            f"reconfirmed a known learning about {existing.get('rule_id')} "
+            f"({captured.entry.observations} observations, confidence "
+            f"{captured.entry.confidence:.2f})"
+        )
+    else:
+        signal = f"recorded a new learning about {existing.get('rule_id')}"
+
     logger.info(
         "Finding %s -> %s by %s (%s)", finding_id, body.status.value, principal.actor, signal
     )

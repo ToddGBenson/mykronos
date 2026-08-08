@@ -35,6 +35,7 @@ from mykronos.jobs import (
     rotate_ingestion_tokens,
     score_portfolio,
 )
+from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
@@ -133,6 +134,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.
     app.state.oracle_policy = load_policy(settings.oracle_policy_path)
+    # spec 11 §8: colocated with the lake, logically separate. Personal tier
+    # is where every captured learning starts; promotion to team or org is a
+    # human decision (spec 11 §2), never a side effect of writing one.
+    app.state.knowledge = KnowledgeStore(
+        default_store_dir(settings.datalake_dir),
+        tier="personal",
+        half_life_days=settings.knowledge_half_life_days,
+    )
 
     tasks: list[asyncio.Task[None]] = []
 
@@ -165,7 +174,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await score_portfolio(
                 app.state.db,
                 OracleService(
-                    app.state.catalog, app.state.buffer, app.state.oracle_policy
+                    app.state.catalog,
+                    app.state.buffer,
+                    app.state.oracle_policy,
+                    app.state.knowledge,
                 ),
             )
 
