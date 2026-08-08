@@ -10,11 +10,16 @@ from fastapi.testclient import TestClient
 
 from mykronos.auth import TokenRegistry
 from mykronos.config import Settings
+from mykronos.github import FakeGitHubClient
+from mykronos.github.factory import FakeGitHubClientFactory
 from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.main import create_app
 
 REPO = "example-org/payments-api"
 CAPABILITY = "sast"
+ADMIN_TOKEN = "test-admin-token"
+WEBHOOK_SECRET = "test-webhook-secret"
+INSTALLATION = 4242
 
 
 @pytest.fixture
@@ -22,15 +27,36 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         datalake_dir=tmp_path / "datalake",
         database_url=f"sqlite:///{(tmp_path / 'mykronos.db').as_posix()}",
-        # Compaction is driven explicitly in tests so assertions never race a timer.
+        # Compaction and jobs are driven explicitly in tests so assertions
+        # never race a timer.
         run_compaction_in_background=False,
+        run_jobs_in_background=False,
+        admin_token=ADMIN_TOKEN,
+        github_webhook_secret=WEBHOOK_SECRET,
     )
 
 
 @pytest.fixture
-def client(settings: Settings) -> Iterator[TestClient]:
+def github() -> FakeGitHubClient:
+    """In-memory GitHub, pre-seeded with the repo the tests onboard."""
+    client = FakeGitHubClient()
+    client.add_repo(REPO, files={"README.md": "# payments"})
+    client.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+    return client
+
+
+@pytest.fixture
+def client(settings: Settings, github: FakeGitHubClient) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as test_client:
+        # Substituted after startup so the installer acts on a repo we control
+        # rather than reaching for the network.
+        test_client.app.state.github_factory = FakeGitHubClientFactory(github)
         yield test_client
+
+
+@pytest.fixture
+def admin_auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {ADMIN_TOKEN}"}
 
 
 @pytest.fixture

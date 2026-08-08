@@ -18,6 +18,12 @@ from sqlalchemy.orm import Session
 
 from mykronos.adminauth import AdminDep
 from mykronos.auth import TokenRegistry
+from mykronos.capabilities import (
+    CapabilityConfigError,
+    config_schema,
+    configurable_capabilities,
+    validate_config,
+)
 from mykronos.db.models import CapabilityConfig, Organization, RepoOnboarding
 from mykronos.github.client import GitHubError
 from mykronos.installer import (
@@ -117,6 +123,20 @@ def _get(session: Session, repo_id: str) -> RepoOnboarding:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/-/capabilities", tags=["onboarding"])
+async def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
+    """Config schema per capability, for the UI to render a form from.
+
+    Under `/-/` so it cannot be mistaken for a repo id. The valid tool list in
+    each schema comes from the adapter registry rather than being restated
+    here, so the form can never offer a tool the platform cannot parse.
+    """
+    return {
+        capability: config_schema(capability)
+        for capability in configurable_capabilities()
+    }
 
 
 @router.post("", response_model=RepoSummary, status_code=status.HTTP_201_CREATED)
@@ -239,12 +259,21 @@ async def update_capabilities(
                 ),
             )
 
-        for capability, config in body.config.items():
+        for capability, raw_config in body.config.items():
             if capability not in requested:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Config supplied for '{capability}', which is not enabled.",
                 )
+            # spec 04 §7: a bad tool name or malformed setting fails the save,
+            # while the admin is looking at it — not three hours later as a red
+            # pipeline nobody connects to this change.
+            try:
+                config = validate_config(capability, raw_config)
+            except CapabilityConfigError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+                ) from exc
             existing = session.execute(
                 select(CapabilityConfig)
                 .where(CapabilityConfig.repo_onboarding_id == row.id)
