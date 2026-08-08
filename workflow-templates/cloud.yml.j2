@@ -1,0 +1,59 @@
+{% extends "_base.yml.j2" %}
+{#-
+  Cloud posture capability — spec 04 §3.
+
+  Reads cloud account configuration, so it needs credentials the repo owns.
+  Mykronos deliberately does not supply them: the platform never handles a
+  customer's cloud credentials, and spec 12 §4.3 keeps the ingestion token as
+  the only secret it ever places in a repo.
+-#}
+{% block triggers %}
+  schedule:
+    - cron: "<< config.schedule_cron | default('7 5 * * *') >>"
+  workflow_dispatch:
+{% endblock %}
+
+{% block checkout_options %}
+          fetch-depth: 1
+{% endblock %}
+
+{% block job_permissions %}
+  # OIDC federation, so the scan assumes a role rather than reading a
+  # long-lived access key out of a repo secret.
+  id-token: write
+{% endblock %}
+
+{% block job_name %}Cloud posture{% endblock %}
+
+{% block scan_steps %}
+      - name: Check cloud credentials are configured
+        # Fails here, loudly, rather than letting the scan produce an empty
+        # result that would be indistinguishable from a clean account.
+        run: |
+          if [ -z "<< config.aws_role_arn | default('') >>" ]; then
+            echo "::error::No aws_role_arn configured for the Cloud capability."
+            echo "Mykronos does not hold your cloud credentials. Configure an"
+            echo "OIDC role for this repo, or disable the Cloud capability."
+            exit 1
+          fi
+
+      - name: Assume the scanning role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: << config.aws_role_arn | default('') >>
+          aws-region: << config.aws_region | default('us-east-1') >>
+
+      - name: Posture scan
+        continue-on-error: true
+        run: |
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          docker run --rm \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN \
+            -e AWS_DEFAULT_REGION \
+            -v "${{ runner.temp }}/mykronos-results:/out" \
+            toniblyx/prowler:<< config.tool_version | default('latest') >> \
+            aws --output-formats json-ocsf \
+                --output-directory /out \
+                --output-filename cloud \
+                --status FAIL
+{% endblock %}

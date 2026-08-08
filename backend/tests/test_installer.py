@@ -14,6 +14,7 @@ when Phase 2 adds five more.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 
 import pytest
@@ -183,7 +184,9 @@ class TestPlanning:
         assert REPO in content
         assert "https://mykronos.internal/api/ingest/health" in content
         assert DEFAULT_SECRET_NAME in content
-        assert "template version: 1.0.0" in content
+        # Version-agnostic: the marker must be stamped, but pinning the number
+        # here would make every template bump a test failure.
+        assert re.search(r"template version: \d+\.\d+\.\d+", content)
 
     async def test_capability_config_reaches_the_template(
         self, installer: WorkflowInstaller, onboarding: RepoOnboarding

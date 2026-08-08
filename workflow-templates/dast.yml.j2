@@ -1,0 +1,42 @@
+{% extends "_base.yml.j2" %}
+{#-
+  DAST capability — spec 04 §3 (OWASP ZAP baseline).
+
+  Scheduled only. DAST needs a running target, so it probes a deployed
+  environment rather than a commit. Running it per-PR would scan whatever
+  happened to be deployed at that moment and attribute the result to an
+  unrelated change — which is worse than not scanning, because the finding
+  would look like the PR's fault.
+-#}
+{% block triggers %}
+  schedule:
+    - cron: "<< config.schedule_cron | default('11 3 * * *') >>"
+  workflow_dispatch:
+{% endblock %}
+
+{% block checkout_options %}
+          # No source needed: DAST probes a running service, and its findings
+          # carry a URL rather than a file path.
+          fetch-depth: 1
+{% endblock %}
+
+{% block job_name %}OWASP ZAP{% endblock %}
+
+{% block scan_steps %}
+      - name: Baseline scan
+        continue-on-error: true
+        env:
+          TARGET_URL: << config.target_url | default('') >>
+        run: |
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::No target_url configured for DAST on this repo."
+            echo "DAST cannot run without a deployed target. Set target_url in"
+            echo "the capability config, or disable DAST for this repository."
+            exit 1
+          fi
+          docker run --rm \
+            -v "${{ runner.temp }}/mykronos-results:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:<< config.tool_version | default('stable') >> \
+            zap-baseline.py -t "$TARGET_URL" -J zap.json -I
+{% endblock %}

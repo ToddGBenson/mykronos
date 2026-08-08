@@ -1,0 +1,40 @@
+{% extends "_base.yml.j2" %}
+{#- IaC capability — spec 04 §3 (Checkov). Emits SARIF natively. -#}
+{% block triggers %}
+  pull_request:
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+      - "cloudformation/**"
+      - "k8s/**"
+      - "**/*.yaml"
+      - "**/*.yml"
+  push:
+    branches: ["<< default_branch >>"]
+  workflow_dispatch:
+{% endblock %}
+
+{% block job_name %}Checkov{% endblock %}
+
+{% block scan_steps %}
+      - name: Scan infrastructure as code
+        continue-on-error: true
+        run: |
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            -v "${{ runner.temp }}/mykronos-results:/out" \
+            bridgecrew/checkov:<< config.tool_version | default('3.2.334') >> \
+            --directory /repo \
+            --output sarif \
+            --output-file-path /out \
+            --soft-fail \
+            --quiet
+          # Checkov always names its file results.sarif. Rename it, so a repo
+          # running several SARIF-emitting scanners cannot have one silently
+          # overwrite another's output.
+          if [ -f "${{ runner.temp }}/mykronos-results/results.sarif" ]; then
+            mv "${{ runner.temp }}/mykronos-results/results.sarif" \
+               "${{ runner.temp }}/mykronos-results/checkov.sarif"
+          fi
+{% endblock %}

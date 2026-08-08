@@ -25,7 +25,8 @@ from typing import Any
 import httpx2
 
 from mykronos.adapters.base import AdapterResult, ScanContext
-from mykronos.adapters.sast_codeql import normalize_directory, tool_version_from_sarif
+from mykronos.adapters.registry import get_adapter, normalize_results
+from mykronos.adapters.sast_codeql import tool_version_from_sarif
 from mykronos.schemas import (
     Capability,
     FindingSubmission,
@@ -158,13 +159,11 @@ class IngestionClient:
 def run_adapter(
     capability: str, tool: str, results_path: Path, context: ScanContext
 ) -> AdapterResult:
-    """Dispatch to the (capability, tool) adapter."""
-    if (capability, tool) == ("sast", "codeql"):
-        return normalize_directory(results_path, context)
-    raise UploadError(
-        f"No adapter for capability '{capability}' with tool '{tool}'. "
-        "Adapters are registered per (capability, tool) pair — spec 04 §4."
-    )
+    """Dispatch to the (capability, tool) adapter (spec 04 §4)."""
+    try:
+        return normalize_results(capability, tool, results_path, context)
+    except LookupError as exc:
+        raise UploadError(str(exc)) from exc
 
 
 def detect_tool_version(results_path: Path, fallback: str) -> str:
@@ -188,6 +187,7 @@ def archive_raw(
     results_path: Path,
     scan_run_id: str,
     capability: str,
+    tool: str,
 ) -> str | None:
     """Archive the tool's original output (spec 05 §7).
 
@@ -195,8 +195,19 @@ def archive_raw(
     and losing it must not discard the normalized findings, which are the
     thing the platform actually runs on.
     """
-    candidates = sorted(results_path.rglob("*.sarif")) if results_path.is_dir() else [results_path]
-    candidates = [p for p in candidates if p.is_file()]
+    if results_path.is_dir():
+        # Whatever this tool actually writes, not just SARIF — the bespoke
+        # adapters emit JSON, and archiving only SARIF would silently skip
+        # exactly the tools whose output is hardest to reconstruct later.
+        try:
+            pattern = get_adapter(capability, tool).pattern
+        except LookupError:
+            pattern = "*"
+        candidates = sorted(results_path.rglob(pattern))
+    else:
+        candidates = [results_path]
+
+    candidates = [p for p in candidates if p.is_file() and p.stat().st_size > 0]
     if not candidates:
         return None
 
@@ -335,7 +346,7 @@ def upload(
             outcome.findings_accepted += int(response.get("accepted", 0))
 
         outcome.raw_output_ref = archive_raw(
-            client, results_path, scan_run_id, args.capability
+            client, results_path, scan_run_id, args.capability, args.tool
         )
         outcome.blocking_findings = count_blocking(
             result.findings, Severity(args.severity_threshold)

@@ -1,0 +1,36 @@
+{% extends "_base.yml.j2" %}
+{#- Containers capability — spec 04 §3 (Trivy). Emits SARIF natively. -#}
+{% block triggers %}
+  pull_request:
+    paths:
+      - "**/Dockerfile*"
+      - "**/*.dockerfile"
+      - "**/docker-compose*.y*ml"
+  push:
+    branches: ["<< default_branch >>"]
+  schedule:
+    - cron: "<< config.schedule_cron | default('41 2 * * *') >>"
+  workflow_dispatch:
+{% endblock %}
+
+{% block job_name %}Trivy{% endblock %}
+
+{% block scan_steps %}
+      - name: Scan filesystem and Dockerfiles
+        # A repo with no Dockerfile is not a failure (spec 04 §6). Trivy exits
+        # 0 with an empty SARIF, the adapter reports no_applicable_targets,
+        # and the lake can tell that apart from "never ran".
+        continue-on-error: true
+        run: |
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            -v "${{ runner.temp }}/mykronos-results:/out" \
+            aquasec/trivy:<< config.tool_version | default('0.58.1') >> \
+            filesystem /repo \
+              --scanners vuln,misconfig,secret \
+              --format sarif \
+              --output /out/trivy.sarif \
+              --exit-code 0 \
+              --quiet
+{% endblock %}

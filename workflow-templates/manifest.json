@@ -7,14 +7,47 @@
     "every repo with that capability enabled. Resync compares rendered content",
     "against what is actually in the repo rather than trusting this string, in",
     "case someone hand-edited the file -- but the version is what tells an",
-    "operator, and a PR reviewer, that something changed and why."
+    "operator, and a PR reviewer, that something changed and why.",
+    "",
+    "Files beginning with an underscore are shared partials, not capabilities,",
+    "and are deliberately absent from this list."
   ],
   "templates": {
     "sast": {
       "template": "sast.yml.j2",
       "target": ".github/workflows/mykronos-sast.yml",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "summary": "Static analysis with CodeQL"
+    },
+    "secrets": {
+      "template": "secrets.yml.j2",
+      "target": ".github/workflows/mykronos-secrets.yml",
+      "version": "1.0.0",
+      "summary": "Secret detection with Gitleaks"
+    },
+    "containers": {
+      "template": "containers.yml.j2",
+      "target": ".github/workflows/mykronos-containers.yml",
+      "version": "1.0.0",
+      "summary": "Container and image scanning with Trivy"
+    },
+    "iac": {
+      "template": "iac.yml.j2",
+      "target": ".github/workflows/mykronos-iac.yml",
+      "version": "1.0.0",
+      "summary": "Infrastructure-as-code scanning with Checkov"
+    },
+    "dast": {
+      "template": "dast.yml.j2",
+      "target": ".github/workflows/mykronos-dast.yml",
+      "version": "1.0.0",
+      "summary": "Dynamic scanning of a deployed target with OWASP ZAP"
+    },
+    "cloud": {
+      "template": "cloud.yml.j2",
+      "target": ".github/workflows/mykronos-cloud.yml",
+      "version": "1.0.0",
+      "summary": "Cloud account posture scanning"
     }
   }
 }

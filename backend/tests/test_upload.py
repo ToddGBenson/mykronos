@@ -367,4 +367,26 @@ class TestAdapterDispatch:
     ) -> None:
         client = RecordingClient()
         with pytest.raises(UploadError, match="No adapter"):
-            upload(make_args(results, workspace, tool="semgrep"), client=client)
+            upload(make_args(results, workspace, tool="not-a-real-tool"), client=client)
+
+    def test_the_error_names_what_is_supported(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """An operator who typo'd a tool name should be told the options,
+        not just that they were wrong."""
+        client = RecordingClient()
+        with pytest.raises(UploadError) as excinfo:
+            upload(make_args(results, workspace, tool="codeqll"), client=client)
+
+        message = str(excinfo.value)
+        assert "codeqll" in message
+        assert "codeql" in message and "semgrep" in message
+
+    def test_a_registered_alternative_tool_works(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """Semgrep is SARIF-native, so spec 04 §3's secondary SAST tool needs
+        no adapter code of its own."""
+        client = RecordingClient()
+        outcome = upload(make_args(results, workspace, tool="semgrep"), client=client)
+        assert outcome.findings_accepted == 1
