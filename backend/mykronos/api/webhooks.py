@@ -24,7 +24,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos.db.models import Organization, RepoOnboarding
+from mykronos.db.models import RepoOnboarding, get_or_create_organization
 from mykronos.installer import BRANCH_PREFIX, WorkflowInstaller
 from mykronos.schemas import utcnow
 
@@ -43,17 +43,6 @@ def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
     return hmac.compare_digest(expected, header.removeprefix("sha256="))
 
 
-def _organization(session: Session, login: str) -> Organization:
-    org = session.execute(
-        select(Organization).where(Organization.github_org_login == login)
-    ).scalars().first()
-    if org is None:
-        org = Organization(github_org_login=login)
-        session.add(org)
-        session.flush()
-    return org
-
-
 def _upsert_onboarding(
     session: Session,
     *,
@@ -63,7 +52,7 @@ def _upsert_onboarding(
     default_branch: str,
 ) -> tuple[RepoOnboarding, bool]:
     """Create or refresh a RepoOnboarding. Returns (row, created)."""
-    org = _organization(session, org_login)
+    org = get_or_create_organization(session, org_login)
     existing = session.execute(
         select(RepoOnboarding)
         .where(RepoOnboarding.org_id == org.id)

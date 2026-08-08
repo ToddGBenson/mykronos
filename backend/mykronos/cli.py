@@ -30,9 +30,11 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.config import get_settings
 from mykronos.db import Database
-from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
+from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens, score_portfolio
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
+from mykronos.oracle import load_policy
+from mykronos.oracle.service import OracleService
 from mykronos.schemas import Capability
 
 CAPABILITIES = [c.value for c in Capability]
@@ -95,6 +97,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("rotate-due", help="Run the token rotation sweep now")
     sub.add_parser(
         "sync-installations", help="Check each installation still exists on GitHub"
+    )
+    sub.add_parser(
+        "score-portfolio",
+        help="Give every Oracle-enabled repo a fresh standing risk decision",
     )
     sub.add_parser("stats", help="Row counts and buffer depth")
 
@@ -240,6 +246,27 @@ def main(argv: list[str] | None = None) -> int:
                     f"Checked {sync.checked}; removed {len(sync.removed)}, "
                     f"suspended {len(sync.suspended)}, unreachable {len(sync.unreachable)}"
                 )
+            return 0
+
+        if args.command == "score-portfolio":
+            db.create_all()
+            run = asyncio.run(
+                score_portfolio(
+                    db,
+                    OracleService(catalog, buffer, load_policy(settings.oracle_policy_path)),
+                )
+            )
+            # Bound before the call: passing sorted() straight in makes mypy
+            # infer its element type from _print_table's Sequence[object]
+            # parameter, and the key function stops seeing an int.
+            worst_first = sorted(run.scored, key=lambda row: -row[1])
+            _print_table(["repo", "score", "recommendation"], worst_first)
+            for repo, reason in run.failed:
+                print(f"  FAILED {repo}: {reason}")
+            print(
+                "\nDecisions are in the write-ahead buffer; run `compact` to "
+                "make them queryable."
+            )
             return 0
 
         if args.command == "stats":

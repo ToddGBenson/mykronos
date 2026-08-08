@@ -29,9 +29,10 @@ from mykronos.github.factory import (
     RestGitHubClientFactory,
 )
 from mykronos.installer import TemplateLibrary
-from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
+from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens, score_portfolio
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.oracle import load_policy
+from mykronos.oracle.service import OracleService
 from mykronos.ratelimit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
@@ -155,10 +156,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # block ingestion for the duration.
             await asyncio.to_thread(reconcile_absences, app.state.catalog)
 
+        async def _portfolio() -> None:
+            await score_portfolio(
+                app.state.db,
+                OracleService(
+                    app.state.catalog, app.state.buffer, app.state.oracle_policy
+                ),
+            )
+
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("installations", settings.installation_sync_interval_seconds, _installations),
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
+            ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
         ):
             tasks.append(
                 asyncio.create_task(

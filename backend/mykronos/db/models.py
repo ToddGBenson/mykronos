@@ -15,8 +15,9 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    select,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 
 from mykronos.schemas import utcnow
 
@@ -39,6 +40,24 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     repos: Mapped[list[RepoOnboarding]] = relationship(back_populates="org")
+
+
+def get_or_create_organization(session: Session, login: str) -> Organization:
+    """Find an org by login, creating it if this is the first repo from it.
+
+    Lives here rather than in whichever API module needed it first: the
+    webhook receiver, the manual registration endpoint and the tests all
+    reach the same row, and `github_org_login` is unique, so a second
+    hand-rolled copy of this is a constraint violation waiting to happen.
+    """
+    org = session.execute(
+        select(Organization).where(Organization.github_org_login == login)
+    ).scalars().first()
+    if org is None:
+        org = Organization(github_org_login=login)
+        session.add(org)
+        session.flush()
+    return org
 
 
 class RepoOnboarding(Base):

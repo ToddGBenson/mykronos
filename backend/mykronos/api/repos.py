@@ -24,7 +24,11 @@ from mykronos.capabilities import (
     configurable_capabilities,
     validate_config,
 )
-from mykronos.db.models import CapabilityConfig, Organization, RepoOnboarding
+from mykronos.db.models import (
+    CapabilityConfig,
+    RepoOnboarding,
+    get_or_create_organization,
+)
 from mykronos.github.client import GitHubError
 from mykronos.installer import (
     InstallerError,
@@ -153,13 +157,7 @@ async def onboard_repo(
     db = request.app.state.db
 
     with db.session() as session:
-        org = session.execute(
-            select(Organization).where(Organization.github_org_login == owner)
-        ).scalars().first()
-        if org is None:
-            org = Organization(github_org_login=owner)
-            session.add(org)
-            session.flush()
+        org = get_or_create_organization(session, owner)
 
         row = session.execute(
             select(RepoOnboarding)

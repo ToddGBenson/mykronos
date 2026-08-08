@@ -1,8 +1,9 @@
 """Scheduled maintenance jobs.
 
-Three things that have to happen on a timer rather than in response to a
+Four things that have to happen on a timer rather than in response to a
 request: rotating ingestion tokens, noticing that a repo uninstalled the App
-behind our back, and closing findings that stopped being reported.
+behind our back, closing findings that stopped being reported, and scoring
+the portfolio.
 
 Every job here is safe to run twice and safe to interrupt. They run
 unattended, so "crashed halfway and left something inconsistent" is not an
@@ -24,6 +25,7 @@ from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import seal_secret
 from mykronos.installer import DEFAULT_SECRET_NAME
+from mykronos.oracle.service import OracleService
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -208,5 +210,71 @@ async def reconcile_installations(
         len(result.removed),
         len(result.suspended),
         len(result.unreachable),
+    )
+    return result
+
+
+@dataclass
+class PortfolioRunResult:
+    scored: list[tuple[str, int, str]] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def worst(self) -> tuple[str, int, str] | None:
+        return max(self.scored, key=lambda row: row[1]) if self.scored else None
+
+
+async def score_portfolio(db: Database, service: OracleService) -> PortfolioRunResult:
+    """Give every Oracle-enabled repo a fresh standing risk decision (spec 09 §5).
+
+    The gate answers "is this change safe to merge". This answers "how risky is
+    this repo right now", which is a different question and cannot be derived
+    from the gate: a repo nobody has opened a pull request against for three
+    months still accumulates risk as its findings age and as new advisories
+    land against dependencies that have not changed.
+
+    Only repos with `oracle` enabled are scored. A repo that has opted into
+    scanning but not into being judged gets its findings shown on the dashboard
+    without a verdict attached — consent to the one is not consent to the
+    other, and quietly scoring everybody is how a platform loses the goodwill
+    it needs to be adopted at all.
+
+    No Check Run is posted. There is no commit under discussion, so there is
+    nowhere for it to appear, and annotating an arbitrary head SHA with a score
+    that is not about that commit would be actively misleading.
+    """
+    result = PortfolioRunResult()
+
+    with db.session() as session:
+        targets = sorted(
+            row.github_repo_full_name
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status == "active")
+            ).scalars()
+            if "oracle" in (row.enabled_capabilities or [])
+        )
+
+    for repo in targets:
+        try:
+            published = await service.evaluate_and_publish(repo, decision_type="portfolio")
+        except Exception as exc:  # noqa: BLE001 — see below
+            # One repo with an unreadable partition must not cost every other
+            # repo its daily decision. The failure is logged and surfaced in
+            # the result rather than swallowed; the next run retries.
+            logger.warning("Portfolio decision for %s failed: %s", repo, exc)
+            result.failed.append((repo, str(exc)))
+            continue
+
+        decision = published.decision
+        result.scored.append(
+            (repo, decision.overall_risk_score, decision.recommendation)
+        )
+
+    worst = result.worst
+    logger.info(
+        "Portfolio scoring: %s scored, %s failed%s",
+        len(result.scored),
+        len(result.failed),
+        f", worst {worst[0]} at {worst[1]}/100" if worst else "",
     )
     return result

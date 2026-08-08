@@ -86,6 +86,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    portfolio_scoring_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "Standing risk decision per Oracle-enabled repo (spec 09 §5). "
+            "Daily: the inputs that move without a push — finding age, new "
+            "advisories — move on the scale of days, and a portfolio score "
+            "that churns hourly is one nobody trusts as a trend."
+        ),
+    )
+
     run_jobs_in_background: bool = Field(
         default=True,
         description="Disable so tests and one-shot CLI runs drive jobs explicitly.",
