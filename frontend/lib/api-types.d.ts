@@ -341,6 +341,121 @@ export interface paths {
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
         trace?: never;
     };
+    "/api/knowledge/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Entries
+         * @description Everything the platform has been told, with current confidence.
+         */
+        get: operations["list_entries_api_knowledge_entries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/knowledge/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Note
+         * @description Write down something noticed in a retro (spec 11 §4).
+         *
+         *     The only entry type with no machine-generated component. Admin-only
+         *     because it writes into the same corpus that eventually influences Oracle's
+         *     policy, and an unauthenticated way to inject a "learning" would be a
+         *     quietly effective way to change how every repository is scored.
+         */
+        post: operations["add_note_api_knowledge_notes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/knowledge/retro": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retro
+         * @description What was learned, reconfirmed and forgotten in one period (spec 11 §7).
+         */
+        get: operations["retro_api_knowledge_retro_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/knowledge/trend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trend
+         * @description Learning volume across several periods (spec 11 §7).
+         *
+         *     A 422 with the reason, rather than a report, when there is too little
+         *     history. spec 11 §10 requires the clear error: a trend report that quietly
+         *     renders two points is more dangerous than none, because somebody will
+         *     present it.
+         */
+        get: operations["trend_api_knowledge_trend_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/knowledge/promotion-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Promotion Candidates
+         * @description Patterns confirmed independently in enough repositories to generalise.
+         *
+         *     `min_projects` starts at 2 and cannot be lowered to 1. Repeated dismissal
+         *     within a single repository is one team's opinion held firmly, which is not
+         *     evidence that a rule is noisy everywhere — and allowing 1 would turn this
+         *     endpoint into a list of every entry.
+         */
+        get: operations["promotion_candidates_api_knowledge_promotion_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/evaluate": {
         parameters: {
             query?: never;
@@ -766,6 +881,59 @@ export interface components {
              * @description Dependencies whose maintenance recency could actually be determined. Private-registry packages have none and are excluded from the stale ratio's denominator rather than counted as fresh or as stale (spec 07 §8). Null means the tool did not report it, in which case dependency_count is used.
              */
             maintenance_data_available_for?: number | null;
+        };
+        /** EntriesPage */
+        EntriesPage: {
+            /** Tier */
+            tier: string;
+            /** Entries */
+            entries: components["schemas"]["EntryOut"][];
+            /** Total */
+            total: number;
+            /**
+             * Active
+             * @description How many are still believed. The difference from `total` is the store's forgetting, which is a number worth seeing.
+             */
+            active: number;
+        };
+        /** EntryOut */
+        EntryOut: {
+            /** Entry Id */
+            entry_id: string;
+            /** Tier */
+            tier: string;
+            /** Repo Full Name */
+            repo_full_name?: string | null;
+            /** Source Type */
+            source_type: string;
+            /** Subject */
+            subject: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Text */
+            text: string;
+            /** Confidence */
+            confidence: number;
+            /** Stored Confidence */
+            stored_confidence: number;
+            /** Sensitivity */
+            sensitivity: string;
+            /** Observations */
+            observations: number;
+            /** Reasons */
+            reasons: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Confirmed At
+             * Format: date-time
+             */
+            last_confirmed_at: string;
+            /** Has Reason */
+            has_reason: boolean;
         };
         /**
          * EvaluateRequest
@@ -1278,6 +1446,18 @@ export interface components {
             onboarded_at: string;
             /** Last Synced At */
             last_synced_at: string | null;
+        };
+        /** RetroNote */
+        RetroNote: {
+            /** Subject */
+            subject: string;
+            /**
+             * Text
+             * @description The learning itself. For a retro note the text *is* the reason.
+             */
+            text: string;
+            /** Repo Full Name */
+            repo_full_name?: string | null;
         };
         /**
          * ScanRunSubmission
@@ -1968,6 +2148,171 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusChangeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_entries_api_knowledge_entries_get: {
+        parameters: {
+            query?: {
+                repo_full_name?: string | null;
+                source_type?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntriesPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_note_api_knowledge_notes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetroNote"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retro_api_knowledge_retro_get: {
+        parameters: {
+            query?: {
+                period_days?: number;
+                fmt?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trend_api_knowledge_trend_get: {
+        parameters: {
+            query?: {
+                periods?: number;
+                period_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    promotion_candidates_api_knowledge_promotion_candidates_get: {
+        parameters: {
+            query?: {
+                min_projects?: number;
+                min_confidence?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

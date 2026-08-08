@@ -1,9 +1,10 @@
 """Scheduled maintenance jobs.
 
-Five things that have to happen on a timer rather than in response to a
+Six things that have to happen on a timer rather than in response to a
 request: rotating ingestion tokens, noticing that a repo uninstalled the App
 behind our back, closing findings that stopped being reported, scoring the
-portfolio, and deleting insider-risk rows past their retention period.
+portfolio, deleting insider-risk rows past their retention period, and
+dropping learnings about repositories that no longer exist.
 
 That last one is not housekeeping. Spec 06 §9 makes it normative, on the
 grounds that an unenforced retention policy is just a sentence.
@@ -29,6 +30,8 @@ from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import seal_secret
 from mykronos.installer import DEFAULT_SECRET_NAME
+from mykronos.knowledge import KnowledgeStore
+from mykronos.knowledge import PurgeResult as KnowledgePurgeResult
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import purge_rows
 from mykronos.oracle.service import OracleService
@@ -299,6 +302,30 @@ def purge_expired_insider_risk(
             result.partitions_rewritten,
         )
     return result
+
+
+def purge_orphaned_learnings(
+    db: Database, store: KnowledgeStore
+) -> KnowledgePurgeResult:
+    """Drop learnings about repos Mykronos no longer holds data for (spec 11 §5).
+
+    Not a confidence purge — decay never deletes. An entry about an offboarded
+    repository cannot be reconfirmed, cannot be audited against anything, and
+    would otherwise outlive the deletion request that removed everything else
+    (spec 02 §6).
+
+    "No longer holds data for" means `removed`, not merely absent from the
+    active list: a suspended repo is expected back, and forgetting what its
+    team concluded while it was paused would be a real loss.
+    """
+    with db.session() as session:
+        known = {
+            row.github_repo_full_name
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+            ).scalars()
+        }
+    return store.purge_expired(known_repos=known)
 
 
 @dataclass

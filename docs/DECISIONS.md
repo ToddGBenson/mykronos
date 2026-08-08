@@ -641,6 +641,142 @@ writing the test that looks redundant.
 
 ---
 
+## D-026 — A learning is a pattern, not an event
+
+**Status:** Decided, spec amended
+**Spec:** [11 §3, §5](../specs/11-knowledge-rag-learning.md)
+
+`KnowledgeEntry.entry_id` is derived from tier + repo + source_type +
+`subject`, where `subject` is the thing that recurs: the `rule_id` for a
+dismissal, the overturned recommendation for an override. A second dismissal
+of the same rule *updates* the entry — resetting decay, incrementing
+`observations`, appending the reason — rather than appending a row.
+
+Spec 11 §3 specified a random UUID while §5 described reconfirmation as
+resetting decay. Those cannot both be true: with a random id, every dismissal
+is a new entry that has never been reconfirmed, so confidence never rises,
+decay never resets, and the model is decorative. Third time this defect has
+appeared in a spec (D-002, spec 06 §3, spec 07 §3), and the pattern is now
+clear enough to state as a rule: **any record that can legitimately be
+produced twice needs a natural key, not a UUID.**
+
+What recurs is also what a policy change would address. "We keep overriding
+no_go on this repo" is actionable; "we overrode decision 4f2a once" is not.
+
+---
+
+## D-027 — Reasons gate everything, and are worth more than counts
+
+**Status:** Decided
+**Spec:** [11 §4, §6.1](../specs/11-knowledge-rag-learning.md)
+
+A dismissal with no written reason is recorded and deliberately made useless.
+It starts at lower confidence, a reconfirmation without a reason resets the
+decay clock but does not raise confidence, and it can never support dampening
+or promotion.
+
+Spec 11 §4 asks for this; the reason it matters is that the alternative is a
+system driven by click counts, in which the loudest and most-dismissed rule is
+quietened fastest whether or not anybody could say what was wrong with it.
+
+Two consequences worth naming:
+
+- **`accepted_risk` teaches nothing about the rule.** It says the finding is
+  real and we are living with it — a statement about appetite, not about
+  detection quality. Only `false_positive` produces a learning. Dampening a
+  rule because somebody accepted its risk would be exactly backwards.
+- **Confidence rises with diminishing returns and never reaches 1.0.** The
+  third dismissal tells you much less than the second, and nothing should
+  reach certainty from clicks alone.
+
+Reconfirmation boosts from the *decayed* value, not the stored one. Rebuilding
+from the stored figure would let an entry nobody has touched in two years jump
+straight back to where it was, which would make decay decorative.
+
+---
+
+## D-028 — Dampening applies inside the curve, not to the band
+
+**Status:** Decided
+**Spec:** [11 §6.1](../specs/11-knowledge-rag-learning.md), [09 §5](../specs/09-oracle-risk-decision-engine.md)
+
+Spec 09 §5 says a dampened rule's "severity weight is multiplied by
+(1 - dampening_factor)". Taken literally against D-018's curve, that would
+mean halving the whole severity band — and only *some* of a band's findings
+come from the dampened rule. Four criticals with one from a dismissed-often
+rule would score as though all four were suspect.
+
+So the factor applies to the count *inside* the curve: the band contributes
+`weight × log2(1 + undampened + dampened × (1 - factor))`. Four criticals with
+one dampened score as 3.5 findings, the real ones keep their full weight, and
+the band's `detail` string says so in words.
+
+The evidence travels with the decision — rate, counts, observation count and
+the human reasons — because a weight that quietly halved is precisely the
+hidden input spec 09 exists to prevent.
+
+Dampening is also strictly an adjustment on top of a correct score. No
+Knowledge Store, an unreadable one, or a failed query all produce *undampened*
+scores rather than no scores (spec 11 §6).
+
+---
+
+## D-029 — `restricted` withholds the prose, not the observation
+
+**Status:** Decided
+**Spec:** [11 §2, §3](../specs/11-knowledge-rag-learning.md)
+
+Captured dismissals default to `sensitivity: restricted`, because the reason
+is free text somebody typed about their own codebase and assuming it is safe
+to circulate is the wrong default.
+
+The first implementation then excluded restricted entries from promotion
+entirely, per a literal reading of spec 11 §2. That made promotion **dead on
+arrival**: every captured entry is restricted by default, so nothing was ever
+a candidate, and the feature appeared to work while doing nothing. Caught by a
+test that expected a candidate and got an empty list.
+
+The split that actually matches §3 is finer than the spec's wording suggests.
+"Rule X was dismissed in repositories A and B" is an observation about a
+*rule*, and it is what generalises. "Because our payments vendor ships this
+pattern in every module" is the confidential part. A restricted entry
+therefore counts toward the recurrence and has its reasons withheld — with the
+number of withheld reasons *reported*, because a reviewer weighing thin
+evidence is entitled to know that some of it is not shown. A proposal where
+every reason is withheld says so and tells the reviewer to ask the
+repositories involved.
+
+---
+
+## D-030 — Retrieval works with no embedding backend
+
+**Status:** Decided, spec amended
+**Spec:** [11 §8](../specs/11-knowledge-rag-learning.md), [12 §5.2](../specs/12-security-and-secrets-management.md)
+
+The default retriever is lexical — overlap on content words after stripping
+the template vocabulary — and `embed_fn` upgrades it to semantic. Results
+carry the mode that produced them.
+
+Two reasons, both about defaults rather than about quality. A deployment with
+no embedding gateway configured would otherwise have a learning loop that
+silently did nothing, which is the same failure mode as a scanner that skips
+without saying so (spec 01 §6). And embedding every dismissal reason means
+sending it off-host, which is a decision an operator should make deliberately
+— the same rule as Aegis's classifier (D-023).
+
+Not TF-IDF, deliberately: the corpus is short, highly templated sentences,
+where inverse document frequency mostly measures how the text was generated
+rather than what it says. Overlap on content words is both more honest about
+what it does and easier to explain when somebody asks why an entry was
+retrieved.
+
+A broken embedding backend falls back to lexical rather than failing, and
+`retrieve_similar` returns `[]` on any error — spec 11 §6 makes graceful
+degradation a requirement, because a triage step that dies over a corrupt JSON
+file is worse than one that proceeds without the extra context.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -649,6 +785,8 @@ Recorded so they are not mistaken for oversights.
 |---|---|---|
 | `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
 | `POST /api/ingest/patchwork` body | Route returns 501 naming the phase. Aegis, Atlas and Oracle now have real handlers | Phase 6 |
+| Tier promotion *execution* | Candidates are found, proposals are rendered, and the Oracle policy proposal is written. Actually moving a row between tier files on approval is a dashboard action with no consumer yet — the team and org tiers have nothing reading them until more than one repo is onboarded | Phase 7 |
+| Automatic draft-PR opening for policy proposals | `render_policy_proposal` produces the body; opening it needs the App installed on the Mykronos repo itself, which is a different installation from the ones being scanned | When the App is registered |
 | Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |
 | SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | Phase 7 |
 | Raw output **retention sweep** (spec 05 §7) | Archival is built; the scheduled purge that bounds disk usage is not | Phase 7 |

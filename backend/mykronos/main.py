@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from mykronos import __version__
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
+from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.webhooks import router as webhooks_router
@@ -31,6 +32,7 @@ from mykronos.github.factory import (
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     purge_expired_insider_risk,
+    purge_orphaned_learnings,
     reconcile_installations,
     rotate_ingestion_tokens,
     score_portfolio,
@@ -182,12 +184,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
         async def _retention() -> None:
-            # In a thread: it rewrites Parquet partitions, same as absences.
+            # In a thread: both rewrite files on disk, same as absences.
             await asyncio.to_thread(
                 purge_expired_insider_risk,
                 app.state.db,
                 app.state.catalog,
                 default_retention_days=settings.insider_risk_default_retention_days,
+            )
+            await asyncio.to_thread(
+                purge_orphaned_learnings, app.state.db, app.state.knowledge
             )
 
         for name, interval, run in (
@@ -237,6 +242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings or get_settings()
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
+    app.include_router(knowledge_router)
     app.include_router(oracle_router)
     app.include_router(repos_router)
     app.include_router(webhooks_router)
