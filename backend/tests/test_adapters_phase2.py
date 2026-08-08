@@ -23,7 +23,13 @@ from mykronos.fingerprint import FINGERPRINT_V2_SNIPPET, compute_finding_id
 from mykronos.schemas import ScanStatus, Severity
 
 REPO = "ToddGBenson/payments-api"
-LIVE_SECRET = "AKIAIOSFODNN7EXAMPLE"
+
+#: Stands in for a secret Gitleaks failed to redact. Deliberately *not*
+#: credential-shaped: the scrubbing is keyed on field name, not on the value,
+#: so a realistic key would prove nothing extra and would itself be a finding
+#: in this repository. (It was. Our own Gitleaks job caught the previous
+#: version of this line — see .gitleaksignore.)
+UNREDACTED_SENTINEL = "sentinel-value-standing-in-for-a-leaked-credential"
 
 
 def context(capability: str, workspace: Path | None = None) -> ScanContext:
@@ -87,13 +93,13 @@ class TestGitleaks:
         """`--redact` is in the template, but the archive is kept for a year
         (spec 05 §7). One workflow missing the flag must not turn that into a
         year-long secret store."""
-        leaky = gitleaks_record(Secret=LIVE_SECRET, Match=f"key = {LIVE_SECRET}")
+        leaky = gitleaks_record(Secret=UNREDACTED_SENTINEL, Match=f"key = {UNREDACTED_SENTINEL}")
 
         result = gitleaks_normalize(json.dumps([leaky]).encode(), context("secrets"))
         finding = result.findings[0]
 
         serialised = json.dumps(finding.model_dump(mode="json"))
-        assert LIVE_SECRET not in serialised
+        assert UNREDACTED_SENTINEL not in serialised
         assert finding.raw_finding_json["Secret"] == REDACTED
         assert finding.raw_finding_json["Match"] == REDACTED
 

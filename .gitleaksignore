@@ -1,0 +1,27 @@
+# Gitleaks allowlist.
+#
+# Every entry here is a finding a human looked at and decided was not a
+# credential. Entries are pinned to a specific commit:file:rule:line, so an
+# allowlist can never quietly cover a *different* leak in the same file.
+#
+# Adding an entry requires a reason. An allowlist without reasons becomes a
+# place where real findings go to be forgotten.
+
+# ---------------------------------------------------------------------------
+# e1ac3c0 — AWS's published documentation key in a test fixture.
+#
+# `AKIAIOSFODNN7EXAMPLE` is the example access key ID from AWS's own docs. It
+# authenticates nothing and never has. It was used in a test proving that
+# Mykronos scrubs an unredacted secret out of an archived Gitleaks record.
+#
+# Our own Gitleaks job flagged it on the first run against this repository,
+# which is the scanner working correctly: it is credential-shaped, and being
+# credential-shaped in a repo is the thing the rule is for.
+#
+# Fixed forward — the fixture now uses a sentinel that is not credential-
+# shaped — but the original line remains in commit e1ac3c0. History is not
+# being rewritten for it: this repository is public and already cloned, and
+# rewriting shared history to hide a value AWS publishes in its own
+# documentation is a worse trade than one audited allowlist entry.
+# ---------------------------------------------------------------------------
+e1ac3c03f606b90174e29e33742ec8aa59ff88fa:backend/tests/test_adapters_phase2.py:aws-access-token:26
