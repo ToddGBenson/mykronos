@@ -86,11 +86,14 @@ modifiers:
     over_30_days_critical: +15
     over_90_days_high: +10
   false_positive_dampening:
-    # if a rule_id has a repo-level historical false-positive rate above
-    # this threshold (from spec 11 retro data), its severity weight above
-    # is multiplied by (1 - dampening_factor)
+    # If a rule_id's historical false-positive rate is at or above this
+    # threshold, its severity weight is multiplied by (1 - dampening_factor).
+    # The rate and its minimum sample size are defined in spec 11 §6.1 --
+    # crucially, dampening requires min_observations *reasoned* dismissals,
+    # so a single click cannot quieten a rule.
     threshold: 0.5
     dampening_factor: 0.5
+    min_observations: 3
 thresholds:
   no_go: 70          # overall_risk_score >= 70 => no_go
   review_recommended: 30   # >= 30 and < 70 => review_recommended

@@ -77,9 +77,14 @@ modifiers:
   # Knowledge Store (spec 11). Arrives in Phase 5; null until then.
   #
   # A rule that humans keep dismissing on this repo should stop shouting.
+  # A rule humans keep dismissing on this repo should stop shouting -- but
+  # only once "keep" means something. With no minimum, one dismissal of a
+  # rule seen once is a 100% false-positive rate, and a single click would
+  # quieten that rule for the whole repository (spec 11 §6.1).
   false_positive_dampening:
-    threshold: 0.5           # historical FP rate above which dampening applies
+    threshold: 0.5           # historical FP rate at or above which dampening applies
     dampening_factor: 0.5    # severity weight × (1 - factor)
+    min_observations: 3      # reasoned dismissals required before any dampening
 
 # ---------------------------------------------------------------------------
 # Thresholds
