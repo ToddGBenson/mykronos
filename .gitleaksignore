@@ -10,9 +10,15 @@
 # ---------------------------------------------------------------------------
 # e1ac3c0 — AWS's published documentation key in a test fixture.
 #
-# `AKIAIOSFODNN7EXAMPLE` is the example access key ID from AWS's own docs. It
-# authenticates nothing and never has. It was used in a test proving that
-# Mykronos scrubs an unredacted secret out of an archived Gitleaks record.
+# The value is the example access key ID from AWS's own public documentation
+# (the AKIA…EXAMPLE one). It authenticates nothing and never has. It was used
+# in a test proving that Mykronos scrubs an unredacted secret out of an
+# archived Gitleaks record.
+#
+# The literal value is deliberately not written here. The first version of
+# this file quoted it in this very comment, and Gitleaks promptly flagged the
+# allowlist — which is the correct behaviour, and a good argument for
+# describing an allowlisted value rather than reproducing it.
 #
 # Our own Gitleaks job flagged it on the first run against this repository,
 # which is the scanner working correctly: it is credential-shaped, and being
