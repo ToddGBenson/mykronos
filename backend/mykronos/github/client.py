@@ -13,6 +13,7 @@ logic tested against it is tested against the rules that actually bite.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -109,6 +110,11 @@ class GitHubClient(Protocol):
     async def update_pull_request(
         self, repo_full_name: str, number: int, *, title: str, body: str
     ) -> PullRequest: ...
+
+    async def close_pull_request(
+        self, repo_full_name: str, number: int, *, comment: str = ""
+    ) -> None:
+        """Close without merging, explaining why in a comment."""
 
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey: ...
 
@@ -258,6 +264,18 @@ class FakeGitHubClient:
                 return pr
         raise GitHubError(f"Pull request #{number} not found", status=404)
 
+    async def close_pull_request(
+        self, repo_full_name: str, number: int, *, comment: str = ""
+    ) -> None:
+        self.calls.append(("close_pull_request", f"{repo_full_name}#{number}"))
+        self._require("pull_requests", "write", "Closing a pull request")
+        for pr in self._repo(repo_full_name).pull_requests:
+            if pr.number == number:
+                pr.state = "closed"
+                pr.merged = False
+                return
+        raise GitHubError(f"Pull request #{number} not found", status=404)
+
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:
         self.calls.append(("get_actions_public_key", repo_full_name))
         self._require("secrets", "write", "Reading the Actions public key")
@@ -369,3 +387,198 @@ class RestGitHubClient:
                 status=403,
             )
         return response
+
+    async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
+        response = await self._request(method, path, **kwargs)
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"{method} {path} -> {response.status_code}: {response.text[:400]}",
+                status=response.status_code,
+            )
+        return response.json() if response.content else {}
+
+    # -- protocol -------------------------------------------------------
+
+    async def get_repo(self, repo_full_name: str) -> dict[str, Any]:
+        return dict(await self._json("GET", f"/repos/{repo_full_name}"))
+
+    async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
+        response = await self._request(
+            "GET", f"/repos/{repo_full_name}/contents/{path}", params={"ref": ref}
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Reading {path}@{ref} failed: {response.text[:200]}",
+                status=response.status_code,
+            )
+        payload = response.json()
+        if payload.get("encoding") != "base64":
+            return str(payload.get("content", ""))
+        return base64.b64decode(payload["content"]).decode("utf-8", errors="replace")
+
+    async def create_branch(self, repo_full_name: str, branch: str, from_ref: str) -> None:
+        base = await self._json("GET", f"/repos/{repo_full_name}/git/ref/heads/{from_ref}")
+        await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/git/refs",
+            json={"ref": f"refs/heads/{branch}", "sha": base["object"]["sha"]},
+        )
+
+    async def commit_files(
+        self, repo_full_name: str, branch: str, message: str, changes: list[FileChange]
+    ) -> str:
+        """One commit for the whole change set, via the Git Data API.
+
+        Deliberately not the Contents API, which commits per file: a
+        multi-capability install would land as several commits, and a failure
+        halfway would leave the branch in a state that is neither the old
+        capability set nor the new one.
+        """
+        head = await self._json("GET", f"/repos/{repo_full_name}/git/ref/heads/{branch}")
+        head_sha = head["object"]["sha"]
+        commit = await self._json("GET", f"/repos/{repo_full_name}/git/commits/{head_sha}")
+
+        tree_entries: list[dict[str, Any]] = []
+        for change in changes:
+            if change.is_delete:
+                # A null sha is how the Git Data API expresses a deletion.
+                blob_sha = None
+            else:
+                blob = await self._json(
+                    "POST",
+                    f"/repos/{repo_full_name}/git/blobs",
+                    json={"content": change.content, "encoding": "utf-8"},
+                )
+                blob_sha = blob["sha"]
+            tree_entries.append(
+                {"path": change.path, "mode": "100644", "type": "blob", "sha": blob_sha}
+            )
+
+        tree = await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/git/trees",
+            json={"base_tree": commit["tree"]["sha"], "tree": tree_entries},
+        )
+        new_commit = await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/git/commits",
+            json={"message": message, "tree": tree["sha"], "parents": [head_sha]},
+        )
+        await self._json(
+            "PATCH",
+            f"/repos/{repo_full_name}/git/refs/heads/{branch}",
+            json={"sha": new_commit["sha"], "force": True},
+        )
+        return str(new_commit["sha"])
+
+    async def find_open_pull_request(
+        self, repo_full_name: str, head_branch_prefix: str
+    ) -> PullRequest | None:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/pulls",
+            params={"state": "open", "per_page": 100},
+        )
+        for item in payload:
+            ref = (item.get("head") or {}).get("ref", "")
+            if ref.startswith(head_branch_prefix):
+                return PullRequest(
+                    number=int(item["number"]),
+                    url=str(item["html_url"]),
+                    head_branch=ref,
+                    state=str(item.get("state", "open")),
+                    merged=bool(item.get("merged_at")),
+                )
+        return None
+
+    async def create_pull_request(
+        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+    ) -> PullRequest:
+        item = await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/pulls",
+            json={"head": head, "base": base, "title": title, "body": body},
+        )
+        return PullRequest(
+            number=int(item["number"]), url=str(item["html_url"]), head_branch=head
+        )
+
+    async def update_pull_request(
+        self, repo_full_name: str, number: int, *, title: str, body: str
+    ) -> PullRequest:
+        item = await self._json(
+            "PATCH",
+            f"/repos/{repo_full_name}/pulls/{number}",
+            json={"title": title, "body": body},
+        )
+        return PullRequest(
+            number=int(item["number"]),
+            url=str(item["html_url"]),
+            head_branch=(item.get("head") or {}).get("ref", ""),
+        )
+
+    async def close_pull_request(
+        self, repo_full_name: str, number: int, *, comment: str = ""
+    ) -> None:
+        if comment:
+            # Comment before closing, so the explanation is already there for
+            # anyone who reads the close notification.
+            await self._json(
+                "POST",
+                f"/repos/{repo_full_name}/issues/{number}/comments",
+                json={"body": comment},
+            )
+        await self._json(
+            "PATCH", f"/repos/{repo_full_name}/pulls/{number}", json={"state": "closed"}
+        )
+
+    async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:
+        payload = await self._json(
+            "GET", f"/repos/{repo_full_name}/actions/secrets/public-key"
+        )
+        return RepoPublicKey(key_id=str(payload["key_id"]), key_base64=str(payload["key"]))
+
+    async def put_actions_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        await self._json(
+            "PUT",
+            f"/repos/{repo_full_name}/actions/secrets/{name}",
+            json={"encrypted_value": encrypted_value, "key_id": key_id},
+        )
+
+    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None:
+        response = await self._request(
+            "DELETE", f"/repos/{repo_full_name}/actions/secrets/{name}"
+        )
+        # 404 is success for our purposes: the secret is gone either way.
+        if response.status_code not in (204, 404):
+            raise GitHubError(
+                f"Deleting secret {name} failed: {response.text[:200]}",
+                status=response.status_code,
+            )
+
+    async def get_installation(self, installation_id: int) -> dict[str, Any]:
+        """Installation metadata, for the daily reconciliation (spec 02 §5.6).
+
+        Authenticates with the App JWT rather than an installation token:
+        asking an installation token whether its own installation still exists
+        is circular, and it stops working at exactly the moment the answer
+        becomes interesting.
+        """
+        async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
+            response = await http.get(
+                f"/app/installations/{installation_id}",
+                headers={
+                    "Authorization": f"Bearer {self.credentials.app_jwt()}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Installation {installation_id} lookup failed: {response.text[:200]}",
+                status=response.status_code,
+            )
+        return dict(response.json())

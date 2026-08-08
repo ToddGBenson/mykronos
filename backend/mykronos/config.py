@@ -59,6 +59,46 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- GitHub App (spec 02 §4) -------------------------------------
+
+    github_app_id: str = Field(
+        default="",
+        description="Registered App's ID. Empty means GitHub calls are faked.",
+    )
+
+    github_app_private_key_path: Path | None = Field(
+        default=None,
+        description=(
+            "PEM holding the App private key. The only long-lived secret in the "
+            "system (spec 12 §2) -- never the database, never a log, never a repo."
+        ),
+    )
+
+    github_webhook_secret: str = Field(
+        default="",
+        description=(
+            "Shared secret for X-Hub-Signature-256. Empty means webhooks are "
+            "rejected: without it there is no way to tell GitHub from anyone who "
+            "found the URL."
+        ),
+    )
+
+    # --- Admin API (spec 12 §3, Phase 1 stub) --------------------------
+
+    admin_token: str = Field(
+        default="",
+        description=(
+            "Bearer token for the admin API. Empty disables the API entirely "
+            "(503), so an unconfigured deployment is unusable rather than open. "
+            "Replaced by SSO in Phase 7."
+        ),
+    )
+
+    admin_identity: str = Field(
+        default="admin",
+        description="Actor name recorded in the audit log for admin actions.",
+    )
+
     database_url: str = Field(
         default="sqlite:///mykronos.db",
         description=(

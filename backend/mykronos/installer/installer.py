@@ -68,10 +68,18 @@ class InstallPlan:
     changes: list[FileChange] = field(default_factory=list)
     rendered: list[RenderedWorkflow] = field(default_factory=list)
 
-    @property
-    def is_noop(self) -> bool:
-        """spec 03 §4: re-requesting the current set opens no PR."""
-        return not self.added and not self.removed
+    #: Nothing to do. Either the request matches what is already merged, or it
+    #: matches a request already in flight (see `already_pending`).
+    is_noop: bool = False
+
+    #: The request is identical to the open PR's. spec 03 §4 only rules out a
+    #: *second* PR; without this we would force-push a byte-identical diff onto
+    #: the open one every time an admin re-saves, which shows up as churn on
+    #: their PR for no reason.
+    already_pending: bool = False
+
+    #: The open PR this request matched, when `already_pending`.
+    pending_pr_number: int | None = None
 
     def describe(self) -> str:
         parts = []
@@ -134,10 +142,24 @@ class WorkflowInstaller:
             repo_full_name=onboarding.github_repo_full_name,
             requested=requested,
             active=active,
+            # Always relative to the *merged* set: this is what the PR does,
+            # and it is what its body describes.
             added=sorted(requested - active),
             removed=sorted(active - requested),
         )
-        if plan.is_noop:
+
+        if not plan.added and not plan.removed:
+            # spec 03 §4: the request matches what is already enabled.
+            plan.is_noop = True
+            return plan
+
+        pending = set(onboarding.pending_capabilities or [])
+        if pending and pending == requested and onboarding.pending_pr_number:
+            # Same request, already in flight. Re-rendering would push an
+            # identical diff onto the open PR.
+            plan.is_noop = True
+            plan.already_pending = True
+            plan.pending_pr_number = onboarding.pending_pr_number
             return plan
 
         configs = configs or {}
@@ -189,23 +211,74 @@ class WorkflowInstaller:
         now: datetime | None = None,
     ) -> InstallResult:
         """Provision the secret, open or update the PR, and record the event."""
-        if plan.is_noop:
-            return InstallResult(
-                plan=plan, pull_request=None, branch=None, secret_provisioned=False
-            )
-
         moment = now or utcnow()
         repo = onboarding.github_repo_full_name
 
         # 1. Ensure the repo has an ingestion token + secret. Once per repo,
-        #    not per capability (D-009).
-        secret_provisioned = await self._ensure_secret(session, repo, registry)
+        #    not per capability (D-009). Skipped when nothing is requested, so
+        #    disabling everything does not mint a credential for a repo that
+        #    has no capabilities left.
+        secret_provisioned = (
+            await self._ensure_secret(session, repo, registry) if plan.requested else False
+        )
 
-        # 2. Grants change immediately, decoupled from the PR (spec 03 §5).
+        # 2. Grants track *intent* and change immediately, decoupled from the
+        #    PR (spec 03 §5). This happens even on a no-op: an admin who
+        #    disables a capability before its PR merged has still disabled it,
+        #    and must not be left with a live grant.
         grants_added, grants_removed = registry.sync_grants(repo, plan.requested)
 
-        # 3. Reuse an open PR rather than opening a second (spec 03 §4).
         existing_pr = await self.github.find_open_pull_request(repo, BRANCH_PREFIX)
+
+        if plan.already_pending:
+            # Same request, already in flight. Touching the PR would push an
+            # identical diff.
+            return InstallResult(
+                plan=plan,
+                pull_request=existing_pr,
+                branch=existing_pr.head_branch if existing_pr else None,
+                secret_provisioned=secret_provisioned,
+                grants_added=grants_added,
+                grants_removed=grants_removed,
+            )
+
+        if plan.is_noop:
+            # The request matches what is already merged. If a PR is open it
+            # was for a request since withdrawn, and has nothing left to do —
+            # leaving it would let a later merge re-enable what was cancelled.
+            if existing_pr is not None:
+                await self.github.close_pull_request(
+                    repo,
+                    existing_pr.number,
+                    comment=(
+                        "Superseded: the requested capability set now matches what "
+                        "is already enabled on this repository, so there is nothing "
+                        "for this pull request to change. Closing it rather than "
+                        "leaving a merge that would re-enable a withdrawn request."
+                    ),
+                )
+                onboarding.pending_capabilities = None
+                onboarding.pending_pr_number = None
+                session.add(
+                    WorkflowInstallEvent(
+                        repo_onboarding_id=onboarding.id,
+                        pr_number=existing_pr.number,
+                        pr_url=existing_pr.url,
+                        branch=existing_pr.head_branch,
+                        status="closed_unmerged",
+                        detail="request withdrawn before merge",
+                    )
+                )
+            return InstallResult(
+                plan=plan,
+                pull_request=None,
+                branch=None,
+                secret_provisioned=secret_provisioned,
+                grants_added=grants_added,
+                grants_removed=grants_removed,
+            )
+
+        # 3. Reuse an open PR rather than opening a second (spec 03 §4).
         if existing_pr is not None:
             branch = existing_pr.head_branch
         else:

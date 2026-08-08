@@ -318,7 +318,7 @@ class TestApply:
         assert event.capabilities_added == ["sast"]
         assert event.pr_number == result.pull_request.number
 
-    async def test_noop_writes_nothing_at_all(
+    async def test_noop_opens_no_pull_request(
         self, installer, session, onboarding, registry, github: FakeGitHubClient
     ) -> None:
         onboarding.enabled_capabilities = ["sast"]
@@ -326,7 +326,44 @@ class TestApply:
 
         assert result.pull_request is None
         assert github.repos[REPO].pull_requests == []
-        assert github.repos[REPO].secrets == {}
+
+    async def test_noop_still_converges_grants_and_the_secret(
+        self, installer, session, onboarding, registry, github: FakeGitHubClient
+    ) -> None:
+        """Re-saving is a repair action, not a null op.
+
+        A repo whose workflows are merged but whose token went missing can
+        never upload anything. Converging on every save means the fix is
+        "press save again" rather than a support ticket.
+        """
+        onboarding.enabled_capabilities = ["sast"]
+        assert registry.granted_capabilities(REPO) == set()
+
+        await install(installer, session, onboarding, registry, {"sast"})
+
+        assert registry.granted_capabilities(REPO) == {"sast"}
+        assert DEFAULT_SECRET_NAME in github.repos[REPO].secrets
+
+    async def test_withdrawing_a_pending_request_closes_its_pull_request(
+        self, installer, session, onboarding, registry, github: FakeGitHubClient
+    ) -> None:
+        """Enable, change your mind before it merges.
+
+        Leaving the PR open would let a later merge re-enable exactly what was
+        withdrawn — and until this was fixed the withdrawal did nothing at all:
+        the grant stayed live and the PR stayed mergeable.
+        """
+        await install(installer, session, onboarding, registry, {"sast"})
+        assert registry.granted_capabilities(REPO) == {"sast"}
+
+        result = await install(installer, session, onboarding, registry, set())
+
+        assert result.pull_request is None
+        assert github.repos[REPO].pull_requests[0].state == "closed"
+        assert github.repos[REPO].pull_requests[0].merged is False
+        assert registry.granted_capabilities(REPO) == set()
+        assert onboarding.pending_capabilities is None
+        assert onboarding.pending_pr_number is None
 
     async def test_pr_body_explains_the_change_and_the_branch_protection_trap(
         self, multi, session, onboarding, registry

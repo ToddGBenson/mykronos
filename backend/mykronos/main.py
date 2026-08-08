@@ -16,8 +16,17 @@ from fastapi import FastAPI
 
 from mykronos import __version__
 from mykronos.api.ingest import router as ingest_router
+from mykronos.api.repos import router as repos_router
+from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
+from mykronos.github.auth import AppCredentials
+from mykronos.github.factory import (
+    FakeGitHubClientFactory,
+    GitHubClientFactory,
+    RestGitHubClientFactory,
+)
+from mykronos.installer import TemplateLibrary
 from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.ratelimit import SlidingWindowLimiter
 
@@ -50,6 +59,31 @@ async def _compaction_loop(app: FastAPI, interval: int) -> None:
             logger.exception("Scheduled compaction failed; buffer retained, will retry")
 
 
+def _build_github_factory(settings: Settings) -> GitHubClientFactory:
+    """Real factory when the App is configured, in-memory otherwise.
+
+    Booting without credentials is deliberate: the platform and its onboarding
+    UI stay explorable before the App exists (spec 02 §4 is a manual one-time
+    step). Anything that would really touch GitHub is recorded on the fake
+    rather than silently doing nothing.
+    """
+    if settings.github_app_id and settings.github_app_private_key_path:
+        credentials = AppCredentials.from_file(
+            settings.github_app_id,
+            settings.github_app_private_key_path,
+            webhook_secret=settings.github_webhook_secret,
+        )
+        logger.info("GitHub App %s configured", settings.github_app_id)
+        return RestGitHubClientFactory(credentials)
+
+    logger.warning(
+        "No GitHub App configured (MYKRONOS_GITHUB_APP_ID / "
+        "MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH). GitHub calls are faked in memory; "
+        "no real repository will be touched."
+    )
+    return FakeGitHubClientFactory()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
@@ -59,6 +93,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = Database(settings.database_url)
     app.state.db.create_all()
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
+    app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
+    app.state.github_factory = _build_github_factory(settings)
 
     task: asyncio.Task[None] | None = None
     if settings.run_compaction_in_background:
@@ -94,6 +130,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings or get_settings()
     app.include_router(ingest_router)
+    app.include_router(repos_router)
+    app.include_router(webhooks_router)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
     async def healthz() -> dict[str, str]:

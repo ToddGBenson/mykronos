@@ -1,0 +1,312 @@
+"""GitHub App webhook receiver (spec 02 §4, §5, §7).
+
+This endpoint is unauthenticated in the ordinary sense — GitHub cannot present
+a bearer token — so the HMAC signature is the *only* thing standing between
+the open internet and an API that creates onboardings and flips repos to
+active. It is checked before the body is parsed, and a deployment with no
+webhook secret configured rejects everything rather than trusting whatever
+arrives.
+
+Handlers are idempotent because GitHub redelivers. Unrecognised events return
+200: a non-2xx is a delivery failure to GitHub, and enough of them get the
+webhook disabled entirely, so "I do not care about this event" must not look
+like "I am broken".
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Header, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from mykronos.db.models import Organization, RepoOnboarding
+from mykronos.installer import BRANCH_PREFIX, WorkflowInstaller
+from mykronos.schemas import utcnow
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+WEBHOOK_ACTOR = "github-webhook"
+
+
+def verify_signature(secret: str, body: bytes, header: str | None) -> bool:
+    """Constant-time HMAC-SHA256 check of `X-Hub-Signature-256`."""
+    if not header or not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header.removeprefix("sha256="))
+
+
+def _organization(session: Session, login: str) -> Organization:
+    org = session.execute(
+        select(Organization).where(Organization.github_org_login == login)
+    ).scalars().first()
+    if org is None:
+        org = Organization(github_org_login=login)
+        session.add(org)
+        session.flush()
+    return org
+
+
+def _upsert_onboarding(
+    session: Session,
+    *,
+    org_login: str,
+    repo_full_name: str,
+    installation_id: int,
+    default_branch: str,
+) -> tuple[RepoOnboarding, bool]:
+    """Create or refresh a RepoOnboarding. Returns (row, created)."""
+    org = _organization(session, org_login)
+    existing = session.execute(
+        select(RepoOnboarding)
+        .where(RepoOnboarding.org_id == org.id)
+        .where(RepoOnboarding.github_repo_full_name == repo_full_name)
+    ).scalars().first()
+
+    if existing is not None:
+        # A reinstall after an uninstall must revive the row rather than
+        # stranding it as `removed` with a stale installation id.
+        existing.github_installation_id = installation_id
+        existing.last_synced_at = utcnow()
+        if existing.status == "removed":
+            existing.status = "pending_install"
+        return existing, False
+
+    row = RepoOnboarding(
+        org_id=org.id,
+        github_repo_full_name=repo_full_name,
+        github_installation_id=installation_id,
+        status="pending_install",
+        enabled_capabilities=[],
+        default_branch=default_branch,
+        onboarded_by=WEBHOOK_ACTOR,
+        last_synced_at=utcnow(),
+    )
+    session.add(row)
+    session.flush()
+    return row, True
+
+
+def _set_status(session: Session, installation_id: int, new_status: str) -> int:
+    rows = session.execute(
+        select(RepoOnboarding).where(
+            RepoOnboarding.github_installation_id == installation_id
+        )
+    ).scalars().all()
+    for row in rows:
+        row.status = new_status
+        row.last_synced_at = utcnow()
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Event handlers
+# ---------------------------------------------------------------------------
+
+
+def handle_installation(session: Session, payload: dict[str, Any], db: Any) -> dict[str, Any]:
+    """`installation` — the App was installed, removed, or suspended."""
+    action = payload.get("action", "")
+    installation = payload.get("installation") or {}
+    installation_id = int(installation.get("id") or 0)
+    account = (installation.get("account") or {}).get("login", "")
+
+    if action in {"created", "new_permissions_accepted", "unsuspend"}:
+        created = 0
+        for repo in payload.get("repositories") or []:
+            full_name = repo.get("full_name") or ""
+            if not full_name:
+                continue
+            _, was_new = _upsert_onboarding(
+                session,
+                org_login=account or full_name.split("/")[0],
+                repo_full_name=full_name,
+                installation_id=installation_id,
+                # The install payload does not carry the default branch; the
+                # onboarding API refreshes it before the installer needs it.
+                default_branch="main",
+            )
+            created += int(was_new)
+        if action == "unsuspend":
+            _set_status(session, installation_id, "pending_install")
+        db.audit(
+            session,
+            actor=WEBHOOK_ACTOR,
+            action=f"installation.{action}",
+            entity_type="installation",
+            entity_id=str(installation_id),
+            repos_created=created,
+        )
+        return {"handled": action, "repos_created": created}
+
+    if action in {"deleted", "suspend"}:
+        # spec 02 §9: suspended is treated as removed for scheduling but kept
+        # distinct, so the dashboard can say "paused" rather than "gone".
+        new_status = "removed" if action == "deleted" else "suspended"
+        affected = _set_status(session, installation_id, new_status)
+        db.audit(
+            session,
+            actor=WEBHOOK_ACTOR,
+            action=f"installation.{action}",
+            entity_type="installation",
+            entity_id=str(installation_id),
+            repos_affected=affected,
+        )
+        return {"handled": action, "repos_affected": affected}
+
+    return {"ignored": f"installation.{action}"}
+
+
+def handle_installation_repositories(
+    session: Session, payload: dict[str, Any], db: Any
+) -> dict[str, Any]:
+    """`installation_repositories` — repos added to or removed from an install."""
+    installation = payload.get("installation") or {}
+    installation_id = int(installation.get("id") or 0)
+    account = (installation.get("account") or {}).get("login", "")
+
+    added = 0
+    for repo in payload.get("repositories_added") or []:
+        full_name = repo.get("full_name") or ""
+        if full_name:
+            _upsert_onboarding(
+                session,
+                org_login=account or full_name.split("/")[0],
+                repo_full_name=full_name,
+                installation_id=installation_id,
+                default_branch="main",
+            )
+            added += 1
+
+    removed = 0
+    for repo in payload.get("repositories_removed") or []:
+        full_name = repo.get("full_name") or ""
+        row = session.execute(
+            select(RepoOnboarding).where(
+                RepoOnboarding.github_repo_full_name == full_name
+            )
+        ).scalars().first()
+        if row is not None:
+            # Historical data lake rows are retained (spec 02 §6); only the
+            # onboarding stops.
+            row.status = "removed"
+            row.last_synced_at = utcnow()
+            removed += 1
+
+    db.audit(
+        session,
+        actor=WEBHOOK_ACTOR,
+        action="installation_repositories",
+        entity_type="installation",
+        entity_id=str(installation_id),
+        added=added,
+        removed=removed,
+    )
+    return {"handled": "installation_repositories", "added": added, "removed": removed}
+
+
+def handle_pull_request(session: Session, payload: dict[str, Any], db: Any) -> dict[str, Any]:
+    """`pull_request` — watch for our own install PR merging (spec 03 §3.6)."""
+    if payload.get("action") != "closed":
+        return {"ignored": f"pull_request.{payload.get('action')}"}
+
+    pull_request = payload.get("pull_request") or {}
+    if not pull_request.get("merged"):
+        return {"ignored": "pull_request.closed (not merged)"}
+
+    head_ref = ((pull_request.get("head") or {}).get("ref")) or ""
+    if not head_ref.startswith(BRANCH_PREFIX):
+        return {"ignored": "pull_request.closed (not a Mykronos install PR)"}
+
+    repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
+    number = int(pull_request.get("number") or 0)
+
+    row = session.execute(
+        select(RepoOnboarding).where(
+            RepoOnboarding.github_repo_full_name == repo_full_name
+        )
+    ).scalars().first()
+    if row is None:
+        logger.warning("Install PR merged for unknown repo %s", repo_full_name)
+        return {"ignored": "unknown repo"}
+
+    promoted = WorkflowInstaller.on_install_pr_merged(session, row, number)
+    if promoted:
+        db.audit(
+            session,
+            actor=WEBHOOK_ACTOR,
+            action="workflow_install_pr.merged",
+            entity_type="repo_onboarding",
+            entity_id=row.id,
+            pr_number=number,
+            enabled_capabilities=row.enabled_capabilities,
+        )
+    return {"handled": "pull_request.closed", "promoted": promoted}
+
+
+HANDLERS = {
+    "installation": handle_installation,
+    "installation_repositories": handle_installation_repositories,
+    "pull_request": handle_pull_request,
+}
+
+
+@router.post("/github")
+async def github_webhook(
+    request: Request,
+    x_github_event: str | None = Header(default=None),
+    x_hub_signature_256: str | None = Header(default=None),
+    x_github_delivery: str | None = Header(default=None),
+) -> dict[str, Any]:
+    settings = request.app.state.settings
+    body = await request.body()
+
+    if not settings.github_webhook_secret:
+        # Fail closed. Without a secret there is no way to distinguish GitHub
+        # from anyone who found the URL, and this endpoint can flip repos to
+        # active and create onboardings.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No webhook secret configured, so webhooks are rejected. Set "
+                "MYKRONOS_GITHUB_WEBHOOK_SECRET to the value given to the App."
+            ),
+        )
+
+    if not verify_signature(settings.github_webhook_secret, body, x_hub_signature_256):
+        logger.warning("Rejected webhook delivery %s: bad signature", x_github_delivery)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Signature verification failed.",
+        )
+
+    handler = HANDLERS.get(x_github_event or "")
+    if handler is None:
+        # 200, deliberately. A non-2xx is a delivery failure to GitHub, and
+        # enough of them disable the webhook — "not interested" must not look
+        # like "broken". Events we will want later (workflow_run, check_run)
+        # land here until their phase.
+        return {"ignored": x_github_event or "unknown"}
+
+    import json
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Body is not valid JSON."
+        ) from None
+
+    db = request.app.state.db
+    with db.session() as session:
+        result = handler(session, payload, db)
+
+    logger.info("webhook %s delivery=%s -> %s", x_github_event, x_github_delivery, result)
+    return result
