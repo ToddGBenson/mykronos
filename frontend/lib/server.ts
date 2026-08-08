@@ -16,7 +16,10 @@ import {
   type FindingsPage,
   type Portfolio,
   type RepoDetail,
+  type RiskDecision,
   type ScanHealth,
+  type ShadowModeReport,
+  type TriageQueue,
 } from "./api";
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -97,6 +100,79 @@ export async function getFindings(
     );
     if (!data) return { ok: false, error: describe(response, "Could not load findings") };
     return { ok: true, data: data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getTriage(query: {
+  severity?: string;
+  capability?: string;
+}): Promise<Result<TriageQueue>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/triage", {
+      params: {
+        query: {
+          severity: query.severity as never,
+          capability: query.capability as never,
+          limit: 100,
+        },
+      },
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load the queue") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getDecisions(
+  repoId: string,
+): Promise<Result<{ repo_full_name: string; decisions: RiskDecision[] }>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/oracle/decisions/{repo_id}",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load decisions") };
+    return {
+      ok: true,
+      data: data as { repo_full_name: string; decisions: RiskDecision[] },
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getShadowMode(): Promise<Result<ShadowModeReport>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/oracle/shadow-mode", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the shadow-mode report") };
+    }
+    return { ok: true, data: data as ShadowModeReport };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * `source` is the parsed policy document, not the YAML text — the endpoint
+ * serves the structure so machine consumers do not have to parse it, and the
+ * UI re-serialises it for display.
+ */
+export async function getPolicy(): Promise<
+  Result<{ version: string; source: unknown; note: string }>
+> {
+  try {
+    const { data, response } = await backendClient().GET("/api/oracle/policy", {
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load the policy") };
+    return { ok: true, data: data as { version: string; source: unknown; note: string } };
   } catch (error) {
     return failure(error);
   }

@@ -72,10 +72,16 @@ class PortfolioRow:
     total_open: int = 0
     last_scan_at: datetime | None = None
     capability_states: list[CapabilityState] = field(default_factory=list)
-    #: Oracle's score. None until Phase 3 — deliberately not 0, which would
-    #: read as "assessed, no risk" rather than "not assessed".
+    #: Oracle's standing score, from the most recent portfolio decision.
+    #: None means Oracle has not judged this repo — deliberately not 0, which
+    #: would read as "assessed, no risk" rather than "not assessed". A repo
+    #: that enabled scanning but not `oracle` stays None forever, on purpose.
     risk_score: int | None = None
     recommendation: str | None = None
+    #: Pre-clamp score. Ranking has to survive the clamp (D-018): two repos
+    #: both displaying 100 still need an order in the triage queue.
+    raw_risk_score: float | None = None
+    risk_assessed_at: datetime | None = None
 
     @property
     def awaiting_first_scan(self) -> bool:
@@ -100,6 +106,10 @@ class PortfolioSummary:
     repos_awaiting_first_scan: int = 0
     repos_with_stale_scans: int = 0
     repos_no_go: int = 0
+    #: Onboarded but never judged — Oracle is opt-in, so this is a coverage
+    #: number, not an error. It belongs next to repos_no_go so the portfolio
+    #: cannot be read as "three at risk" when forty were never looked at.
+    repos_not_assessed: int = 0
 
 
 class DashboardQueries:
@@ -118,6 +128,7 @@ class DashboardQueries:
 
         severity_by_repo = self._open_severity_counts()
         scans_by_repo = self._capability_scan_state()
+        decisions_by_repo = self._latest_portfolio_decisions()
 
         rows: list[PortfolioRow] = []
         for onboarding in onboardings:
@@ -157,6 +168,7 @@ class DashboardQueries:
                     total_open=sum(counts.values()),
                     last_scan_at=max(last_scan_values) if last_scan_values else None,
                     capability_states=capability_states,
+                    **self._risk_fields(decisions_by_repo.get(repo)),
                 )
             )
 
@@ -166,11 +178,46 @@ class DashboardQueries:
             open_high=sum(r.severity_counts.get("high", 0) for r in rows),
             repos_awaiting_first_scan=sum(1 for r in rows if r.awaiting_first_scan),
             repos_with_stale_scans=sum(1 for r in rows if r.is_stale),
-            # Oracle lands in Phase 3; until then this is honestly zero
-            # because nothing has been assessed, not because nothing is risky.
-            repos_no_go=0,
+            repos_no_go=sum(1 for r in rows if r.recommendation == "no_go"),
+            repos_not_assessed=sum(1 for r in rows if r.recommendation is None),
         )
         return rows, summary
+
+    def _latest_portfolio_decisions(self) -> dict[str, tuple[Any, ...]]:
+        """Most recent portfolio decision per repo.
+
+        `portfolio` decisions only. A pr_gate score is about one pull request
+        against one commit, and showing it as the repo's standing risk would
+        mean the portfolio changed every time somebody opened a branch.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT repo_full_name, overall_risk_score, recommendation, evaluated_at,
+                   TRY_CAST(
+                       json_extract_string(inputs_snapshot, '$.totals.raw_score') AS DOUBLE
+                   ) AS raw_score
+            FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY repo_full_name ORDER BY evaluated_at DESC
+                ) AS rn
+                FROM risk_decisions
+                WHERE decision_type = 'portfolio'
+            ) WHERE rn = 1
+            """
+        )
+        return {str(row[0]): tuple(row[1:]) for row in rows}
+
+    @staticmethod
+    def _risk_fields(decision: tuple[Any, ...] | None) -> dict[str, Any]:
+        if decision is None:
+            return {}
+        score, recommendation, evaluated_at, raw = decision
+        return {
+            "risk_score": int(score),
+            "recommendation": str(recommendation),
+            "risk_assessed_at": evaluated_at,
+            "raw_risk_score": float(raw) if raw is not None else float(score),
+        }
 
     def _open_severity_counts(self) -> dict[str, dict[str, int]]:
         rows = self.catalog.query(
@@ -298,6 +345,93 @@ class DashboardQueries:
                     record["raw_finding_json"] = json.loads(record["raw_finding_json"])
             findings.append(record)
         return findings, total
+
+    # -- triage queue ---------------------------------------------------
+
+    def triage_queue(
+        self,
+        session: Session,
+        *,
+        severity: str | None = None,
+        capability: str | None = None,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """The highest-priority open findings across every active repo.
+
+        The portfolio table answers "which repo is worst". This answers "what
+        do I do next", which is a different question and the one somebody
+        actually has on a Monday morning. A per-repo view makes you visit
+        forty pages to find the three things that matter.
+
+        Ordering is severity, then age. Age rather than recency deliberately:
+        an old critical is worse than a new one — it has been exploitable for
+        longer and it has already survived somebody deciding not to fix it.
+
+        Repos that are not active are excluded. Their findings are still in the
+        lake and still on their own pages, but a queue is a list of work, and
+        work on a repo nobody is scanning any more is not work.
+        """
+        active = {
+            row.github_repo_full_name: row
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status == "active")
+            ).scalars()
+        }
+        if not active:
+            return [], dict.fromkeys(SEVERITIES, 0)
+
+        placeholders = ", ".join("?" for _ in active)
+        where = [f"repo_full_name IN ({placeholders})", "status = 'open'"]
+        params: list[Any] = list(active)
+        for column, value in (("severity", severity), ("capability", capability)):
+            if value:
+                where.append(f"{column} = ?")
+                params.append(value)
+        clause = " AND ".join(where)
+
+        counts_rows = self.catalog.query(
+            f"SELECT severity, count(*) FROM findings WHERE {clause} GROUP BY 1",
+            params,
+        )
+        counts = dict.fromkeys(SEVERITIES, 0)
+        for level, count in counts_rows:
+            counts[str(level)] = int(count)
+
+        columns = [
+            "finding_id",
+            "repo_full_name",
+            "capability",
+            "rule_id",
+            "title",
+            "severity",
+            "file_path",
+            "line_start",
+            "package_name",
+            "package_version",
+            "first_seen_at",
+        ]
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
+            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+            "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, first_seen_at "
+            "LIMIT ?",
+            [*params, limit],
+        )
+
+        decisions = self._latest_portfolio_decisions()
+        queue = []
+        for row in rows:
+            record = dict(zip(columns, row, strict=True))
+            repo = str(record["repo_full_name"])
+            onboarding = active[repo]
+            record["repo_id"] = onboarding.id
+            # Carried per row so the queue can be read without cross-referencing
+            # the portfolio table: the same critical means something different
+            # in a repo Oracle already calls no_go.
+            decision = decisions.get(repo)
+            record["repo_recommendation"] = str(decision[1]) if decision else None
+            queue.append(record)
+        return queue, counts
 
     # -- scan health ----------------------------------------------------
 

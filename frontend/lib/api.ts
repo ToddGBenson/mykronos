@@ -36,6 +36,58 @@ export type RepoList =
   paths["/api/repos"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RepoDetail =
   paths["/api/repos/{repo_id}"]["get"]["responses"]["200"]["content"]["application/json"];
+export type TriageQueue =
+  paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
+export type TriageItem = TriageQueue["items"][number];
+
+/** Oracle's verdicts, worst first — the order the UI sorts and colours by. */
+export const RECOMMENDATIONS = ["no_go", "review_recommended", "go"] as const;
+export type Recommendation = (typeof RECOMMENDATIONS)[number];
+
+/**
+ * Decision history for one repo.
+ *
+ * Hand-typed rather than generated: the endpoint returns rows straight out of
+ * the lake, so its OpenAPI schema is an open object. Writing the shape here
+ * keeps the guessing in one place instead of spreading casts through the page.
+ */
+export type RiskDecision = {
+  decision_id: string;
+  decision_type: string;
+  pr_number?: number | null;
+  release_tag?: string | null;
+  commit_sha?: string | null;
+  overall_risk_score: number;
+  recommendation: Recommendation;
+  reasoning: string;
+  policy_version: string;
+  evaluated_at: string;
+  gate_outcome?: string | null;
+  github_check_run_id?: string | null;
+  human_override?: {
+    overridden_by: string;
+    overridden_at: string;
+    reason: string;
+    original_recommendation: string;
+    accepted_recommendation: string;
+  } | null;
+  inputs_snapshot?: {
+    terms?: { label: string; detail: string; contribution: number }[];
+    totals?: { raw_score: number; overall_risk_score: number; clamped: boolean };
+  } | null;
+};
+
+export type ShadowModeReport = {
+  window_days: number;
+  since: string;
+  decisions_with_a_known_outcome: number;
+  merged: number;
+  closed_unmerged: number;
+  would_have_blocked: number;
+  would_have_blocked_and_overridden: number;
+  by_recommendation: Record<string, Record<string, number>>;
+  interpretation: string;
+};
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 

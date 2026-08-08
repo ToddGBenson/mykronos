@@ -353,6 +353,220 @@ class TestScanHealth:
         assert body["capabilities"] == []
 
 
+class TestPortfolioCarriesOracleScores:
+    """The Risk and Oracle columns, which were placeholders until Phase 3."""
+
+    async def _score(self, client, service):
+        from mykronos.jobs import score_portfolio
+
+        return await score_portfolio(client.app.state.db, service)
+
+    @pytest.mark.anyio
+    async def test_the_standing_score_reaches_the_portfolio(
+        self, client, admin_auth, run_compaction, settings
+    ) -> None:
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.service import OracleService
+        from tests.test_portfolio_job import register, seed_findings
+
+        register(client, REPO, capabilities=["sast", "oracle"])
+        seed_findings(client, REPO, 2, "critical")
+        run_compaction()
+
+        await self._score(
+            client,
+            OracleService(
+                client.app.state.catalog,
+                client.app.state.buffer,
+                load_policy(settings.oracle_policy_path),
+            ),
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
+        assert row["risk_score"] == 63
+        assert row["recommendation"] == "review_recommended"
+        assert row["raw_risk_score"] > 0
+        assert row["risk_assessed_at"] is not None
+
+    def test_an_unjudged_repo_reports_null_not_zero(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """Zero would read as 'assessed, no risk'. Oracle is opt-in, and a repo
+        nobody enabled it on has not been looked at."""
+        from tests.test_portfolio_job import register, seed_findings
+
+        register(client, REPO, capabilities=["sast"])
+        seed_findings(client, REPO, 3, "critical")
+        run_compaction()
+
+        body = client.get("/api/dashboard/portfolio", headers=admin_auth).json()
+
+        assert body["repos"][0]["risk_score"] is None
+        assert body["summary"]["repos_not_assessed"] == 1
+        assert body["summary"]["repos_no_go"] == 0
+
+    @pytest.mark.anyio
+    async def test_a_pr_gate_decision_does_not_become_the_standing_score(
+        self, client, admin_auth, run_compaction, settings
+    ) -> None:
+        """Otherwise the portfolio would move every time somebody opened a
+        branch, and the column would stop meaning 'how risky is this repo'."""
+        from tests.test_portfolio_job import register, seed_findings
+
+        register(client, REPO, capabilities=["sast", "oracle"])
+        seed_findings(client, REPO, 6, "critical")
+        run_compaction()
+
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'oracle')}"}
+        client.post(
+            "/api/oracle/evaluate",
+            json={"decision_type": "pr_gate", "commit_sha": "abc", "pr_number": 3},
+            headers=auth,
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
+        assert row["risk_score"] is None
+
+
+class TestTriageQueue:
+    """"What do I do next", across every repo at once (spec 10 §2.1)."""
+
+    def _activate(self, client, repo: str, capabilities: list[str]) -> str:
+        from tests.test_portfolio_job import register
+
+        return register(client, repo, capabilities=capabilities)
+
+    def test_ranks_worst_first_across_repos(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        from tests.test_portfolio_job import seed_findings
+
+        self._activate(client, REPO, ["sast"])
+        self._activate(client, "example-org/ledger-core", ["sast"])
+        seed_findings(client, REPO, 1, "low")
+        seed_findings(client, "example-org/ledger-core", 1, "critical")
+        run_compaction()
+
+        body = client.get("/api/dashboard/triage", headers=admin_auth).json()
+
+        assert [item["severity"] for item in body["items"]] == ["critical", "low"]
+        assert body["items"][0]["repo_full_name"] == "example-org/ledger-core"
+        assert body["total_open"] == 2
+        assert body["open_by_severity"]["critical"] == 1
+
+    def test_each_row_carries_its_repo_and_a_link_target(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        from tests.test_portfolio_job import seed_findings
+
+        repo_id = self._activate(client, REPO, ["sast"])
+        seed_findings(client, REPO, 1, "high")
+        run_compaction()
+
+        item = client.get("/api/dashboard/triage", headers=admin_auth).json()["items"][0]
+
+        assert item["repo_id"] == repo_id
+        assert item["repo_full_name"] == REPO
+
+    def test_the_repo_verdict_is_carried_per_row(
+        self, client, admin_auth, run_compaction, settings
+    ) -> None:
+        """So the queue reads without cross-referencing the portfolio table."""
+        import asyncio
+
+        from mykronos.jobs import score_portfolio
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.service import OracleService
+        from tests.test_portfolio_job import seed_findings
+
+        self._activate(client, REPO, ["sast", "oracle"])
+        seed_findings(client, REPO, 6, "critical")
+        run_compaction()
+        asyncio.run(
+            score_portfolio(
+                client.app.state.db,
+                OracleService(
+                    client.app.state.catalog,
+                    client.app.state.buffer,
+                    load_policy(settings.oracle_policy_path),
+                ),
+            )
+        )
+        run_compaction()
+
+        item = client.get("/api/dashboard/triage", headers=admin_auth).json()["items"][0]
+
+        assert item["repo_recommendation"] == "no_go"
+
+    def test_offboarded_repos_are_not_work(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """Their findings are still in the lake and still on their own page.
+        A queue is a list of work, and a repo nobody scans is not work."""
+        from tests.test_portfolio_job import register, seed_findings
+
+        register(client, REPO, capabilities=["sast"], status="removed")
+        seed_findings(client, REPO, 3, "critical")
+        run_compaction()
+
+        body = client.get("/api/dashboard/triage", headers=admin_auth).json()
+
+        assert body["items"] == []
+        assert body["total_open"] == 0
+
+    def test_filters_narrow_the_queue(self, client, admin_auth, run_compaction) -> None:
+        from tests.test_portfolio_job import seed_findings
+
+        self._activate(client, REPO, ["sast"])
+        seed_findings(client, REPO, 2, "critical")
+        run_compaction()
+
+        assert (
+            client.get(
+                "/api/dashboard/triage?severity=high", headers=admin_auth
+            ).json()["items"]
+            == []
+        )
+        assert len(
+            client.get(
+                "/api/dashboard/triage?severity=critical", headers=admin_auth
+            ).json()["items"]
+        ) == 2
+
+    def test_truncation_is_declared(self, client, admin_auth, run_compaction) -> None:
+        """A queue that silently stops at the limit reads as 'that is all'."""
+        from tests.test_portfolio_job import seed_findings
+
+        self._activate(client, REPO, ["sast"])
+        seed_findings(client, REPO, 3, "critical")
+        run_compaction()
+
+        body = client.get("/api/dashboard/triage?limit=2", headers=admin_auth).json()
+
+        assert len(body["items"]) == 2
+        assert body["truncated"] is True
+        assert body["total_open"] == 3, "the count is of everything, not of the page"
+
+    def test_an_empty_portfolio_is_not_an_error(self, client, admin_auth) -> None:
+        body = client.get("/api/dashboard/triage", headers=admin_auth).json()
+
+        assert body == {
+            "items": [],
+            "open_by_severity": dict.fromkeys(
+                ["critical", "high", "medium", "low", "info"], 0
+            ),
+            "total_open": 0,
+            "truncated": False,
+        }
+
+    def test_it_needs_authentication(self, client) -> None:
+        assert client.get("/api/dashboard/triage").status_code == 401
+
+
 def test_severity_enum_covers_every_portfolio_bucket() -> None:
     """A new severity must not silently vanish from the summary."""
     from mykronos.dashboard import SEVERITIES

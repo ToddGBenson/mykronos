@@ -3,13 +3,16 @@ import Link from "next/link";
 import { getPortfolio } from "@/lib/server";
 import {
   CapabilityDots,
+  Crumb,
   EmptyState,
   ErrorPanel,
   Label,
   Pill,
   RelativeTime,
+  ScoreMeter,
   SeverityBar,
   StatTile,
+  Verdict,
 } from "@/components/primitives";
 
 export const dynamic = "force-dynamic";
@@ -47,13 +50,23 @@ export default async function PortfolioPage({
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
         <StatTile
           label="Open critical"
           value={summary.open_critical}
           alert={summary.open_critical > 0}
         />
         <StatTile label="Open high" value={summary.open_high} />
+        <StatTile
+          label="Oracle: no go"
+          value={summary.repos_no_go}
+          sub={
+            summary.repos_not_assessed
+              ? `${summary.repos_not_assessed} not assessed`
+              : "all repos assessed"
+          }
+          alert={summary.repos_no_go > 0}
+        />
         <StatTile
           label="Awaiting first scan"
           value={summary.repos_awaiting_first_scan}
@@ -133,18 +146,20 @@ export default async function PortfolioPage({
                     />
                   </td>
 
-                  {/* Null, not zero: Oracle has not assessed anything yet. */}
-                  <td className="tabular px-2 py-2 text-ink-3">
-                    {repo.risk_score ?? "—"}
+                  {/* Null, not zero — "not assessed" is its own state, and
+                      Oracle is opt-in, so plenty of repos stay here. */}
+                  <td className="px-2 py-2">
+                    {typeof repo.risk_score === "number" ? (
+                      <ScoreMeter score={repo.risk_score} />
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
                   </td>
                   <td className="px-2 py-2">
-                    {repo.recommendation ? (
-                      <Pill tone="warn">{repo.recommendation}</Pill>
-                    ) : (
-                      <span className="text-ink-3" title="Oracle arrives in Phase 3">
-                        not assessed
-                      </span>
-                    )}
+                    <Verdict
+                      recommendation={repo.recommendation}
+                      score={repo.risk_score}
+                    />
                   </td>
 
                   <td className="px-2 py-2">
@@ -182,10 +197,14 @@ export default async function PortfolioPage({
         <br />
         Ten capability slots per repo, so coverage gaps read down the column. A
         hollow dot outlined in the accent is enabled but pending its install PR
-        — not yet running. Risk and Oracle are empty because the decision engine
-        arrives in Phase 3; they show <span className="font-mono">—</span> rather
-        than <span className="font-mono">0</span>, which would read as
-        &ldquo;assessed, no risk&rdquo;.
+        — not yet running. Risk is Oracle&rsquo;s standing score, refreshed
+        daily, with ticks on the track at the review and no-go thresholds. A
+        repo showing <span className="font-mono">not assessed</span> has not
+        enabled <span className="font-mono">oracle</span> — that is a choice, not
+        a gap, and it reads as <span className="font-mono">—</span> rather than{" "}
+        <span className="font-mono">0</span>, which would mean &ldquo;assessed,
+        no risk&rdquo;. For what to work on next rather than which repo is
+        worst, use the <Crumb href="/triage">triage queue</Crumb>.
       </p>
     </div>
   );

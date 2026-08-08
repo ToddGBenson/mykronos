@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { DecisionsTab } from "@/components/decisions";
 import { DispositionForm } from "@/components/disposition";
 import {
   CapabilityDots,
@@ -12,14 +13,14 @@ import {
   SeverityText,
 } from "@/components/primitives";
 import type { Finding, Severity } from "@/lib/api";
-import { getFindings, getRepo, getScanHealth } from "@/lib/server";
+import { getDecisions, getFindings, getRepo, getScanHealth } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
 const TABS = [
   { id: "findings", label: "Findings" },
   { id: "scan-health", label: "Scan health" },
-  { id: "decisions", label: "Risk decisions", phase: "Phase 3" },
+  { id: "decisions", label: "Risk decisions" },
   { id: "remediation", label: "Remediation", phase: "Phase 6" },
   { id: "sscs", label: "SSCS evidence", phase: "Phase 4" },
   { id: "insider", label: "Insider risk", phase: "Phase 4" },
@@ -98,6 +99,8 @@ export default async function RepoPage({
 
       {tab === "scan-health" ? (
         <ScanHealthTab repoId={repoId} />
+      ) : tab === "decisions" ? (
+        <RiskDecisionsTab repoId={repoId} />
       ) : (
         <FindingsTab repoId={repoId} query={query} />
       )}
@@ -308,6 +311,19 @@ function FindingDetail({
         </div>
       </div>
     </div>
+  );
+}
+
+async function RiskDecisionsTab({ repoId }: { repoId: string }) {
+  const result = await getDecisions(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Decisions unavailable" detail={result.error} />;
+  }
+  return (
+    <DecisionsTab
+      repoFullName={result.data.repo_full_name}
+      decisions={result.data.decisions}
+    />
   );
 }
 

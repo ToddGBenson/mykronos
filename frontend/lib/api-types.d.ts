@@ -148,6 +148,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/triage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Triage
+         * @description What to work on next, across the whole portfolio (spec 10 §2.1).
+         *
+         *     The portfolio table answers "which repo is worst". This answers "what do I
+         *     do next" — the question somebody actually has on a Monday morning, and one
+         *     a per-repo view makes you visit forty pages to answer.
+         */
+        get: operations["triage_api_dashboard_triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/findings": {
         parameters: {
             query?: never;
@@ -834,11 +858,18 @@ export interface components {
             capability_states: components["schemas"]["CapabilityStateOut"][];
             /**
              * Risk Score
-             * @description Oracle's score. Null until Phase 3 — deliberately not 0, which would read as 'assessed, no risk' rather than 'not assessed'.
+             * @description Oracle's standing score from the latest portfolio decision. Null means not judged — deliberately not 0, which would read as 'assessed, no risk'. Oracle is opt-in, so a repo that never enabled it stays null.
              */
             risk_score?: number | null;
             /** Recommendation */
             recommendation?: string | null;
+            /**
+             * Raw Risk Score
+             * @description Pre-clamp score. Ranking has to survive the clamp (D-018): two repos both displaying 100 still need an order.
+             */
+            raw_risk_score?: number | null;
+            /** Risk Assessed At */
+            risk_assessed_at?: string | null;
         };
         /**
          * PortfolioSummary
@@ -875,6 +906,11 @@ export interface components {
              * @default 0
              */
             repos_no_go: number;
+            /**
+             * Repos Not Assessed
+             * @default 0
+             */
+            repos_not_assessed: number;
         };
         /**
          * RawAccepted
@@ -1028,6 +1064,56 @@ export interface components {
             reason_supplied: boolean;
             /** Retro Signal */
             retro_signal: string;
+        };
+        /**
+         * TriageItem
+         * @description One row of the cross-portfolio work queue.
+         */
+        TriageItem: {
+            /** Finding Id */
+            finding_id: string;
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            severity: components["schemas"]["Severity"];
+            /** File Path */
+            file_path?: string | null;
+            /** Line Start */
+            line_start?: number | null;
+            /** Package Name */
+            package_name?: string | null;
+            /** Package Version */
+            package_version?: string | null;
+            /** First Seen At */
+            first_seen_at?: string | null;
+            /**
+             * Repo Recommendation
+             * @description The repo's standing Oracle verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
+             */
+            repo_recommendation?: string | null;
+        };
+        /** TriageQueue */
+        TriageQueue: {
+            /** Items */
+            items: components["schemas"]["TriageItem"][];
+            /** Open By Severity */
+            open_by_severity: {
+                [key: string]: number;
+            };
+            /** Total Open */
+            total_open: number;
+            /**
+             * Truncated
+             * @description Whether the limit cut the list short. A queue that silently stops at 100 reads as 'that is all of it'.
+             */
+            truncated: boolean;
         };
         /**
          * TriggeredBy
@@ -1224,6 +1310,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PortfolioOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_api_dashboard_triage_get: {
+        parameters: {
+            query?: {
+                severity?: components["schemas"]["Severity"] | null;
+                capability?: components["schemas"]["Capability"] | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageQueue"];
                 };
             };
             /** @description Validation Error */

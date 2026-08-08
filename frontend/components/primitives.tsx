@@ -214,6 +214,91 @@ export function EmptyState({ title, detail }: { title: string; detail: ReactNode
 }
 
 
+/**
+ * Oracle's verdict.
+ *
+ * `no_go` is coloured critical even though the gate is advisory by default.
+ * The colour describes the finding, not the enforcement — softening it because
+ * nothing is blocked would be the UI quietly disagreeing with the engine.
+ *
+ * Null is "not assessed", which is a real state and not the same as `go`.
+ * Oracle is opt-in, so plenty of repos will sit here permanently.
+ */
+const RECOMMENDATION_TONE: Record<string, PillTone> = {
+  no_go: "critical",
+  review_recommended: "warn",
+  go: "pass",
+};
+
+export function Verdict({
+  recommendation,
+  score,
+}: {
+  recommendation?: string | null;
+  score?: number | null;
+}) {
+  if (!recommendation) {
+    return (
+      <span
+        className="font-mono text-[10px] text-ink-3"
+        title="Oracle is opt-in and has not judged this repository"
+      >
+        not assessed
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <Pill tone={RECOMMENDATION_TONE[recommendation] ?? "muted"}>
+        {recommendation.replace(/_/g, " ")}
+      </Pill>
+      {typeof score === "number" ? (
+        <span className="tabular font-mono text-[10px] text-ink-3">{score}</span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * A 0–100 score as a filled track.
+ *
+ * The number alone is hard to place — is 63 bad? — and the thresholds are the
+ * context that answers it, so they are drawn on the track as ticks rather than
+ * left in the policy file.
+ */
+export function ScoreMeter({
+  score,
+  reviewAt = 30,
+  noGoAt = 70,
+}: {
+  score: number;
+  reviewAt?: number;
+  noGoAt?: number;
+}) {
+  const tone =
+    score >= noGoAt ? "bg-critical" : score >= reviewAt ? "bg-high" : "bg-pass";
+  return (
+    <span
+      className="relative inline-block h-2.5 w-28 border border-rule bg-paper"
+      role="img"
+      aria-label={`Risk score ${score} of 100`}
+    >
+      <span
+        className={`absolute inset-y-0 left-0 ${tone}`}
+        style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+      />
+      {[reviewAt, noGoAt].map((threshold) => (
+        <span
+          key={threshold}
+          title={`${threshold === noGoAt ? "no go" : "review"} at ${threshold}`}
+          className="absolute inset-y-0 w-px bg-ink-3 opacity-70"
+          style={{ left: `${threshold}%` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 export function Crumb({ href, children }: { href: string; children: ReactNode }) {
   return (
     <Link href={href} className="text-accent underline-offset-2 hover:underline">

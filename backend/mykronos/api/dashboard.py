@@ -60,16 +60,63 @@ class PortfolioRowOut(BaseModel):
     risk_score: int | None = Field(
         default=None,
         description=(
-            "Oracle's score. Null until Phase 3 — deliberately not 0, which "
-            "would read as 'assessed, no risk' rather than 'not assessed'."
+            "Oracle's standing score from the latest portfolio decision. Null "
+            "means not judged — deliberately not 0, which would read as "
+            "'assessed, no risk'. Oracle is opt-in, so a repo that never "
+            "enabled it stays null."
         ),
     )
     recommendation: str | None = None
+    raw_risk_score: float | None = Field(
+        default=None,
+        description=(
+            "Pre-clamp score. Ranking has to survive the clamp (D-018): two "
+            "repos both displaying 100 still need an order."
+        ),
+    )
+    risk_assessed_at: datetime | None = None
 
 
 class PortfolioOut(BaseModel):
     summary: PortfolioSummary
     repos: list[PortfolioRowOut]
+
+
+class TriageItem(BaseModel):
+    """One row of the cross-portfolio work queue."""
+
+    finding_id: str
+    repo_id: str
+    repo_full_name: str
+    capability: str
+    rule_id: str
+    title: str
+    severity: Severity
+    file_path: str | None = None
+    line_start: int | None = None
+    package_name: str | None = None
+    package_version: str | None = None
+    first_seen_at: datetime | None = None
+    repo_recommendation: str | None = Field(
+        default=None,
+        description=(
+            "The repo's standing Oracle verdict, carried per row so the queue "
+            "reads without cross-referencing the portfolio. The same critical "
+            "means something different in a repo already called no_go."
+        ),
+    )
+
+
+class TriageQueue(BaseModel):
+    items: list[TriageItem]
+    open_by_severity: dict[str, int]
+    total_open: int
+    truncated: bool = Field(
+        description=(
+            "Whether the limit cut the list short. A queue that silently stops "
+            "at 100 reads as 'that is all of it'."
+        ),
+    )
 
 
 class FindingOut(BaseModel):
@@ -173,9 +220,43 @@ async def portfolio(
                 capability_states=[
                     CapabilityStateOut(**vars(state)) for state in row.capability_states
                 ],
+                risk_score=row.risk_score,
+                recommendation=row.recommendation,
+                raw_risk_score=row.raw_risk_score,
+                risk_assessed_at=row.risk_assessed_at,
             )
             for row in rows
         ],
+    )
+
+
+@router.get("/triage", response_model=TriageQueue)
+async def triage(
+    request: Request,
+    principal: PrincipalDep,
+    severity: Annotated[Severity | None, Query()] = None,
+    capability: Annotated[Capability | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> TriageQueue:
+    """What to work on next, across the whole portfolio (spec 10 §2.1).
+
+    The portfolio table answers "which repo is worst". This answers "what do I
+    do next" — the question somebody actually has on a Monday morning, and one
+    a per-repo view makes you visit forty pages to answer.
+    """
+    with request.app.state.db.session() as session:
+        items, counts = _queries(request).triage_queue(
+            session,
+            severity=severity.value if severity else None,
+            capability=capability.value if capability else None,
+            limit=limit,
+        )
+
+    return TriageQueue(
+        items=[TriageItem(**item) for item in items],
+        open_by_severity=counts,
+        total_open=sum(counts.values()),
+        truncated=len(items) >= limit,
     )
 
 
