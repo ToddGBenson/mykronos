@@ -106,6 +106,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    github_fake_seed_repos: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repos to pre-register in the in-memory GitHub, so the installer "
+            "has something to act on before a real App exists. Ignored entirely "
+            "once github_app_id is set -- it cannot mask a real 'repo not "
+            "found', because with real credentials the fake is not used at all."
+        ),
+    )
+
     github_webhook_secret: str = Field(
         default="",
         description=(

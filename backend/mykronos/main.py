@@ -103,7 +103,11 @@ def _build_github_factory(settings: Settings) -> GitHubClientFactory:
         "MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH). GitHub calls are faked in memory; "
         "no real repository will be touched."
     )
-    return FakeGitHubClientFactory()
+    factory = FakeGitHubClientFactory()
+    for repo in settings.github_fake_seed_repos:
+        factory.client.add_repo(repo, files={"README.md": f"# {repo}\n"})
+        logger.info("Seeded in-memory repository %s", repo)
+    return factory
 
 
 @asynccontextmanager

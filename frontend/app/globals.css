@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/*
+ * Direction A — "The Console".
+ *
+ * A dense operational surface, so the design work is information design
+ * rather than typography: state has to read at a glance, and semantic colour
+ * (critical / high / pass) is kept separate from the accent so that "this
+ * needs attention" never competes with "this is a link".
+ */
+
+@theme {
+  --color-paper: #f4f6f4;
+  --color-paper-2: #eaeeeb;
+  --color-paper-3: #dfe4e0;
+  --color-ink: #15181a;
+  --color-ink-2: #3c4643;
+  --color-ink-3: #6b7873;
+  --color-rule: #c6cfc9;
+  --color-rule-soft: #d9e0db;
+
+  --color-accent: #2e5c4f;
+  --color-accent-2: #4a8874;
+  --color-accent-wash: #e2ede7;
+
+  --color-critical: #b3392c;
+  --color-high: #c0741c;
+  --color-medium: #8a7b2e;
+  --color-low: #6b7873;
+  --color-info: #8f9a95;
+  --color-pass: #3e7a5e;
+
+  --color-critical-wash: #f6e3e0;
+  --color-high-wash: #f8ebdc;
+  --color-pass-wash: #e1efe8;
+
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-paper: #101312;
+    --color-paper-2: #171b19;
+    --color-paper-3: #1f2523;
+    --color-ink: #e8eeea;
+    --color-ink-2: #b3beb8;
+    --color-ink-3: #7e8c86;
+    --color-rule: #2e3835;
+    --color-rule-soft: #242c29;
+
+    --color-accent: #6fbfa2;
+    --color-accent-2: #4e9c82;
+    --color-accent-wash: #1a2723;
+
+    --color-critical: #e4796a;
+    --color-high: #dfa55c;
+    --color-medium: #c4b45e;
+    --color-low: #7e8c86;
+    --color-info: #6b7873;
+    --color-pass: #6fbfa2;
+
+    --color-critical-wash: #2a1a18;
+    --color-high-wash: #2a2117;
+    --color-pass-wash: #16241e;
+  }
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  font-feature-settings: "cv02", "cv03", "cv04";
+}
+
+/* Digits in a column have to line up to be comparable at a glance. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Wide content scrolls inside its own container; the page body never does. */
+.scroll-x {
+  overflow-x: auto;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

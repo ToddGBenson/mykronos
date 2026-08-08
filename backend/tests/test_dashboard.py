@@ -179,7 +179,7 @@ class TestRawOutputIsAdminOnly:
             f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
         ).json()
         assert body["raw_output_included"] is True
-        assert "raw_finding_json" in body["findings"][0]
+        assert body["findings"][0]["raw_finding_json"] is not None
 
     def test_viewers_do_not(
         self, client: TestClient, viewer_auth: dict[str, str], seeded
@@ -191,8 +191,10 @@ class TestRawOutputIsAdminOnly:
         ).json()
 
         assert body["raw_output_included"] is False
-        assert "raw_finding_json" not in body["findings"][0]
-        assert "code_snippet" not in body["findings"][0]
+        # Null, not absent: the value is what must not be transmitted, and a
+        # stable key shape spares every caller an optional-property dance.
+        assert body["findings"][0]["raw_finding_json"] is None
+        assert body["findings"][0]["code_snippet"] is None
 
     def test_viewers_can_still_see_the_findings_themselves(
         self, client: TestClient, viewer_auth: dict[str, str], seeded

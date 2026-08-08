@@ -52,6 +52,58 @@ jobs:
       - name: Tests
         run: pytest -q --durations=10
 
+  frontend:
+    name: Frontend (lint, types, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # The generated client is derived from the backend's OpenAPI, so the
+      # contract has to be regenerated here rather than trusted from the
+      # committed copy. A backend change that breaks the frontend should fail
+      # this job, not surface as a runtime error in a browser.
+      - name: Set up Python for the schema dump
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Regenerate the API contract
+        run: |
+          cd ../backend
+          pip install --quiet -e .
+          cd ../frontend
+          python ../scripts/dump_openapi.py openapi.json
+          npx openapi-typescript openapi.json -o lib/api-types.d.ts
+
+      - name: Fail if the generated client is stale
+        run: |
+          if ! git diff --quiet -- lib/api-types.d.ts; then
+            echo "::error::The committed API types are out of date."
+            echo "The backend's OpenAPI schema has changed. Regenerate with:"
+            echo "  python scripts/dump_openapi.py frontend/openapi.json"
+            echo "  cd frontend && npx openapi-typescript openapi.json -o lib/api-types.d.ts"
+            git diff --stat -- lib/api-types.d.ts
+            exit 1
+          fi
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
   secrets:
     name: No committed secrets
     runs-on: ubuntu-latest

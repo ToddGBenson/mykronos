@@ -72,11 +72,47 @@ class PortfolioOut(BaseModel):
     repos: list[PortfolioRowOut]
 
 
+class FindingOut(BaseModel):
+    """One finding as the dashboard serves it.
+
+    Modelled rather than passed through as a bare dict so the OpenAPI schema —
+    and therefore the generated TypeScript — describes the real shape. A
+    `dict[str, Any]` response types the whole frontend as `unknown` and pushes
+    the guessing into a cast.
+
+    `code_snippet` and `raw_finding_json` are null for viewer roles rather than
+    absent. The security property is that the *value* is not transmitted
+    (spec 12 §5); a stable key shape costs nothing and spares every caller an
+    optional-property dance.
+    """
+
+    finding_id: str
+    capability: str
+    rule_id: str
+    title: str
+    description: str = ""
+    severity: Severity
+    cvss_score: float | None = None
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    symbol: str | None = None
+    package_name: str | None = None
+    package_version: str | None = None
+    status: str
+    fingerprint_version: str | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    resolved_at: datetime | None = None
+    code_snippet: str | None = None
+    raw_finding_json: Any = None
+
+
 class FindingsPage(BaseModel):
     total: int
     limit: int
     offset: int
-    findings: list[dict[str, Any]]
+    findings: list[FindingOut]
     raw_output_included: bool = Field(
         description="False for viewer roles; raw output is admin-only (spec 12 §5)."
     )
@@ -170,7 +206,7 @@ async def repo_findings(
         total=total,
         limit=limit,
         offset=offset,
-        findings=findings,
+        findings=[FindingOut.model_validate(f) for f in findings],
         raw_output_included=principal.may_see_raw_output,
     )
 
