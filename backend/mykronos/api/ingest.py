@@ -20,24 +20,39 @@ Three properties this module is responsible for:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 
+from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
+from mykronos.aegis import to_row as aegis_row
+from mykronos.atlas import evidence_id as atlas_evidence_id
+from mykronos.atlas import score as trust_score
+from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
+from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.fingerprint import compute_finding_id
+from mykronos.github.client import GitHubError
 from mykronos.schemas import (
+    AegisAccepted,
+    AtlasAccepted,
     Capability,
     FindingBatch,
     FindingStatus,
     HealthResponse,
     IngestAccepted,
+    InsiderRiskSubmission,
     RawAccepted,
     ScanRunSubmission,
+    SscsEvidenceSubmission,
     utcnow,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
 
@@ -301,24 +316,160 @@ def _safe_segment(value: str) -> str:
     return cleaned.strip(".-") or "unknown"
 
 
+@router.post("/aegis", response_model=AegisAccepted)
+async def ingest_aegis(
+    request: Request, body: InsiderRiskSubmission, token: TokenDep
+) -> AegisAccepted:
+    """Score a pull request for insider risk and record it (spec 06 §4).
+
+    The workflow reports *observations* — which signals fired and why — and
+    the platform combines them. Scoring here rather than on the runner is what
+    makes the recommendation reproducible from the stored breakdown, and it is
+    also what stops a repo silently running a forked scorer with its own
+    thresholds.
+
+    Read spec 06 §9 before extending this. The row is personal data.
+    """
+    _require_capability(token, Capability.AEGIS.value)
+
+    with request.app.state.db.session() as session:
+        config = capability_config_for(session, token.repo_full_name, "aegis")
+
+    assessment = assess(
+        body,
+        token.repo_full_name,
+        block_threshold=int(config.get("block_threshold", 80)),
+        ai_disclosure_required=bool(config.get("ai_disclosure_required", True)),
+        ai_classifier_configured=bool(config.get("ai_classifier_url")),
+    )
+
+    check_run_id: str | None = None
+    check_run_error: str | None = None
+    blocking = bool(config.get("blocking", False))
+    github = _installation_client(request, token.repo_full_name)
+    if github is not None:
+        try:
+            check_run_id = await github.create_check_run(
+                token.repo_full_name,
+                name=AEGIS_CHECK_RUN_NAME,
+                head_sha=body.commit_sha,
+                # Advisory unless the repo opted in, same as every other
+                # capability (spec 04 §5). A red check on a heuristic about a
+                # person is the fastest way to make this capability hated.
+                conclusion=(
+                    "failure"
+                    if blocking and assessment.is_block
+                    else "neutral"
+                    if assessment.recommendation != "pass"
+                    else "success"
+                ),
+                title=(
+                    f"{assessment.recommendation.replace('_', ' ')} — "
+                    f"{assessment.insider_risk_score}/100"
+                ),
+                summary=render_check_run_summary(assessment, body),
+            )
+        except GitHubError as exc:
+            # Same rule as Oracle: the row is the record, the Check Run is how
+            # it is displayed, and losing the display must not lose the row.
+            check_run_error = str(exc)
+            logger.warning(
+                "Could not post the Aegis check run for %s#%s: %s",
+                token.repo_full_name,
+                body.pr_number,
+                exc,
+            )
+
+    request.app.state.buffer.append(
+        "insider_risk_signals",
+        [aegis_row(assessment, body, token.repo_full_name, check_run_id=check_run_id)],
+    )
+
+    return AegisAccepted(
+        accepted=1,
+        signal_id=assessment.signal_id,
+        insider_risk_score=assessment.insider_risk_score,
+        recommendation=assessment.recommendation,
+        blocking=blocking,
+        check_run_id=check_run_id,
+        check_run_error=check_run_error,
+    )
+
+
+@router.post("/atlas", response_model=AtlasAccepted)
+async def ingest_atlas(
+    request: Request, body: SscsEvidenceSubmission, token: TokenDep
+) -> AtlasAccepted:
+    """Record supply-chain evidence for a commit (spec 07 §4).
+
+    The workflow reports dependency counts per ecosystem; the trust score is
+    computed here, because spec 07 §7 makes reproducibility an acceptance
+    criterion and a score the runner calculates drifts the moment two repos
+    are on different versions of the action.
+
+    Per-vulnerability detail goes in as ordinary `Finding` rows through
+    `/api/ingest/findings` with `capability = atlas` (spec 07 §3), so
+    dependency vulnerabilities appear in the same portfolio views as
+    everything else. This endpoint writes only the aggregate.
+    """
+    _require_capability(token, Capability.ATLAS.value)
+
+    assessment = trust_score(body.ecosystems)
+
+    with request.app.state.db.session() as session:
+        config = capability_config_for(session, token.repo_full_name, "atlas")
+
+    minimum = int(config.get("min_trust_score", 50))
+    blocking = bool(config.get("blocking", False))
+
+    request.app.state.buffer.append(
+        "sscs_evidence", [atlas_row(body, assessment, token.repo_full_name)]
+    )
+
+    return AtlasAccepted(
+        accepted=1,
+        evidence_id=atlas_evidence_id(token.repo_full_name, body.commit_sha),
+        trust_score=assessment.trust_score,
+        raw_trust_score=assessment.raw_trust_score,
+        dependency_count=assessment.dependency_count,
+        vulnerable_dependency_count=assessment.vulnerable_dependency_count,
+        min_trust_score=minimum,
+        blocking=blocking,
+        below_minimum=assessment.trust_score < minimum,
+    )
+
+
 @router.post("/{capability}", response_model=IngestAccepted)
 async def ingest_capability_payload(
     capability: Capability,
     token: TokenDep,
 ) -> IngestAccepted:
-    """Capability-specific tables: InsiderRiskSignal, SscsEvidence,
-    RemediationEvent, RiskDecision.
+    """Capability-specific tables that do not have an endpoint yet.
 
-    Declared here because spec 05 §4 defines the route, but the target tables
-    arrive with their capabilities in Phases 3-6. Returning 501 rather than 404
-    keeps the contract visible instead of looking like a routing bug.
+    Declared here because spec 05 §4 defines the route. Aegis and Atlas have
+    their own handlers above — registered first, so this catch-all cannot
+    shadow them. Returning 501 rather than 404 keeps the contract visible
+    instead of looking like a routing bug.
     """
     _require_capability(token, capability.value)
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=(
             f"Ingestion for '{capability.value}' is not implemented yet. "
-            "Phases 0-1 cover scan_runs and findings only "
-            "(specs/13-build-roadmap.md §3)."
+            "Patchwork arrives in Phase 6 (specs/13-build-roadmap.md §3)."
         ),
+    )
+
+
+def _installation_client(request: Request, repo_full_name: str) -> Any:
+    with request.app.state.db.session() as session:
+        onboarding = session.execute(
+            select(RepoOnboarding).where(
+                RepoOnboarding.github_repo_full_name == repo_full_name
+            )
+        ).scalars().first()
+    if onboarding is None:
+        return None
+    return request.app.state.github_factory.for_installation(
+        onboarding.github_installation_id
     )

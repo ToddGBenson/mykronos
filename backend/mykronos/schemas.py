@@ -181,6 +181,130 @@ class FindingBatch(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Aegis — insider risk (spec 06)
+# --------------------------------------------------------------------------
+
+
+class SubSignal(BaseModel):
+    """One contributing insider-risk signal, with the reason it fired.
+
+    The rationale is required, not optional (spec 06 §6). A number with no
+    reason attached is not something a person can dispute, and this score is
+    about a person — see spec 06 §9.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=64)
+    score: float = Field(ge=0.0, le=100.0)
+    rationale: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Plain-language statement of what was observed and why it scored.",
+    )
+
+
+class InsiderRiskSubmission(BaseModel):
+    """What the Aegis workflow posts (spec 06 §3, §4).
+
+    No `repo_full_name` and no `signal_id`: the repo comes from the token and
+    the id is derived server-side from repo + PR + commit, so a re-run on an
+    unchanged head commit upserts instead of appending.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pr_number: int = Field(ge=1)
+    commit_sha: str = Field(min_length=1, max_length=64)
+    author_login: str = Field(
+        min_length=1,
+        max_length=255,
+        description=(
+            "The GitHub login whose pull request was scored. Required: a score "
+            "you cannot attribute is one nobody can challenge and nobody can "
+            "delete on request (spec 06 §9)."
+        ),
+    )
+    signals: list[SubSignal] = Field(default_factory=list, max_length=50)
+    ai_authorship_flag: bool | None = Field(
+        default=None,
+        description=(
+            "True if AI authorship is likely and undisclosed, false if "
+            "evaluated and human, null if not evaluated. Null is the default "
+            "because the classifier is opt-in (spec 06 §5)."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Atlas — supply-chain evidence (spec 07)
+# --------------------------------------------------------------------------
+
+
+class EcosystemEvidence(BaseModel):
+    """Per-ecosystem detail for one repo.
+
+    A monorepo scans each ecosystem independently and sums into one evidence
+    row (spec 07 §8); this is the detail the sum would otherwise destroy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ecosystem: str = Field(min_length=1, max_length=64)
+    tool_name: str = Field(default="", max_length=128)
+    dependency_count: int = Field(default=0, ge=0)
+    critical_vulns: int = Field(default=0, ge=0)
+    high_vulns: int = Field(default=0, ge=0)
+    medium_vulns: int = Field(default=0, ge=0)
+    low_vulns: int = Field(default=0, ge=0)
+    floating_versions: int = Field(
+        default=0, ge=0, description="Dependencies not pinned to an exact version."
+    )
+    stale_dependencies: int = Field(
+        default=0, ge=0, description="No release in 2+ years."
+    )
+    maintenance_data_available_for: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Dependencies whose maintenance recency could actually be "
+            "determined. Private-registry packages have none and are excluded "
+            "from the stale ratio's denominator rather than counted as fresh "
+            "or as stale (spec 07 §8). Null means the tool did not report it, "
+            "in which case dependency_count is used."
+        ),
+    )
+
+
+class SscsEvidenceSubmission(BaseModel):
+    """What the Atlas workflow posts (spec 07 §3, §4).
+
+    Counts rather than a trust score: the score is computed server-side from
+    §5's formula so it is reproducible and cannot drift between the workflow's
+    version of the arithmetic and the platform's.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    commit_sha: str = Field(min_length=1, max_length=64)
+    tag_or_release: str | None = Field(default=None, max_length=255)
+    sbom_ref: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Raw-output reference for the generated SBOM (spec 05 §7).",
+    )
+    ecosystems: list[EcosystemEvidence] = Field(default_factory=list, max_length=50)
+    provenance: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Minimal SLSA-style statement: builder id, source repo and commit, "
+            "workflow run id, timestamp. Straight from the runner's GITHUB_* "
+            "environment."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
 # Responses
 # --------------------------------------------------------------------------
 
@@ -191,6 +315,42 @@ class IngestAccepted(BaseModel):
     accepted: int
     scan_run_id: str | None = None
     buffered_at: datetime = Field(default_factory=utcnow)
+    detail: str = "Written to the durability buffer."
+
+
+class AegisAccepted(BaseModel):
+    """The scored result, returned so the workflow can render it in its log.
+
+    The recommendation is echoed rather than recomputed on the runner: one
+    definition of the arithmetic, in the platform (spec 06 §4).
+    """
+
+    accepted: int
+    signal_id: str
+    insider_risk_score: int
+    recommendation: str
+    blocking: bool
+    check_run_id: str | None = None
+    check_run_error: str | None = None
+    detail: str = "Written to the durability buffer."
+
+
+class AtlasAccepted(BaseModel):
+    accepted: int
+    evidence_id: str
+    trust_score: int
+    raw_trust_score: float
+    dependency_count: int
+    vulnerable_dependency_count: int
+    min_trust_score: int
+    blocking: bool
+    below_minimum: bool = Field(
+        description=(
+            "Whether the score is under this repo's configured floor. Reported "
+            "even when blocking is off, so the workflow log says what would "
+            "have happened."
+        )
+    )
     detail: str = "Written to the durability buffer."
 
 

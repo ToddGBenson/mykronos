@@ -301,25 +301,47 @@ class TestAgeEscalation:
 class TestSnapshotCompleteness:
     """spec 09 §9: no input category is silently omitted."""
 
-    UNAVAILABLE = [
+    #: Every input category spec 09 §4 names. All must appear in every
+    #: snapshot, whether or not they had anything to contribute.
+    CATEGORIES = [
         "insider_risk",
         "sscs_trust",
         "remediation_in_flight",
         "false_positive_dampening",
     ]
 
+    #: Capabilities that do not exist yet, as opposed to ones that exist and
+    #: had nothing to say for this particular decision.
+    NOT_BUILT = ["remediation_in_flight", "false_positive_dampening"]
+
     def test_unavailable_categories_are_present_and_explicitly_null(
         self, client, auth, catalog, run_compaction, engine
     ) -> None:
         """'We looked and found nothing' and 'we never looked' produce the
-        same score and very different levels of trust."""
+        same score and very different levels of trust.
+
+        The reason string is asserted to exist rather than to match a
+        particular phrase: what matters is that the absence is explained, and
+        pinning the wording would just break every time a capability ships.
+        """
         seed(client, auth, run_compaction, [critical(0)])
         snapshot = engine.evaluate(REPO).inputs_snapshot
 
-        for category in self.UNAVAILABLE:
+        for category in self.CATEGORIES:
             assert category in snapshot, f"{category} was omitted entirely"
             assert snapshot[category]["available"] is False
             assert snapshot[category]["contribution"] == 0.0
+            assert snapshot[category]["reason"].strip(), (
+                f"{category} is unavailable but does not say why"
+            )
+
+    def test_unbuilt_capabilities_say_so(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        seed(client, auth, run_compaction, [critical(0)])
+        snapshot = engine.evaluate(REPO).inputs_snapshot
+
+        for category in self.NOT_BUILT:
             assert "not implemented yet" in snapshot[category]["reason"]
 
     def test_every_term_carries_its_arithmetic(

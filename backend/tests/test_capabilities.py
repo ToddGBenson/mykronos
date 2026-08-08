@@ -82,10 +82,10 @@ class TestValidation:
         assert "arn:aws:iam::" in str(excinfo.value)
 
     def test_capabilities_without_a_schema_are_refused_clearly(self) -> None:
-        """Aegis and friends arrive in later phases. An empty config block
-        would imply they are ready."""
+        """Patchwork arrives in Phase 6. An empty config block would imply it
+        is ready."""
         with pytest.raises(CapabilityConfigError) as excinfo:
-            validate_config("aegis", {})
+            validate_config("patchwork", {})
         assert "does not accept configuration yet" in str(excinfo.value)
 
     def test_the_error_names_the_offending_field(self) -> None:

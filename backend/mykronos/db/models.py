@@ -60,6 +60,30 @@ def get_or_create_organization(session: Session, login: str) -> Organization:
     return org
 
 
+def capability_config_for(
+    session: Session, repo_full_name: str, capability: str
+) -> dict[str, Any]:
+    """This repo's stored overrides for one capability, or `{}`.
+
+    Returns the raw stored dict rather than a validated model: callers want
+    one or two settings, and re-validating here would mean a config written
+    under an older schema could raise from an unrelated read path.
+    """
+    onboarding = session.execute(
+        select(RepoOnboarding).where(
+            RepoOnboarding.github_repo_full_name == repo_full_name
+        )
+    ).scalars().first()
+    if onboarding is None:
+        return {}
+    config = session.execute(
+        select(CapabilityConfig)
+        .where(CapabilityConfig.repo_onboarding_id == onboarding.id)
+        .where(CapabilityConfig.capability == capability)
+    ).scalars().first()
+    return dict(config.config_json or {}) if config else {}
+
+
 class RepoOnboarding(Base):
     """spec 02 §3, extended by spec 03 §4 with the idempotency fields."""
 

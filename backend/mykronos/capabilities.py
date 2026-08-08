@@ -136,9 +136,98 @@ class CloudConfig(BaseCapabilityConfig):
         return value
 
 
-#: Capabilities with a configurable scanner. Aegis, Atlas, Patchwork and
-#: Oracle arrive with their own config blocks in later phases, and are absent
-#: here rather than given an empty one that would imply they are ready.
+class AegisConfig(BaseCapabilityConfig):
+    """Insider-risk gate (spec 06 §5).
+
+    Two fields here carry more weight than their types suggest:
+    `ai_classifier_url` is the only setting in the whole platform that causes
+    repository content to leave the runner, and `retention_days` is what keeps
+    a table of scores about named people from becoming a permanent record.
+    """
+
+    sensitive_paths: list[str] = Field(
+        default_factory=lambda: [
+            "**/auth/**",
+            "**/*secret*",
+            "**/.github/workflows/**",
+            "**/iam/**",
+        ],
+        max_length=200,
+    )
+    block_threshold: int = Field(
+        default=80,
+        ge=1,
+        le=100,
+        description=(
+            "Score at or above which Aegis recommends blocking. No two "
+            "signals can reach the default between them, so a block always "
+            "requires at least three independent signals agreeing."
+        ),
+    )
+    ai_disclosure_required: bool = Field(default=True)
+    ai_classifier_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        description=(
+            "Endpoint for the AI-authorship classifier. Null — the default — "
+            "disables the signal entirely and no diff leaves the runner. There "
+            "is deliberately no default endpoint: a deployment that changed no "
+            "configuration must never be shipping its code to a third party "
+            "(spec 12 §5.2)."
+        ),
+    )
+    retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description=(
+            "How long insider-risk rows are kept before the purge job deletes "
+            "them (spec 06 §9). The signal's value is in reviewing the pull "
+            "request it is about; after that it is only a record of somebody "
+            "having been suspected."
+        ),
+    )
+
+    @field_validator("ai_classifier_url")
+    @classmethod
+    def _classifier_url_shape(cls, value: str | None) -> str | None:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"ai_classifier_url must be an http(s) URL, got {value!r}. "
+                "Leave it unset to disable AI-authorship classification."
+            )
+        return value
+
+
+class AtlasConfig(BaseCapabilityConfig):
+    """Supply-chain evidence (spec 07 §6)."""
+
+    ecosystems: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Auto-detected when empty; set to force or limit the scan.",
+    )
+    sbom_format: str = Field(default="cyclonedx", max_length=32)
+    min_trust_score: int = Field(
+        default=50,
+        ge=0,
+        le=100,
+        description="With blocking on, a release below this fails its workflow.",
+    )
+
+    @field_validator("sbom_format")
+    @classmethod
+    def _sbom_format_known(cls, value: str) -> str:
+        if value not in {"cyclonedx", "spdx"}:
+            raise ValueError(
+                f"sbom_format must be 'cyclonedx' or 'spdx', got {value!r}."
+            )
+        return value
+
+
+#: Capabilities with a configurable scanner. Patchwork and Oracle arrive with
+#: their own config blocks in later phases, and are absent here rather than
+#: given an empty one that would imply they are ready.
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -146,6 +235,8 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.IAC.value: IacConfig,
     Capability.DAST.value: DastConfig,
     Capability.CLOUD.value: CloudConfig,
+    Capability.AEGIS.value: AegisConfig,
+    Capability.ATLAS.value: AtlasConfig,
 }
 
 

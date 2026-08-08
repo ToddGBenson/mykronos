@@ -91,10 +91,60 @@ RISK_DECISIONS_COLUMNS: Final[list[Column]] = [
     ("gate_outcome", "VARCHAR"),
 ]
 
+INSIDER_RISK_SIGNALS_COLUMNS: Final[list[Column]] = [
+    # Derived from repo + pr_number + commit_sha (spec 06 §3), not random: the
+    # workflow triggers on `synchronize`, so an unchanged head commit
+    # re-evaluated must upsert rather than append.
+    ("signal_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    ("pr_number", "INTEGER"),
+    ("commit_sha", "VARCHAR"),
+    # Personal data. Required, and admin-only at the query layer (spec 06 §9).
+    # Omitting it would not de-identify the row -- repo plus PR number does
+    # that trivially -- it would only make the row unauditable and
+    # undeletable.
+    ("author_login", "VARCHAR"),
+    ("insider_risk_score", "INTEGER"),
+    # Per-signal sub-scores each carrying a rationale string (spec 06 §6). A
+    # number with no reason attached is not something a person can dispute.
+    ("signal_breakdown", "VARCHAR"),
+    # Three states, not two: true (likely and undisclosed), false (evaluated,
+    # human), null (not evaluated -- no classifier configured, or it was
+    # unreachable). Collapsing null into false would report "we checked, it is
+    # human" when nothing checked.
+    ("ai_authorship_flag", "BOOLEAN"),
+    ("recommendation", "VARCHAR"),
+    ("evaluated_at", "TIMESTAMP"),
+    ("github_check_run_id", "VARCHAR"),
+]
+
+SSCS_EVIDENCE_COLUMNS: Final[list[Column]] = [
+    # Derived from repo + commit_sha (spec 07 §3). A random UUID could not
+    # satisfy §7's "exactly one row per tagged release".
+    ("evidence_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    ("commit_sha", "VARCHAR"),
+    ("tag_or_release", "VARCHAR"),
+    ("sbom_ref", "VARCHAR"),
+    ("dependency_count", "INTEGER"),
+    ("vulnerable_dependency_count", "INTEGER"),
+    ("trust_score", "INTEGER"),
+    # Pre-clamp. Ranking has to survive the floor at 0, exactly as Oracle's
+    # raw_score has to survive the ceiling at 100 (D-018).
+    ("raw_trust_score", "DOUBLE"),
+    ("provenance_json", "VARCHAR"),
+    # Kept alongside the aggregate so a monorepo's per-ecosystem detail is not
+    # lost to the sum (spec 07 §8).
+    ("ecosystems_json", "VARCHAR"),
+    ("evaluated_at", "TIMESTAMP"),
+]
+
 TABLES: Final[dict[str, list[Column]]] = {
     "findings": FINDINGS_COLUMNS,
     "scan_runs": SCAN_RUNS_COLUMNS,
     "risk_decisions": RISK_DECISIONS_COLUMNS,
+    "insider_risk_signals": INSIDER_RISK_SIGNALS_COLUMNS,
+    "sscs_evidence": SSCS_EVIDENCE_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
@@ -102,6 +152,8 @@ PRIMARY_KEY: Final[dict[str, str]] = {
     "findings": "finding_id",
     "scan_runs": "scan_run_id",
     "risk_decisions": "decision_id",
+    "insider_risk_signals": "signal_id",
+    "sscs_evidence": "evidence_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -111,6 +163,8 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
     "findings": "first_seen_at",
     "scan_runs": "started_at",
     "risk_decisions": "evaluated_at",
+    "insider_risk_signals": "evaluated_at",
+    "sscs_evidence": "evaluated_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -120,6 +174,8 @@ MUTATION_TS: Final[dict[str, str]] = {
     "findings": "last_seen_at",
     "scan_runs": "ingested_at",
     "risk_decisions": "evaluated_at",
+    "insider_risk_signals": "evaluated_at",
+    "sscs_evidence": "evaluated_at",
 }
 
 
@@ -136,6 +192,15 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     "findings": (),
     "scan_runs": (),
     "risk_decisions": ("human_override", "github_check_run_id", "gate_outcome"),
+    # The Check Run is posted after the score is computed, so its id can
+    # arrive on a later row than the assessment it belongs to.
+    "insider_risk_signals": ("github_check_run_id",),
+    # A push scan and a release scan of the same commit can land in one batch.
+    # The release row carries the SBOM and the tag; the push row carries
+    # neither. Without these declared, the collapse would keep whichever
+    # arrived last and a release could silently lose its evidence -- which is
+    # precisely the failure D-020 describes.
+    "sscs_evidence": ("tag_or_release", "sbom_ref"),
 }
 
 

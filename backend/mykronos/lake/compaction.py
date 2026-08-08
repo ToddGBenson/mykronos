@@ -74,6 +74,34 @@ _UPDATE_SETS: dict[str, str] = {
         github_check_run_id = coalesce(i.github_check_run_id, part.github_check_run_id),
         gate_outcome        = coalesce(i.gate_outcome, part.gate_outcome)
     """,
+    # Re-evaluating a head commit replaces the whole assessment. Unlike a risk
+    # decision, an insider-risk signal is not a historical verdict to preserve
+    # -- it is the current read on one specific commit, and keeping a series of
+    # them per commit would build exactly the per-author history spec 06 §9
+    # forbids.
+    "insider_risk_signals": """
+        author_login        = i.author_login,
+        insider_risk_score  = i.insider_risk_score,
+        signal_breakdown    = i.signal_breakdown,
+        ai_authorship_flag  = i.ai_authorship_flag,
+        recommendation      = i.recommendation,
+        evaluated_at        = i.evaluated_at,
+        github_check_run_id = coalesce(i.github_check_run_id, part.github_check_run_id)
+    """,
+    # A release adds the SBOM and tag to the row a push already created for
+    # that commit, so those two coalesce rather than overwrite -- a later push
+    # scan of the same commit must not blank the release evidence.
+    "sscs_evidence": """
+        tag_or_release              = coalesce(i.tag_or_release, part.tag_or_release),
+        sbom_ref                    = coalesce(i.sbom_ref, part.sbom_ref),
+        dependency_count            = i.dependency_count,
+        vulnerable_dependency_count = i.vulnerable_dependency_count,
+        trust_score                 = i.trust_score,
+        raw_trust_score             = i.raw_trust_score,
+        provenance_json             = i.provenance_json,
+        ecosystems_json             = i.ecosystems_json,
+        evaluated_at                = i.evaluated_at
+    """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,
         capability             = i.capability,

@@ -161,13 +161,29 @@ class TestIngestion:
         self, client: TestClient, auth: dict[str, str]
     ) -> None:
         """The route is in spec 05 §4; its tables arrive in later phases.
-        501 keeps the contract visible instead of looking like a routing bug."""
-        token = issue_token(client, REPO, "aegis")
+        501 keeps the contract visible instead of looking like a routing bug.
+
+        Patchwork, because Aegis and Atlas now have real handlers."""
+        token = issue_token(client, REPO, "patchwork")
         response = client.post(
-            "/api/ingest/aegis", headers={"Authorization": f"Bearer {token}"}
+            "/api/ingest/patchwork", headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 501
         assert "not implemented yet" in response.json()["detail"]
+
+    def test_the_catch_all_does_not_shadow_a_real_handler(
+        self, client: TestClient
+    ) -> None:
+        """`/{capability}` matches "aegis" too. Route order is what keeps the
+        real handler reachable, and route order is easy to break by moving a
+        function, so it is pinned here."""
+        token = issue_token(client, REPO, "aegis")
+        response = client.post(
+            "/api/ingest/aegis",
+            json={"pr_number": 1, "commit_sha": "abc", "author_login": "someone"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, response.text
 
 
 class TestRawArchive:

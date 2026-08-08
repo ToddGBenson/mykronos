@@ -85,6 +85,69 @@ def _band_contribution(weight: float, count: int) -> float:
     return weight * math.log2(1 + count)
 
 
+def _insider_snapshot(
+    insider: dict[str, Any] | None, *, for_gate: bool, multiplier: float
+) -> dict[str, Any]:
+    """The insider-risk category, present whether or not it has anything to say.
+
+    Three distinct absences, each named. Reporting all of them as `score: 0`
+    would let a repo with Aegis switched off look identical to one where Aegis
+    ran and found nothing — a difference of some importance to the person the
+    score is about.
+    """
+    if not for_gate:
+        return {
+            "available": False,
+            "score": None,
+            "contribution": 0.0,
+            "reason": (
+                "Insider risk is about a specific pull request, so it is not "
+                "consulted for a standing portfolio score (spec 06 §9)."
+            ),
+        }
+    if insider is None:
+        return {
+            "available": False,
+            "score": None,
+            "contribution": 0.0,
+            "reason": (
+                "No Aegis assessment exists for this pull request — the "
+                "capability is not enabled, or its workflow has not run yet."
+            ),
+        }
+    return {
+        "available": True,
+        "score": insider["score"],
+        "recommendation": insider["recommendation"],
+        "assessed_commit": insider["commit_sha"],
+        "multiplier": multiplier,
+        "contribution": round(insider["score"] * multiplier, 2),
+    }
+
+
+def _sscs_snapshot(sscs: dict[str, Any] | None, *, cap: float) -> dict[str, Any]:
+    if sscs is None:
+        return {
+            "available": False,
+            "trust_score": None,
+            "contribution": 0.0,
+            "reason": (
+                "No Atlas evidence exists for this repository — the capability "
+                "is not enabled, or its workflow has not run yet."
+            ),
+        }
+    shortfall = 100 - sscs["trust_score"]
+    return {
+        "available": True,
+        "trust_score": sscs["trust_score"],
+        "vulnerable_dependency_count": sscs["vulnerable_dependency_count"],
+        "dependency_count": sscs["dependency_count"],
+        "assessed_commit": sscs["commit_sha"],
+        "penalty_cap": cap,
+        "contribution": round(float(min(max(shortfall, 0), cap)), 2),
+    }
+
+
 class OracleEngine:
     def __init__(self, catalog: Catalog, policy: Policy) -> None:
         self.catalog = catalog
@@ -151,6 +214,73 @@ class OracleEngine:
         aged = {str(severity): int(count) for severity, count in aged_rows}
         return counts, aged
 
+    def _insider_risk(
+        self, repo_full_name: str, pr_number: int | None
+    ) -> dict[str, Any] | None:
+        """The Aegis score for the pull request under discussion (spec 06 §8).
+
+        Deliberately scoped to *this* pull request, and only for a PR gate.
+        Aegis scores a change by a person, and reaching for "the worst recent
+        insider-risk score in this repo" would carry one contributor's signal
+        into an unrelated colleague's decision — which is exactly the
+        cross-pull-request aggregation spec 06 §9 forbids.
+
+        Returns None when there is nothing to read, which the snapshot renders
+        as an explicit "not available" rather than as zero.
+        """
+        if pr_number is None:
+            return None
+
+        rows = self.catalog.query(
+            """
+            SELECT insider_risk_score, recommendation, commit_sha, evaluated_at
+            FROM insider_risk_signals
+            WHERE repo_full_name = ? AND pr_number = ?
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [repo_full_name, pr_number],
+        )
+        if not rows:
+            return None
+        score, recommendation, commit_sha, evaluated_at = rows[0]
+        return {
+            "score": int(score),
+            "recommendation": str(recommendation),
+            "commit_sha": str(commit_sha),
+            "evaluated_at": evaluated_at,
+        }
+
+    def _sscs_trust(self, repo_full_name: str) -> dict[str, Any] | None:
+        """The most recent Atlas evidence for this repo (spec 07 §9).
+
+        Repo-scoped rather than commit-scoped: a dependency tree does not
+        change per pull request unless a manifest was touched, and pinning the
+        lookup to the gated commit would report "no evidence" for every PR
+        that did not happen to trigger an Atlas run.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT trust_score, vulnerable_dependency_count, dependency_count,
+                   commit_sha, evaluated_at
+            FROM sscs_evidence
+            WHERE repo_full_name = ?
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return None
+        trust, vulnerable, total, commit_sha, evaluated_at = rows[0]
+        return {
+            "trust_score": int(trust),
+            "vulnerable_dependency_count": int(vulnerable),
+            "dependency_count": int(total),
+            "commit_sha": str(commit_sha),
+            "evaluated_at": evaluated_at,
+        }
+
     # -- scoring --------------------------------------------------------
 
     def evaluate(
@@ -214,6 +344,49 @@ class OracleEngine:
                 )
             )
 
+        # 3. Insider risk (spec 06). Only for a pull-request gate, and only
+        #    about that pull request — see _insider_risk.
+        insider = self._insider_risk(repo_full_name, pr_number if for_gate else None)
+        if insider and insider["score"] > 0:
+            contribution = insider["score"] * self.policy.insider_risk_multiplier
+            terms.append(
+                Term(
+                    key="insider_risk",
+                    label=f"insider-risk score {insider['score']} on this pull request",
+                    contribution=contribution,
+                    detail=(
+                        f"{insider['score']} × "
+                        f"{self.policy.insider_risk_multiplier:g} = {contribution:.1f}"
+                    ),
+                    inputs={"score": insider["score"]},
+                )
+            )
+
+        # 4. Supply-chain trust (spec 07). A penalty for the distance below
+        #    perfect trust, capped so a bad dependency tree cannot dominate a
+        #    decision about the code someone actually wrote.
+        sscs = self._sscs_trust(repo_full_name)
+        if sscs and sscs["trust_score"] < 100:
+            shortfall = 100 - sscs["trust_score"]
+            contribution = float(min(shortfall, self.policy.sscs_penalty_cap))
+            terms.append(
+                Term(
+                    key="sscs_trust",
+                    label=f"supply-chain trust {sscs['trust_score']}/100",
+                    contribution=contribution,
+                    detail=(
+                        f"min(100 - {sscs['trust_score']}, "
+                        f"{self.policy.sscs_penalty_cap:g}) = {contribution:.1f}"
+                    ),
+                    inputs={
+                        "trust_score": sscs["trust_score"],
+                        "vulnerable_dependency_count": sscs[
+                            "vulnerable_dependency_count"
+                        ],
+                    },
+                )
+            )
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -224,6 +397,8 @@ class OracleEngine:
             raw_score=raw_score,
             score=score,
             for_gate=for_gate,
+            insider=insider,
+            sscs=sscs,
         )
 
         decision = Decision(
@@ -254,6 +429,8 @@ class OracleEngine:
         raw_score: float,
         score: int,
         for_gate: bool,
+        insider: dict[str, Any] | None = None,
+        sscs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -281,21 +458,13 @@ class OracleEngine:
                 "aged": dict(sorted(aged.items())),
                 "curve": self.policy.curve,
             },
-            # Not yet available. Present, explicitly null, with the phase that
-            # will fill them in — so a reader can tell "no insider risk" from
-            # "insider risk was never consulted".
-            "insider_risk": {
-                "available": False,
-                "score": None,
-                "contribution": 0.0,
-                "reason": "Aegis is not implemented yet (spec 06, Phase 4).",
-            },
-            "sscs_trust": {
-                "available": False,
-                "trust_score": None,
-                "contribution": 0.0,
-                "reason": "Atlas is not implemented yet (spec 07, Phase 4).",
-            },
+            # Present whether or not there is anything to say, with an
+            # explicit null and a reason when there is not — so a reader can
+            # tell "no insider risk" from "insider risk was never consulted".
+            "insider_risk": _insider_snapshot(
+                insider, for_gate=for_gate, multiplier=self.policy.insider_risk_multiplier
+            ),
+            "sscs_trust": _sscs_snapshot(sscs, cap=self.policy.sscs_penalty_cap),
             "remediation_in_flight": {
                 "available": False,
                 "covered_findings": None,
