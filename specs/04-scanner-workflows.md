@@ -57,7 +57,7 @@ match.
 One adapter module per (capability, tool) pair, e.g.:
 
 ```
-adapters/
+backend/mykronos/adapters/
 ├── sast_codeql.py
 ├── sast_semgrep.py
 ├── dast_zap.py
@@ -68,14 +68,26 @@ adapters/
 └── cloud_generic.py
 ```
 
+They live inside the backend package rather than in a top-level directory so
+there is exactly one definition of the finding schema. The composite upload
+action installs the package in CI; a second copy of `FindingSubmission` that
+could drift from the server's would be a worse trade than the directory
+layout.
+
 Each adapter exposes one function:
 
 ```python
-def normalize(raw_output: bytes, context: ScanContext) -> list[Finding]:
-    """Parse tool-native output and return a list of Finding records
-    (spec 05 §2). Must not raise on partial/malformed input — log and
-    skip the unparseable record, returning whatever *did* parse."""
+def normalize(raw_output: bytes, context: ScanContext) -> list[FindingSubmission]:
+    """Parse tool-native output and return the findings it describes.
+    Must not raise on partial/malformed input — log and skip the
+    unparseable record, returning whatever *did* parse."""
 ```
+
+**`FindingSubmission`, not `Finding`.** A `Finding` (spec 05 §3) carries
+server-assigned fields — `finding_id`, `status`, `first_seen_at` — that an
+adapter must not supply and could not compute: identity is assigned by the
+Ingestion API precisely so the rule has one implementation (spec 05 §5).
+`FindingSubmission` is the subset a scanner can actually observe.
 
 `ScanContext` carries: `repo_full_name`, `capability`, `tool_name`,
 `tool_version`, `commit_sha`, `branch`, `workflow_run_id`, `triggered_by`

@@ -74,6 +74,7 @@
 | Frontend | Next.js (React, TypeScript) | Matches existing internal platform conventions; SSR for dashboard pages |
 | Backend | FastAPI (Python 3.11+) | Matches existing internal platform conventions; async I/O for GitHub API calls |
 | Data lake | DuckDB (embedded OLAP engine) over Parquet files on local disk | Zero-infrastructure, local-first (no cloud egress requirement), excellent for portfolio-wide analytical queries (aggregation, trend lines), can be upgraded to a networked Postgres later without changing the ingestion contract |
+| Operational store | SQLite via SQLAlchemy | Deliberately **not** the data lake. Onboarding records, capability config, ingestion tokens and the audit log are small, transactional, frequently-updated rows with foreign keys and uniqueness constraints. DuckDB is single-writer and columnar, and row-level updates there would land in the path of the compaction job. Same local-first argument and the same upgrade path as the lake: everything goes through SQLAlchemy, so Postgres is a URL change |
 | Knowledge store | JSON Lines file + local vector index (e.g., FAISS) | Simple, auditable, portable; matches proven internal pattern |
 | Auth to GitHub | GitHub App (JWT → installation access tokens) | Least-privilege, short-lived tokens, no long-lived PAT storage (see spec 12) |
 | Secrets at rest | OS keychain / cloud KMS-backed secret manager (deployment-specific) for the GitHub App private key | Only long-lived secret in the system |

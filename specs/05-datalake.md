@@ -197,10 +197,25 @@ capability is currently granted to the token, and it must match the
 ### Endpoints
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/ingest/scan-run` | Register a `ScanRun` (called first, at workflow start) |
+| `POST` | `/api/ingest/scan-run` | Register or finalise a `ScanRun`. Upserts on `scan_run_id` — see below |
 | `POST` | `/api/ingest/findings` | Submit a batch of normalized `Finding` records for a `scan_run_id` |
 | `POST` | `/api/ingest/{capability}` | Capability-specific payloads for Aegis/Atlas/Patchwork/Oracle tables |
 | `GET` | `/api/ingest/health` | Liveness check the workflow can call before scanning, to fail fast if the data lake is unreachable |
+
+**`scan-run` is called twice per run, and is an upsert.** `completed_at`,
+`scan_status` and `finding_count` are not known at workflow start, and there is
+deliberately no separate finalise endpoint — a second verb would be a second
+thing to get wrong under retry.
+
+The client generates `scan_run_id` itself before scanning and POSTs once at
+start and once at completion; the second POST upserts onto the first by
+`scan_run_id`. That keeps one row per run (§3) and makes the call idempotent
+under workflow retries, which matters because the completion POST runs under
+`always()` and a re-run of a failed job will send it again.
+
+A run that never sends its second POST stays visible as a started-but-unfinished
+row rather than disappearing, which is the distinction §7 needs between "never
+ran" and "ran and broke".
 
 Every write endpoint:
 1. Validates the payload against its Pydantic schema — reject (`422`) with

@@ -30,7 +30,7 @@ agreed process. Regression test: `tests/test_lake.py::test_line_shift_preserves_
 
 ## D-002 — `POST /api/ingest/scan-run` is an upsert
 
-**Status:** Decided, **spec follow-up needed**
+**Status:** Decided, spec amended
 **Spec:** [05 §4](../specs/05-datalake.md)
 
 Spec 05 §4 says the endpoint is "called first, at workflow start", but nothing
@@ -42,8 +42,8 @@ start, once at completion. The second POST upserts onto the first by
 `scan_run_id`. This keeps one row per run (spec 05 §3) and stays idempotent
 under workflow retries.
 
-**Spec follow-up:** amend 05 §4 to document the two-phase call and the upsert
-key. Not done yet — flagged rather than silently invented.
+**Spec follow-up:** ✅ landed. Spec 05 §4 documents the two-phase call, the
+upsert key, and why there is deliberately no separate finalise endpoint.
 
 ---
 
@@ -184,7 +184,7 @@ Tracked as the first task of Phase 1.
 
 ## D-010 — Operational state lives in SQLite, not the data lake
 
-**Status:** Decided, **spec follow-up needed**
+**Status:** Decided, spec amended
 **Spec:** [01 §3](../specs/01-architecture.md)
 
 Spec 01 §3 names DuckDB + Parquet for the data lake but never says where
@@ -199,8 +199,9 @@ compaction job. So: SQLite through SQLAlchemy, in `mykronos.db`.
 Same local-first argument as the lake, and the same upgrade path — everything
 goes through SQLAlchemy, so Postgres is a URL change.
 
-**Spec follow-up:** add a row to spec 01 §3's tech-stack table for the
-operational store, so the next reader does not have to infer it from the code.
+**Spec follow-up:** ✅ landed. Spec 01 §3's tech-stack table now carries an
+"Operational store" row, so the next reader does not have to infer it from the
+code.
 
 ---
 
@@ -234,7 +235,7 @@ more expensive. The trigger is spec 14 entering a phase, whenever that is.
 
 ## D-012 — Adapters return `FindingSubmission`, and live in the package
 
-**Status:** Decided, **spec follow-up needed**
+**Status:** Decided, spec amended
 **Spec:** [04 §4](../specs/04-scanner-workflows.md)
 
 Two small departures from spec 04 §4, both in service of one thing: a single
@@ -251,8 +252,8 @@ in `backend/mykronos/adapters/` instead, and the composite action installs the
 package in CI. A separate copy of `FindingSubmission` that could drift from
 the server's is a worse trade than the directory layout.
 
-**Spec follow-up:** correct the §4 signature. Low priority — it is imprecision
-rather than a contradiction, and nothing is blocked by it.
+**Spec follow-up:** ✅ landed. Spec 04 §4 now shows the `FindingSubmission`
+return type, the package location, and why identity is the server's to assign.
 
 ---
 
@@ -394,7 +395,7 @@ dashboard. The Python join is measured as part of the 0.145s above.
 
 ## D-018 — Finding contributions follow a curve, and the raw score is kept
 
-**Status:** Decided, spec follow-up needed
+**Status:** Decided, spec amended
 **Spec:** [09 §5](../specs/09-oracle-risk-decision-engine.md) — closes open question 4
 
 Spec 09 §5 weighted findings linearly — 40 points per critical, summed, then
@@ -423,9 +424,8 @@ bad repo still shows 100 — that is correct, and the thresholds are doing their
 job. What changed is that 100 is now reached by repos that deserve it rather
 than by any repo with three findings, and that ranking survives the ceiling.
 
-**Spec follow-up:** replace §5's linear formula and worked example with the
-curve. Not done yet — the policy file documents the change and the golden
-tests pin it, but §5 still shows the superseded arithmetic.
+**Spec follow-up:** ✅ landed. Spec 09 §5 now carries the curve, the reason
+for it, and the `raw_score` rule, replacing the superseded linear arithmetic.
 
 ---
 

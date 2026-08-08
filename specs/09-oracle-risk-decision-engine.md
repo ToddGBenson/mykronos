@@ -69,12 +69,16 @@ security admins with review), of the shape:
 
 ```yaml
 version: "1.0"
-weights:
-  finding_severity:
+findings:
+  # Contributions follow a curve, not a straight line. See below.
+  curve: log2
+  weights:
     critical: 40
     high: 20
     medium: 5
     low: 1
+    info: 0
+modifiers:
   insider_risk_score_multiplier: 0.3      # insider_risk_score(0-100) * 0.3 added
   sscs_trust_score_penalty: "100 - trust_score, capped at 20"
   remediation_in_flight_discount: 0.5      # multiplies the contribution of findings that already have an open fix PR
@@ -91,10 +95,44 @@ thresholds:
   no_go: 70          # overall_risk_score >= 70 => no_go
   review_recommended: 30   # >= 30 and < 70 => review_recommended
   # < 30 => go
+scope:
+  minimum_severity: low
+  statuses_considered: [open]   # a human disposition is a decision already taken
+  capabilities_excluded_from_gates: [network]   # spec 14 §7
 ```
 
-Calculation is a straightforward weighted sum over all open, relevant
-findings plus the modifiers above, clamped to [0, 100]. **Every term that
+The checked-in `oracle-policy-v1.yaml` is the source of truth; the block above
+is a sketch of its shape. The engine refuses to start on an unknown curve, a
+missing severity weight, or inverted thresholds — a policy that half-loads
+would score every repo wrong and say nothing about it.
+
+### Why a curve and not a sum
+
+Each severity band contributes `weight × log2(1 + count)`, summed across
+bands, then clamped to [0, 100].
+
+An earlier draft of this spec summed linearly: 40 points per critical. Three
+open criticals reached the clamp — and so did three hundred. Every vulnerable
+repo therefore scored exactly 100, which meant the portfolio view could not
+rank anything, the trend line was flat by construction, and `no_go` stopped
+distinguishing "two aged criticals" from "a catastrophe". A deliberately
+vulnerable demo application produces dozens of criticals and pins the ceiling
+on its first scan.
+
+Under the curve, criticals score 40 / 63 / 80 / 93 for 1 / 2 / 3 / 4. Strictly
+increasing, so ranking is preserved, but flattening — the gap between "a few"
+and "some" matters more than the gap between "many" and "very many", which is
+how a person actually triages.
+
+**The unclamped total is recorded** as
+`inputs_snapshot.totals.raw_score`, so two repos that both *display* 100 can
+still be ordered. Without it every repo past the ceiling ties and sorting by
+risk silently stops working. The displayed score still clamps, and a genuinely
+bad repo still shows 100 — that is correct, and the thresholds are doing their
+job. What changed is that 100 is reached by repos that deserve it rather than
+by any repo with three findings.
+
+**Every term that
 contributes to the final score must be listed in `inputs_snapshot`** with
 its individual contribution value — this is what makes `reasoning` (§3)
 generatable as a template ("Blocked because: 2 critical SAST findings open
