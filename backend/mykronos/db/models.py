@@ -129,6 +129,16 @@ class IngestionToken(Base):
     #: When a superseded token stops being accepted. Null unless superseded.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
+    #: Whether this token's plaintext actually reached the repo's Actions
+    #: secret. False means the repo does not have it yet.
+    #:
+    #: Without this, a rotation that succeeded locally but failed to write the
+    #: secret would look complete: the new token is active with a fresh
+    #: 90-day clock, so it is not due for rotation, nothing retries — and the
+    #: repo's CI breaks silently when the superseded token's overlap expires.
+    #: The rotation job retries any active token that is not yet synced.
+    secret_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+
     label: Mapped[str] = mapped_column(String(255), default="")
 
 

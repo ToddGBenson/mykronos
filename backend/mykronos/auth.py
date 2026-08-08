@@ -127,6 +127,27 @@ class TokenRegistry:
         ).scalars()
         return list(rows)
 
+    def unsynced_repos(self) -> list[str]:
+        """Repos whose active token never reached their Actions secret.
+
+        A rotation that succeeded here but failed to write the secret leaves
+        exactly this state, and it is invisible to `due_for_rotation` because
+        the new token has a fresh 90-day clock. Left alone, the repo's CI
+        breaks the moment the superseded token's overlap expires.
+        """
+        rows = self.session.execute(
+            select(IngestionToken.repo_full_name)
+            .where(IngestionToken.status == "active")
+            .where(IngestionToken.secret_synced.is_(False))
+        ).scalars()
+        return list(rows)
+
+    def mark_secret_synced(self, repo_full_name: str) -> None:
+        """Record that the repo's active token reached its Actions secret."""
+        token = self._active_token(repo_full_name)
+        if token is not None:
+            token.secret_synced = True
+
     # -- resolution -----------------------------------------------------
 
     def resolve(self, plaintext: str, as_of: datetime | None = None) -> Resolution | None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -27,10 +27,31 @@ from mykronos.github.factory import (
     RestGitHubClientFactory,
 )
 from mykronos.installer import TemplateLibrary
-from mykronos.lake import Catalog, WriteAheadBuffer, compact
+from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
+from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.ratelimit import SlidingWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+
+async def _every(
+    name: str, interval: int, run: Callable[[], Awaitable[None]]
+) -> None:
+    """Run `run` forever on an interval, surviving its failures.
+
+    A scheduled job that dies on its first bad day and never runs again is a
+    worse failure than the one that killed it — silent, and usually noticed
+    weeks later. Everything except cancellation is logged and retried on the
+    next tick.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await run()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled job %r failed; will retry in %ss", name, interval)
 
 
 async def _compaction_loop(app: FastAPI, interval: int) -> None:
@@ -96,19 +117,56 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
 
-    task: asyncio.Task[None] | None = None
+    tasks: list[asyncio.Task[None]] = []
+
     if settings.run_compaction_in_background:
-        task = asyncio.create_task(
-            _compaction_loop(app, settings.compaction_interval_seconds),
-            name="mykronos-compaction",
+        tasks.append(
+            asyncio.create_task(
+                _compaction_loop(app, settings.compaction_interval_seconds),
+                name="mykronos-compaction",
+            )
         )
 
-    logger.info("Mykronos %s ready — data lake at %s", __version__, settings.datalake_dir)
+    if settings.run_jobs_in_background:
+
+        async def _rotate() -> None:
+            await rotate_ingestion_tokens(
+                app.state.db,
+                app.state.github_factory,
+                overlap_hours=settings.token_overlap_hours,
+            )
+
+        async def _installations() -> None:
+            await reconcile_installations(app.state.db, app.state.github_factory)
+
+        async def _absences() -> None:
+            # In a thread: it rewrites Parquet partitions and would otherwise
+            # block ingestion for the duration.
+            await asyncio.to_thread(reconcile_absences, app.state.catalog)
+
+        for name, interval, run in (
+            ("rotation", settings.token_rotation_interval_seconds, _rotate),
+            ("installations", settings.installation_sync_interval_seconds, _installations),
+            ("absences", settings.absence_reconcile_interval_seconds, _absences),
+        ):
+            tasks.append(
+                asyncio.create_task(
+                    _every(name, interval, run), name=f"mykronos-{name}"
+                )
+            )
+
+    logger.info(
+        "Mykronos %s ready — data lake at %s, %s background job(s)",
+        __version__,
+        settings.datalake_dir,
+        len(tasks),
+    )
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
         # Final drain, so a clean shutdown leaves nothing sitting in the buffer.

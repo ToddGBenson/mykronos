@@ -11,5 +11,13 @@ dashboard query service and Oracle — go through the DuckDB catalog read-only.
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.compaction import CompactionResult, compact
+from mykronos.lake.reconcile import ReconcileResult, reconcile_absences
 
-__all__ = ["Catalog", "CompactionResult", "WriteAheadBuffer", "compact"]
+__all__ = [
+    "Catalog",
+    "CompactionResult",
+    "ReconcileResult",
+    "WriteAheadBuffer",
+    "compact",
+    "reconcile_absences",
+]

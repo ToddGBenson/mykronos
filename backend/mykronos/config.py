@@ -59,6 +59,38 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Scheduled jobs -----------------------------------------------
+
+    token_rotation_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description="Token rotation sweep. Daily is ample for a 90-day cycle.",
+    )
+
+    installation_sync_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "Installation reconciliation (spec 02 §5.6). Daily, which is what "
+            "spec 02 §8's 24-hour allowance implies."
+        ),
+    )
+
+    absence_reconcile_interval_seconds: int = Field(
+        default=3_600,
+        ge=1,
+        description=(
+            "Sweep for findings absent from consecutive scans (spec 05 §5). "
+            "Hourly: it only acts once two qualifying scans have run, so a "
+            "shorter interval changes nothing."
+        ),
+    )
+
+    run_jobs_in_background: bool = Field(
+        default=True,
+        description="Disable so tests and one-shot CLI runs drive jobs explicitly.",
+    )
+
     # --- GitHub App (spec 02 §4) -------------------------------------
 
     github_app_id: str = Field(

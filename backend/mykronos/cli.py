@@ -19,6 +19,7 @@ then read it back out of the lake with SQL.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import sys
@@ -29,7 +30,9 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.config import get_settings
 from mykronos.db import Database
-from mykronos.lake import Catalog, WriteAheadBuffer, compact
+from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
+from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.main import _build_github_factory as _github_factory
 from mykronos.schemas import Capability
 
 CAPABILITIES = [c.value for c in Capability]
@@ -85,6 +88,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-tokens", help="List tokens and grants (hashes only, never plaintext)")
     sub.add_parser("purge-tokens", help="Drop superseded tokens past their overlap window")
     sub.add_parser("compact", help="Fold the write-ahead buffer into Parquet now")
+    sub.add_parser(
+        "reconcile-absences",
+        help="Close findings absent from two consecutive scans (spec 05 §5)",
+    )
+    sub.add_parser("rotate-due", help="Run the token rotation sweep now")
+    sub.add_parser(
+        "sync-installations", help="Check each installation still exists on GitHub"
+    )
     sub.add_parser("stats", help="Row counts and buffer depth")
 
     query = sub.add_parser("query", help="Run read-only SQL against the lake")
@@ -200,6 +211,35 @@ def main(argv: list[str] | None = None) -> int:
                 f"reopened {len(result.reopened)}; "
                 f"wrote {result.partitions_written} partition file(s)."
             )
+            return 0
+
+        if args.command == "reconcile-absences":
+            outcome = reconcile_absences(catalog)
+            print(f"Closed {outcome.total_fixed} absent finding(s).")
+            for repo, capability in outcome.insufficient_history:
+                print(
+                    f"  skipped {repo}/{capability}: fewer than 2 qualifying scans"
+                )
+            return 0
+
+        if args.command in {"rotate-due", "sync-installations"}:
+            db.create_all()
+            factory = _github_factory(settings)
+            if args.command == "rotate-due":
+                rotation = asyncio.run(
+                    rotate_ingestion_tokens(
+                        db, factory, overlap_hours=settings.token_overlap_hours
+                    )
+                )
+                print(f"Token rotation: {rotation.summary()}")
+                for repo, reason in rotation.failed:
+                    print(f"  FAILED {repo}: {reason}")
+            else:
+                sync = asyncio.run(reconcile_installations(db, factory))
+                print(
+                    f"Checked {sync.checked}; removed {len(sync.removed)}, "
+                    f"suspended {len(sync.suspended)}, unreachable {len(sync.unreachable)}"
+                )
             return 0
 
         if args.command == "stats":

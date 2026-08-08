@@ -346,6 +346,10 @@ class WorkflowInstaller:
             seal_secret(key.key_base64, plaintext),
             key.key_id,
         )
+        # Only after the write lands. If it raised, the token stays unsynced
+        # and the rotation job picks it up rather than leaving a repo holding
+        # a credential the platform has never heard of.
+        registry.mark_secret_synced(repo_full_name)
         return True
 
     def _pr_body(self, plan: InstallPlan) -> str:

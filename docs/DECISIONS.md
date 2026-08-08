@@ -286,18 +286,74 @@ Two supporting decisions:
 
 ---
 
+## D-014 — Absence reconciliation writes to the lake, and why that is not a §9 violation
+
+**Status:** Decided
+**Spec:** [05 §5, §9](../specs/05-datalake.md)
+
+Spec 05 §9 says no component other than the Ingestion API writes to the
+Parquet partitions. The absence reconciler writes: it flips `open` findings to
+`fixed` once two consecutive qualifying scans have failed to report them.
+
+The rule exists so that all *ingestion* passes through one validating,
+deduplicating path. This is not ingestion — it is a derived state transition
+that belongs to the lake, which is why it lives in `mykronos/lake/` beside
+compaction rather than in a service that merely reads.
+
+Routing it through the findings endpoint would be actively wrong. That path
+means "I observed this again", and its upsert deliberately flips a `fixed`
+finding back to `open` (spec 05 §5). Closing a finding by posting it as an
+observation would immediately reopen it.
+
+Two supporting decisions:
+
+- **Only `success` and `no_applicable_targets` scans confirm an absence.** A
+  failed or partially-failed scan reporting nothing is not evidence a finding
+  is gone; counting it would close findings every time CI had a bad day.
+- **Absence is derived, not counted.** Rather than an absence counter on each
+  finding, a finding is absent if its `last_seen_scan_run_id` is not among the
+  two most recent qualifying runs for its (repo, capability). No extra mutable
+  state to keep correct, and it self-corrects if scans are backfilled.
+
+Insufficient history is reported rather than silently skipped: "we have not
+looked enough times yet" and "there is nothing to close" are different facts.
+
+---
+
+## D-015 — Token rotation tracks whether the secret actually landed
+
+**Status:** Decided
+**Spec:** [05 §4](../specs/05-datalake.md)
+
+`IngestionToken.secret_synced` records whether a token's plaintext reached the
+repo's Actions secret.
+
+Without it there is a silent failure with a 24-hour fuse. Rotation creates the
+new token and supersedes the old *before* writing the secret, so that a failed
+write leaves the old token valid — that part is deliberate. But the new token
+then has a fresh 90-day clock, so a due-date sweep never looks at it again,
+nothing retries, and the repo's CI breaks the moment the old token's overlap
+expires. The failure surfaces a day later, in someone else's repo, as an
+unexplained 401.
+
+The rotation job therefore sweeps `due_for_rotation() | unsynced_repos()`, so
+a write that failed because of a transient GitHub error or a missing
+permission is repaired on the next run rather than after 90 days.
+
+One repo failing does not stop the sweep: an unreachable repo must not prevent
+every other repo from rotating.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
 
 | Deferred | Why | Lands in |
 |---|---|---|
-| Absence reconciliation (mark `fixed` after two consecutive absent scans, spec 05 §5) | Needs scan-completeness tracking per capability, which needs onboarding to know what *should* have run | Phase 1–2 |
 | `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
 | `POST /api/ingest/{capability}` bodies | Route returns 501 naming the phase; the target tables belong to Aegis/Atlas/Patchwork/Oracle | Phases 3–6 |
-| Raw tool output archival (`raw_output_ref`, spec 05 §7) | Field is carried through the schema; the upload path and retention sweep are not built | Phase 1 |
-| 90-day token rotation job, incl. the dual-validity overlap window (D-009) | Registry records `rotate_after`; nothing acts on it, and superseded-token acceptance is not implemented | Phase 1 |
-| Capability grants on the token registry (D-009) | Phase 0 stores one scope per token; grants and the explicit batch `capability` field are the first Phase 1 task | Phase 1 |
+| Raw output **retention sweep** (spec 05 §7) | Archival is built; the scheduled purge that bounds disk usage is not | Phase 7 |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
 
 ---
