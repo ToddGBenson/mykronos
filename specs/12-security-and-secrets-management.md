@@ -81,6 +81,34 @@ security-relevant details point back here as the source of truth.
   repo's historical data (spec 02 §6) must be honored as explicit,
   logged, admin-only actions.
 
+### 5.1 Personal data: insider-risk signals
+
+The claim at the top of §5 — that Mykronos processes tool output, not
+application data — holds for every capability except **Aegis** (spec 06).
+Aegis scores a pull request by a named person, so `InsiderRiskSignal` rows
+are personal data, and this section would be untrue if it did not say so.
+
+Spec 06 §9 is the normative treatment. In summary, and binding here:
+`author_login` is recorded (a score you cannot attribute is one you cannot
+challenge or delete); the rows are admin-only at the query layer, on the same
+rule as raw output above; they are purged after a configured retention period
+by a scheduled job rather than by intention; and nothing in the system
+aggregates or ranks individuals across pull requests.
+
+### 5.2 The only path that sends repository content off the runner
+
+Every scanner runs inside the customer's own GitHub Actions runner and sends
+Mykronos its *findings*, never its source. The one exception is Aegis's
+AI-authorship classifier, which posts the pull-request diff to a configured
+endpoint.
+
+That signal is therefore **off unless `ai_classifier_url` is explicitly set**
+(spec 06 §5). There is no default endpoint and there must never be one: a
+default would mean a deployment that changed no configuration was shipping its
+code to a third party, which is precisely the decision an operator has to make
+deliberately. With the URL unset, Aegis records `ai_authorship_flag = null`
+and scores the remaining signals.
+
 ## 6. Least privilege — GitHub App permission review
 
 Restated from spec 02 §4 for completeness: the App requests
