@@ -29,7 +29,7 @@ const NAV: {
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", phase: "Phase 6" },
       { label: "Trends", phase: "Phase 7" },
-      { label: "Retros", phase: "Phase 7" },
+      { label: "Retros", href: "/retro" },
     ],
   },
   {
@@ -37,7 +37,7 @@ const NAV: {
     items: [
       { label: "Repositories", href: "/" },
       { label: "Oracle policy", href: "/decisions#policy" },
-      { label: "Knowledge", phase: "Phase 5" },
+      { label: "Knowledge", href: "/retro" },
     ],
   },
 ];
@@ -55,7 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               AppSec control plane
             </span>
             <span className="ml-auto border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
-              Phase 3 · admin
+              Phase 5 · admin
             </span>
           </header>
 

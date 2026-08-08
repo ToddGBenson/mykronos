@@ -17,10 +17,12 @@ import {
   type InsiderRiskPage,
   type Portfolio,
   type RepoDetail,
+  type RetroReport,
   type RiskDecision,
   type ScanHealth,
   type ShadowModeReport,
   type SscsPage,
+  type TrendReport,
   type TriageQueue,
 } from "./api";
 
@@ -209,6 +211,49 @@ export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
     return { ok: true, data };
   } catch (error) {
     return failure(error);
+  }
+}
+
+export async function getRetro(
+  periodDays = 14,
+): Promise<Result<RetroReport>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/knowledge/retro", {
+      params: { query: { period_days: periodDays } },
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load the retro") };
+    return { ok: true, data: data as RetroReport };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * A 422 here is the *expected* answer for a young deployment, not a fault:
+ * spec 11 §10 requires the report to refuse rather than render a shape into
+ * too few points. The detail message explains why, so it is surfaced as
+ * content rather than as an error panel.
+ */
+export async function getTrend(): Promise<
+  Result<TrendReport> | { ok: false; notEnoughHistory: string }
+> {
+  try {
+    const { data, response, error } = await backendClient().GET(
+      "/api/knowledge/trend",
+      { cache: "no-store" },
+    );
+    if (response?.status === 422) {
+      const detail = (error as { detail?: string } | undefined)?.detail;
+      return {
+        ok: false,
+        notEnoughHistory: detail ?? "Not enough history for a trend yet.",
+      };
+    }
+    if (!data) return { ok: false, error: describe(response, "Could not load the trend") };
+    return { ok: true, data: data as TrendReport };
+  } catch (err) {
+    return failure(err);
   }
 }
 

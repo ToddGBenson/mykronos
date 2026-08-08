@@ -61,6 +61,65 @@ export type SignalBreakdown = {
   contributing_count: number;
 };
 
+export type KnowledgeEntries =
+  paths["/api/knowledge/entries"]["get"]["responses"]["200"]["content"]["application/json"];
+export type KnowledgeEntry = KnowledgeEntries["entries"][number];
+
+/**
+ * Hand-typed: the retro and trend endpoints return rows assembled at request
+ * time, so their OpenAPI schema is an open object. Writing the shape once
+ * here beats spreading casts through the page.
+ */
+export type RetroReport = {
+  period_start: string;
+  period_end: string;
+  quiet: boolean;
+  new_entries: LearningRow[];
+  reconfirmed: LearningRow[];
+  decaying: LearningRow[];
+  unreasoned: number;
+  promotion_candidates: PromotionCandidate[];
+};
+
+export type LearningRow = {
+  entry_id: string;
+  subject: string;
+  source_type: string;
+  repo_full_name: string | null;
+  text: string;
+  observations: number;
+  confidence: number;
+  last_confirmed_at: string;
+  reasons: string[];
+};
+
+export type PromotionCandidate = {
+  subject: string;
+  source_type: string;
+  from_tier: string;
+  to_tier: string;
+  repos: string[];
+  project_count: number;
+  total_observations: number;
+  mean_confidence: number;
+  reasons: string[];
+};
+
+export type TrendReport = {
+  periods: number;
+  period_days: number;
+  direction: "rising" | "falling" | "flat" | "unknown";
+  points: {
+    period_start: string;
+    period_end: string;
+    new_entries: number;
+    reconfirmations: number;
+    with_reasons: number;
+    overrides: number;
+    dismissals: number;
+  }[];
+};
+
 export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];
