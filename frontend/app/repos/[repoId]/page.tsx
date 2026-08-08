@@ -2,6 +2,8 @@ import Link from "next/link";
 
 import { DecisionsTab } from "@/components/decisions";
 import { DispositionForm } from "@/components/disposition";
+import { InsiderRiskTab } from "@/components/insider-risk";
+import { SscsTab } from "@/components/sscs";
 import {
   CapabilityDots,
   Crumb,
@@ -13,7 +15,14 @@ import {
   SeverityText,
 } from "@/components/primitives";
 import type { Finding, Severity } from "@/lib/api";
-import { getDecisions, getFindings, getRepo, getScanHealth } from "@/lib/server";
+import {
+  getDecisions,
+  getFindings,
+  getInsiderRisk,
+  getRepo,
+  getScanHealth,
+  getSscs,
+} from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +30,9 @@ const TABS = [
   { id: "findings", label: "Findings" },
   { id: "scan-health", label: "Scan health" },
   { id: "decisions", label: "Risk decisions" },
+  { id: "sscs", label: "Supply chain" },
+  { id: "insider", label: "Insider risk" },
   { id: "remediation", label: "Remediation", phase: "Phase 6" },
-  { id: "sscs", label: "SSCS evidence", phase: "Phase 4" },
-  { id: "insider", label: "Insider risk", phase: "Phase 4" },
 ] as const;
 
 export default async function RepoPage({
@@ -101,6 +110,10 @@ export default async function RepoPage({
         <ScanHealthTab repoId={repoId} />
       ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
+      ) : tab === "sscs" ? (
+        <SupplyChainTab repoId={repoId} />
+      ) : tab === "insider" ? (
+        <AegisTab repoId={repoId} />
       ) : (
         <FindingsTab repoId={repoId} query={query} />
       )}
@@ -323,6 +336,34 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
     <DecisionsTab
       repoFullName={result.data.repo_full_name}
       decisions={result.data.decisions}
+    />
+  );
+}
+
+async function SupplyChainTab({ repoId }: { repoId: string }) {
+  const result = await getSscs(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Supply-chain evidence unavailable" detail={result.error} />;
+  }
+  return (
+    <SscsTab
+      evidence={result.data.evidence}
+      latest={result.data.latest ?? null}
+    />
+  );
+}
+
+async function AegisTab({ repoId }: { repoId: string }) {
+  const result = await getInsiderRisk(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Insider risk unavailable" detail={result.error} />;
+  }
+  return (
+    <InsiderRiskTab
+      repoFullName={result.data.repo_full_name}
+      signals={result.data.signals}
+      detailIncluded={result.data.detail_included}
+      governance={result.data.governance}
     />
   );
 }

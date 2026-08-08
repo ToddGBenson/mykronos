@@ -433,6 +433,89 @@ class DashboardQueries:
             queue.append(record)
         return queue, counts
 
+    # -- Aegis and Atlas ------------------------------------------------
+
+    def insider_risk(
+        self, repo_full_name: str, *, include_detail: bool, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Insider-risk assessments for one repo, newest first (spec 06 §9).
+
+        `include_detail` is the admin gate, applied *here* rather than in the
+        endpoint or the UI. The author's login and the signal breakdown are
+        simply not selected for a viewer, on the same principle as raw output:
+        "not rendered" is not "not sent".
+
+        What a viewer keeps is the verdict per pull request, which is already
+        visible to anyone who can see the Check Run. Withholding that too would
+        be theatre rather than privacy.
+        """
+        columns = [
+            "signal_id",
+            "pr_number",
+            "commit_sha",
+            "insider_risk_score",
+            "recommendation",
+            "ai_authorship_flag",
+            "evaluated_at",
+            "github_check_run_id",
+        ]
+        if include_detail:
+            columns += ["author_login", "signal_breakdown"]
+
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM insider_risk_signals "
+            "WHERE repo_full_name = ? ORDER BY evaluated_at DESC LIMIT ?",
+            [repo_full_name, limit],
+        )
+
+        signals = []
+        for row in rows:
+            record = dict(zip(columns, row, strict=True))
+            if record.get("signal_breakdown"):
+                with suppress(TypeError, json.JSONDecodeError):
+                    record["signal_breakdown"] = json.loads(record["signal_breakdown"])
+            if not include_detail:
+                # Present as explicit nulls rather than absent keys, so a
+                # caller does not have to guess whether the field is missing
+                # because it was withheld or because nothing recorded it.
+                record["author_login"] = None
+                record["signal_breakdown"] = None
+            signals.append(record)
+        return signals
+
+    def sscs_evidence(
+        self, repo_full_name: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Supply-chain evidence per commit, newest first (spec 10 §9)."""
+        columns = [
+            "evidence_id",
+            "commit_sha",
+            "tag_or_release",
+            "sbom_ref",
+            "dependency_count",
+            "vulnerable_dependency_count",
+            "trust_score",
+            "raw_trust_score",
+            "provenance_json",
+            "ecosystems_json",
+            "evaluated_at",
+        ]
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM sscs_evidence "
+            "WHERE repo_full_name = ? ORDER BY evaluated_at DESC LIMIT ?",
+            [repo_full_name, limit],
+        )
+
+        evidence = []
+        for row in rows:
+            record = dict(zip(columns, row, strict=True))
+            for field_name in ("provenance_json", "ecosystems_json"):
+                if record.get(field_name):
+                    with suppress(TypeError, json.JSONDecodeError):
+                        record[field_name] = json.loads(record[field_name])
+            evidence.append(record)
+        return evidence
+
     # -- scan health ----------------------------------------------------
 
     def scan_health(self, repo_full_name: str, limit: int = 50) -> list[dict[str, Any]]:

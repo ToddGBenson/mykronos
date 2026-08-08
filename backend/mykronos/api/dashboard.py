@@ -165,6 +165,80 @@ class FindingsPage(BaseModel):
     )
 
 
+class InsiderRiskOut(BaseModel):
+    """One insider-risk assessment (spec 06 §3).
+
+    `author_login` and `signal_breakdown` are null for non-admin callers
+    rather than absent — a stable key shape, and the same choice made for raw
+    output. `detail_included` on the page says which you are looking at, so
+    "withheld" is never mistaken for "nothing recorded".
+    """
+
+    signal_id: str
+    pr_number: int
+    commit_sha: str
+    insider_risk_score: int
+    recommendation: str
+    ai_authorship_flag: bool | None = Field(
+        default=None,
+        description=(
+            "True if likely AI and undisclosed, false if evaluated and human, "
+            "null if not evaluated (spec 06 §3)."
+        ),
+    )
+    evaluated_at: datetime | None = None
+    github_check_run_id: str | None = None
+    author_login: str | None = None
+    signal_breakdown: Any = None
+
+
+class InsiderRiskPage(BaseModel):
+    repo_full_name: str
+    signals: list[InsiderRiskOut]
+    detail_included: bool = Field(
+        description=(
+            "False for viewer roles. The author and the breakdown are withheld "
+            "at the query layer, not hidden in the UI (spec 06 §9)."
+        )
+    )
+    governance: str = Field(
+        description=(
+            "Served with the data on purpose. A consumer of this endpoint "
+            "should not have to read spec 06 §9 to learn that these rows are "
+            "not a per-person rating."
+        )
+    )
+
+
+class SscsEvidenceOut(BaseModel):
+    evidence_id: str
+    commit_sha: str
+    tag_or_release: str | None = None
+    sbom_ref: str | None = None
+    dependency_count: int = 0
+    vulnerable_dependency_count: int = 0
+    trust_score: int = 100
+    raw_trust_score: float | None = Field(
+        default=None,
+        description=(
+            "Pre-clamp. Ranking has to survive the floor at 0, the same way "
+            "Oracle's raw_score survives the ceiling at 100 (D-018)."
+        ),
+    )
+    provenance_json: Any = None
+    ecosystems_json: Any = None
+    evaluated_at: datetime | None = None
+
+
+class SscsPage(BaseModel):
+    repo_full_name: str
+    evidence: list[SscsEvidenceOut]
+    latest: SscsEvidenceOut | None = Field(
+        default=None,
+        description="Convenience for the header; the same row as evidence[0].",
+    )
+
+
 class StatusChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,6 +331,57 @@ async def triage(
         open_by_severity=counts,
         total_open=sum(counts.values()),
         truncated=len(items) >= limit,
+    )
+
+
+@router.get("/repos/{repo_id}/insider-risk", response_model=InsiderRiskPage)
+async def repo_insider_risk(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> InsiderRiskPage:
+    """Insider-risk assessments for one repo (spec 06 §9).
+
+    Detail is admin-only, withheld at the query layer rather than hidden in the
+    UI. A viewer sees the verdict per pull request — the same thing anyone who
+    can see the Check Run already sees — and not the author, the breakdown, or
+    the baseline comparison.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    include_detail = principal.may_see_insider_risk
+
+    return InsiderRiskPage(
+        repo_full_name=repo_full_name,
+        detail_included=include_detail,
+        signals=[
+            InsiderRiskOut(**signal)
+            for signal in _queries(request).insider_risk(
+                repo_full_name, include_detail=include_detail, limit=limit
+            )
+        ],
+        governance=(
+            "These rows are a review prompt about a change, not a rating of a "
+            "person. Nothing here aggregates or ranks contributors, and rows "
+            "are deleted after this repository's retention period (spec 06 §9)."
+        ),
+    )
+
+
+@router.get("/repos/{repo_id}/sscs", response_model=SscsPage)
+async def repo_sscs(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> SscsPage:
+    """Supply-chain evidence and trust-score history for one repo (spec 10 §9)."""
+    repo_full_name = _resolve_repo(request, repo_id)
+    evidence = _queries(request).sscs_evidence(repo_full_name, limit=limit)
+    return SscsPage(
+        repo_full_name=repo_full_name,
+        evidence=[SscsEvidenceOut(**row) for row in evidence],
+        latest=SscsEvidenceOut(**evidence[0]) if evidence else None,
     )
 
 

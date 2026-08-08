@@ -103,6 +103,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/aegis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Aegis
+         * @description Score a pull request for insider risk and record it (spec 06 §4).
+         *
+         *     The workflow reports *observations* — which signals fired and why — and
+         *     the platform combines them. Scoring here rather than on the runner is what
+         *     makes the recommendation reproducible from the stored breakdown, and it is
+         *     also what stops a repo silently running a forked scorer with its own
+         *     thresholds.
+         *
+         *     Read spec 06 §9 before extending this. The row is personal data.
+         */
+        post: operations["ingest_aegis_api_ingest_aegis_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/atlas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Atlas
+         * @description Record supply-chain evidence for a commit (spec 07 §4).
+         *
+         *     The workflow reports dependency counts per ecosystem; the trust score is
+         *     computed here, because spec 07 §7 makes reproducibility an acceptance
+         *     criterion and a score the runner calculates drifts the moment two repos
+         *     are on different versions of the action.
+         *
+         *     Per-vulnerability detail goes in as ordinary `Finding` rows through
+         *     `/api/ingest/findings` with `capability = atlas` (spec 07 §3), so
+         *     dependency vulnerabilities appear in the same portfolio views as
+         *     everything else. This endpoint writes only the aggregate.
+         */
+        post: operations["ingest_atlas_api_ingest_atlas_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/{capability}": {
         parameters: {
             query?: never;
@@ -114,12 +172,12 @@ export interface paths {
         put?: never;
         /**
          * Ingest Capability Payload
-         * @description Capability-specific tables: InsiderRiskSignal, SscsEvidence,
-         *     RemediationEvent, RiskDecision.
+         * @description Capability-specific tables that do not have an endpoint yet.
          *
-         *     Declared here because spec 05 §4 defines the route, but the target tables
-         *     arrive with their capabilities in Phases 3-6. Returning 501 rather than 404
-         *     keeps the contract visible instead of looking like a routing bug.
+         *     Declared here because spec 05 §4 defines the route. Aegis and Atlas have
+         *     their own handlers above — registered first, so this catch-all cannot
+         *     shadow them. Returning 501 rather than 404 keeps the contract visible
+         *     instead of looking like a routing bug.
          */
         post: operations["ingest_capability_payload_api_ingest__capability__post"];
         delete?: never;
@@ -164,6 +222,51 @@ export interface paths {
          *     a per-repo view makes you visit forty pages to answer.
          */
         get: operations["triage_api_dashboard_triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/insider-risk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Insider Risk
+         * @description Insider-risk assessments for one repo (spec 06 §9).
+         *
+         *     Detail is admin-only, withheld at the query layer rather than hidden in the
+         *     UI. A viewer sees the verdict per pull request — the same thing anyone who
+         *     can see the Check Run already sees — and not the author, the breakdown, or
+         *     the baseline comparison.
+         */
+        get: operations["repo_insider_risk_api_dashboard_repos__repo_id__insider_risk_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/sscs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Sscs
+         * @description Supply-chain evidence and trust-score history for one repo (spec 10 §9).
+         */
+        get: operations["repo_sscs_api_dashboard_repos__repo_id__sscs_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -499,6 +602,63 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AegisAccepted
+         * @description The scored result, returned so the workflow can render it in its log.
+         *
+         *     The recommendation is echoed rather than recomputed on the runner: one
+         *     definition of the arithmetic, in the platform (spec 06 §4).
+         */
+        AegisAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** Signal Id */
+            signal_id: string;
+            /** Insider Risk Score */
+            insider_risk_score: number;
+            /** Recommendation */
+            recommendation: string;
+            /** Blocking */
+            blocking: boolean;
+            /** Check Run Id */
+            check_run_id?: string | null;
+            /** Check Run Error */
+            check_run_error?: string | null;
+            /**
+             * Detail
+             * @default Written to the durability buffer.
+             */
+            detail: string;
+        };
+        /** AtlasAccepted */
+        AtlasAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Trust Score */
+            trust_score: number;
+            /** Raw Trust Score */
+            raw_trust_score: number;
+            /** Dependency Count */
+            dependency_count: number;
+            /** Vulnerable Dependency Count */
+            vulnerable_dependency_count: number;
+            /** Min Trust Score */
+            min_trust_score: number;
+            /** Blocking */
+            blocking: boolean;
+            /**
+             * Below Minimum
+             * @description Whether the score is under this repo's configured floor. Reported even when blocking is off, so the workflow log says what would have happened.
+             */
+            below_minimum: boolean;
+            /**
+             * Detail
+             * @default Written to the durability buffer.
+             */
+            detail: string;
+        };
+        /**
          * Capability
          * @enum {string}
          */
@@ -548,6 +708,64 @@ export interface components {
             secret_provisioned: boolean;
             /** Detail */
             detail: string;
+        };
+        /**
+         * EcosystemEvidence
+         * @description Per-ecosystem detail for one repo.
+         *
+         *     A monorepo scans each ecosystem independently and sums into one evidence
+         *     row (spec 07 §8); this is the detail the sum would otherwise destroy.
+         */
+        EcosystemEvidence: {
+            /** Ecosystem */
+            ecosystem: string;
+            /**
+             * Tool Name
+             * @default
+             */
+            tool_name: string;
+            /**
+             * Dependency Count
+             * @default 0
+             */
+            dependency_count: number;
+            /**
+             * Critical Vulns
+             * @default 0
+             */
+            critical_vulns: number;
+            /**
+             * High Vulns
+             * @default 0
+             */
+            high_vulns: number;
+            /**
+             * Medium Vulns
+             * @default 0
+             */
+            medium_vulns: number;
+            /**
+             * Low Vulns
+             * @default 0
+             */
+            low_vulns: number;
+            /**
+             * Floating Versions
+             * @description Dependencies not pinned to an exact version.
+             * @default 0
+             */
+            floating_versions: number;
+            /**
+             * Stale Dependencies
+             * @description No release in 2+ years.
+             * @default 0
+             */
+            stale_dependencies: number;
+            /**
+             * Maintenance Data Available For
+             * @description Dependencies whose maintenance recency could actually be determined. Private-registry packages have none and are excluded from the stale ratio's denominator rather than counted as fresh or as stale (spec 07 §8). Null means the tool did not report it, in which case dependency_count is used.
+             */
+            maintenance_data_available_for?: number | null;
         };
         /**
          * EvaluateRequest
@@ -777,6 +995,83 @@ export interface components {
              * @default Written to the durability buffer.
              */
             detail: string;
+        };
+        /**
+         * InsiderRiskOut
+         * @description One insider-risk assessment (spec 06 §3).
+         *
+         *     `author_login` and `signal_breakdown` are null for non-admin callers
+         *     rather than absent — a stable key shape, and the same choice made for raw
+         *     output. `detail_included` on the page says which you are looking at, so
+         *     "withheld" is never mistaken for "nothing recorded".
+         */
+        InsiderRiskOut: {
+            /** Signal Id */
+            signal_id: string;
+            /** Pr Number */
+            pr_number: number;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Insider Risk Score */
+            insider_risk_score: number;
+            /** Recommendation */
+            recommendation: string;
+            /**
+             * Ai Authorship Flag
+             * @description True if likely AI and undisclosed, false if evaluated and human, null if not evaluated (spec 06 §3).
+             */
+            ai_authorship_flag?: boolean | null;
+            /** Evaluated At */
+            evaluated_at?: string | null;
+            /** Github Check Run Id */
+            github_check_run_id?: string | null;
+            /** Author Login */
+            author_login?: string | null;
+            /** Signal Breakdown */
+            signal_breakdown?: unknown;
+        };
+        /** InsiderRiskPage */
+        InsiderRiskPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Signals */
+            signals: components["schemas"]["InsiderRiskOut"][];
+            /**
+             * Detail Included
+             * @description False for viewer roles. The author and the breakdown are withheld at the query layer, not hidden in the UI (spec 06 §9).
+             */
+            detail_included: boolean;
+            /**
+             * Governance
+             * @description Served with the data on purpose. A consumer of this endpoint should not have to read spec 06 §9 to learn that these rows are not a per-person rating.
+             */
+            governance: string;
+        };
+        /**
+         * InsiderRiskSubmission
+         * @description What the Aegis workflow posts (spec 06 §3, §4).
+         *
+         *     No `repo_full_name` and no `signal_id`: the repo comes from the token and
+         *     the id is derived server-side from repo + PR + commit, so a re-run on an
+         *     unchanged head commit upserts instead of appending.
+         */
+        InsiderRiskSubmission: {
+            /** Pr Number */
+            pr_number: number;
+            /** Commit Sha */
+            commit_sha: string;
+            /**
+             * Author Login
+             * @description The GitHub login whose pull request was scored. Required: a score you cannot attribute is one nobody can challenge and nobody can delete on request (spec 06 §9).
+             */
+            author_login: string;
+            /** Signals */
+            signals?: components["schemas"]["SubSignal"][];
+            /**
+             * Ai Authorship Flag
+             * @description True if AI authorship is likely and undisclosed, false if evaluated and human, null if not evaluated. Null is the default because the classifier is opt-in (spec 06 §5).
+             */
+            ai_authorship_flag?: boolean | null;
         };
         /** OnboardRequest */
         OnboardRequest: {
@@ -1044,6 +1339,80 @@ export interface components {
          * @enum {string}
          */
         Severity: "info" | "low" | "medium" | "high" | "critical";
+        /** SscsEvidenceOut */
+        SscsEvidenceOut: {
+            /** Evidence Id */
+            evidence_id: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Tag Or Release */
+            tag_or_release?: string | null;
+            /** Sbom Ref */
+            sbom_ref?: string | null;
+            /**
+             * Dependency Count
+             * @default 0
+             */
+            dependency_count: number;
+            /**
+             * Vulnerable Dependency Count
+             * @default 0
+             */
+            vulnerable_dependency_count: number;
+            /**
+             * Trust Score
+             * @default 100
+             */
+            trust_score: number;
+            /**
+             * Raw Trust Score
+             * @description Pre-clamp. Ranking has to survive the floor at 0, the same way Oracle's raw_score survives the ceiling at 100 (D-018).
+             */
+            raw_trust_score?: number | null;
+            /** Provenance Json */
+            provenance_json?: unknown;
+            /** Ecosystems Json */
+            ecosystems_json?: unknown;
+            /** Evaluated At */
+            evaluated_at?: string | null;
+        };
+        /**
+         * SscsEvidenceSubmission
+         * @description What the Atlas workflow posts (spec 07 §3, §4).
+         *
+         *     Counts rather than a trust score: the score is computed server-side from
+         *     §5's formula so it is reproducible and cannot drift between the workflow's
+         *     version of the arithmetic and the platform's.
+         */
+        SscsEvidenceSubmission: {
+            /** Commit Sha */
+            commit_sha: string;
+            /** Tag Or Release */
+            tag_or_release?: string | null;
+            /**
+             * Sbom Ref
+             * @description Raw-output reference for the generated SBOM (spec 05 §7).
+             */
+            sbom_ref?: string | null;
+            /** Ecosystems */
+            ecosystems?: components["schemas"]["EcosystemEvidence"][];
+            /**
+             * Provenance
+             * @description Minimal SLSA-style statement: builder id, source repo and commit, workflow run id, timestamp. Straight from the runner's GITHUB_* environment.
+             */
+            provenance?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SscsPage */
+        SscsPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Evidence */
+            evidence: components["schemas"]["SscsEvidenceOut"][];
+            /** @description Convenience for the header; the same row as evidence[0]. */
+            latest?: components["schemas"]["SscsEvidenceOut"] | null;
+        };
         /** StatusChange */
         StatusChange: {
             status: components["schemas"]["FindingStatus"];
@@ -1064,6 +1433,25 @@ export interface components {
             reason_supplied: boolean;
             /** Retro Signal */
             retro_signal: string;
+        };
+        /**
+         * SubSignal
+         * @description One contributing insider-risk signal, with the reason it fired.
+         *
+         *     The rationale is required, not optional (spec 06 §6). A number with no
+         *     reason attached is not something a person can dispute, and this score is
+         *     about a person — see spec 06 §9.
+         */
+        SubSignal: {
+            /** Key */
+            key: string;
+            /** Score */
+            score: number;
+            /**
+             * Rationale
+             * @description Plain-language statement of what was observed and why it scored.
+             */
+            rationale: string;
         };
         /**
          * TriageItem
@@ -1261,6 +1649,72 @@ export interface operations {
             };
         };
     };
+    ingest_aegis_api_ingest_aegis_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InsiderRiskSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AegisAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_atlas_api_ingest_atlas_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SscsEvidenceSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AtlasAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ingest_capability_payload_api_ingest__capability__post: {
         parameters: {
             query?: never;
@@ -1343,6 +1797,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TriageQueue"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_insider_risk_api_dashboard_repos__repo_id__insider_risk_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsiderRiskPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_sscs_api_dashboard_repos__repo_id__sscs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SscsPage"];
                 };
             };
             /** @description Validation Error */

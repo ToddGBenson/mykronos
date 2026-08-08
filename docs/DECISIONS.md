@@ -513,6 +513,134 @@ first decision rather than from the day someone asks the question.
 
 ---
 
+## D-022 — Aegis scores a pull request, never a person
+
+**Status:** Decided, spec amended
+**Spec:** [06 §9](../specs/06-aegis-integration.md), [12 §5.1](../specs/12-security-and-secrets-management.md)
+
+Every other capability in Mykronos scores code. Aegis attaches an
+`insider_risk_score` to a named GitHub login, which makes its rows personal
+data and makes a growing table of them a dossier on your colleagues whatever
+the intent behind it. Spec 06 said nothing about this, and spec 12 §5 opened by
+claiming the platform processes tool output rather than application data —
+true of everything except this.
+
+Six things follow, all of them enforced rather than documented:
+
+**`author_login` is required.** This reads backwards until you work it
+through: omitting the author does not de-identify the row, because repo plus
+pull-request number identifies it trivially. It only makes the row unauditable
+and undeletable. Recording it is what lets a deletion request actually be
+honoured, and what lets somebody challenged by a score see what was said about
+them.
+
+**Detail is admin-only at the query layer.** `author_login` and
+`signal_breakdown` are not selected for a viewer, not hidden in the UI — the
+same rule as raw tool output, for a different reason, which is why
+`may_see_insider_risk` is a separate property from `may_see_raw_output`.
+Collapsing them would make the next role change silently alter both. Viewers
+keep the verdict per pull request, which anyone with repo access already sees
+on the Check Run; withholding that too would be theatre.
+
+**Retention is a job, not a sentence.** Rows are deleted after
+`retention_days` (default 90) by a daily sweep that rewrites the Parquet
+partitions. A real delete, not a tombstone column: a flag on a row still in the
+file would not honour a deletion request, it would only stop the dashboard
+showing what the system holds. Emptied partitions have their directories
+removed, because an empty file in a dated directory still announces the day
+somebody was assessed. Repos with no config get the default — the absence of a
+setting is not consent to keep the data forever — and so do rows whose repo was
+offboarded, or deletion would depend on a record that no longer exists.
+
+**Nothing aggregates.** Oracle consults insider risk only for a pull-request
+gate, and only for *that* pull request. Reaching for "the worst recent score in
+this repo" would carry one contributor's signal into an unrelated colleague's
+decision. There is no per-author endpoint, no contributor ranking, no per-person
+trend, and a test asserts no such route exists — if someone adds one, that test
+is where the conversation should happen.
+
+**No single heuristic can block.** Signals are capped per key and the two
+largest caps sum to less than the default block threshold, so a block always
+needs at least three independent signals agreeing. A heuristic that fires
+wrongly costs a review, not a merge.
+
+**The framing is part of the design.** The Check Run says "this PR touches auth
+config", not "this author is risky", and deliberately does not print the
+author's login next to the score — everyone can already see who opened the pull
+request, and repeating it beside a risk number is what turns a review prompt
+into a label. The dashboard leads every row with the pull request and carries
+the author as a field beneath it. Same data, and the arrangement is the
+difference between a review prompt and a file on someone.
+
+---
+
+## D-023 — AI-authorship classification is off by default
+
+**Status:** Decided, spec amended
+**Spec:** [06 §2, §5](../specs/06-aegis-integration.md), [12 §5.2](../specs/12-security-and-secrets-management.md)
+
+`ai_classifier_url` defaults to null, which disables the signal entirely.
+
+It is the only path in the whole platform that causes repository content to
+leave the runner: every scanner runs inside the customer's own Actions runner
+and sends Mykronos findings, never source. There is deliberately no default
+endpoint and there must never be one — a default would mean a deployment that
+changed no configuration was shipping its code to a third party, which is
+precisely the decision an operator has to make deliberately.
+
+With the URL unset, `ai_authorship_flag` is null and the breakdown says which of
+the two nulls applies: nothing configured, versus configured and unreachable.
+Both mean "we did not look"; only one is a fault. The runner-side scorer always
+reports null, never false, because a local heuristic cannot stand in for
+classification and reporting false would claim "we checked, it is human".
+
+---
+
+## D-024 — Runner-side collectors report observations, not scores
+
+**Status:** Decided
+**Spec:** [06 §4](../specs/06-aegis-integration.md), [07 §5, §7](../specs/07-atlas-integration.md)
+
+`mykronos.aegis_signals` and `mykronos.atlas_counts` run on the runner and emit
+*what they saw* — which globs matched, how many criticals in which ecosystem.
+The weights, caps, thresholds and formulas stay in the platform.
+
+Spec 07 §7 makes reproducibility an acceptance criterion, and a score the runner
+calculates drifts the moment two repos are on different versions of the action.
+It also means changing how risk is weighted is a platform deploy rather than a
+template resync across every onboarded repo, and that a repo cannot quietly run
+a forked scorer with its own thresholds. `/api/ingest/atlas` rejects a submitted
+`trust_score` with a 422 rather than ignoring it, so the boundary is enforced
+rather than assumed.
+
+The cost is that adapters, collectors and server-side scoring all live in one
+package — the same trade spec 04 §4 already made, for the same reason: one
+definition of the schema beats a tidier directory layout.
+
+---
+
+## D-025 — `fnmatch` alone cannot express "at any depth"
+
+**Status:** Decided
+**Spec:** [06 §5](../specs/06-aegis-integration.md)
+
+Spec 06 §5's default sensitive-path list includes `**/.github/workflows/**`.
+Under plain `fnmatch` that does **not** match `.github/workflows/ci.yml`,
+because the leading `**/` requires a literal slash before `.github` and git
+reports repo-relative paths with no leading slash.
+
+So the single most sensitive path in any repository — the file that defines what
+CI runs, and the canonical example the default list exists to catch — silently
+failed to match. Same for `secrets.yml`, `auth/` and `iam/` at the top level.
+Nothing errored; the signal simply never fired.
+
+`matches_glob` treats a leading `**/` and a trailing `/**` as optional, which is
+what "at any depth, including the root" actually means. Found by a test written
+to check the *rationale text*, not the matching — which is the argument for
+writing the test that looks redundant.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -520,7 +648,9 @@ Recorded so they are not mistaken for oversights.
 | Deferred | Why | Lands in |
 |---|---|---|
 | `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
-| `POST /api/ingest/{capability}` bodies | Route returns 501 naming the phase; the target tables belong to Aegis/Atlas/Patchwork/Oracle | Phases 3–6 |
+| `POST /api/ingest/patchwork` body | Route returns 501 naming the phase. Aegis, Atlas and Oracle now have real handlers | Phase 6 |
+| Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |
+| SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | Phase 7 |
 | Raw output **retention sweep** (spec 05 §7) | Archival is built; the scheduled purge that bounds disk usage is not | Phase 7 |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
 

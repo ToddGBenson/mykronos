@@ -14,11 +14,13 @@ import {
   BackendUnavailable,
   backendClient,
   type FindingsPage,
+  type InsiderRiskPage,
   type Portfolio,
   type RepoDetail,
   type RiskDecision,
   type ScanHealth,
   type ShadowModeReport,
+  type SscsPage,
   type TriageQueue,
 } from "./api";
 
@@ -173,6 +175,38 @@ export async function getPolicy(): Promise<
     });
     if (!data) return { ok: false, error: describe(response, "Could not load the policy") };
     return { ok: true, data: data as { version: string; source: unknown; note: string } };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getInsiderRisk(
+  repoId: string,
+): Promise<Result<InsiderRiskPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/insider-risk",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load insider risk") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/sscs",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load supply-chain evidence") };
+    }
+    return { ok: true, data };
   } catch (error) {
     return failure(error);
   }

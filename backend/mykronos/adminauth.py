@@ -55,6 +55,24 @@ class Principal:
         return self.role is Role.ADMIN
 
     @property
+    def may_see_insider_risk(self) -> bool:
+        """spec 06 §9: insider-risk detail is admin-only.
+
+        A separate property from `may_see_raw_output` even though both are
+        currently "admin", because they protect different things for different
+        reasons and will diverge. Raw output is withheld because it may quote a
+        secret; this is withheld because it is a risk assessment of a named
+        colleague. Collapsing them into one check would make the next role
+        change silently alter both.
+
+        Viewers can still see *that* Aegis ran on a pull request and what it
+        recommended — the same thing anyone with repo access sees on the Check
+        Run. What they cannot see is the breakdown, the author's baseline
+        comparison, or the history across pull requests.
+        """
+        return self.role is Role.ADMIN
+
+    @property
     def may_write(self) -> bool:
         return self.role is Role.ADMIN
 

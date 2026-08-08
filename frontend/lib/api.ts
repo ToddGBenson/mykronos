@@ -36,6 +36,31 @@ export type RepoList =
   paths["/api/repos"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RepoDetail =
   paths["/api/repos/{repo_id}"]["get"]["responses"]["200"]["content"]["application/json"];
+export type InsiderRiskPage =
+  paths["/api/dashboard/repos/{repo_id}/insider-risk"]["get"]["responses"]["200"]["content"]["application/json"];
+export type InsiderRiskSignal = InsiderRiskPage["signals"][number];
+export type SscsPage =
+  paths["/api/dashboard/repos/{repo_id}/sscs"]["get"]["responses"]["200"]["content"]["application/json"];
+export type SscsEvidence = SscsPage["evidence"][number];
+
+/** The shape `signal_breakdown` carries when an admin is allowed to see it. */
+export type SignalBreakdown = {
+  signals: { key: string; score: number; capped_at: number | null; rationale: string }[];
+  raw_total: number;
+  clamped: boolean;
+  thresholds: { review: number; block: number };
+  ai_authorship:
+    | { evaluated: false; reason: string }
+    | {
+        evaluated: true;
+        likely_ai_and_undisclosed: boolean;
+        disclosure_required: boolean;
+      };
+  signals_not_reported: string[];
+  signals_rejected: string[];
+  contributing_count: number;
+};
+
 export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];
