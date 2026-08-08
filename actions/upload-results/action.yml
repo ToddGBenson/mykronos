@@ -1,0 +1,96 @@
+# Shared upload step for every Mykronos scanner workflow (spec 04 §2).
+#
+# This is a single versioned action rather than a snippet copy-pasted into ten
+# templates, so ingestion behaviour stays consistent as it evolves. Every
+# onboarded repo pins it by tag: it must never be referenced by branch, and it
+# must stay backwards-compatible with the oldest ingestion API still deployed.
+#
+# The logic lives in the `mykronos` package, not in this file, so the adapters
+# and the `FindingSubmission` schema they target have exactly one definition
+# (docs/DECISIONS.md D-012).
+
+name: Mykronos — upload results
+description: >-
+  Normalize a scanner's output into the Mykronos finding schema, archive the
+  original, and upload both to the data lake. Fails the step if results cannot
+  be recorded.
+
+inputs:
+  capability:
+    description: "Capability this scan belongs to (sast, secrets, iac, ...)."
+    required: true
+  tool:
+    description: "Tool that produced the results (codeql, gitleaks, trivy, ...)."
+    required: true
+  tool-version:
+    description: "Tool version. Read from the SARIF driver when omitted."
+    required: false
+    default: ""
+  results-path:
+    description: "File or directory holding the tool's native output."
+    required: true
+  ingestion-url:
+    description: "Base URL of the Mykronos Ingestion API."
+    required: true
+  token:
+    description: >-
+      This repo's ingestion token, from the MYKRONOS_INGESTION_TOKEN secret.
+      Scoped to one repository; the capability above must be granted to it.
+    required: true
+  severity-threshold:
+    description: >-
+      Findings below this are still ingested for trend data but never block
+      (spec 04 §5).
+    required: false
+    default: "low"
+  blocking:
+    description: >-
+      When "true", findings at or above the threshold fail this step. Default
+      is advisory-only, per the platform-wide default in spec 04 §5.
+    required: false
+    default: "false"
+  mykronos-ref:
+    description: >-
+      Version of the mykronos package to install. Pinned, for the same reason
+      this action is pinned.
+    required: false
+    default: "v0.1.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+
+    - name: Install the Mykronos uploader
+      shell: bash
+      run: |
+        python -m pip install --quiet --disable-pip-version-check \
+          "mykronos @ git+https://github.com/ToddGBenson/mykronos@${{ inputs.mykronos-ref }}#subdirectory=backend"
+
+    - name: Upload results
+      shell: bash
+      env:
+        # Passed through the environment rather than the command line so the
+        # token never appears in a process listing or a rendered command in
+        # the Actions log.
+        MYKRONOS_TOKEN: ${{ inputs.token }}
+      run: |
+        python -m mykronos.upload \
+          --capability "${{ inputs.capability }}" \
+          --tool "${{ inputs.tool }}" \
+          --tool-version "${{ inputs.tool-version }}" \
+          --results-path "${{ inputs.results-path }}" \
+          --ingestion-url "${{ inputs.ingestion-url }}" \
+          --token "$MYKRONOS_TOKEN" \
+          --repo "${{ github.repository }}" \
+          --commit-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+          --branch "${{ github.head_ref || github.ref_name }}" \
+          --workflow-run-id "${{ github.run_id }}" \
+          --triggered-by "${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'schedule' && 'schedule' || (github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'push')) }}" \
+          --pr-number "${{ github.event.pull_request.number || 0 }}" \
+          --workspace "${{ github.workspace }}" \
+          --severity-threshold "${{ inputs.severity-threshold }}" \
+          --blocking "${{ inputs.blocking }}"

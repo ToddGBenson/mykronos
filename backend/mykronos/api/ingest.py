@@ -20,6 +20,7 @@ Three properties this module is responsible for:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -33,6 +34,7 @@ from mykronos.schemas import (
     FindingStatus,
     HealthResponse,
     IngestAccepted,
+    RawAccepted,
     ScanRunSubmission,
     utcnow,
 )
@@ -239,6 +241,64 @@ async def ingest_findings(
 
     request.app.state.buffer.append("findings", rows)
     return IngestAccepted(accepted=len(rows), scan_run_id=batch.scan_run_id)
+
+
+@router.post("/raw", response_model=RawAccepted)
+async def ingest_raw_output(
+    request: Request,
+    token: TokenDep,
+    scan_run_id: str,
+    capability: Capability,
+    filename: str,
+) -> RawAccepted:
+    """Archive a scanner's original, unmodified output (spec 05 §7).
+
+    Kept alongside the normalized findings so a disputed result can always be
+    traced back to exactly what the tool said, rather than to our
+    interpretation of it. Retention is bounded separately; normalized
+    `Finding` rows outlive the raw files.
+    """
+    _require_capability(token, capability.value)
+
+    settings = request.app.state.settings
+    safe_name = Path(filename).name  # strip any directory component
+    if not safe_name or safe_name.startswith("."):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="filename must be a plain file name.",
+        )
+
+    body = await request.body()
+    if len(body) > settings.max_raw_output_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"Raw output is {len(body)} bytes; the ceiling is "
+                f"{settings.max_raw_output_bytes}. Normalized findings were still "
+                "accepted — only the archive copy was rejected."
+            ),
+        )
+
+    # Repo names contain a slash; keep it as a directory level rather than
+    # flattening, so the archive mirrors the repo namespace.
+    owner, _, name = token.repo_full_name.partition("/")
+    destination = (
+        settings.raw_dir / _safe_segment(owner) / _safe_segment(name)
+        / _safe_segment(scan_run_id) / safe_name
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(body)
+
+    return RawAccepted(
+        raw_output_ref=str(destination.relative_to(settings.datalake_dir).as_posix()),
+        bytes_written=len(body),
+    )
+
+
+def _safe_segment(value: str) -> str:
+    """One path segment, with no way out of the archive directory."""
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value)
+    return cleaned.strip(".-") or "unknown"
 
 
 @router.post("/{capability}", response_model=IngestAccepted)

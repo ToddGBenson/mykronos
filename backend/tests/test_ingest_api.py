@@ -170,6 +170,78 @@ class TestIngestion:
         assert "not implemented yet" in response.json()["detail"]
 
 
+class TestRawArchive:
+    """spec 05 §7 — the original tool output, kept for dispute resolution."""
+
+    def _post(self, client: TestClient, auth: dict[str, str], body: bytes, **params):
+        query = {"scan_run_id": "run-1", "capability": CAPABILITY, "filename": "out.sarif"}
+        query.update(params)
+        return client.post("/api/ingest/raw", params=query, content=body, headers=auth)
+
+    def test_stores_the_file_and_returns_its_reference(
+        self, client: TestClient, auth: dict[str, str], settings
+    ) -> None:
+        response = self._post(client, auth, b'{"runs": []}')
+
+        assert response.status_code == 200
+        ref = response.json()["raw_output_ref"]
+        assert (settings.datalake_dir / ref).read_bytes() == b'{"runs": []}'
+
+    def test_archive_mirrors_the_repo_namespace(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        ref = self._post(client, auth, b"x").json()["raw_output_ref"]
+        assert ref.startswith("raw/example-org/payments-api/run-1/")
+
+    def test_a_traversal_filename_cannot_escape_the_archive(
+        self, client: TestClient, auth: dict[str, str], settings
+    ) -> None:
+        """The archive stores attacker-influenceable names; it must not be a
+        write primitive onto the host."""
+        response = self._post(client, auth, b"x", filename="../../../../evil.txt")
+
+        assert response.status_code == 200
+        ref = response.json()["raw_output_ref"]
+        assert ".." not in ref
+        assert (settings.datalake_dir / ref).is_file()
+
+    def test_a_traversal_scan_run_id_is_neutralised(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        ref = self._post(client, auth, b"x", scan_run_id="../../etc").json()[
+            "raw_output_ref"
+        ]
+        assert ".." not in ref
+
+    def test_an_ungranted_capability_is_refused(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        assert self._post(client, auth, b"x", capability="iac").status_code == 403
+
+    def test_oversized_output_is_rejected_without_touching_findings(
+        self, settings
+    ) -> None:
+        """Rejecting the archive copy must not imply the findings failed."""
+        settings.max_raw_output_bytes = 16
+        from mykronos.main import create_app
+
+        with TestClient(create_app(settings)) as client:
+            headers = {"Authorization": f"Bearer {issue_token(client, REPO, CAPABILITY)}"}
+            response = client.post(
+                "/api/ingest/raw",
+                params={
+                    "scan_run_id": "run-1",
+                    "capability": CAPABILITY,
+                    "filename": "out.sarif",
+                },
+                content=b"x" * 64,
+                headers=headers,
+            )
+
+        assert response.status_code == 413
+        assert "findings were still accepted" in response.json()["detail"].lower()
+
+
 class TestRateLimiting:
     def test_exceeding_the_limit_returns_429_with_retry_after(
         self, settings, monkeypatch

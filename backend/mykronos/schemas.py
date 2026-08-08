@@ -194,6 +194,13 @@ class IngestAccepted(BaseModel):
     detail: str = "Written to the durability buffer."
 
 
+class RawAccepted(BaseModel):
+    """Archived raw tool output (spec 05 §7)."""
+
+    raw_output_ref: str
+    bytes_written: int
+
+
 class HealthResponse(BaseModel):
     status: str
     datalake_writable: bool

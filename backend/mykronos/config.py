@@ -50,6 +50,15 @@ class Settings(BaseSettings):
         description="Per-token ingestion rate limit. spec 05 §6.",
     )
 
+    max_raw_output_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Ceiling on an archived raw tool output file (spec 05 §7). Exceeding it "
+            "rejects only the archive copy; normalized findings are unaffected."
+        ),
+    )
+
     database_url: str = Field(
         default="sqlite:///mykronos.db",
         description=(
