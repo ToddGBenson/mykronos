@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
@@ -10,7 +11,9 @@ from fastapi.testclient import TestClient
 
 from mykronos.lake import Catalog
 from mykronos.lake.catalog import sql_path
+from mykronos.lake.tables import column_names
 from tests.conftest import (
+    REPO,
     SNIPPET,
     dependency_finding,
     finding_payload,
@@ -330,6 +333,65 @@ class TestScanRunUpsert:
         )
         assert (status, count) == ("partial_failure", 7)
         assert completed is not None
+
+
+class TestPartialUpdatesWithinOneBatch:
+    """Two sparse patches to the same row before compaction runs.
+
+    Compaction collapses duplicate keys last-write-wins before it upserts,
+    which is right for tables whose upsert overwrites — and wrong for the
+    columns that arrive alone and mean "set this, leave the rest". Overriding a
+    risk decision and then merging its pull request inside one five-minute
+    window is an ordinary sequence, so this is not a hypothetical.
+    """
+
+    def _decision(self, buffer, decision_id: str, **patch: Any) -> None:
+        row = {name: None for name in column_names("risk_decisions")}
+        row.update(
+            decision_id=decision_id,
+            repo_full_name=REPO,
+            decision_type="pr_gate",
+            pr_number=1,
+            commit_sha="abc",
+            overall_risk_score=80,
+            recommendation="no_go",
+            inputs_snapshot="{}",
+            reasoning="",
+            policy_version="1.0",
+            evaluated_at=datetime.now(UTC).replace(tzinfo=None).isoformat(),
+        )
+        row.update(patch)
+        buffer.append("risk_decisions", [row])
+
+    def test_both_patches_survive(self, buffer, catalog: Catalog, run_compaction) -> None:
+        self._decision(buffer, "d-1")
+        run_compaction()
+
+        self._decision(buffer, "d-1", human_override='{"reason": "vendored"}')
+        self._decision(buffer, "d-1", gate_outcome="merged")
+        run_compaction()
+
+        assert catalog.count("risk_decisions") == 1
+        override, outcome, recommendation = one(
+            catalog,
+            "SELECT human_override, gate_outcome, recommendation FROM risk_decisions",
+        )
+        assert outcome == "merged"
+        assert override is not None, "the earlier patch was collapsed away"
+        # And neither patch overwrote the decision itself.
+        assert recommendation == "no_go"
+
+    def test_the_newest_non_null_wins_for_the_same_column(
+        self, buffer, catalog: Catalog, run_compaction
+    ) -> None:
+        self._decision(buffer, "d-2")
+        run_compaction()
+
+        self._decision(buffer, "d-2", gate_outcome="closed_unmerged")
+        self._decision(buffer, "d-2", gate_outcome="merged")
+        run_compaction()
+
+        assert one(catalog, "SELECT gate_outcome FROM risk_decisions") == ("merged",)
 
 
 class TestSnippetHandling:

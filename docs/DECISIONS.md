@@ -448,6 +448,69 @@ The two mutable fields are the exceptions that prove it. An override is a
 human acting on the decision that was made, and the check run id is
 bookkeeping about where it was published — neither changes what was decided.
 
+`gate_outcome` later joined them (D-021), on the same reasoning: what happened
+to the pull request is not part of the decision.
+
+---
+
+## D-020 — Compaction must not collapse sparse patches
+
+**Status:** Decided
+**Spec:** [05 §9](../specs/05-datalake.md)
+
+`_stage_incoming` collapses duplicate keys within a batch last-write-wins
+before the upsert runs. That is right for tables whose upsert overwrites its
+columns, and wrong for columns that arrive on an otherwise-empty row meaning
+"set this one field, leave the rest alone".
+
+Found by a failing test, not by inspection: overriding a risk decision and
+then merging its pull request inside one five-minute compaction window
+silently lost the override. The patch row for `gate_outcome` was newer, so the
+collapse discarded the `human_override` row entirely and the upsert's
+`coalesce` never saw it. Nothing errored. The override simply was not there
+afterwards — the worst shape a data bug can take in an audit trail.
+
+`PATCH_COLUMNS` now names those columns per table, and the collapse takes the
+newest *non-null* value for them (`first_value(... IGNORE NULLS)` over the
+whole partition) instead of the newest row. Both are declared in
+`lake/tables.py` next to the upsert they belong to, so adding a third partial
+update means adding it to one list rather than rediscovering this.
+
+The window is five minutes, so any two human-or-webhook actions on the same
+decision within five minutes hit this. It was reachable from day one of the
+override endpoint existing.
+
+---
+
+## D-021 — Advisory mode is the measurement, so record the outcome
+
+**Status:** Decided
+**Spec:** [09 §6](../specs/09-oracle-risk-decision-engine.md)
+**Resolves:** open question 5
+
+Spec 09 §6 makes Oracle advisory by default but gives no path to ever turning
+blocking on. "The tool has been running a while" is not evidence, and neither
+is a low false-positive rate — the question is not whether the findings are
+real, it is whether stopping those merges would have been worth what it cost.
+
+Advisory mode is already the natural experiment for this. Every `no_go` that
+merged anyway is a merge blocking mode *would* have stopped. So
+`risk_decisions.gate_outcome` records what actually happened to the pull
+request, set from the `pull_request.closed` webhook against the most recent
+`pr_gate` decision for that PR — earlier ones were superseded by later pushes
+and were never the standing verdict when the merge button was pressed.
+
+`GET /api/oracle/shadow-mode` reports `would_have_blocked` alongside
+`would_have_blocked_and_overridden`, deliberately in the same table: an
+override is a human who looked at the `no_go`, wrote down why it was
+acceptable, and shipped. A report that counted only the catches would be an
+argument dressed as a measurement.
+
+What it does not claim: whether blocking those merges would have been
+*correct*. That needs the incident record for them, which lives in Phase 5's
+Knowledge Store. This is the denominator, and it starts accumulating from the
+first decision rather than from the day someone asks the question.
+
 ---
 
 ## D-007 — Deferred to a later phase
@@ -471,8 +534,9 @@ Recorded so they are not mistaken for oversights.
 | 2 | GitHub App needs `secrets: write` — spec 12 §6 claims otherwise | Phase 1 | **Resolved** — D-008 |
 | 3 | Ten tokens per repo on ten independent 90-day clocks | Phase 1 | **Resolved** — D-009 |
 | 4 | Oracle's score saturates: criticals weigh 40, clamped at 100, so three of them pins every repo at 100 forever | Phase 3 | **Resolved** — D-018 |
-| 5 | "Advisory by default" has no stated path to ever turning blocking on. Needs a shadow-mode metric to make the case with data | Phase 3 | Open |
+| 5 | "Advisory by default" has no stated path to ever turning blocking on. Needs a shadow-mode metric to make the case with data | Phase 3 | **Resolved** — D-021 |
 
-Nothing now blocks Phase 1. Questions 4 and 5 are Oracle's, and are best
-answered with real findings in the lake — defer until Phase 2 has produced
-some.
+All five are now answered. Questions 4 and 5 were Oracle's and were held until
+Phase 2 had produced real findings to answer them against, which is what made
+D-018's saturation curve and D-021's shadow-mode metric arguable from data
+rather than from taste.

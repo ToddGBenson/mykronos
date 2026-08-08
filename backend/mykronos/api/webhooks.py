@@ -100,7 +100,9 @@ def _set_status(session: Session, installation_id: int, new_status: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def handle_installation(session: Session, payload: dict[str, Any], db: Any) -> dict[str, Any]:
+def handle_installation(
+    session: Session, payload: dict[str, Any], state: Any
+) -> dict[str, Any]:
     """`installation` — the App was installed, removed, or suspended."""
     action = payload.get("action", "")
     installation = payload.get("installation") or {}
@@ -125,7 +127,7 @@ def handle_installation(session: Session, payload: dict[str, Any], db: Any) -> d
             created += int(was_new)
         if action == "unsuspend":
             _set_status(session, installation_id, "pending_install")
-        db.audit(
+        state.db.audit(
             session,
             actor=WEBHOOK_ACTOR,
             action=f"installation.{action}",
@@ -140,7 +142,7 @@ def handle_installation(session: Session, payload: dict[str, Any], db: Any) -> d
         # distinct, so the dashboard can say "paused" rather than "gone".
         new_status = "removed" if action == "deleted" else "suspended"
         affected = _set_status(session, installation_id, new_status)
-        db.audit(
+        state.db.audit(
             session,
             actor=WEBHOOK_ACTOR,
             action=f"installation.{action}",
@@ -154,7 +156,7 @@ def handle_installation(session: Session, payload: dict[str, Any], db: Any) -> d
 
 
 def handle_installation_repositories(
-    session: Session, payload: dict[str, Any], db: Any
+    session: Session, payload: dict[str, Any], state: Any
 ) -> dict[str, Any]:
     """`installation_repositories` — repos added to or removed from an install."""
     installation = payload.get("installation") or {}
@@ -189,7 +191,7 @@ def handle_installation_repositories(
             row.last_synced_at = utcnow()
             removed += 1
 
-    db.audit(
+    state.db.audit(
         session,
         actor=WEBHOOK_ACTOR,
         action="installation_repositories",
@@ -201,21 +203,40 @@ def handle_installation_repositories(
     return {"handled": "installation_repositories", "added": added, "removed": removed}
 
 
-def handle_pull_request(session: Session, payload: dict[str, Any], db: Any) -> dict[str, Any]:
-    """`pull_request` — watch for our own install PR merging (spec 03 §3.6)."""
+def handle_pull_request(
+    session: Session, payload: dict[str, Any], state: Any
+) -> dict[str, Any]:
+    """`pull_request` — two unrelated things happen when a PR closes.
+
+    One is our own install PR merging, which promotes pending capabilities
+    (spec 03 §3.6). The other is that any PR Oracle judged now has a known
+    outcome, which is the evidence blocking mode will eventually be argued
+    from (spec 09 §6). Both hang off the same event; neither is allowed to
+    stop the other from running.
+    """
     if payload.get("action") != "closed":
         return {"ignored": f"pull_request.{payload.get('action')}"}
 
     pull_request = payload.get("pull_request") or {}
-    if not pull_request.get("merged"):
-        return {"ignored": "pull_request.closed (not merged)"}
+    merged = bool(pull_request.get("merged"))
+    repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
+    number = int(pull_request.get("number") or 0)
+
+    result: dict[str, Any] = {"handled": "pull_request.closed"}
+
+    if repo_full_name and number:
+        decision_id = _record_gate_outcome(
+            state, repo_full_name, number, "merged" if merged else "closed_unmerged"
+        )
+        if decision_id:
+            result["gate_outcome_recorded_for"] = decision_id
+
+    if not merged:
+        return {**result, "promoted": []}
 
     head_ref = ((pull_request.get("head") or {}).get("ref")) or ""
     if not head_ref.startswith(BRANCH_PREFIX):
-        return {"ignored": "pull_request.closed (not a Mykronos install PR)"}
-
-    repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
-    number = int(pull_request.get("number") or 0)
+        return {**result, "promoted": []}
 
     row = session.execute(
         select(RepoOnboarding).where(
@@ -224,11 +245,11 @@ def handle_pull_request(session: Session, payload: dict[str, Any], db: Any) -> d
     ).scalars().first()
     if row is None:
         logger.warning("Install PR merged for unknown repo %s", repo_full_name)
-        return {"ignored": "unknown repo"}
+        return {**result, "ignored": "unknown repo"}
 
     promoted = WorkflowInstaller.on_install_pr_merged(session, row, number)
     if promoted:
-        db.audit(
+        state.db.audit(
             session,
             actor=WEBHOOK_ACTOR,
             action="workflow_install_pr.merged",
@@ -237,7 +258,32 @@ def handle_pull_request(session: Session, payload: dict[str, Any], db: Any) -> d
             pr_number=number,
             enabled_capabilities=row.enabled_capabilities,
         )
-    return {"handled": "pull_request.closed", "promoted": promoted}
+    return {**result, "promoted": promoted}
+
+
+def _record_gate_outcome(
+    state: Any, repo_full_name: str, pr_number: int, outcome: str
+) -> str | None:
+    """Mark what happened to a judged PR, without letting it break the webhook.
+
+    A lake read failing here must not turn into a non-2xx: GitHub disables a
+    webhook that fails often enough, and losing install-PR promotion to save a
+    metric would be a bad trade.
+    """
+    from mykronos.oracle.service import OracleService
+
+    try:
+        return OracleService(
+            state.catalog, state.buffer, state.oracle_policy
+        ).record_gate_outcome(repo_full_name, pr_number, outcome)
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logger.warning(
+            "Could not record the gate outcome for %s#%s: %s",
+            repo_full_name,
+            pr_number,
+            exc,
+        )
+        return None
 
 
 HANDLERS = {
@@ -293,9 +339,9 @@ async def github_webhook(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Body is not valid JSON."
         ) from None
 
-    db = request.app.state.db
-    with db.session() as session:
-        result = handler(session, payload, db)
+    state = request.app.state
+    with state.db.session() as session:
+        result = handler(session, payload, state)
 
     logger.info("webhook %s delivery=%s -> %s", x_github_event, x_github_delivery, result)
     return result

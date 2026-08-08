@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -188,6 +188,27 @@ async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, 
             "re-baseline of the golden tests."
         ),
     }
+
+
+@router.get("/shadow-mode")
+async def shadow_mode(
+    request: Request,
+    principal: PrincipalDep,
+    days: Annotated[int, Query(ge=1, le=730)] = 90,
+) -> dict[str, Any]:
+    """What blocking mode would have done, had it been on (spec 09 §6).
+
+    Advisory-by-default is not just a safety choice, it is a measurement: every
+    `no_go` that merged anyway is a merge blocking mode would have stopped.
+    This endpoint is the evidence anyone should have to produce before
+    proposing that the gate start failing builds.
+
+    Ordered before `/decisions/{repo_id}` because a literal path must not be
+    shadowed by the parameterised one.
+    """
+    since = utcnow() - timedelta(days=days)
+    report = _service(request).shadow_mode_report(since=since)
+    return {"window_days": days, "since": since.isoformat(), **report}
 
 
 @router.get("/decisions/{repo_id}")

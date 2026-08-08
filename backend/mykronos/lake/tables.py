@@ -123,6 +123,22 @@ MUTATION_TS: Final[dict[str, str]] = {
 }
 
 
+#: Columns written by *partial* updates — a row that sets one of these leaves
+#: the others null and means "leave them alone", which is why the upsert
+#: coalesces them against the stored row rather than overwriting.
+#:
+#: Compaction has to know about them separately, because its normal
+#: last-write-wins collapse of duplicate keys within a batch would discard the
+#: earlier patch entirely. Overriding a decision and then merging its pull
+#: request inside one five-minute compaction window is an ordinary sequence,
+#: and it must not cost the override.
+PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
+    "findings": (),
+    "scan_runs": (),
+    "risk_decisions": ("human_override", "github_check_run_id", "gate_outcome"),
+}
+
+
 def column_names(table: str) -> list[str]:
     return [name for name, _ in TABLES[table]]
 

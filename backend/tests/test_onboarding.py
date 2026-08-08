@@ -314,7 +314,10 @@ class TestOnboardingApi:
             },
         )
 
-        assert "ignored" in response.json()
+        # The event is still handled — a closing PR is now also where a gate
+        # outcome gets recorded — but nothing is promoted off the back of a
+        # branch we did not create.
+        assert response.json()["promoted"] == []
         assert client.get(f"/api/repos/{repo_id}", headers=admin_auth).json()["status"] != "active"
 
     def test_a_repeated_save_opens_no_second_pr(

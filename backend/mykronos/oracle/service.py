@@ -18,6 +18,7 @@ import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from mykronos.github.client import GitHubClient, GitHubError
@@ -25,6 +26,7 @@ from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.oracle.engine import Decision, OracleEngine
 from mykronos.oracle.policy import Policy
+from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +217,139 @@ class OracleService:
         self.buffer.append("risk_decisions", [row])
         return published
 
+    def record_gate_outcome(
+        self, repo_full_name: str, pr_number: int, outcome: str
+    ) -> str | None:
+        """Record what actually happened to the pull request Oracle judged.
+
+        This is the evidence for open question 5 — whether blocking mode should
+        ever be turned on. Advisory mode gives you a natural experiment for
+        free: every `no_go` that merged anyway is a merge blocking mode *would*
+        have stopped, and the only honest way to argue for blocking is to point
+        at those merges and show what they cost. Without this column the
+        argument reduces to "the scanner said so", which is exactly the
+        argument that gets security gates switched off.
+
+        Only the most recent `pr_gate` decision for the PR is marked: earlier
+        ones were superseded by later pushes and were never the standing
+        verdict when the merge button was pressed.
+
+        Returns the decision id, or None if Oracle never judged this PR.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT decision_id, repo_full_name, decision_type, recommendation,
+                   overall_risk_score, gate_outcome
+            FROM risk_decisions
+            WHERE repo_full_name = ? AND pr_number = ? AND decision_type = 'pr_gate'
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [repo_full_name, pr_number],
+        )
+        if not rows:
+            return None
+
+        decision_id, repo, decision_type, recommendation, score, existing = rows[0]
+        if existing:
+            # A PR closes once. A second delivery of the same event must not
+            # rewrite the record — GitHub redelivers, and reopen/re-close would
+            # otherwise overwrite the outcome that mattered.
+            return str(decision_id)
+
+        stub = Decision(
+            decision_id=str(decision_id),
+            repo_full_name=str(repo),
+            decision_type=str(decision_type),
+            commit_sha="",
+            pr_number=pr_number,
+            release_tag=None,
+            overall_risk_score=int(score),
+            recommendation=str(recommendation),
+            reasoning="",
+            inputs_snapshot={},
+            policy_version="",
+            evaluated_at=utcnow(),
+        )
+        self.buffer.append(
+            "risk_decisions", [decision_to_row(stub, gate_outcome=outcome)]
+        )
+        logger.info(
+            "Gate outcome for %s#%s (%s): %s",
+            repo_full_name,
+            pr_number,
+            recommendation,
+            outcome,
+        )
+        return str(decision_id)
+
     # -- reads ----------------------------------------------------------
+
+    def shadow_mode_report(self, *, since: datetime | None = None) -> dict[str, Any]:
+        """What blocking mode would have done, had it been on (spec 09 §6).
+
+        Deliberately reports the counter-evidence in the same shape as the
+        supporting evidence: `would_have_blocked` next to `overridden`, so the
+        cost of turning blocking on is as visible as the benefit. A report that
+        only counted caught issues would be an argument, not a measurement.
+        """
+        where = ["decision_type = 'pr_gate'", "gate_outcome IS NOT NULL"]
+        params: list[Any] = []
+        if since is not None:
+            where.append("evaluated_at >= ?")
+            params.append(since)
+        clause = " AND ".join(where)
+
+        rows = self.catalog.query(
+            f"""
+            SELECT recommendation, gate_outcome, human_override IS NOT NULL, count(*)
+            FROM risk_decisions
+            WHERE {clause}
+            GROUP BY 1, 2, 3
+            """,
+            params,
+        )
+
+        totals = dict.fromkeys(
+            (
+                "decisions_with_a_known_outcome",
+                "merged",
+                "closed_unmerged",
+                # no_go decisions that merged anyway: exactly the set blocking
+                # mode would have stopped.
+                "would_have_blocked",
+                "would_have_blocked_and_overridden",
+            ),
+            0,
+        )
+        by_recommendation: dict[str, dict[str, int]] = {}
+
+        for recommendation, outcome, overridden, raw_count in rows:
+            count = int(raw_count)
+            totals["decisions_with_a_known_outcome"] += count
+            if outcome in ("merged", "closed_unmerged"):
+                totals[str(outcome)] += count
+            bucket = by_recommendation.setdefault(
+                str(recommendation), {"merged": 0, "closed_unmerged": 0}
+            )
+            bucket[str(outcome)] = bucket.get(str(outcome), 0) + count
+            if recommendation == "no_go" and outcome == "merged":
+                totals["would_have_blocked"] += count
+                if overridden:
+                    totals["would_have_blocked_and_overridden"] += count
+
+        return {
+            **totals,
+            "by_recommendation": by_recommendation,
+            "interpretation": (
+                "Every 'would_have_blocked' is a merge that blocking mode "
+                "would have stopped. Whether that was the right call is not "
+                "in this table — it needs the incident record for those "
+                "merges. This is the denominator for that question, not the "
+                "answer to it."
+            ),
+        }
+
 
     def recent_decisions(
         self,

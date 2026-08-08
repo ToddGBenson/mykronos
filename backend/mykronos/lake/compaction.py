@@ -30,6 +30,7 @@ from mykronos.lake.catalog import Catalog, sql_path
 from mykronos.lake.tables import (
     MUTATION_TS,
     PARTITION_SOURCE,
+    PATCH_COLUMNS,
     PRIMARY_KEY,
     TABLES,
     column_names,
@@ -122,10 +123,18 @@ def _stage_incoming(
     Within one batch the same key can appear repeatedly (a retried workflow,
     two scans of one commit). Last write wins, ordered by the API-stamped
     mutation timestamp rather than by file scan order.
+
+    Except for `PATCH_COLUMNS`. Those arrive on rows that are otherwise empty
+    and mean "set this field, leave the rest alone", so a plain last-write-wins
+    collapse would throw the earlier patch away before the upsert ever saw it —
+    overriding a risk decision and then merging its pull request within one
+    compaction window would silently lose the override. For those columns the
+    collapse takes the newest *non-null* value instead.
     """
     names = column_names(table)
     pk = PRIMARY_KEY[table]
     mutation_ts = MUTATION_TS[table]
+    patches = PATCH_COLUMNS[table]
 
     columns_spec = ", ".join(f"'{name}': '{sql_type}'" for name, sql_type in TABLES[table])
     file_list = ", ".join(f"'{sql_path(path)}'" for path in segments)
@@ -144,14 +153,28 @@ def _stage_incoming(
         )
         """
     )
+    # Newest first, so first_value is the latest write and — with IGNORE NULLS
+    # over the whole partition — the latest write that actually set the column.
+    window = (
+        f"PARTITION BY {pk} ORDER BY {mutation_ts} DESC NULLS LAST, _seq DESC "
+        "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
+    )
+    patched = [
+        f"first_value({name} IGNORE NULLS) OVER w AS _patch_{name}" for name in patches
+    ]
+    projection = ", ".join(
+        f"_patch_{name} AS {name}" if name in patches else name for name in names
+    )
+
     con.execute(
         f"""
         CREATE TEMP TABLE incoming AS
-        SELECT {', '.join(names)} FROM (
-            SELECT *, row_number() OVER (
-                PARTITION BY {pk} ORDER BY {mutation_ts} DESC NULLS LAST, _seq DESC
-            ) AS _rn
+        SELECT {projection} FROM (
+            SELECT *,
+                   row_number() OVER w AS _rn
+                   {''.join(f', {expr}' for expr in patched)}
             FROM incoming_raw
+            WINDOW w AS ({window})
         ) WHERE _rn = 1
         """
     )
