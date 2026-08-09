@@ -299,10 +299,16 @@ class TestAgeEscalation:
 
 
 class TestSnapshotCompleteness:
-    """spec 09 §9: no input category is silently omitted."""
+    """spec 09 §9: no input category is silently omitted.
 
-    #: Every input category spec 09 §4 names. All must appear in every
-    #: snapshot, whether or not they had anything to contribute.
+    As of Phase 6 every category spec 09 §4 names is implemented, so this no
+    longer tests for placeholders. What it still tests — and what matters
+    more — is that each category is *present* and either carries data or says
+    why it does not. A score whose inputs you cannot enumerate is a score you
+    cannot audit, whether the gap is an unbuilt capability or one that had
+    nothing to report.
+    """
+
     CATEGORIES = [
         "insider_risk",
         "sscs_trust",
@@ -310,40 +316,46 @@ class TestSnapshotCompleteness:
         "false_positive_dampening",
     ]
 
-    #: Capabilities that do not exist yet, as opposed to ones that exist and
-    #: had nothing to say for this particular decision. Shrinks by one each
-    #: phase; when it empties, every input spec 09 §4 names is real.
-    NOT_BUILT = ["remediation_in_flight"]
-
-    def test_unavailable_categories_are_present_and_explicitly_null(
+    def test_every_category_is_present(
         self, client, auth, catalog, run_compaction, engine
     ) -> None:
-        """'We looked and found nothing' and 'we never looked' produce the
-        same score and very different levels of trust.
-
-        The reason string is asserted to exist rather than to match a
-        particular phrase: what matters is that the absence is explained, and
-        pinning the wording would just break every time a capability ships.
-        """
         seed(client, auth, run_compaction, [critical(0)])
         snapshot = engine.evaluate(REPO).inputs_snapshot
 
         for category in self.CATEGORIES:
             assert category in snapshot, f"{category} was omitted entirely"
-            assert snapshot[category]["available"] is False
-            assert snapshot[category]["contribution"] == 0.0
-            assert snapshot[category]["reason"].strip(), (
-                f"{category} is unavailable but does not say why"
-            )
+            assert "available" in snapshot[category]
+            assert "contribution" in snapshot[category]
 
-    def test_unbuilt_capabilities_say_so(
+    def test_an_unavailable_category_explains_itself(
         self, client, auth, catalog, run_compaction, engine
     ) -> None:
+        """'We looked and found nothing' and 'we never looked' produce the
+        same score and very different levels of trust."""
         seed(client, auth, run_compaction, [critical(0)])
         snapshot = engine.evaluate(REPO).inputs_snapshot
 
-        for category in self.NOT_BUILT:
-            assert "not implemented yet" in snapshot[category]["reason"]
+        for category in self.CATEGORIES:
+            entry = snapshot[category]
+            if entry["available"]:
+                continue
+            assert entry["contribution"] == 0.0
+            assert entry["reason"].strip(), (
+                f"{category} is unavailable but does not say why"
+            )
+
+    def test_a_category_with_nothing_to_report_still_says_so(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        """Patchwork writes no rows for a repository it does not run on, and
+        "no open fixes" is the complete answer for one — so the category is
+        available with a count of zero rather than unavailable."""
+        seed(client, auth, run_compaction, [critical(0)])
+        remediation = engine.evaluate(REPO).inputs_snapshot["remediation_in_flight"]
+
+        assert remediation["available"] is True
+        assert remediation["covered_findings"] == 0
+        assert "No Patchwork pull request is open" in remediation["reason"]
 
     def test_every_term_carries_its_arithmetic(
         self, client, auth, catalog, run_compaction, engine

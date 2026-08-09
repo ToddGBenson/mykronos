@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mykronos.capabilities import (
+    CONFIG_MODELS,
     CapabilityConfigError,
     config_schema,
     configurable_capabilities,
@@ -81,12 +82,23 @@ class TestValidation:
             validate_config("cloud", {"aws_role_arn": "my-role"})
         assert "arn:aws:iam::" in str(excinfo.value)
 
-    def test_capabilities_without_a_schema_are_refused_clearly(self) -> None:
-        """Patchwork arrives in Phase 6. An empty config block would imply it
-        is ready."""
+    def test_an_unknown_capability_is_refused_clearly(self) -> None:
+        """Every real capability now has a schema, so the remaining case is a
+        name nobody recognises — which must fail the save rather than be
+        stored and silently ignored (spec 04 §7)."""
         with pytest.raises(CapabilityConfigError) as excinfo:
-            validate_config("patchwork", {})
+            validate_config("telepathy", {})
         assert "does not accept configuration yet" in str(excinfo.value)
+
+    def test_every_capability_has_a_schema(self) -> None:
+        """As of Phase 6 all ten do. A capability the API cannot configure is
+        one whose settings can only be written by hand — which is how Oracle's
+        `blocking` flag was unreachable through the API until Phase 6."""
+        from mykronos.schemas import Capability
+
+        missing = [c.value for c in Capability if c.value not in CONFIG_MODELS]
+
+        assert missing == []
 
     def test_the_error_names_the_offending_field(self) -> None:
         with pytest.raises(CapabilityConfigError) as excinfo:

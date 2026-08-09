@@ -136,6 +136,36 @@ def _dampening_snapshot(
     }
 
 
+def _remediation_snapshot(
+    covered: set[str] | None, *, discount: float
+) -> dict[str, Any]:
+    """Findings with a fix already in flight (spec 08 §9, spec 09 §5).
+
+    Available even when nothing is covered, unlike the categories that depend
+    on a capability being enabled: Patchwork writes no rows for a repository
+    it is not running on, and "no open fixes" is the correct and complete
+    answer for such a repository. There is nothing to be uncertain about.
+    """
+    count = len(covered or ())
+    return {
+        "available": True,
+        "covered_findings": count,
+        "discount": discount,
+        # Not a contribution of its own: like dampening, it reduces other
+        # terms, and the reduction is visible in the finding bands.
+        "contribution": 0.0,
+        "reason": (
+            "No Patchwork pull request is open for any finding in scope."
+            if not count
+            else (
+                f"{count} finding(s) have a draft fix awaiting review, counted "
+                f"at {1.0 - discount:g}× because a fix in flight lowers "
+                "urgency, not risk."
+            )
+        ),
+    }
+
+
 def _insider_snapshot(
     insider: dict[str, Any] | None, *, for_gate: bool, multiplier: float
 ) -> dict[str, Any]:
@@ -330,6 +360,46 @@ class OracleEngine:
             "evaluated_at": evaluated_at,
         }
 
+    def _remediation_in_flight(self, repo_full_name: str) -> set[str]:
+        """Findings with a Patchwork draft pull request open (spec 08 §9).
+
+        spec 09 §5's discount lowers *urgency*, not risk: a fix in flight means
+        somebody is on it, and the vulnerability is still there. That is why
+        the modifier is a partial discount rather than an exclusion — a repo
+        with ten open auto-fixes is not a safe repo, it is a repo with ten
+        unmerged fixes.
+
+        `human_edited` counts. A person took the draft and started working on
+        it, which is *more* evidence of remediation in flight than an
+        untouched one, not less.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT finding_id
+            FROM remediation_events
+            WHERE repo_full_name = ?
+              AND pr_status IN ('draft_open', 'human_edited')
+            """,
+            [repo_full_name],
+        )
+        return {str(row[0]) for row in rows}
+
+    def _covered_counts(
+        self, repo_full_name: str, covered: set[str]
+    ) -> dict[str, int]:
+        """Open findings per severity that already have a fix in flight."""
+        if not covered:
+            return {}
+        placeholders = ", ".join("?" for _ in covered)
+        rows = self.catalog.query(
+            f"SELECT severity, count(*) FROM findings "
+            f"WHERE finding_id IN ({placeholders}) "
+            "AND repo_full_name = ? AND status = 'open' "
+            "GROUP BY severity",
+            [*sorted(covered), repo_full_name],
+        )
+        return {str(severity): int(count) for severity, count in rows}
+
     def _sscs_trust(self, repo_full_name: str) -> dict[str, Any] | None:
         """The most recent Atlas evidence for this repo (spec 07 §9).
 
@@ -407,6 +477,8 @@ class OracleEngine:
         counts, aged, dampened_counts = self._finding_counts(
             repo_full_name, for_gate=for_gate, dampened=sorted(dampened)
         )
+        covered = self._remediation_in_flight(repo_full_name)
+        covered_counts = self._covered_counts(repo_full_name, covered)
         terms: list[Term] = []
 
         # 1. Findings, worst band first so the reasoning reads in the order a
@@ -423,18 +495,33 @@ class OracleEngine:
             # outside it, because only some of a band's findings are dampened
             # and halving the whole band would quieten the real ones too.
             quiet = dampened_counts.get(severity, 0)
-            effective = (count - quiet) + quiet * (1.0 - factor)
+            # A fix already in flight lowers urgency, not risk (spec 09 §5).
+            # Capped at the undampened remainder so a finding that is both
+            # dampened and being fixed cannot be discounted twice.
+            in_flight = max(0, min(covered_counts.get(severity, 0), count - quiet))
+            discount = self.policy.remediation_discount
+            effective = (
+                (count - quiet - in_flight)
+                + quiet * (1.0 - factor)
+                + in_flight * (1.0 - discount)
+            )
             contribution = _band_contribution(weight, effective)
 
+            plural = "s" if count != 1 else ""
             detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
-            label = f"{count} open {severity} finding{'s' if count != 1 else ''}"
-            if quiet:
+            label = f"{count} open {severity} finding{plural}"
+            if quiet or in_flight:
+                parts = []
+                if quiet:
+                    parts.append(f"{quiet} from dampened rules at {1.0 - factor:g}×")
+                    label += f", {quiet} from a dampened rule"
+                if in_flight:
+                    parts.append(f"{in_flight} being fixed at {1.0 - discount:g}×")
+                    label += f", {in_flight} with a fix in flight"
                 detail = (
                     f"{weight:g} × log2(1 + {effective:g}) = {contribution:.1f} "
-                    f"({quiet} of {count} from dampened rules, counted at "
-                    f"{1.0 - factor:g}×)"
+                    f"({'; '.join(parts)})"
                 )
-                label += f", {quiet} from dampened rule{'s' if quiet != 1 else ''}"
 
             terms.append(
                 Term(
@@ -446,6 +533,7 @@ class OracleEngine:
                         "count": count,
                         "weight": weight,
                         "dampened": quiet,
+                        "remediation_in_flight": in_flight,
                         "effective_count": round(effective, 2),
                     },
                 )
@@ -527,6 +615,7 @@ class OracleEngine:
             insider=insider,
             sscs=sscs,
             dampened=dampened,
+            covered=covered,
         )
 
         decision = Decision(
@@ -560,6 +649,7 @@ class OracleEngine:
         insider: dict[str, Any] | None = None,
         sscs: dict[str, Any] | None = None,
         dampened: dict[str, Any] | None = None,
+        covered: set[str] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -594,12 +684,9 @@ class OracleEngine:
                 insider, for_gate=for_gate, multiplier=self.policy.insider_risk_multiplier
             ),
             "sscs_trust": _sscs_snapshot(sscs, cap=self.policy.sscs_penalty_cap),
-            "remediation_in_flight": {
-                "available": False,
-                "covered_findings": None,
-                "contribution": 0.0,
-                "reason": "Patchwork is not implemented yet (spec 08, Phase 6).",
-            },
+            "remediation_in_flight": _remediation_snapshot(
+                covered, discount=self.policy.remediation_discount
+            ),
             "false_positive_dampening": _dampening_snapshot(
                 dampened,
                 store_configured=self.store is not None,

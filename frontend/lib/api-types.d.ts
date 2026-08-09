@@ -576,6 +576,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/patchwork/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run
+         * @description Run the pipeline for this repository (spec 08 §2, §6).
+         */
+        post: operations["run_api_patchwork_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/patchwork/repos/{repo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Events
+         * @description What Patchwork did, and did not do, for one repository (spec 08 §7).
+         */
+        get: operations["repo_events_api_patchwork_repos__repo_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -1385,6 +1425,47 @@ export interface components {
             /** Bytes Written */
             bytes_written: number;
         };
+        /** RemediationEventOut */
+        RemediationEventOut: {
+            /** Event Id */
+            event_id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Toxic Combination Id */
+            toxic_combination_id?: string | null;
+            /** Contributing Finding Ids */
+            contributing_finding_ids?: string[];
+            /** Pipeline Stage Reached */
+            pipeline_stage_reached: string;
+            /** Triage Classification */
+            triage_classification: string;
+            /** Fix Pr Number */
+            fix_pr_number?: number | null;
+            /** Fix Pr Url */
+            fix_pr_url?: string | null;
+            /** Pr Status */
+            pr_status?: string | null;
+            /** Rationale */
+            rationale: string;
+            /** Created At */
+            created_at?: unknown;
+            /** Updated At */
+            updated_at?: unknown;
+        };
+        /** RemediationPage */
+        RemediationPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Events */
+            events: components["schemas"]["RemediationEventOut"][];
+            /** Open Draft Prs */
+            open_draft_prs: number;
+            /**
+             * Note
+             * @default Patchwork never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
+             */
+            note: string;
+        };
         /** RepoDetail */
         RepoDetail: {
             /** Id */
@@ -1458,6 +1539,42 @@ export interface components {
             text: string;
             /** Repo Full Name */
             repo_full_name?: string | null;
+        };
+        /**
+         * RunRequest
+         * @description What the workflow sends. No repo field — it comes from the token.
+         */
+        RunRequest: {
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /** Pr Number */
+            pr_number?: number | null;
+        };
+        /** RunResult */
+        RunResult: {
+            /** Findings Considered */
+            findings_considered: number;
+            /** By Stage */
+            by_stage: {
+                [key: string]: number;
+            };
+            /** Draft Prs Opened */
+            draft_prs_opened: number;
+            /** Queued */
+            queued: number;
+            /**
+             * Errors
+             * @description Failures that did not stop the run. Reported rather than raised: spec 08 §8 requires every finding to record where it got to even when the pipeline breaks partway.
+             */
+            errors?: string[];
+            /**
+             * Note
+             * @default Every pull request Patchwork opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
+             */
+            note: string;
         };
         /**
          * ScanRunSubmission
@@ -2472,6 +2589,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OverrideResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_api_patchwork_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_events_api_patchwork_repos__repo_id__get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationPage"];
                 };
             };
             /** @description Validation Error */

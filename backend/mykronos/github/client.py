@@ -82,6 +82,9 @@ class PullRequest:
     head_branch: str
     state: str = "open"
     merged: bool = False
+    #: Patchwork's pull requests are always draft (spec 08 §3). Recorded on
+    #: the object so a test can assert it rather than trusting the caller.
+    draft: bool = False
 
 
 class GitHubClient(Protocol):
@@ -104,12 +107,32 @@ class GitHubClient(Protocol):
     ) -> PullRequest | None: ...
 
     async def create_pull_request(
-        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+        self,
+        repo_full_name: str,
+        *,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        draft: bool = False,
     ) -> PullRequest: ...
 
     async def update_pull_request(
         self, repo_full_name: str, number: int, *, title: str, body: str
     ) -> PullRequest: ...
+
+    # NOTE: there is deliberately no `merge_pull_request` here, and there must
+    # never be one added casually.
+    #
+    # spec 08 §3 makes "Patchwork never merges anything" a hard constraint.
+    # That cannot be enforced by GitHub permissions — merging needs
+    # `contents: write`, which the App already holds so the Workflow Installer
+    # can commit workflow files at all (D-008). The constraint is enforced
+    # here instead: there is no method to call, in this protocol or in either
+    # implementation, and `tests/test_patchwork.py` fails if one appears.
+    #
+    # Adding merge support is therefore a visible change to a shared interface
+    # with a failing test attached, rather than a config flag somebody flips.
 
     async def close_pull_request(
         self, repo_full_name: str, number: int, *, comment: str = ""
@@ -175,6 +198,9 @@ class FakeGitHubClient:
         self.repos = repos or {}
         self.permissions = dict(REQUIRED_PERMISSIONS if permissions is None else permissions)
         self.calls: list[tuple[str, str]] = []
+        #: Bodies by PR number, so a test can assert what a reviewer would
+        #: actually read rather than only that a PR was opened.
+        self.pull_request_bodies: dict[int, str] = {}
         self._next_pr_number = 1
         self.installations: dict[int, dict[str, Any]] = {}
 
@@ -256,15 +282,24 @@ class FakeGitHubClient:
         return None
 
     async def create_pull_request(
-        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+        self,
+        repo_full_name: str,
+        *,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        draft: bool = False,
     ) -> PullRequest:
         self.calls.append(("create_pull_request", repo_full_name))
         self._require("pull_requests", "write", "Opening a pull request")
         repo = self._repo(repo_full_name)
+        self.pull_request_bodies[self._next_pr_number] = body
         pr = PullRequest(
             number=self._next_pr_number,
             url=f"https://github.com/{repo_full_name}/pull/{self._next_pr_number}",
             head_branch=head,
+            draft=draft,
         )
         self._next_pr_number += 1
         repo.pull_requests.append(pr)
@@ -537,15 +572,31 @@ class RestGitHubClient:
         return None
 
     async def create_pull_request(
-        self, repo_full_name: str, *, head: str, base: str, title: str, body: str
+        self,
+        repo_full_name: str,
+        *,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        draft: bool = False,
     ) -> PullRequest:
         item = await self._json(
             "POST",
             f"/repos/{repo_full_name}/pulls",
-            json={"head": head, "base": base, "title": title, "body": body},
+            json={
+                "head": head,
+                "base": base,
+                "title": title,
+                "body": body,
+                "draft": draft,
+            },
         )
         return PullRequest(
-            number=int(item["number"]), url=str(item["html_url"]), head_branch=head
+            number=int(item["number"]),
+            url=str(item["html_url"]),
+            head_branch=head,
+            draft=bool(item.get("draft", draft)),
         )
 
     async def update_pull_request(

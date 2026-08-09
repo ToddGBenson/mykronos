@@ -102,6 +102,21 @@ _UPDATE_SETS: dict[str, str] = {
         ecosystems_json             = i.ecosystems_json,
         evaluated_at                = i.evaluated_at
     """,
+    # The pipeline advances a finding through stages across runs, so an
+    # update refreshes the assessment -- but the PR fields coalesce, because
+    # the webhook writes pr_status long after the pipeline wrote the rest and
+    # a later pipeline run must not blank the pull request it already opened.
+    "remediation_events": """
+        pipeline_stage_reached   = i.pipeline_stage_reached,
+        triage_classification    = i.triage_classification,
+        contributing_finding_ids = i.contributing_finding_ids,
+        toxic_combination_id     = coalesce(i.toxic_combination_id, part.toxic_combination_id),
+        rationale                = i.rationale,
+        fix_pr_number            = coalesce(i.fix_pr_number, part.fix_pr_number),
+        fix_pr_url               = coalesce(i.fix_pr_url, part.fix_pr_url),
+        pr_status                = coalesce(i.pr_status, part.pr_status),
+        updated_at               = i.updated_at
+    """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,
         capability             = i.capability,

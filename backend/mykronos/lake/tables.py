@@ -139,12 +139,39 @@ SSCS_EVIDENCE_COLUMNS: Final[list[Column]] = [
     ("evaluated_at", "TIMESTAMP"),
 ]
 
+REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
+    # Derived from repo + finding, or from the sorted contributing findings
+    # for a combination (spec 08 §4). The pipeline re-runs on every push to a
+    # pull request, so a random id would append a row per run and §7's "exactly
+    # one event per finding routed" would quietly stop holding.
+    ("event_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    ("finding_id", "VARCHAR"),
+    ("toxic_combination_id", "VARCHAR"),
+    # JSON array. §7 requires a combination event to reference every finding
+    # it is made of, and the original model had nowhere to put them.
+    ("contributing_finding_ids", "VARCHAR"),
+    ("pipeline_stage_reached", "VARCHAR"),
+    ("triage_classification", "VARCHAR"),
+    ("fix_pr_number", "INTEGER"),
+    ("fix_pr_url", "VARCHAR"),
+    # draft_open | human_edited | merged | closed_unmerged. Kept in sync by
+    # the pull_request webhook, and the richest retro signal in the system
+    # (spec 11 §9): a merged auto-fix and an abandoned one are the clearest
+    # verdicts a human ever gives this platform.
+    ("pr_status", "VARCHAR"),
+    ("rationale", "VARCHAR"),
+    ("created_at", "TIMESTAMP"),
+    ("updated_at", "TIMESTAMP"),
+]
+
 TABLES: Final[dict[str, list[Column]]] = {
     "findings": FINDINGS_COLUMNS,
     "scan_runs": SCAN_RUNS_COLUMNS,
     "risk_decisions": RISK_DECISIONS_COLUMNS,
     "insider_risk_signals": INSIDER_RISK_SIGNALS_COLUMNS,
     "sscs_evidence": SSCS_EVIDENCE_COLUMNS,
+    "remediation_events": REMEDIATION_EVENTS_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
@@ -154,6 +181,7 @@ PRIMARY_KEY: Final[dict[str, str]] = {
     "risk_decisions": "decision_id",
     "insider_risk_signals": "signal_id",
     "sscs_evidence": "evidence_id",
+    "remediation_events": "event_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -165,6 +193,7 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
     "risk_decisions": "evaluated_at",
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
+    "remediation_events": "created_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -176,6 +205,7 @@ MUTATION_TS: Final[dict[str, str]] = {
     "risk_decisions": "evaluated_at",
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
+    "remediation_events": "updated_at",
 }
 
 
@@ -201,6 +231,9 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     # arrived last and a release could silently lose its evidence -- which is
     # precisely the failure D-020 describes.
     "sscs_evidence": ("tag_or_release", "sbom_ref"),
+    # The webhook sets pr_status long after the pipeline set everything else,
+    # and a later pipeline run must not blank the PR it already opened.
+    "remediation_events": ("pr_status", "fix_pr_number", "fix_pr_url"),
 }
 
 

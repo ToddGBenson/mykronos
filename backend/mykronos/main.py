@@ -19,6 +19,7 @@ from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
+from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
@@ -244,6 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(dashboard_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)
+    app.include_router(patchwork_router)
     app.include_router(repos_router)
     app.include_router(webhooks_router)
 

@@ -225,9 +225,85 @@ class AtlasConfig(BaseCapabilityConfig):
         return value
 
 
-#: Capabilities with a configurable scanner. Patchwork and Oracle arrive with
-#: their own config blocks in later phases, and are absent here rather than
-#: given an empty one that would imply they are ready.
+class PatchworkConfig(BaseCapabilityConfig):
+    """Auto-remediation (spec 08 §5).
+
+    Note what is *absent*: there is no `blocking` field with any meaning here,
+    and no auto-merge setting. spec 08 §3 makes that a hard constraint rather
+    than a default — Patchwork opens draft pull requests and a human merges
+    them, and making that configurable would need a separately-reviewed design
+    change, not a config key.
+    """
+
+    source_capabilities: list[str] = Field(
+        default_factory=lambda: ["sast", "secrets", "containers", "iac"],
+        max_length=10,
+    )
+    min_confidence_to_generate_fix: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Below this a fix is not opened as a pull request. A "
+            "possibly-wrong fix costs more review attention than no fix."
+        ),
+    )
+    max_open_draft_prs_per_repo: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description=(
+            "Backpressure (spec 08 §5). A repository that wakes up to forty "
+            "draft pull requests does not triage them, it turns the "
+            "capability off."
+        ),
+    )
+    fix_generator_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        description=(
+            "Endpoint for LLM-assisted fix generation. Null — the default — "
+            "restricts Patchwork to its deterministic fixers and sends no "
+            "source anywhere (spec 12 §5.2)."
+        ),
+    )
+
+    @field_validator("fix_generator_url")
+    @classmethod
+    def _generator_url_shape(cls, value: str | None) -> str | None:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"fix_generator_url must be an http(s) URL, got {value!r}. "
+                "Leave it unset to use only the deterministic fixers."
+            )
+        return value
+
+
+class OracleConfig(BaseCapabilityConfig):
+    """Risk gating (spec 09 §6).
+
+    Almost everything about Oracle is global — the weights, the curve, the
+    thresholds all live in the versioned policy file, because a per-repo
+    scoring rule would make "the same finding scores the same everywhere"
+    false and the portfolio incomparable.
+
+    What *is* per-repo is whether a `no_go` fails the check run. That has to
+    be settable through the API, and until Phase 6 it was not: Oracle had no
+    schema at all, so `PATCH /api/repos/{id}/capabilities` refused any config
+    for it and the only way to turn blocking on was to write the row by hand.
+    """
+
+    blocking: bool = Field(
+        default=False,
+        description=(
+            "Whether a no_go fails the check run for this repository. Off "
+            "platform-wide by default (spec 09 §6) — a red check nobody agreed "
+            "to is how a security tool gets switched off in its first week."
+        ),
+    )
+
+
+#: Every capability's per-repo configuration.
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -237,6 +313,8 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.CLOUD.value: CloudConfig,
     Capability.AEGIS.value: AegisConfig,
     Capability.ATLAS.value: AtlasConfig,
+    Capability.PATCHWORK.value: PatchworkConfig,
+    Capability.ORACLE.value: OracleConfig,
 }
 
 

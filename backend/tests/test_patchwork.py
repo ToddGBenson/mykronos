@@ -1,0 +1,621 @@
+"""Patchwork — spec 08.
+
+`TestTheHardConstraint` comes first because it is the one thing in this
+capability that must never regress. Everything else is a quality question;
+that is a trust question.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+
+from mykronos.github.client import FakeGitHubClient, GitHubClient
+from mykronos.patchwork import correlate, fixers
+from tests.conftest import REPO, finding_payload, issue_token, post_findings, post_scan
+from tests.test_onboarding import onboard
+
+REQUIREMENTS = "requirements.txt"
+
+
+class TestTheHardConstraint:
+    """spec 08 §3. Patchwork never merges anything.
+
+    Not enforceable by GitHub permission — merging needs `contents: write`,
+    which the App holds so the Workflow Installer can commit workflow files at
+    all (D-008). So the guarantee lives here: there is no method to call.
+    """
+
+    def test_the_client_exposes_no_merge_operation(self) -> None:
+        for name in dir(GitHubClient):
+            assert "merge" not in name.lower(), (
+                f"GitHubClient.{name} exists. spec 08 §3 makes 'Patchwork "
+                "never merges' a hard constraint enforced by the absence of "
+                "this capability from the interface. Adding it needs a "
+                "separately-reviewed design change, not a passing test."
+            )
+
+    def test_neither_implementation_has_one_either(self) -> None:
+        from mykronos.github.client import RestGitHubClient
+
+        for implementation in (FakeGitHubClient, RestGitHubClient):
+            for name in dir(implementation):
+                assert "merge" not in name.lower(), (
+                    f"{implementation.__name__}.{name} exists."
+                )
+
+    def test_every_patchwork_pull_request_is_a_draft(self) -> None:
+        """Not a parameter the pipeline passes through from config — written
+        once at the call site so there is nowhere for it to be got wrong."""
+        import inspect
+
+        from mykronos.patchwork import pipeline
+
+        source = inspect.getsource(pipeline.PatchworkPipeline._open_draft_pr)
+
+        assert "draft=True" in source
+        assert "draft=False" not in source
+
+
+class TestDeterministicFixers:
+    def test_it_pins_a_vulnerable_dependency(self) -> None:
+        finding = {
+            "package_name": "urllib3",
+            "file_path": REQUIREMENTS,
+            "raw_finding_json": {"fixed_version": "2.2.2"},
+        }
+        content = "requests==2.31.0\nurllib3==2.0.4\n"
+
+        fix = fixers.pin_python_requirement(finding, content)
+
+        assert fix is not None
+        assert fix.files[REQUIREMENTS] == "requests==2.31.0\nurllib3==2.2.2\n"
+
+    def test_it_leaves_a_range_alone(self) -> None:
+        """Narrowing `urllib3>=2.0` to an exact pin is a change to the
+        project's dependency policy, not a security fix, and not Patchwork's
+        call to make."""
+        finding = {
+            "package_name": "urllib3",
+            "file_path": REQUIREMENTS,
+            "raw_finding_json": {"fixed_version": "2.2.2"},
+        }
+
+        assert fixers.pin_python_requirement(finding, "urllib3>=2.0\n") is None
+
+    def test_it_does_nothing_without_a_fixed_version(self) -> None:
+        """An advisory with no known fix cannot be fixed by pinning."""
+        finding = {"package_name": "urllib3", "file_path": REQUIREMENTS}
+
+        assert fixers.pin_python_requirement(finding, "urllib3==2.0.4\n") is None
+
+    def test_it_is_deterministic(self) -> None:
+        finding = {
+            "package_name": "urllib3",
+            "file_path": REQUIREMENTS,
+            "raw_finding_json": {"fixed_version": "2.2.2"},
+        }
+        content = "urllib3==2.0.4\n"
+
+        first = fixers.pin_python_requirement(finding, content)
+        second = fixers.pin_python_requirement(finding, content)
+
+        assert first is not None and second is not None
+        assert first.files == second.files
+
+    def test_the_review_notes_are_specific(self) -> None:
+        """"Review this" with no specifics is a disclaimer, not guidance."""
+        fix = fixers.pin_python_requirement(
+            {
+                "package_name": "urllib3",
+                "file_path": REQUIREMENTS,
+                "raw_finding_json": {"fixed_version": "2.2.2"},
+            },
+            "urllib3==2.0.4\n",
+        )
+
+        assert fix is not None
+        assert any("test suite" in note for note in fix.review_notes)
+        assert any("2.2.2" in note for note in fix.review_notes)
+
+
+class TestSecretFixer:
+    def _finding(self, **overrides):
+        payload = {
+            "capability": "secrets",
+            "file_path": "app/config.py",
+            "line_start": 2,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_it_replaces_the_literal_with_an_environment_lookup(self) -> None:
+        content = 'import sys\nAPI_TOKEN = "hunter2"\n'
+
+        fix = fixers.remove_committed_secret(self._finding(), content)
+
+        assert fix is not None
+        assert 'API_TOKEN = os.environ["API_TOKEN"]' in fix.files["app/config.py"]
+        assert "hunter2" not in fix.files["app/config.py"]
+
+    def test_it_leads_with_rotation(self) -> None:
+        """A fix that made the repository look clean while the credential
+        stayed valid would be worse than no fix."""
+        fix = fixers.remove_committed_secret(
+            self._finding(), 'x = 1\nTOKEN = "abc"\n'
+        )
+
+        assert fix is not None
+        assert "Rotate the credential first" in fix.review_notes[0]
+        assert "git history" in fix.review_notes[0]
+
+    def test_it_refuses_anything_more_structured(self) -> None:
+        """A regex rewriting arbitrary code around a secret turns a leaked
+        credential into a leaked credential *and* a broken build."""
+        content = 'x = 1\nconn = connect(token="abc", retries=3)\n'
+
+        assert fixers.remove_committed_secret(self._finding(), content) is None
+
+    def test_it_only_touches_secrets_findings(self) -> None:
+        assert (
+            fixers.remove_committed_secret(
+                self._finding(capability="sast"), 'x = 1\nT = "a"\n'
+            )
+            is None
+        )
+
+
+class TestCorrelation:
+    def _finding(self, finding_id, rule_id, path="src/api.py", title=""):
+        return {
+            "finding_id": finding_id,
+            "rule_id": rule_id,
+            "title": title or rule_id,
+            "file_path": path,
+        }
+
+    def test_it_detects_an_unauthenticated_injectable_endpoint(self) -> None:
+        findings = [
+            self._finding("f1", "CWE-89"),
+            self._finding("f2", "CWE-306"),
+        ]
+
+        combos = correlate.detect(findings)
+
+        assert len(combos) == 1
+        assert combos[0].finding_ids == frozenset({"f1", "f2"})
+        assert "unauthenticated path to the database" in combos[0].rationale
+
+    def test_proximity_matters(self) -> None:
+        """The default scope is one file, because proximity is most of what
+        makes a combination toxic rather than coincidental."""
+        findings = [
+            self._finding("f1", "CWE-89", path="src/a.py"),
+            self._finding("f2", "CWE-306", path="src/b.py"),
+        ]
+
+        assert correlate.detect(findings) == []
+
+    def test_a_finding_appears_in_at_most_one_combination(self) -> None:
+        """Overlap would mean one finding generating several draft pull
+        requests — the flooding backpressure exists to prevent, by another
+        route."""
+        findings = [
+            self._finding("f1", "CWE-89"),
+            self._finding("f2", "CWE-306"),
+            self._finding("f3", "generic-api-key"),
+        ]
+
+        combos = correlate.detect(findings)
+        seen = [fid for combo in combos for fid in combo.finding_ids]
+
+        assert len(seen) == len(set(seen))
+
+    def test_the_id_is_derived_from_its_members(self) -> None:
+        first = correlate.combination_id("r", frozenset({"a", "b"}))
+        same = correlate.combination_id("r", frozenset({"b", "a"}))
+        different = correlate.combination_id("r", frozenset({"a", "c"}))
+
+        assert first == same
+        assert first != different
+
+    def test_a_lone_finding_is_not_a_combination(self) -> None:
+        assert correlate.detect([self._finding("f1", "CWE-89")]) == []
+
+
+@pytest.fixture
+def patchwork_auth(client: TestClient) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {issue_token(client, REPO, 'sast', 'secrets', 'patchwork')}"
+    }
+
+
+def put_file(github, path: str, content: str, branch: str = "main") -> None:
+    """Write a file the fake will serve.
+
+    The fake resolves a ref to `branches[ref]` when that branch exists and
+    only falls back to `files` when it does not — which is right, and is why
+    writing to `files` alone silently produced "the file no longer exists".
+    """
+    repo = github.repos[REPO]
+    repo.files[path] = content
+    repo.branches.setdefault(branch, {})[path] = content
+
+
+def seed(client, auth, run_compaction, findings):
+    post_scan(client, auth, scan_run_id="scan-1")
+    post_findings(client, auth, findings, scan_run_id="scan-1")
+    run_compaction()
+
+
+def dependency_finding(**overrides):
+    payload = {
+        "rule_id": "CVE-2024-4812",
+        "title": "urllib3 redirect handling flaw",
+        "severity": "critical",
+        "file_path": REQUIREMENTS,
+        "package_name": "urllib3",
+        "package_version": "2.0.4",
+        "symbol": None,
+        "code_snippet": None,
+        "raw_finding_json": {"fixed_version": "2.2.2"},
+    }
+    payload.update(overrides)
+    return finding_payload(**payload)
+
+
+class TestPipeline:
+    def _run(self, client, patchwork_auth, **body):
+        return client.post("/api/patchwork/run", json=body, headers=patchwork_auth)
+
+    def test_it_opens_a_draft_pull_request(
+        self, client, admin_auth, patchwork_auth, run_compaction, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        body = self._run(client, patchwork_auth).json()
+
+        assert body["draft_prs_opened"] == 1
+        pr = github.repos[REPO].pull_requests[-1]
+        assert pr.draft is True
+
+    def test_the_fix_is_actually_committed(
+        self, client, admin_auth, patchwork_auth, run_compaction, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        self._run(client, patchwork_auth)
+
+        branch = github.repos[REPO].pull_requests[-1].head_branch
+        assert "2.2.2" in github.repos[REPO].branches[branch][REQUIREMENTS]
+
+    def test_the_pr_body_leads_with_what_to_check(
+        self, client, admin_auth, patchwork_auth, run_compaction, github
+    ) -> None:
+        """A reviewer's job on a machine-generated PR is to find what the
+        machine got wrong."""
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        self._run(client, patchwork_auth)
+        number = github.repos[REPO].pull_requests[-1].number
+        body = github.pull_request_bodies[number]
+
+        assert "Before you approve" in body
+        assert body.index("Before you approve") < body.index("What this addresses")
+        assert "has no ability to merge" in body
+
+    def test_every_routed_finding_produces_an_event(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        """spec 08 §7, including the ones where nothing happened."""
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [
+                dependency_finding(),
+                finding_payload(rule_id="CWE-79", severity="low", symbol="a"),
+            ],
+        )
+
+        self._run(client, patchwork_auth)
+        run_compaction()
+
+        assert catalog.count("remediation_events") == 2
+
+    def test_a_finding_with_no_fixer_says_so(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        # The file has to exist, or the pipeline correctly reports the finding
+        # as superseded rather than unfixable — a different and better answer.
+        put_file(github, "orders/query.py", "def get_order(order_id):\n    pass\n")
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [finding_payload(rule_id="CWE-89", severity="critical")],
+        )
+
+        self._run(client, patchwork_auth)
+        run_compaction()
+
+        stage, rationale = catalog.query(
+            "SELECT pipeline_stage_reached, rationale FROM remediation_events"
+        )[0]
+        assert stage == "no_fix_available"
+        assert "no fix generator endpoint is configured" in rationale
+
+    def test_a_low_finding_is_not_worth_a_draft_pr(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [finding_payload(rule_id="CWE-79", severity="low")],
+        )
+
+        self._run(client, patchwork_auth)
+        run_compaction()
+
+        stage, classification = catalog.query(
+            "SELECT pipeline_stage_reached, triage_classification "
+            "FROM remediation_events"
+        )[0]
+        assert stage == "triaged"
+        assert classification == "needs_human_judgment"
+
+    def test_re_running_upserts_rather_than_appending(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """The pipeline runs on every push to a pull request; §7 wants exactly
+        one event per finding."""
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        self._run(client, patchwork_auth)
+        run_compaction()
+        self._run(client, patchwork_auth)
+        run_compaction()
+
+        assert catalog.count("remediation_events") == 1
+
+    def test_the_pr_it_opened_is_not_blanked_by_a_later_run(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        self._run(client, patchwork_auth)
+        run_compaction()
+        self._run(client, patchwork_auth)
+        run_compaction()
+
+        number, status = catalog.query(
+            "SELECT fix_pr_number, pr_status FROM remediation_events"
+        )[0]
+        assert number is not None
+        assert status == "draft_open"
+
+
+class TestBackpressure:
+    def test_over_the_limit_a_candidate_queues(
+        self, client, admin_auth, run_compaction, catalog, github
+    ) -> None:
+        """spec 08 §5. A repository that wakes up to forty draft pull requests
+        does not triage them, it turns the capability off."""
+        from mykronos.db.models import CapabilityConfig
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        with client.app.state.db.session() as session:
+            session.add(
+                CapabilityConfig(
+                    repo_onboarding_id=repo_id,
+                    capability="patchwork",
+                    config_json={"max_open_draft_prs_per_repo": 1},
+                )
+            )
+
+        auth = {
+            "Authorization": f"Bearer {issue_token(client, REPO, 'sast', 'patchwork')}"
+        }
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\nrequests==2.0.0\n")
+        seed(
+            client,
+            auth,
+            run_compaction,
+            [
+                dependency_finding(symbol="a", code_snippet="a()"),
+                dependency_finding(
+                    package_name="requests",
+                    symbol="b",
+                    code_snippet="b()",
+                    raw_finding_json={"fixed_version": "2.32.0"},
+                ),
+            ],
+        )
+
+        body = client.post("/api/patchwork/run", json={}, headers=auth).json()
+        run_compaction()
+
+        assert body["draft_prs_opened"] == 1
+        assert body["queued"] == 1
+        stages = dict(
+            catalog.query(
+                "SELECT pipeline_stage_reached, count(*) FROM remediation_events "
+                "GROUP BY 1"
+            )
+        )
+        assert stages == {"pr_opened": 1, "queued": 1}
+
+
+class TestTriageUsesTheKnowledgeStore:
+    def test_a_dismissed_rule_is_not_auto_fixed(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """The store is what stops the pipeline repeating a mistake somebody
+        has already corrected."""
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        client.app.state.knowledge.add_entry(
+            source_type="finding_dismissal",
+            subject="CVE-2024-4812",
+            source_ref="f",
+            text="noise",
+            repo_full_name=REPO,
+            reason="we do not use the affected code path",
+        )
+
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+
+        stage, classification, rationale = catalog.query(
+            "SELECT pipeline_stage_reached, triage_classification, rationale "
+            "FROM remediation_events"
+        )[0]
+        assert stage == "triaged"
+        assert classification == "likely_false_positive"
+        assert "do not use the affected code path" in rationale
+
+
+class TestCombinationEvents:
+    def test_a_combination_records_its_members(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        """spec 08 §7: one event referencing all contributing findings."""
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="a"),
+                finding_payload(rule_id="CWE-306", severity="high", symbol="b"),
+            ],
+        )
+
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+
+        rows = catalog.query(
+            "SELECT toxic_combination_id, contributing_finding_ids "
+            "FROM remediation_events WHERE toxic_combination_id IS NOT NULL"
+        )
+        assert len(rows) == 1
+        assert len(json.loads(rows[0][1])) == 2
+
+    def test_members_are_not_fixed_in_isolation(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        """Fixing one half of a toxic pair closes the finding without closing
+        the risk."""
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="a"),
+                finding_payload(rule_id="CWE-306", severity="high", symbol="b"),
+            ],
+        )
+
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+
+        assert catalog.count("remediation_events") == 1
+
+
+class TestApi:
+    def test_the_patchwork_grant_is_required(self, client, admin_auth) -> None:
+        onboard(client, admin_auth)
+        other = {
+            "Authorization": f"Bearer {issue_token(client, 'example-org/x', 'sast')}"
+        }
+
+        assert (
+            client.post("/api/patchwork/run", json={}, headers=other).status_code == 403
+        )
+
+    def test_events_are_listed_for_a_repo(
+        self, client, admin_auth, patchwork_auth, run_compaction, github
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+
+        body = client.get(
+            f"/api/patchwork/repos/{repo_id}", headers=admin_auth
+        ).json()
+
+        assert body["open_draft_prs"] == 1
+        assert body["events"][0]["pipeline_stage_reached"] == "pr_opened"
+        assert "never merges" in body["note"]
+
+    def test_it_needs_authentication(self, client) -> None:
+        assert client.post("/api/patchwork/run", json={}).status_code == 401
+
+
+class TestOracleSeesFixesInFlight:
+    def test_a_finding_being_fixed_counts_for_less(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """spec 09 §5: a fix in flight lowers urgency, not risk."""
+        from mykronos.config import get_settings
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.engine import OracleEngine
+
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+
+        engine = OracleEngine(
+            client.app.state.catalog, load_policy(get_settings().oracle_policy_path)
+        )
+        before = engine.evaluate(REPO).overall_risk_score
+
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+        after = engine.evaluate(REPO)
+
+        assert after.overall_risk_score < before
+        assert after.inputs_snapshot["remediation_in_flight"]["covered_findings"] == 1
+        assert "fix in flight" in after.inputs_snapshot["terms"][0]["label"]
+
+    def test_it_is_a_discount_not_an_exclusion(
+        self, client, admin_auth, patchwork_auth, run_compaction, github
+    ) -> None:
+        """A repo with ten open auto-fixes is not a safe repo, it is a repo
+        with ten unmerged fixes."""
+        from mykronos.config import get_settings
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.engine import OracleEngine
+
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        client.post("/api/patchwork/run", json={}, headers=patchwork_auth)
+        run_compaction()
+
+        engine = OracleEngine(
+            client.app.state.catalog, load_policy(get_settings().oracle_policy_path)
+        )
+
+        assert engine.evaluate(REPO).overall_risk_score > 0
