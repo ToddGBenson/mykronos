@@ -32,9 +32,11 @@ from mykronos.github.secrets import seal_secret
 from mykronos.installer import DEFAULT_SECRET_NAME
 from mykronos.knowledge import KnowledgeStore
 from mykronos.knowledge import PurgeResult as KnowledgePurgeResult
+from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import purge_rows
 from mykronos.oracle.service import OracleService
+from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -326,6 +328,45 @@ def purge_orphaned_learnings(
             ).scalars()
         }
     return store.purge_expired(known_repos=known)
+
+
+async def close_superseded_fixes(
+    db: Database,
+    catalog: Catalog,
+    buffer: WriteAheadBuffer,
+    github_factory: GitHubClientFactory,
+) -> dict[str, int]:
+    """Close draft fixes whose finding somebody already dealt with (spec 08 §8).
+
+    A queue of draft pull requests nobody needs is how the ones that matter
+    stop being read, so a fix for a resolved finding closes itself with an
+    explanation rather than sitting there.
+    """
+    with db.session() as session:
+        targets = [
+            (row.github_repo_full_name, row.github_installation_id)
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status == "active")
+            ).scalars()
+        ]
+
+    totals = {"checked": 0, "closed": 0, "failed": 0}
+    for repo, installation_id in sorted(targets):
+        github = github_factory.for_installation(installation_id)
+        try:
+            outcome = await close_superseded_drafts(catalog, buffer, repo, github)
+        except Exception as exc:  # noqa: BLE001
+            # One repo failing must not stop the sweep; the next run retries.
+            logger.warning("Could not reconcile drafts for %s: %s", repo, exc)
+            totals["failed"] += 1
+            continue
+        totals["checked"] += outcome.checked
+        totals["closed"] += len(outcome.closed)
+        totals["failed"] += len(outcome.failed)
+
+    if totals["closed"]:
+        logger.info("Superseded-draft sweep: %s", totals)
+    return totals
 
 
 @dataclass

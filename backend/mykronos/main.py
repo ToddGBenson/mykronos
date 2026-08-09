@@ -33,6 +33,7 @@ from mykronos.github.factory import (
 )
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
+    close_superseded_fixes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
     reconcile_installations,
@@ -202,8 +203,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 purge_orphaned_learnings, app.state.db, app.state.knowledge
             )
 
+        async def _stale_drafts() -> None:
+            await close_superseded_fixes(
+                app.state.db,
+                app.state.catalog,
+                app.state.buffer,
+                app.state.github_factory,
+            )
+
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
+            ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
             ("installations", settings.installation_sync_interval_seconds, _installations),
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),

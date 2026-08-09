@@ -920,21 +920,71 @@ every scanner plus every gate before it.
 
 ---
 
+## D-036 — Patchwork's identity check fails closed
+
+**Status:** Decided
+**Spec:** [08 §3, §8](../specs/08-patchwork-integration.md)
+
+Two behaviours decide whether a team keeps auto-remediation switched on, and
+neither is about the quality of the fix.
+
+**Never overwrite somebody's edit.** A `push` webhook on a `mykronos/fix-`
+branch compares each commit's author against Patchwork's configured bot
+logins. Any commit that is not ours flips `pr_status` to `human_edited`
+permanently, and the pipeline skips that finding from then on — with no event
+written, because the existing one already records that a person is on it and
+overwriting it with a fresh assessment would lose that.
+
+The `push` event is the only way to learn this. Pull-request events do not
+fire for a plain push to an existing branch, so without the handler Patchwork
+would keep regenerating over somebody's work — the single behaviour spec 08 §3
+says it must never have.
+
+**The identity check fails closed, and this is the interesting decision.**
+With no bot login configured, *nothing* is recognised as Patchwork's, so every
+fix branch reads as human-edited and refreshes stop. That looks like the
+capability quietly breaking, and it is still right: the two mistakes are not
+symmetric. Wrongly leaving a branch alone costs one unrefreshed fix. Wrongly
+overwriting costs a colleague's commit and the team's willingness to let a bot
+near their repositories again.
+
+**Never leave a stale draft open.** A six-hourly sweep closes fixes whose
+finding is no longer open — fixed, dismissed, or gone from the lake entirely —
+with a comment saying why rather than vanishing. A queue of drafts nobody
+needs is how the ones that matter stop being read.
+
+`human_edited` branches are exempt from that sweep too. Somebody is working on
+it, and the finding's status stops being Patchwork's business once a person
+has taken the change over: they may have dismissed the finding precisely
+because they are mid-fix.
+
+One structural note: `BRANCH_PREFIX` moved from the pipeline to the
+stewardship module. The pipeline creates these branches, but stewardship owns
+the question "is that one ours", and the other arrangement is a circular
+import.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
 
+"Lands in" names a phase only while that phase is ahead. Once it has passed,
+the entry says what would actually trigger the work instead — a row still
+pointing at a delivered phase is the table quietly lying about its own
+backlog.
+
 | Deferred | Why | Lands in |
 |---|---|---|
-| `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
+| `finding_reopened` events persisted as retro signals | Returned from `compact()` and logged. The Knowledge Store now exists to receive them, so this is a wiring job rather than a missing dependency — a finding that came back is a strong signal that whatever closed it did not work | Next |
 | LLM-assisted fix generation | The deterministic fixers ship and are the primary path; the open-ended classes need `fix_generator_url` and an endpoint to point it at (D-032) | When a gateway exists |
-| Detecting a human commit on a Patchwork branch | `pr_status: human_edited` is modelled, consumed by Oracle and rendered; setting it needs the `push` webhook and a bot-identity comparison (spec 08 §3) | Phase 7 |
-| Auto-closing a draft whose finding was fixed by a human | spec 08 §8's reconciliation job. The `superseded` stage exists and the pipeline reports it when the file is gone; closing the stale pull request is the missing half | Phase 7 |
-| Tier promotion *execution* | Candidates are found, proposals are rendered, and the Oracle policy proposal is written. Actually moving a row between tier files on approval is a dashboard action with no consumer yet — the team and org tiers have nothing reading them until more than one repo is onboarded | Phase 7 |
+| SSO replacing the admin-token stub | spec 12 §3 requires the organisation's SSO with roles from identity groups. The stub fails closed and is labelled everywhere it appears, but it is still one token with full rights | Before any multi-person use |
+| Raw-output retention sweep | spec 05 §7's archival is built; the scheduled purge that bounds disk usage is not. Insider-risk rows already expire (D-022) — this is the larger, less sensitive pile | When disk becomes a constraint |
+
+| Tier promotion *execution* | Candidates are found, proposals are rendered, and the Oracle policy proposal is written. Actually moving a row between tier files on approval is a dashboard action with no consumer yet — the team and org tiers have nothing reading them until more than one repo is onboarded | When a second repo is onboarded |
 | Automatic draft-PR opening for policy proposals | `render_policy_proposal` produces the body; opening it needs the App installed on the Mykronos repo itself, which is a different installation from the ones being scanned | When the App is registered |
 | Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |
-| SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | Phase 7 |
-| Raw output **retention sweep** (spec 05 §7) | Archival is built; the scheduled purge that bounds disk usage is not | Phase 7 |
+| SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | When somebody needs to download one |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
 
 ---

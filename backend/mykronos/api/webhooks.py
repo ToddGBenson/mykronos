@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from mykronos.db.models import RepoOnboarding, get_or_create_organization
 from mykronos.installer import BRANCH_PREFIX, WorkflowInstaller
+from mykronos.patchwork.stewardship import is_patchwork_branch, record_human_edit
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -322,10 +323,70 @@ def _record_gate_outcome(
         return None
 
 
+def handle_push(
+    session: Session, payload: dict[str, Any], state: Any
+) -> dict[str, Any]:
+    """`push` — watch for a person committing to a Patchwork fix branch.
+
+    This is the only way to learn that somebody has taken a draft over. The
+    pull-request events do not fire for a plain push to an existing branch,
+    so without this Patchwork would keep regenerating over the top of
+    somebody's work — the single behaviour spec 08 §3 says it must never
+    have.
+    """
+    ref = str(payload.get("ref") or "")
+    repo_full_name = (payload.get("repository") or {}).get("full_name") or ""
+    commits = list(payload.get("commits") or [])
+
+    if not repo_full_name or not is_patchwork_branch(ref):
+        return {"ignored": "not a Patchwork branch"}
+
+    try:
+        outcome = record_human_edit(
+            state.catalog,
+            state.buffer,
+            repo_full_name,
+            ref,
+            commits,
+            bot_logins=set(state.settings.github_bot_logins),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Same posture as the other two side-effects on this endpoint: GitHub
+        # disables a webhook that fails often enough, and losing install-PR
+        # promotion to save a bookkeeping update would be a bad trade.
+        #
+        # The failure mode here is worth naming, though: if this never
+        # records, Patchwork keeps regenerating over the branch. That is the
+        # one thing spec 08 §3 forbids — so the log line says so, loudly.
+        logger.warning(
+            "Could not record a human edit on %s (%s): %s. Patchwork may "
+            "overwrite this branch on its next run.",
+            repo_full_name,
+            ref,
+            exc,
+        )
+        return {"handled": "push", "marked_human_edited": False, "reason": str(exc)}
+
+    if outcome.marked:
+        state.db.audit(
+            session,
+            actor=WEBHOOK_ACTOR,
+            action="patchwork.human_edited",
+            entity_type="remediation_event",
+            entity_id=outcome.event_id or ref,
+            repo=repo_full_name,
+            branch=ref,
+        )
+
+    return {"handled": "push", "marked_human_edited": outcome.marked,
+            "reason": outcome.reason}
+
+
 HANDLERS = {
     "installation": handle_installation,
     "installation_repositories": handle_installation_repositories,
     "pull_request": handle_pull_request,
+    "push": handle_push,
 }
 
 

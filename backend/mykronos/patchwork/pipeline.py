@@ -25,11 +25,10 @@ from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate, fixers
+from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
-
-BRANCH_PREFIX = "mykronos/fix-"
 
 STAGES = (
     "triaged",
@@ -223,6 +222,12 @@ class PatchworkPipeline:
 
         by_id = {str(f["finding_id"]): f for f in findings}
 
+        # Branches a person has taken over. Checked before anything is
+        # regenerated: spec 08 §3 makes the human_edited transition permanent,
+        # and a bot that reverted somebody's commit would end this
+        # capability's welcome the same afternoon.
+        off_limits = branches_off_limits(self.catalog, repo_full_name)
+
         # Stage 3. Done before fix generation so a finding that is part of a
         # combination is never fixed in isolation — spec 08 §8's overlap case,
         # and the reason combinations are detected at all.
@@ -246,6 +251,12 @@ class PatchworkPipeline:
         budget = max(0, self.max_open_draft_prs - open_prs)
 
         for finding_id, finding in by_id.items():
+            if finding_id in off_limits:
+                # Deliberately produces no event. The existing one already
+                # says `human_edited`, and overwriting it with a fresh
+                # assessment would lose the fact that a person is on this.
+                continue
+
             if finding_id in claimed:
                 # Already covered by a combination event. Generating a
                 # separate fix would produce two draft PRs touching related

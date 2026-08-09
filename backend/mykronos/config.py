@@ -129,6 +129,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    stale_draft_sweep_interval_seconds: int = Field(
+        default=21_600,
+        ge=1,
+        description=(
+            "How often to close draft fixes whose finding is no longer open "
+            "(spec 08 §8). Every six hours: a stale draft is a small "
+            "annoyance that becomes a large one when there are nine of them, "
+            "and closing is cheap."
+        ),
+    )
+
     run_jobs_in_background: bool = Field(
         default=True,
         description="Disable so tests and one-shot CLI runs drive jobs explicitly.",
@@ -243,6 +254,20 @@ class Settings(BaseSettings):
             "signal collectors and adapters (spec 04 §4). Pinned to a tag for "
             "the same reason the upload action is: every onboarded repo "
             "depends on it, so it must never resolve to a moving branch."
+        ),
+    )
+
+    github_bot_logins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Commit author names that are Patchwork's own, used to tell its "
+            "commits from a person's (spec 08 §3). Usually one entry: "
+            "'<app-slug>[bot]'. "
+            "Empty means nothing is recognised as ours, so every fix branch "
+            "reads as human-edited and Patchwork stops refreshing it — which "
+            "is the correct direction to be wrong in. A stale draft costs one "
+            "unrefreshed fix; the opposite mistake overwrites somebody's "
+            "commit."
         ),
     )
 
