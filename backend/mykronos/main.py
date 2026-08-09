@@ -41,6 +41,7 @@ from mykronos.jobs import (
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.maturity import load_model as load_maturity_model
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ratelimit import SlidingWindowLimiter
@@ -138,6 +139,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.
     app.state.oracle_policy = load_policy(settings.oracle_policy_path)
+    # Held from startup like the Oracle policy, and for the same reason: an
+    # assessment should not change under a running request because somebody
+    # saved the file.
+    app.state.maturity_model = load_maturity_model(settings.maturity_model_path)
     # spec 11 §8: colocated with the lake, logically separate. Personal tier
     # is where every captured learning starts; promotion to team or org is a
     # human decision (spec 11 §2), never a side effect of writing one.

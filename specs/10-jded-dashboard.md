@@ -41,13 +41,45 @@ check each tool's own separate UI.
   (spec 11 §4).
 
 ### 2.3 Maturity / trend view
-- Per-repo and portfolio-wide trend lines over time: finding count by
-  severity, `overall_risk_score`, SSCS trust score, mean time-to-fix.
-- An illustrative maturity roadmap (baseline → target posture) per repo,
-  in the spirit of a BSIMM/OWASP SAMM-style view — qualitative maturity
-  stage inferred from quantitative signals (e.g., "all 6 core scanners
-  enabled + Oracle blocking + <5 open criticals older than 30 days" maps to
-  a defined maturity tier; tiers and thresholds are configurable).
+
+**Trends** — per-repo and portfolio-wide series over time: finding count by
+severity, `overall_risk_score`, SSCS trust score, mean time-to-fix.
+
+No time-series table is needed for any of these, and adding one would be a
+mistake. Every series is reconstructible from records the lake already holds:
+a `Finding` carries `first_seen_at` and `resolved_at`, so the open count on
+any past date is a query rather than a snapshot; `risk_decisions` and
+`sscs_evidence` are already append-only per evaluation. A parallel table of
+daily rollups would be a second copy of the truth, able to disagree with the
+first, and §6 requires every number to be reproducible from the underlying
+rows.
+
+**Maturity** — a qualitative tier per repo, inferred from quantitative
+signals, in the spirit of BSIMM/SAMM. Tiers and thresholds live in
+`maturity-model-v1.yaml` at the repository root, versioned and reviewed in a
+pull request for the same reason the Oracle policy is (spec 09 §5): a
+definition of "good" that can be edited in a database is one nobody can
+audit.
+
+**Criteria measure evidence, not switch positions.** An earlier draft of this
+spec gave "Oracle blocking enabled" as an example criterion. That contradicts
+spec 09 §6, which makes blocking opt-in, off by default, and conditional on
+shadow-mode data showing what it would have cost. A maturity model that scores
+a team higher the moment they flip that switch is pushing them to do the thing
+spec 09 says to do only with evidence in hand — and the fastest way to a high
+score would be to turn on a gate nobody agreed to, which is how the whole
+platform gets switched off.
+
+So the criteria reward the *evidence*: enough judged pull requests to have a
+shadow-mode signal at all, dismissals carrying written reasons, findings not
+ageing. A repo that has earned the right to turn blocking on scores as a repo
+that has earned it, whether or not it has.
+
+**Every tier shows its working.** A tier is a derived label, and §6 forbids
+dashboard-only numbers that cannot be traced back. The view therefore renders
+each criterion with its measured value, its threshold, and whether it passed —
+so "Tier 2" is never the whole answer, and the next tier always comes with the
+specific thing standing between the repo and it.
 
 ### 2.4 Retro / learning view
 - Surfaces the Knowledge Store's synthesized retro reports (spec 11 §6):
@@ -63,10 +95,15 @@ check each tool's own separate UI.
   (e.g., `GET /api/dashboard/portfolio`, `GET /api/dashboard/repos/{id}/findings`)
   backed by parameterized DuckDB SQL views defined once in the backend
   (not ad hoc query strings scattered across endpoint handlers).
-- Heavy aggregate queries (portfolio summary cards, trend lines) are
-  pre-computed on a schedule (e.g., every 15 minutes) into small
-  materialized DuckDB views/tables to keep dashboard load times fast
-  regardless of data lake size.
+- Heavy aggregate queries (portfolio summary cards, trend lines) *may* be
+  pre-computed on a schedule into small materialized DuckDB views to keep
+  dashboard load times fast regardless of data lake size — but only where a
+  measurement shows they need to be. Materialization buys speed with a
+  staleness window and a refresh job to keep working; that is a bad trade for
+  a query already inside the §6 budget. The portfolio aggregate was measured
+  and left live (docs/DECISIONS.md D-016), with the budget enforced as a test
+  so the decision is revisited by a failure rather than by an opinion. Trend
+  series are held to the same rule.
 
 ## 4. API endpoints (backend, dashboard-facing)
 

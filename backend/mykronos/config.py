@@ -246,6 +246,15 @@ class Settings(BaseSettings):
         ),
     )
 
+    maturity_model_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "maturity-model-v1.yaml",
+        description=(
+            "Versioned maturity tiers (spec 10 §2.3). At the repository root "
+            "beside the Oracle policy, for the same reason: a definition of "
+            "'good' that can be edited in a database is one nobody can audit."
+        ),
+    )
+
     ingestion_api_url: str = Field(
         default="http://localhost:8100",
         description=(

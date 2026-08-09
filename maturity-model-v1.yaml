@@ -1,0 +1,170 @@
+# Maturity model (spec 10 §2.3).
+#
+# A definition of "good", versioned and reviewed in a pull request for the
+# same reason the Oracle policy is: one that can be edited in a database is
+# one nobody can audit, and this one decides what teams are told to aim at.
+#
+# ---------------------------------------------------------------------------
+# The rule that shapes every criterion below
+# ---------------------------------------------------------------------------
+#
+# **Criteria measure evidence, not switch positions.**
+#
+# The obvious maturity model rewards configuration: scanners enabled, gates
+# turned on, blocking switched to true. It is easy to compute and it is the
+# wrong incentive. Spec 09 §6 makes Oracle blocking opt-in, off by default,
+# and conditional on shadow-mode data showing what it would cost. A model that
+# scored a team higher the moment they flipped that switch would push them to
+# do the thing spec 09 says to do only with evidence — and the fastest route
+# to a good score would be turning on a gate nobody agreed to, which is
+# precisely how a security platform gets switched off in its first month.
+#
+# So the criteria ask whether the team has *earned* the right to that switch:
+# are pull requests being judged at all, are dismissals carrying written
+# reasons, are findings being fixed rather than aged. A repo that has earned
+# it scores as one, whether or not it has flipped anything.
+#
+# Corollary worth stating: no criterion here can be satisfied by changing
+# configuration alone. Every one of them requires something to have happened.
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Tiers
+# ---------------------------------------------------------------------------
+#
+# Ordered, cumulative: a repo is at the highest tier whose criteria it meets
+# *and* whose predecessors it meets. Skipping is not possible, deliberately —
+# a repo with a sophisticated learning loop and no scanners running has not
+# leapfrogged anything, it has a gap somebody should look at.
+tiers:
+  - id: unmanaged
+    name: Unmanaged
+    summary: >-
+      Onboarded, but nothing has run. Not a criticism — every repository
+      starts here, and it takes one merged pull request to leave.
+    requires: []
+
+  - id: observed
+    name: Observed
+    summary: >-
+      Something is scanning, and the results arrive. You can answer "what is
+      in this repository" with evidence rather than belief.
+    requires:
+      - scanners_reporting            # at least N capabilities have scanned
+      - scans_are_fresh               # and recently
+
+  - id: triaged
+    name: Triaged
+    summary: >-
+      Findings are being looked at by people, and those people write down
+      what they concluded. This is the first tier that needs human effort
+      rather than configuration.
+    requires:
+      - scanners_reporting
+      - scans_are_fresh
+      - findings_are_dispositioned
+      - dismissals_carry_reasons
+
+  - id: measured
+    name: Measured
+    summary: >-
+      Risk is scored, the score has a history, and supply-chain evidence
+      exists. There is enough here to argue about with numbers.
+    requires:
+      - scanners_reporting
+      - scans_are_fresh
+      - findings_are_dispositioned
+      - dismissals_carry_reasons
+      - risk_is_scored
+      - supply_chain_evidence
+
+  - id: governed
+    name: Governed
+    summary: >-
+      Findings do not rot, and there is enough shadow-mode data to decide
+      about blocking on evidence rather than on nerve. This is the tier at
+      which turning the gate on is a defensible decision — the model does not
+      care whether you have.
+    requires:
+      - scanners_reporting
+      - scans_are_fresh
+      - findings_are_dispositioned
+      - dismissals_carry_reasons
+      - risk_is_scored
+      - supply_chain_evidence
+      - criticals_do_not_age
+      - shadow_mode_has_signal
+
+# ---------------------------------------------------------------------------
+# Criteria
+# ---------------------------------------------------------------------------
+#
+# `metric` names a function in mykronos/maturity.py. Adding a criterion needs
+# a matching function, which is deliberate: a threshold with no measurement
+# behind it would be a number in a config file that quietly always passes.
+criteria:
+  scanners_reporting:
+    label: At least two capabilities have reported findings
+    metric: capabilities_with_scans
+    at_least: 2
+    why: >-
+      One scanner is a pilot. Two is a decision.
+
+  scans_are_fresh:
+    label: Scanned within the last 14 days
+    metric: days_since_last_scan
+    at_most: 14
+    why: >-
+      A stale scan is worse than none: it reports a clean repository that
+      nobody has actually looked at recently.
+
+  findings_are_dispositioned:
+    label: Fewer than half of open findings are untouched after 30 days
+    metric: stale_untouched_ratio
+    at_most: 0.5
+    why: >-
+      Measures whether anybody is working the queue. Not "zero findings" —
+      a repository with no findings has usually not been scanned properly.
+
+  dismissals_carry_reasons:
+    label: Most dismissals explain themselves
+    metric: reasoned_dismissal_ratio
+    at_least: 0.8
+    why: >-
+      Spec 11 §4's premise. A dismissal with no reason is recorded and
+      useless: it cannot raise confidence, be promoted, or dampen a rule, so
+      the effort of clicking it taught the platform nothing.
+
+  risk_is_scored:
+    label: Oracle has produced a standing decision
+    metric: portfolio_decisions
+    at_least: 1
+    why: >-
+      Scored, not gated. Whether the gate blocks is a separate decision this
+      model deliberately does not reward.
+
+  supply_chain_evidence:
+    label: Supply-chain evidence exists for this repository
+    metric: sscs_evidence_count
+    at_least: 1
+    why: >-
+      Most real risk arrives through dependencies rather than through code
+      somebody in this repository wrote.
+
+  criticals_do_not_age:
+    label: No critical finding open longer than 30 days
+    metric: aged_criticals
+    at_most: 0
+    why: >-
+      The single most honest maturity signal in the set. Everything else can
+      be satisfied by process; this one requires the work to have been done.
+
+  shadow_mode_has_signal:
+    label: At least three pull requests judged and closed
+    metric: decided_pull_requests
+    at_least: 3
+    why: >-
+      Enough outcomes to say something about what blocking mode would have
+      cost (spec 09 §6). This is the criterion that replaces "blocking is
+      enabled" — it rewards having the evidence, not having the nerve.

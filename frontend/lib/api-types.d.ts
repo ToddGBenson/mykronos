@@ -230,6 +230,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/trends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trends
+         * @description Portfolio or per-repo series over time (spec 10 §2.3, §4).
+         *
+         *     Reconstructed from the rows already held rather than read from a rollup
+         *     table. Left live rather than materialized, on the same rule as the
+         *     portfolio aggregate (D-016): materialization buys speed with a staleness
+         *     window and a refresh job, which is a bad trade for a query inside budget.
+         */
+        get: operations["trends_api_dashboard_trends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/maturity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Maturity
+         * @description Maturity tier per repo, with the working shown (spec 10 §2.3).
+         *
+         *     Criteria measure evidence rather than switch positions: nothing here can
+         *     be satisfied by changing configuration alone, and in particular no tier
+         *     rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+         *     shadow-mode data, so the model asks whether the data exists instead.
+         */
+        get: operations["maturity_api_dashboard_maturity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/insider-risk": {
         parameters: {
             query?: never;
@@ -2094,6 +2144,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TriageQueue"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trends_api_dashboard_trends_get: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+                days?: number;
+                points?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    maturity_api_dashboard_maturity_get: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

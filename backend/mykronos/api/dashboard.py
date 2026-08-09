@@ -14,11 +14,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
+from mykronos.db.models import RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
+from mykronos.maturity import assess as maturity_assess
+from mykronos.maturity import mean_time_to_fix, trend_series
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -333,6 +337,116 @@ async def triage(
         total_open=sum(counts.values()),
         truncated=len(items) >= limit,
     )
+
+
+@router.get("/trends")
+async def trends(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=7, le=730)] = 90,
+    points: Annotated[int, Query(ge=2, le=60)] = 12,
+) -> dict[str, Any]:
+    """Portfolio or per-repo series over time (spec 10 §2.3, §4).
+
+    Reconstructed from the rows already held rather than read from a rollup
+    table. Left live rather than materialized, on the same rule as the
+    portfolio aggregate (D-016): materialization buys speed with a staleness
+    window and a refresh job, which is a bad trade for a query inside budget.
+    """
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    catalog = request.app.state.catalog
+
+    series = trend_series(catalog, repo_full_name, days=days, points=points)
+    return {
+        "scope": repo_full_name or "portfolio",
+        "days": days,
+        "mean_time_to_fix_days": mean_time_to_fix(catalog, repo_full_name),
+        "points": [
+            {
+                "at": point.at,
+                "open_critical": point.open_critical,
+                "open_high": point.open_high,
+                "open_total": point.open_total,
+                "risk_score": point.risk_score,
+                "trust_score": point.trust_score,
+            }
+            for point in series
+        ],
+        "note": (
+            "Every point is a query over first_seen_at and resolved_at, not a "
+            "stored snapshot, so any of them can be re-derived from the "
+            "findings themselves (spec 10 §6)."
+        ),
+    }
+
+
+@router.get("/maturity")
+async def maturity(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """Maturity tier per repo, with the working shown (spec 10 §2.3).
+
+    Criteria measure evidence rather than switch positions: nothing here can
+    be satisfied by changing configuration alone, and in particular no tier
+    rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+    shadow-mode data, so the model asks whether the data exists instead.
+    """
+    model = request.app.state.maturity_model
+    catalog = request.app.state.catalog
+    store = request.app.state.knowledge
+
+    if repo_id:
+        targets = [_resolve_repo(request, repo_id)]
+    else:
+        with request.app.state.db.session() as session:
+            targets = sorted(
+                row.github_repo_full_name
+                for row in session.execute(
+                    select(RepoOnboarding).where(RepoOnboarding.status == "active")
+                ).scalars()
+            )
+
+    assessments = [
+        maturity_assess(catalog, repo, model, store=store) for repo in targets
+    ]
+
+    return {
+        "model_version": model.version,
+        "tiers": [
+            {"id": t.id, "name": t.name, "summary": t.summary} for t in model.tiers
+        ],
+        "repos": [
+            {
+                "repo_full_name": a.repo_full_name,
+                "tier_id": a.tier_id,
+                "tier_name": a.tier_name,
+                "tier_summary": a.tier_summary,
+                "tier_index": a.tier_index,
+                "total_tiers": a.total_tiers,
+                "next_tier_name": a.next_tier_name,
+                "criteria": [
+                    {
+                        "key": c.key,
+                        "label": c.label,
+                        "why": c.why,
+                        "threshold": c.threshold,
+                        "measured": c.measured,
+                        "passed": c.passed,
+                    }
+                    for c in a.criteria
+                ],
+                "blocking": [
+                    {"key": c.key, "label": c.label, "measured": c.measured,
+                     "threshold": c.threshold, "why": c.why}
+                    for c in a.blocking
+                ],
+            }
+            for a in assessments
+        ],
+    }
 
 
 @router.get("/repos/{repo_id}/insider-risk", response_model=InsiderRiskPage)
