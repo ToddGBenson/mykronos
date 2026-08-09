@@ -472,3 +472,53 @@ class TestMerge:
         assert len(github.repos[REPO].pull_requests) == 2
         assert second.plan.added == ["secrets"]
         assert second.plan.removed == []
+
+
+class TestGateOrdering:
+    """`workflow_run` triggers, which are silently wrong when they are wrong.
+
+    A gate naming a workflow that does not exist simply never fires; a gate
+    naming itself is a workflow triggering on its own completion. Neither
+    produces an error anywhere — the capability just stops working.
+    """
+
+    def test_a_gate_never_waits_for_itself(self) -> None:
+        from mykronos.installer.installer import _gate_depends_on
+
+        assert "Mykronos patchwork" not in _gate_depends_on(
+            "patchwork", ["sast", "patchwork", "oracle"]
+        )
+        assert "Mykronos oracle" not in _gate_depends_on(
+            "oracle", ["sast", "patchwork", "oracle"]
+        )
+
+    def test_oracle_waits_for_patchwork(self) -> None:
+        """Oracle discounts findings with a fix in flight (spec 08 §9). If
+        they both trigger on the scanners they race, and Oracle scores before
+        the draft pull requests exist — so the discount is missing from
+        exactly the decision somebody is reading."""
+        from mykronos.installer.installer import _gate_depends_on
+
+        assert _gate_depends_on("oracle", ["sast", "patchwork", "oracle"]) == [
+            "Mykronos sast",
+            "Mykronos patchwork",
+        ]
+
+    def test_patchwork_waits_only_for_scanners(self) -> None:
+        from mykronos.installer.installer import _gate_depends_on
+
+        assert _gate_depends_on("patchwork", ["sast", "secrets", "patchwork"]) == [
+            "Mykronos sast",
+            "Mykronos secrets",
+        ]
+
+    def test_a_capability_that_is_not_enabled_is_not_waited_for(self) -> None:
+        """A trigger naming a workflow that does not exist never fires."""
+        from mykronos.installer.installer import _gate_depends_on
+
+        assert _gate_depends_on("oracle", ["sast", "oracle"]) == ["Mykronos sast"]
+
+    def test_a_scanner_waits_for_nothing(self) -> None:
+        from mykronos.installer.installer import _gate_depends_on
+
+        assert _gate_depends_on("sast", ["sast", "oracle"]) == []

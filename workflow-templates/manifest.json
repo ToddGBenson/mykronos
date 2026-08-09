@@ -61,6 +61,12 @@
       "version": "1.0.0",
       "summary": "Dependency vulnerabilities, SBOM and provenance with osv-scanner"
     },
+    "patchwork": {
+      "template": "patchwork.yml.j2",
+      "target": ".github/workflows/mykronos-patchwork.yml",
+      "version": "1.0.0",
+      "summary": "Auto-remediation — opens draft pull requests, never merges"
+    },
     "oracle": {
       "template": "oracle-gate.yml.j2",
       "target": ".github/workflows/mykronos-oracle.yml",

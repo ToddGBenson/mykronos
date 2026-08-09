@@ -41,6 +41,40 @@ from mykronos.schemas import utcnow
 logger = logging.getLogger(__name__)
 
 BRANCH_PREFIX = "mykronos/enable-workflows-"
+
+#: Capabilities that are triggered by other workflows rather than by a push.
+#: Ordered: each waits for everything before it, so Oracle sees Patchwork's
+#: draft pull requests when it scores (spec 08 §9) instead of racing the
+#: pipeline whose output it consumes.
+_GATE_ORDER = ("patchwork", "oracle")
+
+
+def _gate_depends_on(capability: str, enabled: list[str]) -> list[str]:
+    """Workflow names a `workflow_run`-triggered capability must wait for.
+
+    Derived from what this repo will actually have enabled, not from the full
+    capability list: a `workflow_run` trigger naming a workflow that does not
+    exist never fires, so an over-broad list silently stops the gate firing at
+    all.
+
+    Two rules beyond that, both of which were wrong in the first version:
+
+    - **A gate never waits for itself.** Listing `Mykronos patchwork` in
+      patchwork's own trigger is a workflow triggering on its own completion.
+    - **A later gate waits for the earlier ones.** Oracle reads Patchwork's
+      output; if they both trigger on the scanners they race, and Oracle
+      scores before the draft pull requests exist. The discount would then be
+      missing from exactly the decision a reviewer is reading.
+    """
+    if capability not in _GATE_ORDER:
+        return []
+
+    position = _GATE_ORDER.index(capability)
+    waits_for = [c for c in enabled if c not in _GATE_ORDER] + [
+        c for c in _GATE_ORDER[:position] if c in enabled
+    ]
+    return [f"Mykronos {c}" for c in waits_for]
+
 DEFAULT_SECRET_NAME = "MYKRONOS_INGESTION_TOKEN"
 
 
@@ -166,16 +200,9 @@ class WorkflowInstaller:
 
         configs = configs or {}
 
-        # Workflow names the Oracle gate must wait for. Derived from what this
-        # repo will actually have enabled after this change, not from the full
-        # capability list: a workflow_run trigger naming a workflow that does
-        # not exist never fires, so an over-broad list would silently stop the
-        # gate producing decisions at all.
-        gate_depends_on = [
-            f"Mykronos {capability}"
-            for capability in sorted(requested)
-            if capability != "oracle" and capability in self.templates.available
-        ]
+        enabled_after = sorted(
+            c for c in requested if c in self.templates.available
+        )
 
         for capability in plan.added:
             rendered = self.templates.render(
@@ -187,7 +214,7 @@ class WorkflowInstaller:
                 upload_action_ref=self.upload_action_ref,
                 mykronos_package_spec=self.package_spec,
                 config=configs.get(capability, {}),
-                gate_depends_on=gate_depends_on,
+                gate_depends_on=_gate_depends_on(capability, enabled_after),
             )
             await self._assert_no_collision(onboarding, rendered.path)
             plan.rendered.append(rendered)

@@ -16,6 +16,7 @@ import {
   type FindingsPage,
   type InsiderRiskPage,
   type Portfolio,
+  type RemediationPage,
   type RepoDetail,
   type RetroReport,
   type RiskDecision,
@@ -254,6 +255,23 @@ export async function getTrend(): Promise<
     return { ok: true, data: data as TrendReport };
   } catch (err) {
     return failure(err);
+  }
+}
+
+export async function getRemediation(
+  repoId: string,
+): Promise<Result<RemediationPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/patchwork/repos/{repo_id}",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load remediation") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
   }
 }
 

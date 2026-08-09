@@ -120,6 +120,10 @@ export type TrendReport = {
   }[];
 };
 
+export type RemediationPage =
+  paths["/api/patchwork/repos/{repo_id}"]["get"]["responses"]["200"]["content"]["application/json"];
+export type RemediationEvent = RemediationPage["events"][number];
+
 export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];

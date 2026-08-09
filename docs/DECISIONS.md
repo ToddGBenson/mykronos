@@ -777,6 +777,149 @@ file is worse than one that proceeds without the extra context.
 
 ---
 
+## D-031 — "Never merges" is enforced by an absent method, not a permission
+
+**Status:** Decided, spec amended
+**Spec:** [08 §3](../specs/08-patchwork-integration.md)
+
+Spec 08 §3 originally said Patchwork "has no merge permission" and that the
+App "should not request merge rights". Neither is achievable. Merging a pull
+request through the API needs `contents: write`, which the App already holds
+and cannot give up — it is what lets the Workflow Installer commit workflow
+files at all (D-008). Any deployment where Patchwork can open a pull request
+is one where the App could technically merge one.
+
+Stating otherwise put a guarantee in the spec that nothing was enforcing,
+which is worse than no guarantee: somebody reading it would have believed the
+platform was constrained in a way it was not.
+
+The constraint now lives where it can be checked. `GitHubClient` exposes no
+merge operation, neither implementation has one, and three tests fail if that
+changes — including one asserting `draft=True` is written at the call site
+rather than threaded through from configuration. Adding merge support means
+editing a shared interface with failing tests attached, which is a visible,
+reviewable act.
+
+Same posture as spec 14 §4's authorization boundaries: where a platform
+permission cannot express the constraint, the constraint lives in code with a
+test that fails if it is removed.
+
+---
+
+## D-032 — Deterministic fixers are the product, not the fallback
+
+**Status:** Decided, spec amended
+**Spec:** [08 §2](../specs/08-patchwork-integration.md)
+
+v1 ships pattern-based fixers for the classes where the correct change is
+mechanical, and requires a configured endpoint for anything else.
+
+The bar for a deterministic fixer is stated in the module and is deliberately
+high: it belongs there only if the change is *provably* the right shape given
+the finding, with no judgement about the surrounding code. Pinning a
+dependency to a patched version is that. Parameterising a query is not — it
+needs to understand what the query does, and getting it subtly wrong produces
+a diff that looks right and breaks at runtime.
+
+Both shipped fixers refuse more than they accept, and the refusals are the
+interesting part:
+
+- The pinner leaves `urllib3>=2.0` alone. Narrowing a range to an exact pin is
+  a change to the project's dependency *policy*, not a security fix.
+- The secret fixer refuses anything more structured than a plain assignment. A
+  regex rewriting arbitrary code around a credential turns a leaked credential
+  into a leaked credential *and* a broken build.
+- Its first review note is "rotate the credential first". Removing a literal
+  from the working tree removes it from nothing else, and a fix that made a
+  repository look clean while the credential stayed valid would be worse than
+  no fix.
+
+LLM generation needs `fix_generator_url` and is off when unset — same rule as
+Aegis's classifier (D-023). Without it, findings outside the deterministic
+classes reach `no_fix_available` with a rationale saying exactly that, which
+is a true statement about the deployment rather than a claim about the
+finding.
+
+---
+
+## D-033 — A detected combination suppresses the individual fixes
+
+**Status:** Decided
+**Spec:** [08 §2, §8](../specs/08-patchwork-integration.md)
+
+Findings inside a toxic combination are not fixed in isolation. Two reasons,
+and the first is the one that matters.
+
+Fixing one half of an unauthenticated injectable endpoint **closes the finding
+without closing the risk**, and leaves the code looking attended to. The
+composite is the problem; addressing half of it is worse than addressing none,
+because the remaining half no longer has a partner to make it visible.
+
+The second is mechanical: two fixes touching the same request path produce two
+draft pull requests that cannot both merge cleanly, which is spec 08 §8's
+overlap case.
+
+A finding belongs to at most one combination — first rule wins, in rule order
+— because overlap would let one finding generate several draft pull requests,
+which is the flooding backpressure exists to prevent arriving by another
+route.
+
+The built-in rule set is deliberately tiny. A large default set of speculative
+combinations produces noise that discredits the real ones, and spec 08 §5
+already allows admins to add their own.
+
+---
+
+## D-034 — Remediation in flight is a discount, and it expires
+
+**Status:** Decided
+**Spec:** [08 §9](../specs/08-patchwork-integration.md), [09 §5](../specs/09-oracle-risk-decision-engine.md)
+
+A finding with an open Patchwork pull request counts for half. Not zero: a
+repository with ten open auto-fixes is not a safe repository, it is a
+repository with ten unmerged fixes. The discount says somebody is on it, which
+is a statement about urgency rather than about risk.
+
+Applied inside the curve like dampening (D-028), and capped at the undampened
+remainder so a finding that is both dismissed-often and being fixed cannot be
+discounted twice.
+
+`human_edited` counts as in flight. A person took the draft and started working
+on it, which is *more* evidence of remediation underway than an untouched one.
+
+**The expiry is the half that is easy to miss.** When the pull request closes
+— merged or abandoned — the discount stops. Without that, a closed-unmerged
+auto-fix keeps lowering the repository's score forever, and the score looks
+attended to when nobody attended to it. Both directions are tested; the
+abandoned case is the important one.
+
+---
+
+## D-035 — A gate never waits for itself, and Oracle waits for Patchwork
+
+**Status:** Decided
+**Spec:** [08 §6](../specs/08-patchwork-integration.md), [09 §8](../specs/09-oracle-risk-decision-engine.md)
+
+The installer's `gate_depends_on` list was built once and handed to every
+template, which produced two silent faults the moment a second
+`workflow_run`-triggered capability existed.
+
+Patchwork's own trigger listed `Mykronos patchwork` — a workflow triggering on
+its own completion. And Oracle and Patchwork both waited on the scanners, so
+they raced: Oracle could score before the draft pull requests existed, and the
+`remediation_in_flight` discount would be missing from exactly the decision a
+reviewer was reading.
+
+Neither produces an error. A `workflow_run` trigger naming a workflow that does
+not exist simply never fires, and a race just gives the wrong answer sometimes.
+That is why the fix comes with five unit tests over the helper rather than
+relying on the rendered YAML looking right.
+
+Gates now have an explicit order — Patchwork, then Oracle — and each waits for
+every scanner plus every gate before it.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -784,7 +927,9 @@ Recorded so they are not mistaken for oversights.
 | Deferred | Why | Lands in |
 |---|---|---|
 | `finding_reopened` events persisted as retro signals | Currently logged and returned from `compact()`; there is no Knowledge Store to write them to yet | Phase 5 |
-| `POST /api/ingest/patchwork` body | Route returns 501 naming the phase. Aegis, Atlas and Oracle now have real handlers | Phase 6 |
+| LLM-assisted fix generation | The deterministic fixers ship and are the primary path; the open-ended classes need `fix_generator_url` and an endpoint to point it at (D-032) | When a gateway exists |
+| Detecting a human commit on a Patchwork branch | `pr_status: human_edited` is modelled, consumed by Oracle and rendered; setting it needs the `push` webhook and a bot-identity comparison (spec 08 §3) | Phase 7 |
+| Auto-closing a draft whose finding was fixed by a human | spec 08 §8's reconciliation job. The `superseded` stage exists and the pipeline reports it when the file is gone; closing the stale pull request is the missing half | Phase 7 |
 | Tier promotion *execution* | Candidates are found, proposals are rendered, and the Oracle policy proposal is written. Actually moving a row between tier files on approval is a dashboard action with no consumer yet — the team and org tiers have nothing reading them until more than one repo is onboarded | Phase 7 |
 | Automatic draft-PR opening for policy proposals | `render_policy_proposal` produces the body; opening it needs the App installed on the Mykronos repo itself, which is a different installation from the ones being scanned | When the App is registered |
 | Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { DecisionsTab } from "@/components/decisions";
 import { DispositionForm } from "@/components/disposition";
 import { InsiderRiskTab } from "@/components/insider-risk";
+import { RemediationTab } from "@/components/remediation";
 import { SscsTab } from "@/components/sscs";
 import {
   CapabilityDots,
@@ -19,6 +20,7 @@ import {
   getDecisions,
   getFindings,
   getInsiderRisk,
+  getRemediation,
   getRepo,
   getScanHealth,
   getSscs,
@@ -32,7 +34,7 @@ const TABS = [
   { id: "decisions", label: "Risk decisions" },
   { id: "sscs", label: "Supply chain" },
   { id: "insider", label: "Insider risk" },
-  { id: "remediation", label: "Remediation", phase: "Phase 6" },
+  { id: "remediation", label: "Remediation" },
 ] as const;
 
 export default async function RepoPage({
@@ -79,31 +81,22 @@ export default async function RepoPage({
         </div>
       ) : null}
 
+      {/* Every tab is built as of Phase 6 — the "arrives in Phase N" branch
+          that used to live here has no subject left. */}
       <nav className="flex flex-wrap border-b-2 border-ink-2" aria-label="Repository views">
-        {TABS.map((entry) =>
-          "phase" in entry && entry.phase ? (
-            <span
-              key={entry.id}
-              title={`Arrives in ${entry.phase}`}
-              className="cursor-default px-3 py-1.5 font-mono text-[10px] text-ink-3 opacity-50"
-            >
-              {entry.label}
-              <span className="ml-1 text-[8px]">{entry.phase}</span>
-            </span>
-          ) : (
-            <Link
-              key={entry.id}
-              href={`/repos/${repoId}?tab=${entry.id}`}
-              className={`-mb-0.5 border-b-2 px-3 py-1.5 font-mono text-[10px] ${
-                tab === entry.id
-                  ? "border-accent font-bold text-ink"
-                  : "border-transparent text-ink-3 hover:text-accent"
-              }`}
-            >
-              {entry.label}
-            </Link>
-          ),
-        )}
+        {TABS.map((entry) => (
+          <Link
+            key={entry.id}
+            href={`/repos/${repoId}?tab=${entry.id}`}
+            className={`-mb-0.5 border-b-2 px-3 py-1.5 font-mono text-[10px] ${
+              tab === entry.id
+                ? "border-accent font-bold text-ink"
+                : "border-transparent text-ink-3 hover:text-accent"
+            }`}
+          >
+            {entry.label}
+          </Link>
+        ))}
       </nav>
 
       {tab === "scan-health" ? (
@@ -114,6 +107,8 @@ export default async function RepoPage({
         <SupplyChainTab repoId={repoId} />
       ) : tab === "insider" ? (
         <AegisTab repoId={repoId} />
+      ) : tab === "remediation" ? (
+        <PatchworkTab repoId={repoId} />
       ) : (
         <FindingsTab repoId={repoId} query={query} />
       )}
@@ -364,6 +359,20 @@ async function AegisTab({ repoId }: { repoId: string }) {
       signals={result.data.signals}
       detailIncluded={result.data.detail_included}
       governance={result.data.governance}
+    />
+  );
+}
+
+async function PatchworkTab({ repoId }: { repoId: string }) {
+  const result = await getRemediation(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Remediation unavailable" detail={result.error} />;
+  }
+  return (
+    <RemediationTab
+      events={result.data.events}
+      openDraftPrs={result.data.open_draft_prs}
+      note={result.data.note}
     />
   );
 }

@@ -27,7 +27,7 @@ const NAV: {
       { label: "Portfolio", href: "/" },
       { label: "Triage queue", href: "/triage" },
       { label: "Decisions", href: "/decisions" },
-      { label: "Remediation", phase: "Phase 6" },
+      { label: "Remediation", href: "/triage" },
       { label: "Trends", phase: "Phase 7" },
       { label: "Retros", href: "/retro" },
     ],
@@ -55,7 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               AppSec control plane
             </span>
             <span className="ml-auto border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
-              Phase 5 · admin
+              Phase 6 · admin
             </span>
           </header>
 
