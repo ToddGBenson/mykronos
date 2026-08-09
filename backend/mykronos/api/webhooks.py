@@ -231,6 +231,13 @@ def handle_pull_request(
         if decision_id:
             result["gate_outcome_recorded_for"] = decision_id
 
+        # A Patchwork draft closing is the clearest verdict a human ever gives
+        # this platform (spec 11 §9), and it is also what stops Oracle
+        # discounting a finding for a fix that is no longer in flight.
+        event_id = _record_remediation_outcome(state, repo_full_name, number, merged)
+        if event_id:
+            result["remediation_outcome_recorded_for"] = event_id
+
     if not merged:
         return {**result, "promoted": []}
 
@@ -259,6 +266,35 @@ def handle_pull_request(
             enabled_capabilities=row.enabled_capabilities,
         )
     return {**result, "promoted": promoted}
+
+
+def _record_remediation_outcome(
+    state: Any, repo_full_name: str, pr_number: int, merged: bool
+) -> str | None:
+    """Same failure posture as the gate outcome: never break the webhook.
+
+    GitHub disables a webhook that fails often enough, and losing install-PR
+    promotion to save a bookkeeping update would be a bad trade.
+    """
+    from mykronos.patchwork.outcomes import record_pr_outcome
+
+    try:
+        return record_pr_outcome(
+            state.catalog,
+            state.buffer,
+            repo_full_name,
+            pr_number,
+            merged=merged,
+            store=state.knowledge,
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logger.warning(
+            "Could not record the remediation outcome for %s#%s: %s",
+            repo_full_name,
+            pr_number,
+            exc,
+        )
+        return None
 
 
 def _record_gate_outcome(
