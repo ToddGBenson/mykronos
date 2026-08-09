@@ -30,6 +30,8 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.config import get_settings
 from mykronos.db import Database
+from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
+from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
     purge_expired_insider_risk,
     reconcile_installations,
@@ -111,6 +113,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "purge-insider-risk",
         help="Delete insider-risk rows past their retention window (spec 06 §9)",
     )
+    resync = sub.add_parser(
+        "resync-templates",
+        help="Open update PRs where rendered workflows have drifted (spec 03 §6)",
+    )
+    resync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change without opening anything. Do this first.",
+    )
+    resync.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum pull requests to open in one run (default 10).",
+    )
+    resync.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        choices=CAPABILITIES,
+        help="Limit the sweep to these capabilities. Repeatable.",
+    )
+
     sub.add_parser("stats", help="Row counts and buffer depth")
 
     query = sub.add_parser("query", help="Run read-only SQL against the lake")
@@ -293,6 +318,38 @@ def main(argv: list[str] | None = None) -> int:
                 _print_table(
                     ["repo", "retention days"], sorted(purge.applied.items())
                 )
+            return 0
+
+        if args.command == "resync-templates":
+            db.create_all()
+            sweep = asyncio.run(
+                resync_templates(
+                    db,
+                    TemplateLibrary(settings.workflow_templates_dir),
+                    _github_factory(settings),
+                    ingestion_api_url=settings.ingestion_api_url,
+                    upload_action_ref=settings.upload_action_ref,
+                    package_spec=settings.mykronos_package_spec,
+                    secret_name=DEFAULT_SECRET_NAME,
+                    capabilities=set(args.capability) or None,
+                    max_pull_requests=args.limit,
+                    dry_run=args.dry_run,
+                )
+            )
+            print(f"Template resync: {sweep.summary()}")
+            drifted: list[Sequence[object]] = [
+                [
+                    r.repo_full_name,
+                    ", ".join(r.drifted) or "-",
+                    f"#{r.pull_request_number}" if r.pull_request_number else "-",
+                    r.error or r.skipped_reason or "",
+                ]
+                for r in sweep.repos
+            ]
+            if drifted:
+                _print_table(["repo", "drifted", "pr", "note"], drifted)
+            if args.dry_run:
+                print("\nDry run — nothing was opened.")
             return 0
 
         if args.command == "stats":
