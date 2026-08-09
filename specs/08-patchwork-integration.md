@@ -29,8 +29,26 @@ requests for a human to review. **Patchwork never merges anything itself.**
    built-in rule set and allows custom rules to be added without code
    changes.
 4. **Generate fix** — for findings classified as true positives with a
-   known safe fix pattern, generate a code change (e.g., parameterize a
-   query, pin a vulnerable dependency version, add input validation).
+   known safe fix pattern, generate a code change.
+
+   **Two generators, and the deterministic one is not a fallback.** v1 ships
+   pattern-based fixers for the classes where the correct change is mechanical
+   and verifiable — pinning a vulnerable dependency to a known-good version,
+   removing a committed credential and replacing the reference, adding a
+   missing IaC property with a documented default. These need no model, they
+   are reviewable line by line, and their output is identical every run.
+
+   LLM-generated fixes for the open-ended classes (parameterising a query,
+   adding input validation) require a configured endpoint —
+   `fix_generator_url`, §5 — and are **off when it is unset**. Same rule as
+   Aegis's classifier (spec 06 §5, spec 12 §5.2): a default that shipped
+   repository source to a third party without anybody choosing it would be
+   the wrong default, and a capability that silently did nothing without one
+   would be worse.
+
+   With no endpoint configured, findings outside the deterministic classes
+   reach `no_fix_available` with a rationale saying so, which is a true
+   statement about this deployment rather than a claim about the finding.
 5. **Open draft PR** — commit the fix to a new branch, open a **draft** PR
    referencing the original finding(s), with a description explaining the
    fix and linking back to the finding in the dashboard.
@@ -40,10 +58,27 @@ requests for a human to review. **Patchwork never merges anything itself.**
 
 ## 3. Human-in-the-loop guarantee (hard constraint)
 
-- Every Patchwork-generated PR is opened as a **draft**. Patchwork has no
-  merge permission — the GitHub App permission set for repos with
-  Patchwork enabled explicitly does not need (and should not request)
-  merge/administration rights beyond opening PRs.
+- Every Patchwork-generated PR is opened as a **draft**.
+
+- **The guarantee is structural, not permission-based.** An earlier draft of
+  this spec said Patchwork "has no merge permission" and that the App "should
+  not request merge rights". That is not achievable and stating it was
+  misleading. Merging a pull request through the API needs `contents: write`,
+  which the App already holds and cannot give up: it is what lets the Workflow
+  Installer commit workflow files at all (spec 02 §4, D-008). Any deployment
+  where Patchwork can open a PR is one where the App could technically merge
+  one.
+
+  So the guarantee is enforced where it can actually be checked. The
+  `GitHubClient` protocol (spec 02) **exposes no merge operation** — there is
+  no method to call, in either the real or the fake implementation — and a
+  test asserts that no such method exists. A future contributor who wants
+  Patchwork to merge has to add a capability to the client interface, which is
+  a visible, reviewable act rather than a config flag.
+
+  This is the same posture spec 14 §4 takes for network scanning: where a
+  platform-level permission cannot express the constraint, the constraint
+  lives in code with a test that fails if it is removed.
 - No `blocking`/auto-merge configuration exists for Patchwork — unlike
   other capabilities, this is not configurable per repo. This is
   intentional and must not be made configurable without a deliberate,
@@ -53,15 +88,23 @@ requests for a human to review. **Patchwork never merges anything itself.**
   automatically re-push over human edits once a PR has received a human
   commit or review comment.
 
+  "Has received a human commit" is determined by comparing the PR's commit
+  authors against Patchwork's own bot identity, not by trusting a flag. Once
+  any commit on the branch has a different author, `pr_status` becomes
+  `human_edited` and Patchwork stops touching that branch permanently — there
+  is no path back, deliberately. Somebody's edit being silently overwritten by
+  a bot is the single fastest way to lose a team's trust in this capability.
+
 ## 4. Data model — `RemediationEvent` (data lake table)
 
 | Field | Type | Notes |
 |---|---|---|
-| `event_id` | UUID | PK |
+| `event_id` | string | PK. **Derived, not random**: SHA-256 over `repo_full_name` + `finding_id`, or over the sorted contributing finding ids for a combination. §7 requires exactly one event per finding routed, and the pipeline re-runs on every push to a pull request — a random id would append a row per run and the requirement would quietly stop holding. Same rule as `finding_id` (spec 05 §5), `signal_id` (06 §3), `evidence_id` (07 §3) and `entry_id` (11 §3) |
 | `repo_full_name` | string | |
 | `finding_id` | UUID | FK → `Finding` (spec 05 §3); nullable if event is about a toxic combination rather than a single finding |
-| `toxic_combination_id` | UUID, nullable | groups multiple `finding_id`s when a combination was detected |
-| `pipeline_stage_reached` | enum | `triaged, correlated, fix_generated, pr_opened, no_fix_available, skipped_low_confidence` |
+| `toxic_combination_id` | string, nullable | Derived from the rule id and the sorted contributing findings, so the same combination detected twice is the same combination |
+| `contributing_finding_ids` | list[string] | The findings a combination is made of. §7 requires the event to "reference all contributing findings" and the original model had nowhere to put them — with `finding_id` null for a combination, the event named no findings at all |
+| `pipeline_stage_reached` | enum | `triaged, correlated, fix_generated, pr_opened, no_fix_available, skipped_low_confidence, queued, superseded`. `queued` is what §5's backpressure actually produces and the original enum had no value for it. `superseded` is §8's case: the finding was fixed by a human before the draft PR was reviewed |
 | `triage_classification` | enum | `true_positive, likely_false_positive, needs_human_judgment` |
 | `fix_pr_number` | int, nullable | |
 | `fix_pr_url` | string, nullable | |
@@ -75,8 +118,9 @@ requests for a human to review. **Patchwork never merges anything itself.**
 |---|---|---|---|
 | `source_capabilities` | list | `["sast", "secrets", "containers", "iac"]` | which capabilities' findings feed Patchwork |
 | `min_confidence_to_generate_fix` | float (0–1) | `0.7` | below this, stage stops at `no_fix_available` rather than generating a possibly-wrong fix |
+| `fix_generator_url` | string, nullable | `null` | Endpoint for LLM-assisted fix generation. Null — the default — restricts Patchwork to its deterministic fixers and sends no source anywhere (§2 stage 4, spec 12 §5.2) |
 | `toxic_combination_rules` | list of rule refs | built-in default set | admin-extensible rule definitions |
-| `max_open_draft_prs_per_repo` | int | `10` | backpressure — prevents flooding a repo with draft PRs; new candidates queue until existing ones are resolved |
+| `max_open_draft_prs_per_repo` | int | `10` | Backpressure. A repository that wakes up to forty draft pull requests does not triage them, it turns the capability off. Over the limit, a candidate's event is recorded with `pipeline_stage_reached: queued` and the fix is *not* generated — the queue is the event table itself, re-examined on the next run, not a separate structure holding unreviewed generated code |
 
 ## 6. Workflow behavior
 
