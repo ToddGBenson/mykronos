@@ -35,6 +35,14 @@ def settings(tmp_path: Path) -> Settings:
         admin_token=ADMIN_TOKEN,
         github_webhook_secret=WEBHOOK_SECRET,
         viewer_token=VIEWER_TOKEN,
+        # Pinned rather than left to default, because pydantic-settings falls
+        # back to `.env` for anything unspecified — so a real deployment file
+        # sitting next to the tests would switch the perimeter gate on for all
+        # of them and fail the suite for reasons nothing in it mentions.
+        # Tests that want the gate build their own Settings (test_gate.py).
+        gate_token="",
+        github_app_id="",
+        github_app_private_key_path=None,
     )
 
 
