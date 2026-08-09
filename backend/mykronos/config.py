@@ -194,6 +194,19 @@ class Settings(BaseSettings):
 
     viewer_identity: str = Field(default="viewer", description="Audit-log actor name.")
 
+    gate_token: str = Field(
+        default="",
+        description=(
+            "Perimeter token for the whole host, presented as X-Hub-Token, a "
+            "hub_token cookie, or ?_token= — the same scheme and the same "
+            "value as the Hub's HUB_API_TOKEN, so one credential opens both. "
+            "Empty disables the gate, which is correct on a laptop and wrong "
+            "the moment this is reachable from the internet. It is a "
+            "perimeter, not an authorisation model: admin and viewer are "
+            "still decided by the tokens above."
+        ),
+    )
+
     database_url: str = Field(
         default="sqlite:///mykronos.db",
         description=(
@@ -234,8 +247,14 @@ class Settings(BaseSettings):
     )
 
     ingestion_api_url: str = Field(
-        default="http://localhost:8000",
-        description="Base URL rendered into workflow templates so repos can reach us.",
+        default="http://localhost:8100",
+        description=(
+            "Base URL rendered into workflow templates so repos can reach us. "
+            "8100 rather than 8000 because the Hub already holds 8000 on the "
+            "host this runs on. Must be publicly resolvable in any real "
+            "deployment: GitHub-hosted runners POST findings to it, and "
+            "unlike the webhook there is no fallback path if they cannot."
+        ),
     )
 
     upload_action_ref: str = Field(

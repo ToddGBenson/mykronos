@@ -24,6 +24,7 @@ from mykronos.api.repos import router as repos_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
+from mykronos.gate import PerimeterGate
 from mykronos.github.auth import AppCredentials
 from mykronos.github.factory import (
     FakeGitHubClientFactory,
@@ -240,7 +241,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         lifespan=lifespan,
     )
-    app.state.settings = settings or get_settings()
+    resolved = settings or get_settings()
+    app.state.settings = resolved
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
     app.include_router(knowledge_router)
@@ -248,6 +250,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(patchwork_router)
     app.include_router(repos_router)
     app.include_router(webhooks_router)
+
+    # Outermost, so it runs before routing: a request that cannot present the
+    # perimeter token should not reach a handler at all, and should not be
+    # able to learn which paths exist by the shape of the error.
+    if resolved.gate_token:
+        app.add_middleware(PerimeterGate, token=resolved.gate_token)
+        logger.info("Perimeter gate enabled (X-Hub-Token)")
+    else:
+        logger.info(
+            "Perimeter gate disabled — no MYKRONOS_GATE_TOKEN set. Fine "
+            "locally; set it before exposing this host."
+        )
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
     async def healthz() -> dict[str, str]:

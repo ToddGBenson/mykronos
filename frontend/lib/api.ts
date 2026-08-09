@@ -17,13 +17,19 @@ import type { paths } from "./api-types";
 
 /** Server-side only. Never import this from a client component. */
 export function backendClient() {
-  const baseUrl = process.env.MYKRONOS_API_URL ?? "http://127.0.0.1:8000";
+  const baseUrl = process.env.MYKRONOS_API_URL ?? "http://127.0.0.1:8100";
   const token = process.env.MYKRONOS_ADMIN_TOKEN ?? "";
+  // The perimeter gate (backend `mykronos/gate.py`), when one is configured.
+  // Sent from here rather than forwarded from the browser: this server calls
+  // the backend over localhost, so it needs its own copy regardless of how
+  // the visitor got past the gate at the edge.
+  const gate = process.env.MYKRONOS_GATE_TOKEN ?? "";
 
-  return createClient<paths>({
-    baseUrl,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (gate) headers["X-Hub-Token"] = gate;
+
+  return createClient<paths>({ baseUrl, headers });
 }
 
 export type Portfolio =
