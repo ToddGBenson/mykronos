@@ -130,6 +130,52 @@ export type RemediationPage =
   paths["/api/patchwork/repos/{repo_id}"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RemediationEvent = RemediationPage["events"][number];
 
+/**
+ * Hand-typed: both endpoints assemble their rows at request time, so the
+ * generated schema is an open object.
+ */
+export type TrendSeries = {
+  scope: string;
+  days: number;
+  mean_time_to_fix_days: number | null;
+  points: {
+    at: string;
+    open_critical: number;
+    open_high: number;
+    open_total: number;
+    risk_score: number | null;
+    trust_score: number | null;
+  }[];
+  note: string;
+};
+
+export type MaturityCriterion = {
+  key: string;
+  label: string;
+  why: string;
+  threshold: string;
+  measured: string;
+  passed: boolean;
+};
+
+export type MaturityRepo = {
+  repo_full_name: string;
+  tier_id: string;
+  tier_name: string;
+  tier_summary: string;
+  tier_index: number;
+  total_tiers: number;
+  next_tier_name: string | null;
+  criteria: MaturityCriterion[];
+  blocking: MaturityCriterion[];
+};
+
+export type MaturityReport = {
+  model_version: string;
+  tiers: { id: string; name: string; summary: string }[];
+  repos: MaturityRepo[];
+};
+
 export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];

@@ -10,16 +10,18 @@ export const metadata: Metadata = {
 };
 
 /**
- * The nav rail lists the whole product, not just what is built.
+ * The nav rail.
  *
- * Unbuilt views are shown disabled with the phase that delivers them, rather
- * than hidden. Hiding them would make the shipped slice look like the whole
- * design; labelling them makes the roadmap legible to anyone reading the
- * dashboard, and stops "where is the risk score?" being a mystery.
+ * It used to show unbuilt views disabled, labelled with the phase that would
+ * deliver them — hiding them would have made the shipped slice look like the
+ * whole design, and "where is the risk score?" deserved an answer rather than
+ * a blank. As of Phase 7 there is nothing left to label, so the branch that
+ * rendered those is gone rather than kept warm for a case that no longer
+ * arises.
  */
 const NAV: {
   section: string;
-  items: { label: string; href?: string; phase?: string }[];
+  items: { label: string; href: string }[];
 }[] = [
   {
     section: "Views",
@@ -28,7 +30,7 @@ const NAV: {
       { label: "Triage queue", href: "/triage" },
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", href: "/triage" },
-      { label: "Trends", phase: "Phase 7" },
+      { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
     ],
   },
@@ -55,7 +57,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               AppSec control plane
             </span>
             <span className="ml-auto border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
-              Phase 6 · admin
+              Phase 7 · admin
             </span>
           </header>
 
@@ -69,26 +71,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <p className="px-3 pb-1 pt-2 font-mono text-[9px] uppercase tracking-[0.13em] text-ink-3 opacity-70">
                     {group.section}
                   </p>
-                  {group.items.map((item) =>
-                    item.href ? (
-                      <Link
-                        key={item.label}
-                        href={item.href}
-                        className="block border-l-2 border-transparent px-3 py-1.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:bg-paper-3"
-                      >
-                        {item.label}
-                      </Link>
-                    ) : (
-                      <span
-                        key={item.label}
-                        className="flex items-baseline justify-between px-3 py-1.5 font-mono text-[11px] text-ink-3 opacity-50"
-                        title={`Arrives in ${item.phase}`}
-                      >
-                        {item.label}
-                        <span className="text-[8px] tracking-wider">{item.phase}</span>
-                      </span>
-                    ),
-                  )}
+                  {group.items.map((item) => (
+                    <Link
+                      key={item.label}
+                      href={item.href}
+                      className="block border-l-2 border-transparent px-3 py-1.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:bg-paper-3"
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
                 </div>
               ))}
             </nav>

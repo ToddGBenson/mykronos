@@ -15,6 +15,7 @@ import {
   backendClient,
   type FindingsPage,
   type InsiderRiskPage,
+  type MaturityReport,
   type Portfolio,
   type RemediationPage,
   type RepoDetail,
@@ -24,6 +25,7 @@ import {
   type ShadowModeReport,
   type SscsPage,
   type TrendReport,
+  type TrendSeries,
   type TriageQueue,
 } from "./api";
 
@@ -270,6 +272,33 @@ export async function getRemediation(
       return { ok: false, error: describe(response, "Could not load remediation") };
     }
     return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getTrends(
+  repoId?: string,
+): Promise<Result<TrendSeries>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/trends", {
+      params: { query: { repo_id: repoId, days: 90, points: 12 } },
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load trends") };
+    return { ok: true, data: data as TrendSeries };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getMaturity(): Promise<Result<MaturityReport>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/maturity", {
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load maturity") };
+    return { ok: true, data: data as MaturityReport };
   } catch (error) {
     return failure(error);
   }
