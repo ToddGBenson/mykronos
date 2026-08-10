@@ -86,7 +86,7 @@ jobs:
         uses: << upload_action_ref >>
         with:
           capability: << capability >>
-          tool: {% block tool_name %}<< config.enabled_tool | default(capability) >>{% endblock %}
+          tool: {% block tool_name %}<< config.enabled_tool | default(default_tool) >>{% endblock %}
 
           results-path: {% block results_path %}${{ runner.temp }}/mykronos-results{% endblock %}
 

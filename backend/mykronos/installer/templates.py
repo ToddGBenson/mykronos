@@ -15,6 +15,8 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from mykronos.adapters.registry import default_tool
+
 #: Every rendered file carries this. It is how the installer tells a file it
 #: generated from one a human wrote at the same path (spec 03 §8) — which is
 #: the difference between an update and silently destroying someone's work.
@@ -125,6 +127,12 @@ class TemplateLibrary:
 
         context: dict[str, Any] = {
             "capability": capability,
+            # The tool the rendered workflow declares to the upload action when
+            # config names none. It has to come from the adapter registry: the
+            # previous default was the capability name, which is not a tool for
+            # any capability, so every unconfigured workflow uploaded under a
+            # label no adapter could resolve.
+            "default_tool": default_tool(capability),
             "template_version": spec.version,
             "repo_full_name": repo_full_name,
             "default_branch": default_branch,

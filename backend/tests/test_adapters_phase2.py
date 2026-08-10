@@ -7,6 +7,7 @@ the system that is itself the secret.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -328,10 +329,52 @@ class TestRegistry:
             ("iac", "checkov"),
             ("dast", "zap"),
             ("cloud", "prowler"),
+            ("atlas", "osv-scanner"),
         ],
     )
     def test_every_shipped_pairing_resolves(self, capability: str, tool: str) -> None:
         assert get_adapter(capability, tool) is not None
+
+    def test_every_uploading_template_has_an_adapter(self) -> None:
+        """The list above is hand-maintained, and that is how Atlas shipped
+        without one: the template ran osv-scanner, the counts module parsed
+        its JSON, the trust score was tested — and the upload failed with
+        "'atlas' has no adapters registered" the first time a real repo tried
+        it. Nothing in the suite connected the two halves.
+
+        This asks the templates instead of a list. Any workflow that calls the
+        shared upload action is claiming its output can be normalized, so the
+        pairing it passes must resolve. A new capability with a scanner
+        template now fails here rather than in somebody's Actions log.
+        """
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+
+        checked = []
+        for capability in sorted(library.available):
+            rendered = library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            ).content
+
+            if "actions/upload-results@" not in rendered:
+                continue  # Not a scanner — the Oracle gate and Patchwork.
+
+            match = re.search(r"^\s*tool:\s*(\S+)\s*$", rendered, re.MULTILINE)
+            assert match, f"{capability}: uploads results but declares no tool"
+            tool = match.group(1)
+
+            get_adapter(capability, tool)  # raises LookupError if missing
+            checked.append((capability, tool))
+
+        assert checked, "no scanner templates found — the discovery is broken"
 
     def test_an_unknown_tool_names_the_alternatives(self) -> None:
         with pytest.raises(LookupError) as excinfo:

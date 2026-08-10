@@ -57,6 +57,13 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         AdapterSpec("sast", "semgrep", _sarif, "*.sarif", "Semgrep (spec 04 §3 secondary)"),
         AdapterSpec("containers", "trivy", _sarif, "*.sarif", "Trivy"),
         AdapterSpec("iac", "checkov", _sarif, "*.sarif", "Checkov"),
+        # Atlas scores supply-chain trust from counts (spec 07 §5), but the
+        # vulnerabilities behind those counts are findings like any other and
+        # have to reach the lake through the same path. Without this entry the
+        # workflow scans correctly and then fails at upload with "'atlas' has
+        # no adapters registered" — the scoring, the counts and the template
+        # all existed while the one line joining them to ingestion did not.
+        AdapterSpec("atlas", "osv-scanner", _sarif, "*.sarif", "OSV-Scanner"),
         # --- Bespoke: not SARIF ---
         AdapterSpec("secrets", "gitleaks", secrets_gitleaks.normalize, "*.json", "Gitleaks"),
         AdapterSpec("dast", "zap", dast_zap.normalize, "*.json", "OWASP ZAP"),
@@ -67,6 +74,39 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
 
 
 REGISTRY: dict[tuple[str, str], AdapterSpec] = _build_registry()
+
+
+#: The tool a capability runs when its config does not name one. Every
+#: capability with an adapter needs an entry, and `test_adapters_phase2`
+#: enforces that against the templates.
+#:
+#: This exists because the workflow templates previously defaulted the tool
+#: they declare to the *capability name* — so a repo with no `enabled_tool`
+#: set installed a workflow announcing `tool: secrets`, and the upload failed
+#: with "No adapter for capability 'secrets' with tool 'secrets'". The scan
+#: itself was fine. Only the label was wrong, and only at the last step.
+#:
+#: `cloud` is the reason this is a table rather than "the first registered
+#: tool": it has two adapters, and alphabetical order would pick `generic`
+#: over the one the template actually runs.
+DEFAULT_TOOLS: dict[str, str] = {
+    "sast": "codeql",
+    "secrets": "gitleaks",
+    "dast": "zap",
+    "atlas": "osv-scanner",
+    "containers": "trivy",
+    "iac": "checkov",
+    "cloud": "prowler",
+}
+
+
+def default_tool(capability: str) -> str:
+    """The tool a capability runs absent explicit config.
+
+    Returns the capability name for capabilities that upload nothing (the
+    Oracle gate, Patchwork, Aegis), which never reach an adapter lookup.
+    """
+    return DEFAULT_TOOLS.get(capability, capability)
 
 
 def supported_tools(capability: str) -> list[str]:
