@@ -25,6 +25,15 @@ datalake/
 # Never committed even though it contains no plaintext secrets.
 tokens.json
 
+# The operational store: token hashes, installation ids, the audit log.
+# Same tier as tokens.json (spec 12 §2), and easy to miss — `*.duckdb` above
+# covers the lake, but SQLite carries a different extension and the file only
+# appears once someone runs against the default config rather than a scratch
+# path. The -shm/-wal siblings are WAL-mode artefacts of the same database.
+mykronos.db
+mykronos.db-shm
+mykronos.db-wal
+
 # --- Secrets (spec 12 §8: no real secret is ever committed) ---
 .env
 .env.*

@@ -120,7 +120,20 @@ def _build_github_factory(settings: Settings) -> GitHubClientFactory:
     )
     factory = FakeGitHubClientFactory()
     for repo in settings.github_fake_seed_repos:
-        factory.client.add_repo(repo, files={"README.md": f"# {repo}\n"})
+        # A default branch, and something on it worth changing. Without both,
+        # a seeded repo is unusable for the paths that matter: `create_branch`
+        # refuses a base ref that does not exist, so the installer cannot open
+        # a pull request, and Patchwork reads every file as absent and reports
+        # each finding `superseded` — a confident-looking answer that is
+        # entirely an artefact of the fixture.
+        files = {
+            "README.md": f"# {repo}\n",
+            # Deliberately a version with a published advisory, so the
+            # deterministic dependency fixer has something real to do.
+            "requirements.txt": "requests==2.31.0\nurllib3==2.0.4\n",
+        }
+        seeded = factory.client.add_repo(repo, files=files)
+        seeded.branches[seeded.default_branch] = dict(files)
         logger.info("Seeded in-memory repository %s", repo)
     return factory
 
