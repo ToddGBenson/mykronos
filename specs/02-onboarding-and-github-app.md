@@ -114,8 +114,13 @@ capability's spec (04, 06, 07, 08, 09).
 
 3. Webhook URL → Mykronos backend `/webhooks/github`.
 4. Subscribe to events: `installation`, `installation_repositories`,
-   `pull_request`, `workflow_run`, `check_run`.
-5. Generate a private key; store per spec 12. Note the App ID and Client ID.
+   `pull_request`, `workflow_run`, `check_run`, `push`.
+5. Set a webhook secret and record it as `MYKRONOS_GITHUB_WEBHOOK_SECRET`.
+   GitHub treats this as optional and the App works without it right up until
+   the first delivery, which `/webhooks/github` then rejects unsigned. The
+   failure reads as a broken tunnel rather than a missing field, so it is
+   worth setting at registration and not later.
+6. Generate a private key; store per spec 12. Note the App ID and Client ID.
 
 ## 5. Onboarding flow (per repo)
 
@@ -159,12 +164,26 @@ capability's spec (04, 06, 07, 08, 09).
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/repos/onboard` | Idempotently create/update a `RepoOnboarding` from a GitHub installation event or manual admin action |
+| `POST` | `/api/repos` | Idempotently create/update a `RepoOnboarding` from a GitHub installation event or manual admin action |
 | `GET` | `/api/repos` | List onboarded repos with status + enabled capabilities |
 | `GET` | `/api/repos/{id}` | Detail view of one onboarded repo |
 | `PATCH` | `/api/repos/{id}/capabilities` | Update `enabled_capabilities` and trigger the Workflow Installer |
 | `DELETE` | `/api/repos/{id}` | Offboard a repo (sets `status=removed`) |
-| `POST` | `/webhooks/github` | GitHub App webhook receiver (installation, PR, workflow_run, check_run events) |
+| `POST` | `/webhooks/github` | GitHub App webhook receiver (installation, PR, workflow_run, check_run, push events) |
+
+> **Why `POST /api/repos` and not `/api/repos/onboard`.** An earlier draft of
+> this table named the creating call `/api/repos/onboard`, and the first real
+> onboarding attempt got a `405` for it — the implementation had always
+> mounted create on the collection, alongside the `GET` that lists it. The
+> code is the one that is right. A verb in the path buys nothing here when
+> the method already carries it, and the split form invites a second question
+> nobody wants to answer: whether `POST /api/repos` means something *else*.
+>
+> The `push` subscription is likewise a correction rather than an addition.
+> Spec 08 §3 requires Patchwork to stand down when a person commits to one of
+> its fix branches, and `push` is the only event that reveals it —
+> `pull_request` does not fire for a commit to an existing branch. Without the
+> subscription the guarantee silently does not hold.
 
 All endpoints require an authenticated admin session (see spec 12 §3 for
 admin auth — out of scope of GitHub App auth, which is service-to-service).
