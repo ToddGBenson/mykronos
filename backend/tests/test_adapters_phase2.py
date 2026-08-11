@@ -506,6 +506,48 @@ class TestRegistry:
             "the install step must resolve its ref from github.action_ref"
         )
 
+    def test_every_third_party_action_is_pinned_to_a_sha(self) -> None:
+        """A mutable tag is a standing write-access grant to someone else.
+
+        `actions/checkout@v4` re-points whenever its owner moves the tag, so
+        whatever that ref holds at run time executes inside every onboarded
+        repository's CI, with that repository's token. This is the same class
+        of risk the scanners here exist to find, in the workflows that run
+        them — and these templates ship into other people's repos, so a bad
+        ref propagates on the next resync.
+
+        Only the first-party upload action is exempt: it is injected as
+        `upload_action_ref` by the installer rather than written in a
+        template, and its ref must stay a moving one because the composite
+        resolves its own package install from `github.action_ref`
+        (see test_the_upload_action_pins_no_version_of_its_own).
+        """
+        from mykronos.config import get_settings
+
+        templates_dir = get_settings().workflow_templates_dir
+        sources = sorted(templates_dir.glob("*.j2")) + [
+            templates_dir.parent / "actions/upload-results/action.yml"
+        ]
+
+        unpinned = []
+        for path in sources:
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                # Anchored: `uses:` as a YAML key, not the word "uses:"
+                # inside a prose comment (both files have one).
+                match = re.match(r"\s*-?\s*uses:\s*(\S+)\s*(?:#.*)?$", line)
+                if not match:
+                    continue
+                ref = match.group(1)
+                if "<<" in ref:
+                    continue  # installer-injected, covered by the test above
+                _, _, version = ref.partition("@")
+                if not re.fullmatch(r"[0-9a-f]{40}", version):
+                    unpinned.append(f"{path.name}:{lineno}: {ref}")
+
+        assert not unpinned, "pin these to a 40-hex commit SHA: " + "; ".join(unpinned)
+
     def test_atlas_installs_a_real_osv_scanner(self) -> None:
         """`pip install osv-scanner` installs nothing.
 

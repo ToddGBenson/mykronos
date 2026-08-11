@@ -55,7 +55,7 @@
 
 {% block scan_steps %}
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.13"
 
@@ -94,6 +94,16 @@
         # packages found" — a clean-looking empty result. `.gitignore` is
         # honoured during the walk, so node_modules and friends stay out.
         #
+        # `--no-resolve` disables transitive resolution of manifests, which
+        # calls deps.dev. That call returns `rpc error: code = Internal` for
+        # any requirements.txt containing sqlalchemy — reproduced down to a
+        # one-line file at every version tested — and an extractor error is
+        # exit 127, which fails the whole lane. It stayed invisible while the
+        # scan also found vulnerabilities, because exit 1 outranks it; the
+        # first repo to fix its last CVE turned a green lane red. Direct
+        # manifest and lockfile scanning is unaffected and still finds
+        # everything the advisories cover.
+        #
         # Exit 1 means vulnerabilities were found, which is a result and not
         # an error, so that one code is tolerated. Everything else fails the
         # step: 127 is a general error, 128 means nothing was scanned, and a
@@ -110,7 +120,7 @@
           # without disabling errexit for the rest of the script.
           run_osv() {
             local rc=0
-            osv-scanner scan source --recursive "$@" . || rc=$?
+            osv-scanner scan source --recursive --no-resolve "$@" . || rc=$?
             if [ "$rc" -gt 1 ]; then
               echo "::error::osv-scanner exited ${rc} — that is a scan failure, not a findings result"
               exit "$rc"
