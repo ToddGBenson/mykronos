@@ -52,8 +52,8 @@
     "aegis": {
       "template": "aegis.yml.j2",
       "target": ".github/workflows/mykronos-aegis.yml",
-      "version": "1.0.0",
-      "summary": "Insider-risk and AI-authorship review prompt on every pull request"
+      "version": "2.0.0",
+      "summary": "Review-integrity and AI-authorship prompts on every pull request and review"
     },
     "atlas": {
       "template": "atlas.yml.j2",

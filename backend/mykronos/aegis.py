@@ -43,6 +43,17 @@ SIGNAL_CAP: dict[str, float] = {
     "ai_authorship": 25.0,
     "access_anomaly": 25.0,
     "privilege_adjacent": 30.0,
+    # Review integrity (spec 06 §2a). These describe how a change was
+    # reviewed, not who reviewed it — the mechanism every insider scenario
+    # routes through, without modelling relationships between people.
+    #
+    # `self_approval` is the heaviest of the four because it is the only one
+    # that is not a heuristic: either the approving login equals the author's
+    # or it does not. It still cannot block alone, by the rule below.
+    "self_approval": 30.0,
+    "sole_approver": 20.0,
+    "fast_approval": 15.0,
+    "unverified_ai": 20.0,
 }
 
 #: Signals the platform will accept. An unknown key is dropped rather than

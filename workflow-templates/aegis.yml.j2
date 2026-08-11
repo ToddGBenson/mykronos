@@ -39,14 +39,26 @@ name: Mykronos aegis
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # Review integrity (spec 06 §2a) cannot be evaluated on `pull_request`
+  # alone: that fires when the change is opened or pushed to, which is before
+  # any review exists. Every one of those signals would see zero reviews
+  # forever and stay silent — the capability would look like it worked.
+  #
+  # `dismissed` matters as much as `submitted`. An approval withdrawn after
+  # the fact changes the answer, and leaving a stale "reviewed independently"
+  # check run behind would be worse than never having posted one.
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
   # Publishing the recommendation as a Check Run is how a reviewer sees it.
   checks: write
-  # Deliberately NOT pull-requests: write. spec 06 §6 — Aegis never merges,
-  # closes or force-pushes, and the surest way to guarantee that is to
-  # withhold the permission rather than to promise it in a comment.
+  # Read, not write. spec 06 §6 requires that Aegis can never merge, close or
+  # force-push, and all three need `pull-requests: write` — which stays
+  # withheld. Reading reviews is what the §2a signals are computed from, and
+  # `read` cannot mutate a pull request in any way.
+  pull-requests: read
 
 concurrency:
   group: mykronos-aegis-${{ github.event.pull_request.number }}
@@ -91,9 +103,21 @@ jobs:
           # a PR description is attacker-controlled text and must never be
           # able to reach a shell.
           PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           printf '%s' "$PR_BODY" > pr-body.txt
+
+          # Reviews submitted so far. Empty on `pull_request: opened`, which
+          # is correct and not an error: the §2a signals stay silent rather
+          # than reporting that nobody reviewed a change nobody has seen yet.
+          #
+          # `|| true` because a failed fetch should cost the review-integrity
+          # signals, not the whole assessment — the sensitive-path and
+          # baseline signals are still worth publishing without it.
+          gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            --paginate > reviews.json || echo '[]' > reviews.json
 
           python -m mykronos.aegis_signals \
             --pr-number "${{ github.event.pull_request.number }}" \
@@ -102,6 +126,7 @@ jobs:
             --base-ref "origin/${{ github.event.pull_request.base.ref }}" \
             --head-ref "${{ github.event.pull_request.head.sha }}" \
             --pr-body-file pr-body.txt \
+            --reviews-file reviews.json \
 {%- for pattern in config.sensitive_paths | default(['**/auth/**', '**/*secret*', '**/.github/workflows/**', '**/iam/**']) %}
             --sensitive-path '<< pattern >>' \
 {%- endfor %}
