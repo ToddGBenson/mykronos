@@ -51,10 +51,11 @@ inputs:
     default: "false"
   mykronos-ref:
     description: >-
-      Version of the mykronos package to install. Pinned, for the same reason
-      this action is pinned.
+      Version of the mykronos package to install. Defaults to the ref this
+      action was itself resolved at, so the package and the action cannot
+      drift apart. Set it only to deliberately pin them differently.
     required: false
-    default: "v0.1.0"
+    default: ""
 
 runs:
   using: composite
@@ -66,9 +67,29 @@ runs:
 
     - name: Install the Mykronos uploader
       shell: bash
+      env:
+        REQUESTED_REF: ${{ inputs.mykronos-ref }}
+        # The ref this action was itself resolved at. Defaulting the package
+        # to it is the whole point: these were two independent version knobs
+        # that had to agree, and did not. The action shipped pinned to `v1`
+        # while this input defaulted to a hardcoded `v0.1.0` that was never
+        # tagged, so every upload step in every repository died on
+        # `pathspec 'v0.1.0' did not match any file(s) known to git` — after
+        # the scan had run, so it read as an upload problem rather than a
+        # version one.
+        ACTION_REF: ${{ github.action_ref }}
       run: |
+        set -euo pipefail
+        REF="${REQUESTED_REF:-}"
+        if [ -z "$REF" ]; then REF="${ACTION_REF:-}"; fi
+        if [ -z "$REF" ]; then
+          echo "::error::Cannot determine which mykronos ref to install. Pass" \
+               "mykronos-ref explicitly." >&2
+          exit 1
+        fi
+        echo "Installing mykronos at $REF"
         python -m pip install --quiet --disable-pip-version-check \
-          "mykronos @ git+https://github.com/ToddGBenson/mykronos@${{ inputs.mykronos-ref }}#subdirectory=backend"
+          "mykronos @ git+https://github.com/ToddGBenson/mykronos@${REF}#subdirectory=backend"
 
     - name: Upload results
       shell: bash

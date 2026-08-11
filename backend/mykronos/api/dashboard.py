@@ -23,6 +23,7 @@ from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.maturity import assess as maturity_assess
 from mykronos.maturity import mean_time_to_fix, trend_series
+from mykronos.pull_requests import open_pull_requests
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -266,6 +267,45 @@ class StatusChangeResult(BaseModel):
     retro_signal: str
 
 
+class ChecksOut(BaseModel):
+    total: int
+    passed: int
+    failed: int
+    pending: int
+
+
+class PullRequestOut(BaseModel):
+    repo_full_name: str
+    number: int
+    url: str
+    kind: str
+    title: str
+    draft: bool
+    branch: str
+    opened_at: datetime | None
+    changed_files: int | None
+    summary: str
+    detail: str
+    capabilities: list[str]
+    finding_id: str | None
+    human_edited: bool
+    #: Null means the check-runs call failed, which is not the same answer as
+    #: a repository that has no checks configured.
+    checks: ChecksOut | None
+
+
+class UnreachableRepoOut(BaseModel):
+    repo_full_name: str
+    reason: str
+
+
+class PullRequestsPage(BaseModel):
+    pull_requests: list[PullRequestOut]
+    #: Reported rather than silently dropped: a shorter list of outstanding
+    #: work reads as progress, and a failed API call is not progress.
+    unreachable: list[UnreachableRepoOut]
+
+
 def _queries(request: Request) -> DashboardQueries:
     return DashboardQueries(request.app.state.catalog)
 
@@ -305,6 +345,51 @@ async def portfolio(
                 risk_assessed_at=row.risk_assessed_at,
             )
             for row in rows
+        ],
+    )
+
+
+@router.get("/pull-requests", response_model=PullRequestsPage)
+async def pull_requests(request: Request, principal: PrincipalDep) -> PullRequestsPage:
+    """Everything Mykronos has open across every repository (spec 10 §2).
+
+    Read-only, and deliberately so. Each row links out to GitHub to review and
+    merge; the platform offers no merge of its own. That is the same constraint
+    spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+    could merge a change to your code is a page that has to be trusted
+    differently from one that can only show it to you.
+    """
+    with request.app.state.db.session() as session:
+        result = await open_pull_requests(
+            session, request.app.state.catalog, request.app.state.github_factory
+        )
+
+    return PullRequestsPage(
+        pull_requests=[
+            PullRequestOut(
+                repo_full_name=row.repo_full_name,
+                number=row.number,
+                url=row.url,
+                kind=row.kind,
+                title=row.title,
+                draft=row.draft,
+                branch=row.branch,
+                opened_at=row.opened_at,
+                changed_files=row.changed_files,
+                summary=row.summary,
+                detail=row.detail,
+                capabilities=row.capabilities,
+                finding_id=row.finding_id,
+                human_edited=row.human_edited,
+                checks=(
+                    ChecksOut(**vars(row.checks)) if row.checks is not None else None
+                ),
+            )
+            for row in result.pull_requests
+        ],
+        unreachable=[
+            UnreachableRepoOut(repo_full_name=name, reason=reason)
+            for name, reason in result.unreachable
         ],
     )
 

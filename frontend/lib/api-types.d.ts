@@ -206,6 +206,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pull Requests
+         * @description Everything Mykronos has open across every repository (spec 10 §2).
+         *
+         *     Read-only, and deliberately so. Each row links out to GitHub to review and
+         *     merge; the platform offers no merge of its own. That is the same constraint
+         *     spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+         *     could merge a change to your code is a page that has to be trusted
+         *     differently from one that can only show it to you.
+         */
+        get: operations["pull_requests_api_dashboard_pull_requests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/triage": {
         parameters: {
             query?: never;
@@ -914,6 +940,17 @@ export interface components {
             /** Detail */
             detail: string;
         };
+        /** ChecksOut */
+        ChecksOut: {
+            /** Total */
+            total: number;
+            /** Passed */
+            passed: number;
+            /** Failed */
+            failed: number;
+            /** Pending */
+            pending: number;
+        };
         /**
          * EcosystemEvidence
          * @description Per-ecosystem detail for one repo.
@@ -1465,6 +1502,45 @@ export interface components {
              */
             repos_not_assessed: number;
         };
+        /** PullRequestOut */
+        PullRequestOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Number */
+            number: number;
+            /** Url */
+            url: string;
+            /** Kind */
+            kind: string;
+            /** Title */
+            title: string;
+            /** Draft */
+            draft: boolean;
+            /** Branch */
+            branch: string;
+            /** Opened At */
+            opened_at: string | null;
+            /** Changed Files */
+            changed_files: number | null;
+            /** Summary */
+            summary: string;
+            /** Detail */
+            detail: string;
+            /** Capabilities */
+            capabilities: string[];
+            /** Finding Id */
+            finding_id: string | null;
+            /** Human Edited */
+            human_edited: boolean;
+            checks: components["schemas"]["ChecksOut"] | null;
+        };
+        /** PullRequestsPage */
+        PullRequestsPage: {
+            /** Pull Requests */
+            pull_requests: components["schemas"]["PullRequestOut"][];
+            /** Unreachable */
+            unreachable: components["schemas"]["UnreachableRepoOut"][];
+        };
         /**
          * RawAccepted
          * @description Archived raw tool output (spec 05 §7).
@@ -1855,6 +1931,13 @@ export interface components {
          * @enum {string}
          */
         TriggeredBy: "pull_request" | "push" | "schedule" | "workflow_dispatch" | "manual";
+        /** UnreachableRepoOut */
+        UnreachableRepoOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Reason */
+            reason: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2120,6 +2203,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_requests_api_dashboard_pull_requests_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestsPage"];
                 };
             };
         };

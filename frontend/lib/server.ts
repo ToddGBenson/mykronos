@@ -17,6 +17,7 @@ import {
   type InsiderRiskPage,
   type MaturityReport,
   type Portfolio,
+  type PullRequestsPage,
   type RemediationPage,
   type RepoDetail,
   type RetroReport,
@@ -312,6 +313,21 @@ export async function getScanHealth(repoId: string): Promise<Result<ScanHealth>>
     );
     if (!data) return { ok: false, error: describe(response, "Could not load scan health") };
     return { ok: true, data: data as ScanHealth };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getPullRequests(): Promise<Result<PullRequestsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/pull-requests",
+      { cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load pull requests") };
+    }
+    return { ok: true, data: data as PullRequestsPage };
   } catch (error) {
     return failure(error);
   }

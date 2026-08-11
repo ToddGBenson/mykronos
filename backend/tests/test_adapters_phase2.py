@@ -376,6 +376,43 @@ class TestRegistry:
 
         assert checked, "no scanner templates found — the discovery is broken"
 
+    def test_the_upload_action_pins_no_version_of_its_own(self) -> None:
+        """The composite action installs the `mykronos` package, and which
+        version it installs must follow the ref the action was resolved at.
+
+        It did not. The action shipped pinned to `v1` while its `mykronos-ref`
+        input defaulted to a hardcoded `v0.1.0` that was never tagged, so every
+        upload step in every onboarded repository failed with `pathspec
+        'v0.1.0' did not match any file(s) known to git` — after the scan had
+        succeeded, which made it read as an ingestion problem.
+
+        Two version knobs that must agree will not stay agreed. This asserts
+        there is only one.
+        """
+        import yaml
+
+        from mykronos.config import get_settings
+
+        action = get_settings().workflow_templates_dir.parent / (
+            "actions/upload-results/action.yml"
+        )
+        spec = yaml.safe_load(action.read_text(encoding="utf-8"))
+
+        default = spec["inputs"]["mykronos-ref"]["default"]
+        assert default == "", (
+            "mykronos-ref must default to empty so the install falls back to "
+            f"github.action_ref; found a hardcoded {default!r}"
+        )
+
+        install = next(
+            step
+            for step in spec["runs"]["steps"]
+            if "pip install" in str(step.get("run", ""))
+        )
+        assert "github.action_ref" in str(install.get("env", {})), (
+            "the install step must resolve its ref from github.action_ref"
+        )
+
     def test_an_unknown_tool_names_the_alternatives(self) -> None:
         with pytest.raises(LookupError) as excinfo:
             get_adapter("secrets", "trufflehog")

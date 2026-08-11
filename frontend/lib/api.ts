@@ -180,6 +180,10 @@ export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];
 
+export type PullRequestsPage =
+  paths["/api/dashboard/pull-requests"]["get"]["responses"]["200"]["content"]["application/json"];
+export type PullRequestRow = PullRequestsPage["pull_requests"][number];
+
 /** Oracle's verdicts, worst first — the order the UI sorts and colours by. */
 export const RECOMMENDATIONS = ["no_go", "review_recommended", "go"] as const;
 export type Recommendation = (typeof RECOMMENDATIONS)[number];

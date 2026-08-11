@@ -28,6 +28,7 @@ const NAV: {
     items: [
       { label: "Portfolio", href: "/" },
       { label: "Triage queue", href: "/triage" },
+      { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", href: "/triage" },
       { label: "Trends", href: "/trends" },

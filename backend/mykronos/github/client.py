@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
 import httpx2
@@ -85,6 +86,36 @@ class PullRequest:
     #: Patchwork's pull requests are always draft (spec 08 §3). Recorded on
     #: the object so a test can assert it rather than trusting the caller.
     draft: bool = False
+    title: str = ""
+    created_at: datetime | None = None
+    changed_files: int | None = None
+    head_sha: str = ""
+
+
+def _parse_time(value: object) -> datetime | None:
+    """GitHub's ISO-8601 with a `Z`, which `fromisoformat` rejects before 3.11
+    and which is worth not crashing a whole page over regardless."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+@dataclass
+class ChecksSummary:
+    """How a commit's checks are going, for a human deciding whether to merge.
+
+    Deliberately counts rather than a verdict. "2 failed" and "all green" are
+    different questions to a reviewer, and collapsing them into a boolean
+    throws away the one that decides whether they look closer.
+    """
+
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    pending: int = 0
 
 
 class GitHubClient(Protocol):
@@ -120,6 +151,21 @@ class GitHubClient(Protocol):
     async def update_pull_request(
         self, repo_full_name: str, number: int, *, title: str, body: str
     ) -> PullRequest: ...
+
+    async def get_pull_request(
+        self, repo_full_name: str, number: int
+    ) -> PullRequest | None:
+        """Live state of one pull request, or None if it is gone.
+
+        Read-only, and the dashboard's pull-request view depends on it being
+        live rather than on what the platform last recorded: a PR merged or
+        closed on GitHub while a webhook was undelivered would otherwise sit
+        in the list looking like outstanding work forever.
+        """
+
+    async def get_checks_summary(
+        self, repo_full_name: str, ref: str
+    ) -> ChecksSummary: ...
 
     # NOTE: there is deliberately no `merge_pull_request` here, and there must
     # never be one added casually.
@@ -315,6 +361,33 @@ class FakeGitHubClient:
             if pr.number == number:
                 return pr
         raise GitHubError(f"Pull request #{number} not found", status=404)
+
+    async def get_pull_request(
+        self, repo_full_name: str, number: int
+    ) -> PullRequest | None:
+        self.calls.append(("get_pull_request", f"{repo_full_name}#{number}"))
+        for pr in self._repo(repo_full_name).pull_requests:
+            if pr.number == number:
+                return pr
+        return None
+
+    async def get_checks_summary(
+        self, repo_full_name: str, ref: str
+    ) -> ChecksSummary:
+        self.calls.append(("get_checks_summary", f"{repo_full_name}@{ref}"))
+        summary = ChecksSummary()
+        for run in self._repo(repo_full_name).check_runs:
+            if run.get("head_sha") != ref:
+                continue
+            summary.total += 1
+            conclusion = run.get("conclusion")
+            if conclusion in {"success", "neutral", "skipped"}:
+                summary.passed += 1
+            elif conclusion is None:
+                summary.pending += 1
+            else:
+                summary.failed += 1
+        return summary
 
     async def close_pull_request(
         self, repo_full_name: str, number: int, *, comment: str = ""
@@ -612,6 +685,49 @@ class RestGitHubClient:
             url=str(item["html_url"]),
             head_branch=(item.get("head") or {}).get("ref", ""),
         )
+
+    async def get_pull_request(
+        self, repo_full_name: str, number: int
+    ) -> PullRequest | None:
+        try:
+            item = await self._json("GET", f"/repos/{repo_full_name}/pulls/{number}")
+        except GitHubError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return PullRequest(
+            number=int(item["number"]),
+            url=str(item["html_url"]),
+            head_branch=(item.get("head") or {}).get("ref", ""),
+            state=str(item.get("state", "open")),
+            merged=bool(item.get("merged_at")),
+            draft=bool(item.get("draft", False)),
+            title=str(item.get("title", "")),
+            created_at=_parse_time(item.get("created_at")),
+            changed_files=(
+                int(item["changed_files"]) if item.get("changed_files") is not None else None
+            ),
+            head_sha=str((item.get("head") or {}).get("sha", "")),
+        )
+
+    async def get_checks_summary(
+        self, repo_full_name: str, ref: str
+    ) -> ChecksSummary:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/commits/{ref}/check-runs",
+            params={"per_page": 100},
+        )
+        summary = ChecksSummary()
+        for run in payload.get("check_runs", []):
+            summary.total += 1
+            if run.get("status") != "completed":
+                summary.pending += 1
+            elif run.get("conclusion") in {"success", "neutral", "skipped"}:
+                summary.passed += 1
+            else:
+                summary.failed += 1
+        return summary
 
     async def close_pull_request(
         self, repo_full_name: str, number: int, *, comment: str = ""
