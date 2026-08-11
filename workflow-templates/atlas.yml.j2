@@ -63,23 +63,50 @@
         run: |
           set -euo pipefail
           pip install --quiet '<< mykronos_package_spec >>'
-          pip install --quiet osv-scanner cyclonedx-bom
+          pip install --quiet cyclonedx-bom
+
+      - name: Install OSV-Scanner
+        # NOT `pip install osv-scanner` — that name on PyPI is a reserved
+        # placeholder ("Reserved name placeholder. No functionality.", 0.0.1)
+        # which installs cleanly and provides no CLI. Every Atlas run since
+        # this lane shipped died on `osv-scanner: command not found`, was
+        # swallowed by the old blanket `|| true`, and reported zero findings.
+        # OSV-Scanner is a Go binary released on GitHub; pin the version and
+        # verify the published checksum so a swapped artifact cannot land in
+        # the one lane whose job is catching swapped artifacts.
+        env:
+          OSV_VERSION: "<< config.osv_version | default('2.5.0') >>"
+          OSV_SHA256: "<< config.osv_sha256 | default('edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c') >>"
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /usr/local/bin/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  /usr/local/bin/osv-scanner" | sha256sum -c -
+          chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
 
       - name: Scan dependencies
         id: sca
-        # `|| true` because osv-scanner exits non-zero when it finds
-        # vulnerabilities, which is the normal case and not an error. The
-        # upload step reports the ScanRun either way (spec 04 §7), so a real
-        # failure is still visible as a failed run rather than as silence.
+        # OSV-Scanner exits 1 when it finds vulnerabilities, which is the
+        # normal case and not an error, so that one code is tolerated. Any
+        # other non-zero code is a real scan failure and must fail the step —
+        # a blanket `|| true` here is what let a missing binary masquerade as
+        # a clean supply chain.
         run: |
           set -uo pipefail
           mkdir -p "${{ runner.temp }}/mykronos-results"
-          osv-scanner scan source \
-            --format sarif \
-            --output "${{ runner.temp }}/mykronos-results/osv.sarif" \
-            . || true
 
-          osv-scanner scan source --format json --output osv.json . || true
+          run_osv() {
+            osv-scanner scan source "$@" .
+            rc=$?
+            if [ "$rc" -gt 1 ]; then
+              echo "::error::osv-scanner exited ${rc} — that is a scan failure, not a findings result"
+              exit "$rc"
+            fi
+          }
+
+          run_osv --format sarif --output "${{ runner.temp }}/mykronos-results/osv.sarif"
+          run_osv --format json --output osv.json
           test -f osv.json || echo '{"results":[]}' > osv.json
 
       - name: Generate the SBOM
