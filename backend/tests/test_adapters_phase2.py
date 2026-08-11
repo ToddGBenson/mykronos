@@ -506,6 +506,99 @@ class TestRegistry:
             "the install step must resolve its ref from github.action_ref"
         )
 
+    def test_atlas_installs_a_real_osv_scanner(self) -> None:
+        """`pip install osv-scanner` installs nothing.
+
+        That name on PyPI is a reserved placeholder — version 0.0.1, summary
+        "Reserved name placeholder. No functionality." — so pip succeeded, no
+        CLI landed on PATH, and `osv-scanner scan source` died with `command
+        not found`. The blanket `|| true` on the scan step swallowed it, the
+        SARIF file was never written, and every Atlas run in every onboarded
+        repo uploaded zero findings before failing at the upload step, where
+        the error read as an ingestion problem rather than a missing scanner.
+
+        The supply-chain lane reported a clean supply chain because it never
+        ran. OSV-Scanner is a Go binary released on GitHub; this asserts we
+        fetch it pinned and checksum-verified.
+        """
+        import yaml
+
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+        rendered = library.render(
+            "atlas",
+            repo_full_name="example-org/repo",
+            default_branch="main",
+            ingestion_api_url="https://example.invalid",
+            token_secret_name="MYKRONOS_INGESTION_TOKEN",
+            upload_action_ref="example-org/repo/actions/upload-results@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+        ).content
+
+        # Against the parsed `run` bodies, not the raw file: the step's own
+        # comment explains what not to do and names the bad command, which a
+        # text search cannot tell apart from doing it.
+        spec = yaml.safe_load(rendered)
+        scripts = [
+            str(step.get("run", ""))
+            for job in spec["jobs"].values()
+            for step in job.get("steps", [])
+        ]
+        installs_placeholder = [
+            s for s in scripts if re.search(r"pip install[^\n]*\bosv-scanner\b", s)
+        ]
+        assert not installs_placeholder, (
+            "osv-scanner on PyPI is an empty placeholder — install the released binary instead"
+        )
+        assert "releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" in rendered, (
+            "Atlas must fetch a pinned OSV-Scanner release binary"
+        )
+        assert "sha256sum -c -" in rendered, (
+            "the one lane whose job is catching swapped artifacts must verify "
+            "the checksum of the artifact it downloads"
+        )
+
+    def test_no_scanner_template_swallows_its_scanner_exit_code(self) -> None:
+        """`|| true` on a scanner invocation is indistinguishable from a pass.
+
+        Atlas used it to tolerate OSV-Scanner's exit 1 (vulnerabilities found,
+        which is a result and not an error) and in doing so also tolerated
+        exit 127 — the missing binary above — for the entire life of the lane.
+        Tolerate the specific findings code, never the whole range.
+        """
+        import yaml
+
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+
+        offenders = []
+        for capability in sorted(library.available):
+            rendered = library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            ).content
+            if "actions/upload-results@" not in rendered:
+                continue  # Not a scanner — the Oracle gate and Patchwork.
+
+            spec = yaml.safe_load(rendered)
+            for job in spec["jobs"].values():
+                for step in job.get("steps", []):
+                    if "|| true" in str(step.get("run", "")):
+                        offenders.append(f"{capability}: {step.get('name')}")
+
+        assert not offenders, (
+            f"scanner steps must not blanket-ignore exit codes: {', '.join(offenders)}"
+        )
+
     def test_an_unknown_tool_names_the_alternatives(self) -> None:
         with pytest.raises(LookupError) as excinfo:
             get_adapter("secrets", "trufflehog")
