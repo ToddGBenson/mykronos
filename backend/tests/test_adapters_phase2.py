@@ -506,6 +506,57 @@ class TestRegistry:
             "the install step must resolve its ref from github.action_ref"
         )
 
+    def test_the_sbom_step_invokes_cyclonedx_py_correctly(self) -> None:
+        """`--output-format` is the serialisation, not the SBOM standard.
+
+        The step passed `sbom_format` — spec 07 §5's `cyclonedx | spdx` enum —
+        straight into it, so every run died on `unsupported value
+        'CYCLONEDX'`. The `|| fallback` behind it used `--outfile`, which is
+        not a flag (it is `-o`), so it died too. Neither was ever seen: the
+        step ran on releases only until 1.1.0 opened it to default-branch
+        pushes, and most repositories here never tag.
+
+        Two concepts with one name is the bug. This pins the invocation to
+        flags the tool actually has.
+        """
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        rendered = TemplateLibrary(get_settings().workflow_templates_dir).render(
+            "atlas",
+            repo_full_name="example-org/repo",
+            default_branch="main",
+            ingestion_api_url="https://example.invalid",
+            token_secret_name="MYKRONOS_INGESTION_TOKEN",
+            upload_action_ref="example-org/repo/actions/upload-results@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+        ).content
+
+        import yaml
+
+        spec = yaml.safe_load(rendered)
+        step = next(
+            step
+            for job in spec["jobs"].values()
+            for step in job.get("steps", [])
+            if "cyclonedx-py environment" in str(step.get("run", ""))
+        )
+        # Against the executable lines only, joined: reformatting the command
+        # across lines cannot make this pass by accident, and the step's own
+        # comment — which names the broken flags to explain them — cannot make
+        # it fail. Whole-line comments only, so a `#fragment` in a URL on a
+        # real command line still counts as code.
+        code = " ".join(
+            line
+            for line in str(step["run"]).splitlines()
+            if not line.strip().startswith("#")
+        )
+        code = " ".join(code.split())
+        assert "--outfile" not in code, "the outfile flag is -o"
+        assert re.search(r"--of\s+(JSON|XML)\b", code), (
+            f"--of takes a serialisation, not an SBOM standard: {code!r}"
+        )
+
     def test_every_third_party_action_is_pinned_to_a_sha(self) -> None:
         """A mutable tag is a standing write-access grant to someone else.
 

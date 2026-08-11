@@ -170,9 +170,20 @@ jobs:
            github.ref == 'refs/heads/main')
         run: |
           set -euo pipefail
-          cyclonedx-py environment \
-            --output-format "CYCLONEDX" \
-            --outfile sbom.json || cyclonedx-py environment --outfile sbom.json
+          # `sbom_format` is the SBOM *standard* (spec 07 §5: cyclonedx |
+          # spdx). cyclonedx-py's --output-format is the *serialisation*
+          # (JSON | XML) and the tool only ever emits CycloneDX. Feeding the
+          # standard into it meant every invocation died on
+          # `unsupported value 'CYCLONEDX'`, and the fallback passed
+          # `--outfile`, which is not a flag either — it is `-o`. So both
+          # halves were broken, and neither was ever observed: until 1.1.0
+          # this step ran on releases only, and most repos never tag.
+          SBOM_STANDARD="cyclonedx"
+          if [ "$SBOM_STANDARD" != "cyclonedx" ]; then
+            echo "::error::sbom_format=${SBOM_STANDARD} is not implemented — this step emits CycloneDX only. Set it to cyclonedx, or add a generator for ${SBOM_STANDARD}."
+            exit 1
+          fi
+          cyclonedx-py environment --of JSON -o sbom.json
 
       - name: Archive the SBOM
         id: sbom
