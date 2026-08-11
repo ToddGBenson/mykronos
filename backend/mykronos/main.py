@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
-from mykronos import __version__
+from mykronos import __version__, logsafe
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
@@ -141,6 +141,10 @@ def _build_github_factory(settings: Settings) -> GitHubClientFactory:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
+    # Before anything else logs. Untrusted text is scrubbed at the call sites
+    # that handle it, but only the ones somebody remembered; this covers the
+    # rest, including uvicorn's own request logging (spec 12 §8).
+    logsafe.install()
     app.state.catalog = Catalog(settings.datalake_dir)
     app.state.catalog.initialise()
     app.state.buffer = WriteAheadBuffer(settings.buffer_dir)

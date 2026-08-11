@@ -51,9 +51,11 @@ inputs:
     default: "false"
   mykronos-ref:
     description: >-
-      Version of the mykronos package to install. Defaults to the ref this
-      action was itself resolved at, so the package and the action cannot
-      drift apart. Set it only to deliberately pin them differently.
+      Version of the mykronos package to install. Mykronos-generated workflows
+      always pass this, set to the same ref as the `uses:` line that reached
+      here, so the action and the package it installs cannot drift apart.
+      Hand-written workflows may omit it and get `github.action_ref`, which is
+      usually right but is empty in some contexts — hence the explicit pass.
     required: false
     default: ""
 

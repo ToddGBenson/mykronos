@@ -85,16 +85,32 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         description = str(record.get("Description") or rule_id)
         start_line = record.get("StartLine")
 
+        # The workflow runs `gitleaks detect` over a full-depth clone, which
+        # scans *history*: each hit belongs to the commit that introduced it,
+        # and `StartLine` is a line in that commit's version of the file, not
+        # in the current one. Without the commit the location is frequently
+        # unresolvable — the first real triage of these findings hit lines
+        # holding a closing brace and an unrelated assertion, which reads as a
+        # broken scanner rather than as a finding about the past.
+        commit = str(record.get("Commit") or "").strip()
+        where = (
+            f"commit {commit[:10]}, which may not be the current content of "
+            f"that file. Retrieve exactly what matched with "
+            f"`git show {commit}:{file_path}`"
+            if commit
+            else f"{file_path} in the working tree"
+        )
+
         result.findings.append(
             FindingSubmission(
                 rule_id=rule_id[:255],
                 title=f"Exposed secret: {description}"[:1000],
                 description=(
-                    f"Gitleaks rule '{rule_id}' matched in {file_path}. "
-                    "The value is redacted here and in the archived output; "
-                    "inspect the file directly, then rotate the credential — "
-                    "removing it from the working tree does not remove it from "
-                    "git history."
+                    f"Gitleaks rule '{rule_id}' matched at {file_path}:"
+                    f"{start_line} in {where}. The value is redacted here and "
+                    "in the archived output. If it is a real credential, "
+                    "rotate it first: it is already in history, and deleting "
+                    "the line does not remove it from anyone's existing clone."
                 ),
                 # Not derived from the tool: Gitleaks does not rank findings,
                 # and a committed live credential is critical whichever

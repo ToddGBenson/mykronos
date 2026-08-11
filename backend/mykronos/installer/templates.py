@@ -50,8 +50,18 @@ def _build_environment(directory: Path) -> Environment:
     GitHub Actions expressions are `${{ ... }}`; Jinja's default variable
     syntax is `{{ ... }}`. Left alone, Jinja tries to evaluate every Actions
     expression in the file. Remapping variables to `<< >>` keeps the templates
-    readable as workflows instead of burying them in `{% raw %}` blocks. Block
-    and comment syntax keep their defaults — neither collides.
+    readable as workflows instead of burying them in `{% raw %}` blocks.
+
+    Block and comment syntax keep their defaults, and an earlier version of
+    this docstring claimed neither collides. Comment syntax does: bash's
+    array-length expansion — dollar, brace, hash — opens a Jinja comment that
+    never closes, and the template fails to compile with "Missing end of
+    comment tag" pointing at a line well past the real one.
+
+    Remapping comments too would be the tidy fix and is not worth it: every
+    existing `{# ... #}` block in every template would start rendering into
+    the output. The templates avoid the sequence instead, and
+    `test_adapters_phase2` fails if one reintroduces it.
 
     `StrictUndefined` makes a missing render variable an error rather than an
     empty string, so a typo produces a failed install instead of a workflow
@@ -139,6 +149,17 @@ class TemplateLibrary:
             "ingestion_api_url": ingestion_api_url.rstrip("/"),
             "token_secret_name": token_secret_name,
             "upload_action_ref": upload_action_ref,
+            # The ref half of `upload_action_ref`, passed to the action so the
+            # package it installs matches the action itself.
+            #
+            # This was tried twice at runtime and failed twice. First as a
+            # hardcoded `v0.1.0` default on the action, a tag that never
+            # existed. Then as `github.action_ref`, which is empty inside a
+            # composite action — so every scan failed at upload with a loud
+            # error instead of a quiet one. Resolving it here ends the guessing:
+            # the ref in the `uses:` line and the ref the package installs from
+            # are now the same string, computed once, at render time.
+            "mykronos_ref": upload_action_ref.rpartition("@")[2] or "main",
             "config": config or {},
             # CodeQL needs an explicit language matrix; the config may override.
             "languages": (config or {}).get("languages") or ["javascript-typescript", "python"],

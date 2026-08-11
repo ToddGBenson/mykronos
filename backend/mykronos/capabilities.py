@@ -27,6 +27,48 @@ from mykronos.schemas import Capability, Severity
 #: scheduler.
 _CRON = re.compile(r"^\s*(\S+\s+){4,5}\S+\s*$")
 
+#: Every string in a capability's config is rendered into a GitHub Actions
+#: workflow, and several land unquoted inside `run:` blocks — `tool_version`
+#: becomes the tag in `docker run aquasec/trivy:<version>`, `aws_role_arn`
+#: becomes a step input. The templates cannot escape their way out of this:
+#: Jinja autoescaping is HTML escaping, which would corrupt YAML rather than
+#: protect it (`installer/templates.py`). So the boundary is here, on the way
+#: in, where the value is still a field somebody typed rather than a line in a
+#: file about to be executed on a runner.
+#:
+#: The reachable path is admin-only, which lowers the severity and does not
+#: remove it: an admin token is a credential, and "the attacker had to steal a
+#: token first" is a poor last line of defence for arbitrary shell on a runner
+#: holding `contents: write` to every onboarded repository.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+#: Shell and YAML metacharacters, for the fields that reach a command line.
+#: A deny-list would be the wrong shape here — this is an allow-list of what a
+#: version tag, an ARN or a path glob legitimately contains.
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:@/+-]*$")
+
+
+def _reject_control_characters(value: str, field: str) -> str:
+    if _CONTROL_CHARS.search(value):
+        raise ValueError(
+            f"{field} contains a control character. These are rendered into a "
+            "GitHub Actions workflow, where a newline is a new YAML line and "
+            "potentially a new step."
+        )
+    return value
+
+
+def _require_safe_token(value: str, field: str) -> str:
+    _reject_control_characters(value, field)
+    if not _SAFE_TOKEN.match(value):
+        raise ValueError(
+            f"{field} may only contain letters, digits and ._:@/+- — it is "
+            "interpolated into a shell command in the generated workflow, so "
+            "quotes, spaces and shell metacharacters are refused rather than "
+            "escaped."
+        )
+    return value
+
 
 class CapabilityConfigError(ValueError):
     """Configuration a human needs to correct before this can be saved."""
@@ -73,6 +115,19 @@ class BaseCapabilityConfig(BaseModel):
             )
         return value
 
+    @field_validator("tool_version")
+    @classmethod
+    def _tool_version_is_a_tag(cls, value: str | None) -> str | None:
+        """Interpolated into `docker run image:<version>` in three templates."""
+        return None if value is None else _require_safe_token(value, "tool_version")
+
+    @field_validator("paths_include", "paths_exclude")
+    @classmethod
+    def _paths_are_single_line(cls, value: list[str]) -> list[str]:
+        for entry in value:
+            _reject_control_characters(entry, "path pattern")
+        return value
+
 
 class SastConfig(BaseCapabilityConfig):
     languages: list[str] = Field(
@@ -111,7 +166,9 @@ class DastConfig(BaseCapabilityConfig):
                 f"target_url must be an http(s) URL, got {value!r}. DAST probes a "
                 "running service, not a repository path."
             )
-        return value
+        # Rendered as an unquoted `TARGET_URL:` step env value, so a space or a
+        # newline here becomes YAML rather than part of the URL.
+        return _require_safe_token(value, "target_url")
 
 
 class CloudConfig(BaseCapabilityConfig):
@@ -133,7 +190,15 @@ class CloudConfig(BaseCapabilityConfig):
                 f"aws_role_arn must be an IAM role ARN, got {value!r}. "
                 "Expected 'arn:aws:iam::<account>:role/<name>'."
             )
-        return value
+        # The prefix check alone is not enough: it constrains how the value
+        # starts and says nothing about the rest, which is rendered unquoted
+        # into both a YAML step input and a `[ -z "..." ]` shell test.
+        return _require_safe_token(value, "aws_role_arn")
+
+    @field_validator("aws_region")
+    @classmethod
+    def _region_shape(cls, value: str) -> str:
+        return _require_safe_token(value, "aws_region")
 
 
 class AegisConfig(BaseCapabilityConfig):
@@ -154,6 +219,14 @@ class AegisConfig(BaseCapabilityConfig):
         ],
         max_length=200,
     )
+
+    @field_validator("sensitive_paths")
+    @classmethod
+    def _sensitive_paths_are_single_line(cls, value: list[str]) -> list[str]:
+        """Rendered one per line into the workflow's own YAML list."""
+        for entry in value:
+            _reject_control_characters(entry, "sensitive path pattern")
+        return value
     block_threshold: int = Field(
         default=80,
         ge=1,

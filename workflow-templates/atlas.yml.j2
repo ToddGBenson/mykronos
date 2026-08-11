@@ -83,10 +83,21 @@
           test -f osv.json || echo '{"results":[]}' > osv.json
 
       - name: Generate the SBOM
-        # Only on a release: §2 requires one per tag, and producing one on
-        # every pull request would archive thousands of near-identical files
-        # for no additional evidence.
-        if: github.event_name == 'release'
+        # On releases and on the default branch, not on pull requests.
+        #
+        # §2 requires an SBOM per tag, and the first version stopped there —
+        # which meant a repository that never cuts a release never produced
+        # one at all, and its supply-chain evidence showed no SBOM with
+        # nothing to say it was merely waiting for a tag. Most repositories
+        # here do not tag. One per default-branch commit costs a file per push
+        # and makes the evidence real for repos that ship continuously; pull
+        # requests stay excluded, because thousands of near-identical SBOMs
+        # from feature branches are archive noise rather than evidence.
+        if: >-
+          github.event_name == 'release' ||
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' &&
+           github.ref == 'refs/heads/<< default_branch >>')
         run: |
           set -euo pipefail
           cyclonedx-py environment \
@@ -95,7 +106,10 @@
 
       - name: Archive the SBOM
         id: sbom
-        if: github.event_name == 'release'
+        # Keyed on the file existing rather than repeating the condition
+        # above. Two copies of the same `if:` is how they come to disagree,
+        # and the failure mode is a curl against a file that is not there.
+        if: hashFiles('sbom.json') != ''
         run: |
           set -euo pipefail
           REF=$(curl --fail --silent --show-error --max-time 60 \

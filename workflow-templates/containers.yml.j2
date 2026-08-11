@@ -1,14 +1,36 @@
 {% extends "_base.yml.j2" %}
-{#- Containers capability — spec 04 §3 (Trivy). Emits SARIF natively. -#}
+{#- Containers capability — spec 04 §3 (Trivy).
+
+    Builds each Dockerfile in the repository and scans the resulting image,
+    rather than scanning the working tree.
+
+    The first version ran `trivy filesystem /repo --scanners vuln,misconfig,
+    secret`, which never builds or pulls anything. That reads lockfiles and
+    Dockerfiles already in the repo and cannot see the base image's OS
+    packages, the layers a build adds, or anything installed by a RUN line —
+    which is most of what container scanning exists to find. It also
+    duplicated two other capabilities: `misconfig` overlaps Checkov (iac) and
+    `secret` overlaps Gitleaks (secrets), so a repo with all three enabled got
+    the same finding three times under three rule ids.
+
+    `--scanners vuln` only, here. Dockerfile misconfiguration belongs to iac,
+    and the repo's secrets belong to secrets. -#}
+
 {% block triggers %}
   pull_request:
     paths:
       - "**/Dockerfile*"
       - "**/*.dockerfile"
       - "**/docker-compose*.y*ml"
+      - "**/requirements*.txt"
+      - "**/package-lock.json"
+      - "**/poetry.lock"
+      - "**/go.sum"
   push:
     branches: ["<< default_branch >>"]
   schedule:
+    # Daily, and this is the capability where that matters most: the image
+    # does not change, and the set of vulnerabilities known about it does.
     - cron: "<< config.schedule_cron | default('41 2 * * *') >>"
   workflow_dispatch:
 {% endblock %}
@@ -16,21 +38,101 @@
 {% block job_name %}Trivy{% endblock %}
 
 {% block scan_steps %}
-      - name: Scan filesystem and Dockerfiles
-        # A repo with no Dockerfile is not a failure (spec 04 §6). Trivy exits
-        # 0 with an empty SARIF, the adapter reports no_applicable_targets,
-        # and the lake can tell that apart from "never ran".
-        continue-on-error: true
+      - name: Find Dockerfiles
+        id: discover
+        # NOTE: bash array-length syntax -- dollar, brace, hash -- must not
+        # appear in this file. Those three characters open a Jinja comment
+        # that never closes, and the template fails to compile with "Missing
+        # end of comment tag" pointing at a line that is not the problem.
+        # (Writing the sequence out literally in a comment does it too, which
+        # is how the first attempt at this very note failed.)
+        #
+        # `_base.yml.j2` remaps Jinja's *variable* delimiters for the same
+        # class of collision with GitHub's expression syntax; comment
+        # delimiters are still the default, so the shell has to avoid them.
+        # Counting lines in a file sidesteps it entirely.
         run: |
-          mkdir -p "${{ runner.temp }}/mykronos-results"
-          docker run --rm \
-            -v "${{ github.workspace }}:/repo" \
-            -v "${{ runner.temp }}/mykronos-results:/out" \
-            aquasec/trivy:<< config.tool_version | default('0.58.1') >> \
-            filesystem /repo \
-              --scanners vuln,misconfig,secret \
-              --format sarif \
-              --output /out/trivy.sarif \
-              --exit-code 0 \
-              --quiet
+          set -euo pipefail
+          LIST="${{ runner.temp }}/dockerfiles.txt"
+          # Excludes dependency and fixture directories: scanning a vendored
+          # example Dockerfile reports vulnerabilities in an image this repo
+          # never builds and never ships.
+          find . \
+            \( -path ./.git -o -path '*/node_modules' -o -path '*/.venv' \
+               -o -path '*/vendor' -o -path '*/testdata' \) -prune -o \
+            \( -name 'Dockerfile' -o -name 'Dockerfile.*' -o -name '*.dockerfile' \) \
+            -type f -print | sort > "$LIST"
+          COUNT=$(wc -l < "$LIST" | tr -d ' ')
+          echo "Found $COUNT Dockerfile(s)"
+          cat "$LIST"
+          {
+            echo "count=$COUNT"
+            echo "list=$LIST"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and scan each image
+        # A repo with no Dockerfile is not a failure (spec 04 §6). The step
+        # writes an empty SARIF, the adapter reports a clean scan, and the
+        # lake can still tell "scanned, nothing to scan" from "never ran".
+        #
+        # A build failure is also not a scan failure. The repository's own CI
+        # owns whether the image builds; reporting that here would mean this
+        # capability goes red for a reason that has nothing to do with
+        # vulnerabilities, and a check that is red for unrelated reasons stops
+        # being read.
+        continue-on-error: true
+        env:
+          LIST: ${{ steps.discover.outputs.list }}
+          COUNT: ${{ steps.discover.outputs.count }}
+        run: |
+          set -uo pipefail
+          OUT="${{ runner.temp }}/mykronos-results"
+          mkdir -p "$OUT"
+          EMPTY_SARIF='{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy"}},"results":[]}]}'
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No Dockerfile in this repository — nothing to build."
+            printf '%s' "$EMPTY_SARIF" > "$OUT/trivy-empty.sarif"
+            exit 0
+          fi
+
+          INDEX=0
+          while IFS= read -r DOCKERFILE; do
+            [ -n "$DOCKERFILE" ] || continue
+            INDEX=$((INDEX + 1))
+            CONTEXT=$(dirname "$DOCKERFILE")
+            TAG="mykronos-scan:${{ github.sha }}-$INDEX"
+
+            echo "::group::Building $DOCKERFILE"
+            if ! docker build --quiet --file "$DOCKERFILE" --tag "$TAG" "$CONTEXT"; then
+              echo "::warning::Could not build $DOCKERFILE — skipping it. The" \
+                   "repository's own CI owns whether this image builds."
+              echo "::endgroup::"
+              continue
+            fi
+            echo "::endgroup::"
+
+            # The SARIF filename carries the Dockerfile path so a finding can
+            # be traced back to which image it came from. Without it, a repo
+            # with three Dockerfiles produces one undifferentiated pile.
+            SAFE=$(printf '%s' "$DOCKERFILE" | sed 's|^\./||; s|[/. ]|_|g')
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$OUT:/out" \
+              aquasec/trivy:<< config.tool_version | default('0.58.1') >> \
+              image "$TAG" \
+                --scanners vuln \
+                --format sarif \
+                --output "/out/trivy-$SAFE.sarif" \
+                --exit-code 0 \
+                --quiet
+          done < "$LIST"
+
+          if ! ls "$OUT"/*.sarif >/dev/null 2>&1; then
+            # Every build failed. Still a completed scan of zero images, not a
+            # silent nothing: the adapter needs a file, and the lake needs to
+            # be able to tell this from a run that never happened.
+            echo "::warning::No image was scannable; recording an empty result."
+            printf '%s' "$EMPTY_SARIF" > "$OUT/trivy-empty.sarif"
+          fi
 {% endblock %}

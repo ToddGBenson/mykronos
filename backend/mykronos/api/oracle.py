@@ -29,6 +29,7 @@ from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
+from mykronos.logsafe import scrub
 from mykronos.oracle.service import OracleService, decision_to_row
 from mykronos.schemas import utcnow
 
@@ -320,10 +321,10 @@ async def override_decision(
 
     logger.info(
         "Oracle decision %s overridden by %s: %s -> %s",
-        decision_id,
-        actor,
-        existing["recommendation"],
-        accepted,
+        scrub(decision_id),
+        scrub(actor),
+        scrub(existing["recommendation"]),
+        scrub(accepted),
     )
     return OverrideResult(
         decision_id=decision_id,

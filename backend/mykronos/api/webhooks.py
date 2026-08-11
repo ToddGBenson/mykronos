@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from mykronos.db.models import RepoOnboarding, get_or_create_organization
 from mykronos.installer import BRANCH_PREFIX, WorkflowInstaller
+from mykronos.logsafe import scrub
 from mykronos.patchwork.stewardship import is_patchwork_branch, record_human_edit
 from mykronos.schemas import utcnow
 
@@ -413,7 +414,13 @@ async def github_webhook(
         )
 
     if not verify_signature(settings.github_webhook_secret, body, x_hub_signature_256):
-        logger.warning("Rejected webhook delivery %s: bad signature", x_github_delivery)
+        # Unauthenticated at this point, by definition: the signature just
+        # failed. The delivery id is an attacker-supplied header, and this is
+        # the one log-injection site on the platform reachable without any
+        # credential at all.
+        logger.warning(
+            "Rejected webhook delivery %s: bad signature", scrub(x_github_delivery)
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Signature verification failed.",
@@ -440,5 +447,10 @@ async def github_webhook(
     with state.db.session() as session:
         result = handler(session, payload, state)
 
-    logger.info("webhook %s delivery=%s -> %s", x_github_event, x_github_delivery, result)
+    logger.info(
+        "webhook %s delivery=%s -> %s",
+        scrub(x_github_event),
+        scrub(x_github_delivery),
+        scrub(result),
+    )
     return result

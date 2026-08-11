@@ -30,6 +30,7 @@ from typing import Any
 from mykronos.knowledge.dampening import dampened_rules
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
+from mykronos.logsafe import scrub
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
 
@@ -633,7 +634,10 @@ class OracleEngine:
             evaluated_at=self._as_of,
         )
         logger.info(
-            "Oracle %s for %s: %s", decision_type, repo_full_name, decision.summary()
+            "Oracle %s for %s: %s",
+            scrub(decision_type),
+            scrub(repo_full_name),
+            scrub(decision.summary()),
         )
         return decision
 

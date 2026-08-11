@@ -94,6 +94,10 @@ jobs:
           token: ${{ secrets.<< token_secret_name >> }}
           severity-threshold: << config.severity_threshold | default('low') >>
           blocking: "<< config.blocking | default(false) | lower >>"
+          # Same ref as the `uses:` line above, resolved when this file was
+          # rendered. The action can also fall back to `github.action_ref`, but
+          # that is empty inside a composite action, so it is not relied on.
+          mykronos-ref: << mykronos_ref >>
 
 {# A capability with an aggregate record as well as findings hangs it here:
    Atlas writes per-dependency Finding rows through the upload action above and

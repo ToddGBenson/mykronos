@@ -90,6 +90,45 @@ class TestGitleaks:
         )
         assert result.findings[0].code_snippet == REDACTED
 
+    def test_the_finding_says_which_commit_it_is_about(self) -> None:
+        """The workflow runs `gitleaks detect` over a full-depth clone, so a
+        hit belongs to the commit that introduced it and `StartLine` indexes
+        *that* version of the file.
+
+        Without the commit, triage goes to the current file and lands on
+        whatever now occupies that line. The first real triage of these
+        findings hit a closing brace and an unrelated assertion, which reads
+        as a broken scanner rather than as a finding about history.
+        """
+        record = gitleaks_record(Commit="bf28ea7e5cabc123def4567890abcdef12345678")
+
+        result = gitleaks_normalize(json.dumps([record]).encode(), context("secrets"))
+        description = result.findings[0].description
+
+        assert "bf28ea7e5c" in description
+        assert "git show bf28ea7e5cabc123def4567890abcdef12345678:config/settings.py" in (
+            description
+        )
+
+    def test_it_leads_with_rotation_not_deletion(self) -> None:
+        """Deleting the line is the intuitive fix and the useless one: the
+        value is already in every clone that fetched it."""
+        result = gitleaks_normalize(
+            json.dumps([gitleaks_record()]).encode(), context("secrets")
+        )
+
+        assert "rotate" in result.findings[0].description.lower()
+
+    def test_a_record_with_no_commit_still_produces_a_usable_finding(self) -> None:
+        """`--no-git` mode, or a future tool version that drops the field."""
+        record = gitleaks_record()
+        record.pop("Commit", None)
+
+        result = gitleaks_normalize(json.dumps([record]).encode(), context("secrets"))
+
+        assert len(result.findings) == 1
+        assert "working tree" in result.findings[0].description
+
     def test_an_unredacted_secret_is_scrubbed_from_the_raw_record(self) -> None:
         """`--redact` is in the template, but the archive is kept for a year
         (spec 05 §7). One workflow missing the flag must not turn that into a
@@ -375,6 +414,60 @@ class TestRegistry:
             checked.append((capability, tool))
 
         assert checked, "no scanner templates found — the discovery is broken"
+
+    def test_every_scanner_workflow_passes_the_ref_it_was_rendered_with(self) -> None:
+        """The package the upload action installs must match the action.
+
+        Three attempts. A hardcoded `v0.1.0` on the action, a tag that never
+        existed. Then `github.action_ref`, which is empty inside a composite
+        action, so every scan failed loudly at upload instead of quietly. Now
+        the installer passes it, resolved from the same setting that produces
+        the `uses:` line — one string, computed once, no runtime lookup.
+        """
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+
+        for capability in sorted(library.available):
+            rendered = library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v9",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v9",
+            ).content
+
+            if "actions/upload-results@" not in rendered:
+                continue
+            assert re.search(r"^\s*mykronos-ref:\s*v9\s*$", rendered, re.MULTILINE), (
+                f"{capability} calls the upload action without passing the ref "
+                "it was rendered with"
+            )
+
+    def test_no_template_contains_the_jinja_comment_collision(self) -> None:
+        """Bash array-length syntax opens a Jinja comment that never closes.
+
+        The template then fails to compile pointing at an unrelated line, and
+        the capability cannot be installed at all. Checked as raw source
+        rather than by rendering, so the message names the real cause instead
+        of "Missing end of comment tag" forty lines away.
+        """
+        from mykronos.config import get_settings
+
+        directory = get_settings().workflow_templates_dir
+        offenders = [
+            path.name
+            for path in sorted(directory.glob("*.j2"))
+            if "${" + "#" in path.read_text(encoding="utf-8")
+        ]
+
+        assert offenders == [], (
+            f"{offenders} use bash array-length syntax, which Jinja reads as "
+            "an unterminated comment. Count lines in a file instead."
+        )
 
     def test_the_upload_action_pins_no_version_of_its_own(self) -> None:
         """The composite action installs the `mykronos` package, and which

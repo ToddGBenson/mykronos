@@ -21,6 +21,7 @@ from mykronos.dashboard import DashboardQueries, PortfolioSummary
 from mykronos.db.models import RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
+from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
 from mykronos.maturity import mean_time_to_fix, trend_series
 from mykronos.pull_requests import open_pull_requests
@@ -734,7 +735,11 @@ async def set_finding_status(
         signal = f"recorded a new learning about {existing.get('rule_id')}"
 
     logger.info(
-        "Finding %s -> %s by %s (%s)", finding_id, body.status.value, principal.actor, signal
+        "Finding %s -> %s by %s (%s)",
+        scrub(finding_id),
+        body.status.value,
+        scrub(principal.actor),
+        scrub(signal),
     )
 
     return StatusChangeResult(

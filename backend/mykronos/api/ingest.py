@@ -37,6 +37,7 @@ from mykronos.auth import Resolution, TokenRegistry
 from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.fingerprint import compute_finding_id
 from mykronos.github.client import GitHubError
+from mykronos.logsafe import scrub
 from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
@@ -375,9 +376,9 @@ async def ingest_aegis(
             check_run_error = str(exc)
             logger.warning(
                 "Could not post the Aegis check run for %s#%s: %s",
-                token.repo_full_name,
-                body.pr_number,
-                exc,
+                scrub(token.repo_full_name),
+                scrub(body.pr_number),
+                scrub(exc),
             )
 
     request.app.state.buffer.append(

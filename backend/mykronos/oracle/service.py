@@ -25,6 +25,7 @@ from mykronos.github.client import GitHubClient, GitHubError
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
+from mykronos.logsafe import scrub
 from mykronos.oracle.engine import Decision, OracleEngine
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
@@ -209,9 +210,9 @@ class OracleService:
                 published.check_run_error = str(exc)
                 logger.warning(
                     "Could not post a check run for %s@%s: %s",
-                    repo_full_name,
-                    commit_sha,
-                    exc,
+                    scrub(repo_full_name),
+                    scrub(commit_sha),
+                    scrub(exc),
                 )
 
         # Written last, so the persisted row carries the check run id when
