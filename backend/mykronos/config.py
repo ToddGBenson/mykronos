@@ -292,10 +292,19 @@ class Settings(BaseSettings):
     )
 
     upload_action_ref: str = Field(
-        default="ToddGBenson/mykronos/actions/upload-results@v1",
+        default=(
+            "ToddGBenson/mykronos/actions/upload-results@"
+            "8b329fc5c1f739eab8ad40b8a7628da7cd1ee935"  # v1
+        ),
         description=(
-            "Semver-pinned reference to the shared upload composite action "
-            "(spec 04 §2). Never a branch: every onboarded repo depends on it."
+            "Commit-pinned reference to the shared upload composite action "
+            "(spec 04 §2). A SHA, not a tag and never a branch: every onboarded "
+            "repo executes this action with its own checkout and ingestion "
+            "token, and a tag can be repointed by whoever controls it. "
+            "NOTE when updating: v1 is an ANNOTATED tag, so the tag-object SHA "
+            "is not the commit. Dereference it -- "
+            "`gh api repos/ToddGBenson/mykronos/commits/v1 --jq .sha` -- or you "
+            "pin a valid-looking ref that never resolves as a commit."
         ),
     )
 

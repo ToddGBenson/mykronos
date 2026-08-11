@@ -1,9 +1,9 @@
 {
   "$comment": [
-    "Template registry for the Workflow Installer (spec 03 §2, §6).",
+    "Template registry for the Workflow Installer (spec 03 \u00a72, \u00a76).",
     "",
     "`version` is the template semver stamped into every rendered file's header.",
-    "Bumping it is what makes a bulk resync (spec 03 §6) open update PRs across",
+    "Bumping it is what makes a bulk resync (spec 03 \u00a76) open update PRs across",
     "every repo with that capability enabled. Resync compares rendered content",
     "against what is actually in the repo rather than trusting this string, in",
     "case someone hand-edited the file -- but the version is what tells an",
@@ -16,62 +16,62 @@
     "sast": {
       "template": "sast.yml.j2",
       "target": ".github/workflows/mykronos-sast.yml",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "summary": "Static analysis with CodeQL"
     },
     "secrets": {
       "template": "secrets.yml.j2",
       "target": ".github/workflows/mykronos-secrets.yml",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "summary": "Secret detection with Gitleaks"
     },
     "containers": {
       "template": "containers.yml.j2",
       "target": ".github/workflows/mykronos-containers.yml",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "summary": "Container and image scanning with Trivy"
     },
     "iac": {
       "template": "iac.yml.j2",
       "target": ".github/workflows/mykronos-iac.yml",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "summary": "Infrastructure-as-code scanning with Checkov"
     },
     "dast": {
       "template": "dast.yml.j2",
       "target": ".github/workflows/mykronos-dast.yml",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "summary": "Dynamic scanning of a deployed target with OWASP ZAP"
     },
     "cloud": {
       "template": "cloud.yml.j2",
       "target": ".github/workflows/mykronos-cloud.yml",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "summary": "Cloud account posture scanning"
     },
     "aegis": {
       "template": "aegis.yml.j2",
       "target": ".github/workflows/mykronos-aegis.yml",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "summary": "Insider-risk and AI-authorship review prompt on every pull request"
     },
     "atlas": {
       "template": "atlas.yml.j2",
       "target": ".github/workflows/mykronos-atlas.yml",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "summary": "Dependency vulnerabilities, SBOM and provenance with osv-scanner"
     },
     "patchwork": {
       "template": "patchwork.yml.j2",
       "target": ".github/workflows/mykronos-patchwork.yml",
-      "version": "1.0.0",
-      "summary": "Auto-remediation — opens draft pull requests, never merges"
+      "version": "1.1.0",
+      "summary": "Auto-remediation \u2014 opens draft pull requests, never merges"
     },
     "oracle": {
       "template": "oracle-gate.yml.j2",
       "target": ".github/workflows/mykronos-oracle.yml",
-      "version": "1.0.0",
-      "summary": "Risk decision gate — asks Oracle to judge a commit once the scanners have reported"
+      "version": "1.1.0",
+      "summary": "Risk decision gate \u2014 asks Oracle to judge a commit once the scanners have reported"
     }
   }
 }
