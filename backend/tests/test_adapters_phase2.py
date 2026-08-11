@@ -469,6 +469,38 @@ class TestRegistry:
             "an unterminated comment. Count lines in a file instead."
         )
 
+    def test_the_injected_upload_action_ref_is_a_commit_sha(self) -> None:
+        """The upload action is the highest-value ref in the system to hold still.
+
+        It runs in EVERY onboarded repository, with that repo's checkout on disk
+        and its ingestion token in the environment. A tag is a mutable pointer:
+        whoever can move it can change what executes across every install at
+        once, with no PR anywhere. Exempting this one ref while pinning the
+        third-party ones protects the smaller target and leaves the larger one
+        open.
+
+        Pinning it also pins the package: `mykronos_ref` is derived from the
+        part after `@` (installer/templates.py), so the action and the code it
+        installs cannot drift apart.
+
+        NOTE for whoever updates this: v1 is an ANNOTATED tag. Its tag-object
+        SHA is not the commit. Dereference with
+        `gh api repos/ToddGBenson/mykronos/commits/<tag> --jq .sha`.
+        """
+        from mykronos.config import Settings
+
+        ref = Settings.model_fields["upload_action_ref"].default
+        if callable(ref):
+            ref = ref()
+
+        _, sep, rev = ref.rpartition("@")
+        assert sep, f"upload_action_ref carries no ref at all: {ref!r}"
+        assert re.fullmatch(r"[0-9a-f]{40}", rev), (
+            f"upload_action_ref is pinned to {rev!r}, which is not a 40-character "
+            "commit SHA. See this test's docstring for why this ref in particular "
+            "must not be a tag."
+        )
+
     def test_the_upload_action_pins_no_version_of_its_own(self) -> None:
         """The composite action installs the `mykronos` package, and which
         version it installs must follow the ref the action was resolved at.
@@ -516,11 +548,17 @@ class TestRegistry:
         them — and these templates ship into other people's repos, so a bad
         ref propagates on the next resync.
 
-        Only the first-party upload action is exempt: it is injected as
-        `upload_action_ref` by the installer rather than written in a
-        template, and its ref must stay a moving one because the composite
-        resolves its own package install from `github.action_ref`
-        (see test_the_upload_action_pins_no_version_of_its_own).
+        The first-party upload action is not written in a template — it is
+        injected as `upload_action_ref` by the installer — so this scan cannot
+        see it. It is pinned too, and asserted by
+        test_the_injected_upload_action_ref_is_a_commit_sha below.
+
+        An earlier version of this docstring claimed that ref had to stay
+        mutable because the composite resolves its package install from
+        `github.action_ref`. That is not what happens: `_base.yml.j2` always
+        passes `mykronos-ref` explicitly, derived from `upload_action_ref`
+        itself, and `github.action_ref` is only the fallback for hand-written
+        workflows. Pinning the ref pins the package with it.
         """
         from mykronos.config import get_settings
 
