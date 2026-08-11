@@ -108,17 +108,25 @@ jobs:
 
       - name: Scan dependencies
         id: sca
-        # OSV-Scanner exits 1 when it finds vulnerabilities, which is the
-        # normal case and not an error, so that one code is tolerated. Any
-        # other non-zero code is a real scan failure and must fail the step —
-        # a blanket `|| true` here is what let a missing binary masquerade as
-        # a clean supply chain.
+        # `--recursive` is required, not a tuning knob: `scan source` looks
+        # only at the directory it is given, and real repos keep their
+        # manifests in subdirectories (backend/, frontend/). Without it the
+        # scan walked the repo root, matched nothing, and exited 128 "no
+        # packages found" — a clean-looking empty result. `.gitignore` is
+        # honoured during the walk, so node_modules and friends stay out.
+        #
+        # Exit 1 means vulnerabilities were found, which is a result and not
+        # an error, so that one code is tolerated. Everything else fails the
+        # step: 127 is a general error, 128 means nothing was scanned, and a
+        # capability that scanned nothing must not report a clean supply
+        # chain (spec 04 §6). A blanket `|| true` here is what hid both of
+        # the bugs above for the entire life of this lane.
         run: |
           set -uo pipefail
           mkdir -p "${{ runner.temp }}/mykronos-results"
 
           run_osv() {
-            osv-scanner scan source "$@" .
+            osv-scanner scan source --recursive "$@" .
             rc=$?
             if [ "$rc" -gt 1 ]; then
               echo "::error::osv-scanner exited ${rc} — that is a scan failure, not a findings result"
@@ -126,8 +134,8 @@ jobs:
             fi
           }
 
-          run_osv --format sarif --output "${{ runner.temp }}/mykronos-results/osv.sarif"
-          run_osv --format json --output osv.json
+          run_osv --format sarif --output-file "${{ runner.temp }}/mykronos-results/osv.sarif"
+          run_osv --format json --output-file osv.json
           test -f osv.json || echo '{"results":[]}' > osv.json
 
       - name: Generate the SBOM
