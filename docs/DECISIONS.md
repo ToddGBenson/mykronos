@@ -965,6 +965,68 @@ import.
 
 ---
 
+## D-037 — The installer cannot participate in a repo's own process
+
+**Status:** Known limitation, deliberate for now
+**Spec:** [03 §4](../specs/03-workflow-installer.md), [02 §5](../specs/02-onboarding-and-github-app.md)
+
+Onboarding four real repositories produced four pull requests. Three merged.
+The fourth was refused by its own repository, and the refusal was correct.
+
+`ToddGBenson/keel` runs a `pr-governance.yml` gate that hard-fails a pull
+request unless the body carries a linked issue, an `## AI authorship`
+declaration naming which parts were machine-authored, a `## Definition of
+Done` checklist with at least one item engaged, a Conventional Commit title,
+and either an approving review from a second identity or a committed
+self-review artifact under `evidence/<issue>/g3/`. Its default branch sets
+`enforce_admins: true`, so an administrator cannot merge past any of it.
+
+The Workflow Installer writes its own pull request body (`_pr_body`) and knows
+nothing about any of that. It cannot: it has never read the repository's
+`PULL_REQUEST_TEMPLATE.md`, has no issue to link, and has no way to produce a
+review artifact. So on a repo with real process, the installer opens a pull
+request that cannot be merged, and nothing in the platform notices.
+
+**The gap is Mykronos's, not keel's.** It would have been easy to read this
+the other way round — a governance gate obstructing an automated improvement —
+and the temptation is to widen the tool's permissions until the obstruction
+goes away. That is the wrong direction. A repository that refuses a bot's pull
+request on process grounds, and does not let the bot's operator override it
+either, is a repository whose controls work. The platform should learn to
+comply, not acquire a way to bypass.
+
+**Two things were specifically not done.**
+
+The AI-authorship section could have been added honestly, because the change
+genuinely is machine-authored and saying so is exactly what the rule asks. The
+Definition of Done could not: it is an attestation about testing and review
+that only the person merging can make. Ticking those boxes to turn a check
+green would be falsifying a compliance record from inside a compliance gate.
+The check is not a formality standing between us and the real work; it *is*
+the work it describes.
+
+`enforce_admins` was also left alone. Relaxing it would have merged the pull
+request in one call, and it is the single most valuable line in that
+repository's configuration.
+
+**What a fix looks like**, when it is worth building: render the repository's
+`PULL_REQUEST_TEMPLATE.md` when one exists and fill the sections the installer
+can answer truthfully, plus a per-repo configurable preamble for what it
+cannot. That still leaves the linked issue and the review artifact, which are
+human acts by design — so the honest ceiling is a pull request that fails on
+two named items rather than five, with the remainder clearly the operator's.
+
+Until then the platform's answer is that a repository can have requirements
+the installer cannot meet, and the pull request waits for a person. That is a
+worse product and a better outcome than the alternative.
+
+One note for the demo, because it is easy to miss: keel requires AI-authorship
+disclosure on every change, which is the same control Aegis implements as
+`ai_disclosure_required` (spec 06 §2). The rule Mykronos ships for other
+people's repositories is one its own pull requests failed to satisfy.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
@@ -986,6 +1048,7 @@ backlog.
 | Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |
 | SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | When somebody needs to download one |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
+| Installer honouring a repo's `PULL_REQUEST_TEMPLATE.md` | D-037. On a repository with a governance gate the installer opens a pull request that cannot be merged, and the platform does not notice. The template is readable through the same `get_file` the collision check already uses | When a second repo refuses one |
 
 ---
 
