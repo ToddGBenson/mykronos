@@ -102,6 +102,15 @@ class InstallPlan:
     changes: list[FileChange] = field(default_factory=list)
     rendered: list[RenderedWorkflow] = field(default_factory=list)
 
+    #: Capabilities already requested whose rendered workflow no longer matches
+    #: what is in the repo — a config change rather than an enable or disable.
+    #: Without this the installer was blind to config: it decided there was
+    #: nothing to do by comparing capability *sets*, so narrowing a CodeQL
+    #: language matrix, setting a DAST target or changing a cron was stored in
+    #: the database and never reached the repository. The two then disagreed
+    #: silently until some later resync rewrote the file for no visible reason.
+    updated: list[str] = field(default_factory=list)
+
     #: Nothing to do. Either the request matches what is already merged, or it
     #: matches a request already in flight (see `already_pending`).
     is_noop: bool = False
@@ -121,6 +130,8 @@ class InstallPlan:
             parts.append(f"enable {', '.join(sorted(self.added))}")
         if self.removed:
             parts.append(f"disable {', '.join(sorted(self.removed))}")
+        if self.updated:
+            parts.append(f"update {', '.join(sorted(self.updated))}")
         return "; ".join(parts) or "no change"
 
 
@@ -184,30 +195,29 @@ class WorkflowInstaller:
             removed=sorted(active - requested),
         )
 
-        if not plan.added and not plan.removed:
-            # spec 03 §4: the request matches what is already enabled.
-            plan.is_noop = True
-            return plan
-
-        pending = set(onboarding.pending_capabilities or [])
-        if pending and pending == requested and onboarding.pending_pr_number:
-            # Same request, already in flight. Re-rendering would push an
-            # identical diff onto the open PR.
-            plan.is_noop = True
-            plan.already_pending = True
-            plan.pending_pr_number = onboarding.pending_pr_number
-            return plan
-
         configs = configs or {}
 
         enabled_after = sorted(
             c for c in requested if c in self.templates.available
         )
 
-        for capability in plan.added:
+        # What a further change would land on top of. An open install PR is
+        # that branch — comparing against the default branch instead would
+        # re-push every file the PR already carries.
+        repo = onboarding.github_repo_full_name
+        existing_pr = await self.github.find_open_pull_request(repo, BRANCH_PREFIX)
+        baseline = existing_pr.head_branch if existing_pr else onboarding.default_branch
+
+        # Render everything requested, not only what is newly added. A
+        # capability that is already on can still have a workflow that no
+        # longer matches its config, and that is precisely the case the old
+        # set-comparison could not see.
+        for capability in sorted(requested):
+            if capability not in self.templates.available:
+                continue
             rendered = self.templates.render(
                 capability,
-                repo_full_name=onboarding.github_repo_full_name,
+                repo_full_name=repo,
                 default_branch=onboarding.default_branch,
                 ingestion_api_url=self.ingestion_api_url,
                 token_secret_name=self.secret_name,
@@ -216,30 +226,55 @@ class WorkflowInstaller:
                 config=configs.get(capability, {}),
                 gate_depends_on=_gate_depends_on(capability, enabled_after),
             )
-            await self._assert_no_collision(onboarding, rendered.path)
             plan.rendered.append(rendered)
+
+            current = await self._existing_file(onboarding, rendered.path, baseline)
+            if current == rendered.content:
+                # Byte-identical. Skipping it is what keeps a re-save from
+                # showing up as churn on somebody's open pull request.
+                continue
+            if capability not in plan.added:
+                plan.updated.append(capability)
             plan.changes.append(FileChange(path=rendered.path, content=rendered.content))
 
         for capability in plan.removed:
             # Default is to delete the file so the repo's Actions tab stays
             # clean (spec 03 §3.3).
-            plan.changes.append(
-                FileChange(path=self.templates.target_path(capability), content=None)
-            )
+            path = self.templates.target_path(capability)
+            if await self._existing_file(onboarding, path, baseline) is None:
+                continue  # Already absent on the branch we would push to.
+            plan.changes.append(FileChange(path=path, content=None))
+
+        if not plan.changes:
+            # Judged on content, not on capability sets. The two differ exactly
+            # when config changed, which is the bug this replaced.
+            plan.is_noop = True
+            if existing_pr is not None and set(
+                onboarding.pending_capabilities or []
+            ) == requested:
+                plan.already_pending = True
+                plan.pending_pr_number = existing_pr.number
 
         return plan
 
-    async def _assert_no_collision(self, onboarding: RepoOnboarding, path: str) -> None:
-        existing = await self.github.get_file(
-            onboarding.github_repo_full_name, path, onboarding.default_branch
-        )
-        if existing is None or is_mykronos_generated(existing):
-            return
-        raise PathCollisionError(
-            f"{onboarding.github_repo_full_name} already has a file at {path} that "
-            "Mykronos did not generate. Refusing to overwrite it. Rename or remove "
-            "the existing workflow, then retry. (spec 03 §8)"
-        )
+    async def _existing_file(
+        self, onboarding: RepoOnboarding, path: str, ref: str
+    ) -> str | None:
+        """This repo's current content at `path`, refusing to touch a file a
+        person wrote (spec 03 §8).
+
+        The collision check lives here rather than in a separate pass so that
+        every path the plan touches is checked exactly once, and always
+        against the same read that decides whether it changed.
+        """
+        existing = await self.github.get_file(onboarding.github_repo_full_name, path, ref)
+        if existing is not None and not is_mykronos_generated(existing):
+            raise PathCollisionError(
+                f"{onboarding.github_repo_full_name} already has a file at {path} that "
+                "Mykronos did not generate. Refusing to overwrite it. Rename or remove "
+                "the existing workflow, then retry. (spec 03 §8)"
+            )
+        return existing
 
     # -- applying -------------------------------------------------------
 
@@ -413,6 +448,13 @@ class WorkflowInstaller:
             lines.append(
                 f"- **Disable `{capability}`** — removes `"
                 f"{self.templates.target_path(capability)}`"
+            )
+        for capability in plan.updated:
+            spec = self.templates.spec(capability)
+            lines.append(
+                f"- **Update `{capability}`** — already enabled; its workflow no "
+                f"longer matches the configuration held in Mykronos "
+                f"(`{spec.target}`, template v{spec.version})"
             )
         lines += [
             "",

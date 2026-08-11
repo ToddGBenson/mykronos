@@ -34,6 +34,7 @@ from mykronos.installer import (
     TemplateLibrary,
     WorkflowInstaller,
 )
+from mykronos.installer.installer import _gate_depends_on
 
 REPO = "example-org/payments-api"
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
@@ -142,6 +143,39 @@ async def install(installer, session, onboarding, registry, capabilities: set[st
     return await installer.apply(session, onboarding, plan, actor="tgb", registry=registry)
 
 
+async def already_enabled(
+    installer: WorkflowInstaller,
+    github: FakeGitHubClient,
+    onboarding: RepoOnboarding,
+    *capabilities: str,
+    config: dict[str, dict[str, object]] | None = None,
+) -> None:
+    """Put the repo in the state a merged install PR would leave it in.
+
+    Setting `enabled_capabilities` alone is not that state — it says the
+    workflow is running while the file it would run from is absent. The
+    installer compares rendered content against the repository now, so a
+    fixture that skips the file makes "already enabled" and "never installed"
+    indistinguishable, and every no-op test passes for the wrong reason.
+    """
+    onboarding.enabled_capabilities = sorted(capabilities)
+    repo = github.repos[onboarding.github_repo_full_name]
+    for capability in capabilities:
+        rendered = installer.templates.render(
+            capability,
+            repo_full_name=onboarding.github_repo_full_name,
+            default_branch=onboarding.default_branch,
+            ingestion_api_url=installer.ingestion_api_url,
+            token_secret_name=installer.secret_name,
+            upload_action_ref=installer.upload_action_ref,
+            mykronos_package_spec=installer.package_spec,
+            config=(config or {}).get(capability, {}),
+            gate_depends_on=_gate_depends_on(capability, sorted(capabilities)),
+        )
+        repo.files[rendered.path] = rendered.content
+        repo.branches[repo.default_branch][rendered.path] = rendered.content
+
+
 class TestPlanning:
     async def test_enabling_a_capability_stages_its_workflow(
         self, installer: WorkflowInstaller, onboarding: RepoOnboarding
@@ -152,23 +186,81 @@ class TestPlanning:
         assert GENERATED_MARKER in (plan.changes[0].content or "")
 
     async def test_disabling_stages_a_deletion(
-        self, installer: WorkflowInstaller, onboarding: RepoOnboarding
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+        github: FakeGitHubClient,
     ) -> None:
         """spec 03 §3.3: default is to delete the file so the repo's Actions
         tab stays clean."""
-        onboarding.enabled_capabilities = ["sast"]
+        await already_enabled(installer, github, onboarding, "sast")
         plan = await installer.plan(onboarding, set())
         assert plan.removed == ["sast"]
         assert plan.changes[0].is_delete
 
+    async def test_a_deletion_is_not_staged_for_a_file_that_is_gone(
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+    ) -> None:
+        """Somebody deleted the workflow by hand before disabling it here.
+        Committing a deletion for a path that does not exist is a commit that
+        changes nothing, and on GitHub it is an error rather than a no-op."""
+        onboarding.enabled_capabilities = ["sast"]
+        plan = await installer.plan(onboarding, set())
+        assert plan.removed == ["sast"]
+        assert plan.changes == []
+        assert plan.is_noop
+
     async def test_requesting_the_current_set_is_a_noop(
-        self, installer: WorkflowInstaller, onboarding: RepoOnboarding
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+        github: FakeGitHubClient,
     ) -> None:
         """spec 03 §4: no duplicate PR on a repeated save."""
-        onboarding.enabled_capabilities = ["sast"]
+        await already_enabled(installer, github, onboarding, "sast")
         plan = await installer.plan(onboarding, {"sast"})
         assert plan.is_noop
         assert plan.changes == []
+
+    async def test_a_config_change_alone_is_not_a_noop(
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+        github: FakeGitHubClient,
+    ) -> None:
+        """The bug this replaced. `sast` stays enabled and the capability set
+        does not move, so the old set-comparison returned "nothing to do" —
+        while the new language matrix sat in the database, disagreeing with a
+        repository nobody had told."""
+        await already_enabled(installer, github, onboarding, "sast")
+
+        plan = await installer.plan(
+            onboarding, {"sast"}, configs={"sast": {"languages": ["python"]}}
+        )
+
+        assert not plan.is_noop
+        assert plan.updated == ["sast"]
+        assert plan.added == []
+        assert [c.path for c in plan.changes] == [SAST_PATH]
+        assert '["python"]' in (plan.changes[0].content or "")
+
+    async def test_an_unchanged_config_is_still_a_noop(
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+        github: FakeGitHubClient,
+    ) -> None:
+        """The other half. Re-saving identical config must not push a
+        byte-identical diff, which is churn on somebody's open pull request."""
+        config = {"sast": {"languages": ["python"]}}
+        await already_enabled(installer, github, onboarding, "sast", config=config)
+
+        plan = await installer.plan(onboarding, {"sast"}, configs=config)
+
+        assert plan.is_noop
+        assert plan.updated == []
 
     async def test_unknown_capability_is_refused(
         self, installer: WorkflowInstaller, onboarding: RepoOnboarding
@@ -324,11 +416,27 @@ class TestApply:
     async def test_noop_opens_no_pull_request(
         self, installer, session, onboarding, registry, github: FakeGitHubClient
     ) -> None:
-        onboarding.enabled_capabilities = ["sast"]
+        await already_enabled(installer, github, onboarding, "sast")
         result = await install(installer, session, onboarding, registry, {"sast"})
 
         assert result.pull_request is None
         assert github.repos[REPO].pull_requests == []
+
+    async def test_a_missing_merged_workflow_is_restored(
+        self, installer, session, onboarding, registry, github: FakeGitHubClient
+    ) -> None:
+        """`sast` is enabled but its file is not in the repository — somebody
+        deleted it, or a merge went wrong. Re-saving the same set now opens a
+        PR putting it back, where the old set-comparison called it a no-op and
+        left the repo silently unscanned while the dashboard claimed coverage.
+        """
+        onboarding.enabled_capabilities = ["sast"]
+
+        result = await install(installer, session, onboarding, registry, {"sast"})
+
+        assert result.pull_request is not None
+        assert result.plan.updated == ["sast"]
+        assert [c.path for c in result.plan.changes] == [SAST_PATH]
 
     async def test_noop_still_converges_grants_and_the_secret(
         self, installer, session, onboarding, registry, github: FakeGitHubClient
