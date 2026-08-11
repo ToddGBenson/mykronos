@@ -125,9 +125,13 @@ jobs:
           set -uo pipefail
           mkdir -p "${{ runner.temp }}/mykronos-results"
 
+          # `|| rc=$?` rather than a bare call: Actions runs this as
+          # `bash -e`, so exit 1 would abort the step before the check below
+          # ever ran. Putting the call in a compound exempts it from errexit
+          # without disabling errexit for the rest of the script.
           run_osv() {
-            osv-scanner scan source --recursive "$@" .
-            rc=$?
+            local rc=0
+            osv-scanner scan source --recursive "$@" . || rc=$?
             if [ "$rc" -gt 1 ]; then
               echo "::error::osv-scanner exited ${rc} — that is a scan failure, not a findings result"
               exit "$rc"
