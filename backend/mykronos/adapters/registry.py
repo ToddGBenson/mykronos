@@ -49,7 +49,7 @@ class AdapterSpec:
 
 
 def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
-    from mykronos.adapters import cloud_generic, dast_zap, secrets_gitleaks
+    from mykronos.adapters import atlas_osv, cloud_generic, dast_zap, secrets_gitleaks
 
     specs = [
         # --- SARIF-native: no bespoke parser needed ---
@@ -63,7 +63,9 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         # workflow scans correctly and then fails at upload with "'atlas' has
         # no adapters registered" — the scoring, the counts and the template
         # all existed while the one line joining them to ingestion did not.
-        AdapterSpec("atlas", "osv-scanner", _sarif, "*.sarif", "OSV-Scanner"),
+        AdapterSpec(
+            "atlas", "osv-scanner", atlas_osv.normalize, "*.sarif", "OSV-Scanner"
+        ),
         # --- Bespoke: not SARIF ---
         AdapterSpec("secrets", "gitleaks", secrets_gitleaks.normalize, "*.json", "Gitleaks"),
         AdapterSpec("dast", "zap", dast_zap.normalize, "*.json", "OWASP ZAP"),

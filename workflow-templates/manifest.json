@@ -58,8 +58,8 @@
     "atlas": {
       "template": "atlas.yml.j2",
       "target": ".github/workflows/mykronos-atlas.yml",
-      "version": "1.1.0",
-      "summary": "Dependency vulnerabilities, SBOM and provenance with osv-scanner"
+      "version": "2.0.0",
+      "summary": "Dependency vulnerabilities with osv-scanner, SBOM with syft, and provenance"
     },
     "patchwork": {
       "template": "patchwork.yml.j2",

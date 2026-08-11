@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from mykronos.adapters.base import AdapterResult, ScanContext
@@ -50,12 +52,45 @@ def severity_from_security_score(score: float) -> Severity:
     return Severity.INFO
 
 
-def _clean_uri(uri: str) -> str:
-    """Normalise a SARIF artifact URI to a repo-relative path."""
+def _clean_uri(uri: str, workspace: Path | None = None) -> str:
+    """Normalise a SARIF artifact URI to a repo-relative path.
+
+    This used to only strip the scheme, which left an absolute path absolute.
+    That claim in the docstring was false for any tool emitting a full
+    `file:///` URI, and osv-scanner does — so Atlas findings recorded paths
+    like `home/runner/work/TheHub/TheHub/backend/requirements.txt`.
+
+    Two things break when that happens. A path is not clickable against the
+    repository, so triage cannot open the file. Worse, the finding's identity
+    derives from its path (spec 05 §5): move the checkout, change runner
+    image layout, and every finding reopens as new work that nobody did.
+
+    The runner path is stripped by matching the workspace root the upload
+    action already passes. GitHub's `/home/runner/work/<repo>/<repo>/` layout
+    is the fallback for anything that arrives without one.
+    """
     for prefix in ("file://", "file:"):
         if uri.startswith(prefix):
             uri = uri[len(prefix) :]
-    return uri.lstrip("/").removeprefix("./")
+    uri = uri.replace("\\", "/")
+
+    if workspace is not None:
+        root = str(workspace).replace("\\", "/").rstrip("/")
+        for candidate in (root, root.lstrip("/")):
+            if candidate and uri.lstrip("/").startswith(candidate.lstrip("/")):
+                uri = uri.lstrip("/")[len(candidate.lstrip("/")) :]
+                break
+
+    uri = uri.lstrip("/").removeprefix("./")
+
+    # Fallback for absolute runner paths with no workspace to match against.
+    # `/home/runner/work/<repo>/<repo>/rest` — the doubled name is Actions'
+    # own layout, and matching it is safer than guessing at a prefix length.
+    match = re.match(r"^home/runner/work/([^/]+)/\1/(?P<rest>.*)$", uri)
+    if match:
+        uri = match.group("rest")
+
+    return uri
 
 
 def _rule_index(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -215,7 +250,7 @@ def _convert_result(
         physical = locations[0].get("physicalLocation") or {}
 
     artifact = physical.get("artifactLocation") or {}
-    file_path = _clean_uri(str(artifact.get("uri") or "")) or None
+    file_path = _clean_uri(str(artifact.get("uri") or ""), context.workspace) or None
 
     region = physical.get("region") or {}
     context_region = physical.get("contextRegion") or {}

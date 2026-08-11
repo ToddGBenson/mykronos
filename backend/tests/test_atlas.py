@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -283,3 +284,209 @@ class TestIngestion:
         response = client.post("/api/ingest/atlas", json=payload, headers=atlas_auth)
 
         assert response.status_code == 422
+
+
+class TestTheWorkflow:
+    """The rendered workflow, not the scoring.
+
+    Both bugs here were invisible until the capability first ran for real:
+    the SBOM step had never executed, and when it finally did it documented
+    the wrong software.
+    """
+
+    @pytest.fixture
+    def rendered(self) -> str:
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+        return library.render(
+            "atlas",
+            repo_full_name="example-org/repo",
+            default_branch="main",
+            ingestion_api_url="https://example.invalid",
+            token_secret_name="MYKRONOS_INGESTION_TOKEN",
+            upload_action_ref="example-org/repo/actions/upload-results@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+        ).content
+
+    def test_the_sbom_documents_the_repo_not_the_runner(self, rendered: str) -> None:
+        """`cyclonedx-py environment` documents the interpreter the workflow
+        is running in — which by that point holds mykronos and osv-scanner,
+        because the previous step installed them. It had never looked at the
+        repository, and on a polyglot repo it saw only Python.
+
+        It survived review because it ran only on releases, and no onboarded
+        repository tags releases, so it had never executed once.
+        """
+        # Comment lines stripped: the template explains why the old tool was
+        # wrong, and that explanation names it. Asserting on the whole file
+        # would fail on the documentation rather than on the behaviour.
+        commands = "\n".join(
+            line for line in rendered.splitlines() if not line.lstrip().startswith("#")
+        )
+
+        assert "cyclonedx-py" not in commands
+        assert "cyclonedx-bom" not in commands
+        assert "anchore/syft" in commands
+        assert "scan dir:/src" in commands
+
+    def test_the_sbom_tool_is_pinned(self, rendered: str) -> None:
+        """Evidence produced by an unknown version of the tool is worth less
+        than none."""
+        assert "anchore/syft:latest" not in rendered
+        assert re.search(r"anchore/syft:v\d+\.\d+\.\d+", rendered)
+
+    def test_an_empty_sbom_is_not_archived(self, rendered: str) -> None:
+        """A repo pinning nothing has no resolved dependency set to record.
+        Archiving an empty document would show an SBOM present for a file
+        describing no software."""
+        assert "COMPONENTS" in rendered
+        assert "rm -f sbom.json" in rendered
+
+    def test_the_archive_step_keys_on_the_file_not_the_event(
+        self, rendered: str
+    ) -> None:
+        """Two copies of the same condition is how they come to disagree, and
+        the failure mode is a curl against a file that is not there."""
+        assert "hashFiles('sbom.json')" in rendered
+
+    def test_the_sbom_runs_off_releases_too(self, rendered: str) -> None:
+        """spec 07 §2 asks for one per tag. Stopping there meant repositories
+        that never tag produced none at all, and their evidence showed no SBOM
+        with nothing to say it was waiting."""
+        assert "refs/heads/main" in rendered
+        assert "github.event_name == 'release'" in rendered
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [("cyclonedx", "cyclonedx-json"), ("spdx", "spdx-json")],
+    )
+    def test_both_configured_formats_map_to_a_real_syft_format(
+        self, configured: str, expected: str
+    ) -> None:
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+        rendered = library.render(
+            "atlas",
+            repo_full_name="example-org/repo",
+            default_branch="main",
+            ingestion_api_url="https://example.invalid",
+            token_secret_name="MYKRONOS_INGESTION_TOKEN",
+            upload_action_ref="example-org/repo/actions/upload-results@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            config={"sbom_format": configured},
+        ).content
+
+        assert f'FORMAT="{configured}"' in rendered
+        assert expected in rendered
+
+
+OSV_SARIF = {
+    "version": "2.1.0",
+    "runs": [
+        {
+            "tool": {"driver": {"name": "osv-scanner", "rules": [
+                {"id": "GHSA-5p4m-2wfm-xmqj",
+                 "shortDescription": {"text": "js-yaml quadratic CPU"}}
+            ]}},
+            "results": [
+                {
+                    "ruleId": "GHSA-5p4m-2wfm-xmqj",
+                    "level": "error",
+                    "message": {
+                        "text": "Package 'js-yaml@4.3.0' is vulnerable to "
+                                "'GHSA-5p4m-2wfm-xmqj'."
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "file:///home/runner/work/mykronos/"
+                                           "mykronos/frontend/package-lock.json"
+                                }
+                            }
+                        }
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+class TestTheOsvAdapter:
+    """Two defects the first real Atlas scan exposed."""
+
+    def _normalize(self, document=None, workspace=None):
+        import json as _json
+
+        from mykronos.adapters.atlas_osv import normalize
+        from mykronos.adapters.base import ScanContext
+
+        context = ScanContext(
+            repo_full_name="ToddGBenson/mykronos",
+            capability="atlas",
+            tool_name="osv-scanner",
+            tool_version="1.0",
+            commit_sha="a" * 40,
+            branch="main",
+            workspace=workspace,
+        )
+        return normalize(
+            _json.dumps(document or OSV_SARIF).encode(), context
+        )
+
+    def test_the_package_is_extracted_from_the_message(self) -> None:
+        """osv-scanner puts it nowhere structured, and Patchwork's dependency
+        fixer keys on exactly these two fields (spec 08 §4). Null means every
+        dependency finding falls through to `triaged` and no fix is offered —
+        the capability that finds vulnerable dependencies producing findings
+        the one that fixes them cannot read."""
+        finding = self._normalize().findings[0]
+
+        assert finding.package_name == "js-yaml"
+        assert finding.package_version == "4.3.0"
+
+    def test_a_scoped_npm_name_keeps_its_scope(self) -> None:
+        """`@babel/traverse@7.0.0` — the name contains an `@`, so the version
+        comes from the last one, not the first."""
+        document = json.loads(json.dumps(OSV_SARIF))
+        document["runs"][0]["results"][0]["message"]["text"] = (
+            "Package '@babel/traverse@7.23.2' is vulnerable to 'GHSA-x'."
+        )
+
+        finding = self._normalize(document).findings[0]
+
+        assert finding.package_name == "@babel/traverse"
+        assert finding.package_version == "7.23.2"
+
+    def test_the_runner_path_is_stripped(self) -> None:
+        """`home/runner/work/<repo>/<repo>/...` is not clickable, and finding
+        identity derives from the path — so a runner layout change would
+        reopen every finding as new work nobody did."""
+        finding = self._normalize().findings[0]
+
+        assert finding.file_path == "frontend/package-lock.json"
+
+    def test_an_explicit_workspace_is_preferred(self) -> None:
+        from pathlib import Path
+
+        finding = self._normalize(
+            workspace=Path("/home/runner/work/mykronos/mykronos")
+        ).findings[0]
+
+        assert finding.file_path == "frontend/package-lock.json"
+
+    def test_an_unparseable_message_warns_rather_than_guessing(self) -> None:
+        """A silent miss here shows up much later as Patchwork offering no
+        fixes, which is a hard symptom to trace back to a message format."""
+        document = json.loads(json.dumps(OSV_SARIF))
+        document["runs"][0]["results"][0]["message"]["text"] = "something else"
+
+        outcome = self._normalize(document)
+
+        assert outcome.findings[0].package_name is None
+        assert any("package specifier" in w for w in outcome.warnings)
