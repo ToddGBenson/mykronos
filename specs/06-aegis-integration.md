@@ -26,6 +26,42 @@ scored, then combined into an `insider_risk_score` (0–100, higher = riskier):
 | **AI-authorship likelihood** | Heuristic/LLM-based estimate of whether code was AI-generated and, if so, whether the PR description discloses it | Diff content passed to an LLM classifier. **Off unless an endpoint is configured** — see §5 |
 | **Access anomaly** | Author has write access but has never contributed to this repo before | Repo contributor history |
 | **Rapid privilege-adjacent change** | PR modifies permission/role definitions (IAM policies, RBAC configs) shortly before or after a personnel-sensitive event, *if such an event feed is configured* (optional integration, off by default — no HR system integration in v1) | Optional external signal, disabled by default |
+| **Self-approval** | The only approving review came from the pull request's own author | GitHub reviews API |
+| **Sole approver on a sensitive path** | Exactly one approval, on a change touching a sensitive path | GitHub reviews API + `sensitive_paths` |
+| **Approval faster than reading** | An approval arrived sooner than the change could plausibly have been read, scaled to diff size | Review timestamps + diff size |
+| **AI-authored without a verification claim** | The PR discloses AI authorship (or the classifier flags it) and no reviewer states what they verified independently | PR body + reviews |
+
+### 2a. Review integrity, and why there is no collusion model
+
+The four signals above exist because the interesting insider-risk scenarios —
+a person and a second account, a person and an agent — all work the same way:
+they route a change around independent review. That is the mechanism, and the
+mechanism is observable on a single pull request.
+
+**Aegis does not model relationships between people, and this is deliberate.**
+A signal like "this reviewer approves this author disproportionately often" is
+what would actually catch a sustained two-person conspiracy, and Mykronos will
+not compute it. Three reasons, in increasing order of importance:
+
+1. It requires exactly what §9 forbids — scores aggregated per person, keyed
+   on pairs, trended over time.
+2. The base rate is very close to zero, so almost every positive is a false
+   one. Two colleagues who work on the same subsystem approve each other's
+   changes constantly, and that is called a team.
+3. The cost of a false positive is not comparable to any other finding this
+   platform produces. A wrong SAST result wastes an hour. A wrong collusion
+   signal accuses two named colleagues of conspiring, inside a system their
+   employer runs, on evidence that cannot distinguish conspiracy from
+   colleagues who sit next to each other.
+
+The review-integrity signals get most of the value with none of that. "This
+change was approved by its own author" is a fact about the change, disputable
+on specifics, and actionable by asking for a second reviewer. "These two
+people are colluding" is an accusation, and Aegis is not equipped to make it.
+
+A deployment that genuinely needs relationship analysis should do it somewhere
+with a legal basis, a review board, and a human process for handling a hit —
+not as a heuristic in a CI pipeline.
 
 **v1 explicitly does NOT integrate with HR/personnel systems.** The
 "rapid privilege-adjacent change" signal only activates if a deployment
@@ -134,6 +170,15 @@ its author has not contributed here before, so look properly" — it does not
 say "this person is a risk". Nothing in Mykronos aggregates these scores per
 author, ranks contributors, or trends an individual over time, and adding such
 a view is a spec change, not a feature request.
+
+This clause has been tested once and held. Asked to detect human/human and
+human/AI collusion, the answer was the review-integrity signals in §2a rather
+than a relationship model, because collusion detection needs per-pair
+aggregation over time and that is the thing this paragraph exists to prevent.
+The request was reasonable and the mechanism it was after is now covered; what
+was declined was inferring intent about named people from CI metadata. If a
+future change does need the relationship view, §9 must be rewritten first and
+deliberately — the clause is not scenery.
 
 **Access.** Insider-risk rows are **admin-only**, at the query layer rather
 than hidden in the UI — the same rule and the same reason as raw tool output
