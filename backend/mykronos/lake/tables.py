@@ -35,6 +35,9 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     ("package_name", "VARCHAR"),
     ("package_version", "VARCHAR"),
     ("status", "VARCHAR"),
+    # The finding_id that replaced this record, when `status = superseded`
+    # (spec 05 §5a). Null otherwise, which is the overwhelming majority.
+    ("superseded_by", "VARCHAR"),
     ("first_seen_scan_run_id", "VARCHAR"),
     ("last_seen_scan_run_id", "VARCHAR"),
     ("first_seen_at", "TIMESTAMP"),

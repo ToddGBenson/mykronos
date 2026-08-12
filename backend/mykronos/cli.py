@@ -42,6 +42,7 @@ from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
+from mykronos.reprocess import reprocess
 from mykronos.schemas import Capability
 
 CAPABILITIES = [c.value for c in Capability]
@@ -113,6 +114,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "purge-insider-risk",
         help="Delete insider-risk rows past their retention window (spec 06 §9)",
     )
+    reproc = sub.add_parser(
+        "reprocess",
+        help="Re-derive findings from archived tool output (spec 05 §5a)",
+    )
+    reproc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Report what would change and write nothing. Do this first: a "
+            "real run can retire hundreds of records."
+        ),
+    )
+    reproc.add_argument("--repo", default=None, help="Limit to one repository.")
+    reproc.add_argument(
+        "--capability",
+        default=None,
+        choices=CAPABILITIES,
+        help="Limit to one capability — usually the one whose adapter changed.",
+    )
+
     resync = sub.add_parser(
         "resync-templates",
         help="Open update PRs where rendered workflows have drifted (spec 03 §6)",
@@ -318,6 +339,42 @@ def main(argv: list[str] | None = None) -> int:
                 _print_table(
                     ["repo", "retention days"], sorted(purge.applied.items())
                 )
+            return 0
+
+        if args.command == "reprocess":
+            # Distinct names: `outcome` and `rows` are already bound above by
+            # other subcommands, and reusing them made mypy infer the wrong
+            # type rather than fail at runtime.
+            rederived = reprocess(
+                catalog,
+                buffer,
+                settings.raw_dir,
+                repo_full_name=args.repo,
+                capability=args.capability,
+                dry_run=args.dry_run,
+            )
+            reprocess_rows = [
+                (
+                    scan.repo_full_name,
+                    scan.capability,
+                    scan.scan_run_id[:12],
+                    scan.produced,
+                    scan.unchanged,
+                    scan.superseded,
+                    scan.error[:40] or "",
+                )
+                for scan in rederived.scans
+            ]
+            _print_table(
+                ["repo", "capability", "scan", "produced", "same", "superseded", "error"],
+                reprocess_rows,
+            )
+            print()
+            print(rederived.summary())
+            if args.dry_run:
+                print("Dry run - nothing was written.")
+            else:
+                print("Run `compact` to make the re-derived findings queryable.")
             return 0
 
         if args.command == "resync-templates":

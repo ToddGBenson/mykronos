@@ -61,6 +61,28 @@ class FindingStatus(StrEnum):
     FALSE_POSITIVE = "false_positive"
     ACCEPTED_RISK = "accepted_risk"
     SUPPRESSED = "suppressed"
+    #: Withdrawn because the adapter that produced it was wrong (spec 05 §5a).
+    #: A statement about the record, not the vulnerability — which is very
+    #: likely still open under a new id, named in `superseded_by`.
+    #:
+    #: Deliberately not `fixed`. That is the only input to mean-time-to-fix,
+    #: so retiring mis-identified findings as fixed would report a mass
+    #: remediation every time an adapter was corrected.
+    SUPERSEDED = "superseded"
+
+
+#: Statuses that mean the finding is no longer outstanding work. `superseded`
+#: is here and `open` is not, but note that `superseded` is *also* excluded
+#: from the resolved-work metrics — it is neither.
+TERMINAL_STATUSES = frozenset(
+    {
+        FindingStatus.FIXED,
+        FindingStatus.FALSE_POSITIVE,
+        FindingStatus.ACCEPTED_RISK,
+        FindingStatus.SUPPRESSED,
+        FindingStatus.SUPERSEDED,
+    }
+)
 
 
 def utcnow() -> datetime:
