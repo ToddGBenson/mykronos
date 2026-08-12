@@ -1,9 +1,9 @@
 {
   "$comment": [
-    "Template registry for the Workflow Installer (spec 03 §2, §6).",
+    "Template registry for the Workflow Installer (spec 03 \u00a72, \u00a76).",
     "",
     "`version` is the template semver stamped into every rendered file's header.",
-    "Bumping it is what makes a bulk resync (spec 03 §6) open update PRs across",
+    "Bumping it is what makes a bulk resync (spec 03 \u00a76) open update PRs across",
     "every repo with that capability enabled. Resync compares rendered content",
     "against what is actually in the repo rather than trusting this string, in",
     "case someone hand-edited the file -- but the version is what tells an",
@@ -58,20 +58,20 @@
     "atlas": {
       "template": "atlas.yml.j2",
       "target": ".github/workflows/mykronos-atlas.yml",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "summary": "Dependency vulnerabilities with osv-scanner, SBOM with syft, and provenance"
     },
     "patchwork": {
       "template": "patchwork.yml.j2",
       "target": ".github/workflows/mykronos-patchwork.yml",
       "version": "1.0.0",
-      "summary": "Auto-remediation — opens draft pull requests, never merges"
+      "summary": "Auto-remediation \u2014 opens draft pull requests, never merges"
     },
     "oracle": {
       "template": "oracle-gate.yml.j2",
       "target": ".github/workflows/mykronos-oracle.yml",
       "version": "1.0.0",
-      "summary": "Risk decision gate — asks Oracle to judge a commit once the scanners have reported"
+      "summary": "Risk decision gate \u2014 asks Oracle to judge a commit once the scanners have reported"
     }
   }
 }
