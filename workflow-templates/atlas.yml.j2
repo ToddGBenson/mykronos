@@ -217,7 +217,7 @@
         run: |
           set -euo pipefail
           REF=$(curl --fail --silent --show-error --max-time 60 \
-            -X POST "<< ingestion_api_url >>/api/ingest/raw?scan_run_id=${{ github.run_id }}&filename=sbom.json" \
+            -X POST "<< ingestion_api_url >>/api/ingest/raw?scan_run_id=${{ github.run_id }}&capability=<< capability >>&filename=sbom.json" \
             -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
             -H "Content-Type: application/octet-stream" \
             --data-binary @sbom.json | jq -r '.raw_output_ref')
