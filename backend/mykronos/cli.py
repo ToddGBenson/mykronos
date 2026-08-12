@@ -128,6 +128,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproc.add_argument("--repo", default=None, help="Limit to one repository.")
     reproc.add_argument(
+        "--all-history",
+        action="store_true",
+        help=(
+            "Re-derive every archived scan, not just the latest per repo and "
+            "capability. Rarely what you want: older scans are history, and "
+            "re-materialising them resurrects findings later scans resolved."
+        ),
+    )
+    reproc.add_argument(
         "--capability",
         default=None,
         choices=CAPABILITIES,
@@ -352,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_full_name=args.repo,
                 capability=args.capability,
                 dry_run=args.dry_run,
+                all_history=args.all_history,
             )
             reprocess_rows = [
                 (

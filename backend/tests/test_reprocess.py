@@ -365,3 +365,176 @@ class TestItDoesNotRewriteHistory:
         )[0][0]
 
         assert first_seen == scan_started
+
+
+class TestIdentityMatchesIngestion:
+    def test_reprocess_computes_ids_the_same_way_the_api_does(self) -> None:
+        """Two code paths, one identity rule.
+
+        `compute_finding_id` keys dependency findings on the package rather
+        than the path, and reprocess originally omitted `package_name`. A
+        re-derived finding therefore got a different id from the one a real
+        scan produces for the same vulnerability, so the next scan would have
+        inserted a third record instead of updating.
+
+        Compared as argument names rather than by running both, because the
+        failure is an argument quietly missing from one call.
+        """
+        import inspect
+
+        from mykronos import reprocess as reprocess_module
+        from mykronos.api import ingest as ingest_module
+
+        def call_args(source: str) -> set[str]:
+            start = source.index("compute_finding_id(")
+            depth = 0
+            for offset, char in enumerate(source[start:], start):
+                depth += char == "("
+                depth -= char == ")"
+                if depth == 0:
+                    body = source[start + len("compute_finding_id(") : offset]
+                    break
+            return {
+                line.split("=", 1)[0].strip()
+                for line in body.split(",")
+                if "=" in line
+            }
+
+        api = call_args(inspect.getsource(ingest_module))
+        derived = call_args(inspect.getsource(reprocess_module))
+
+        missing = api - derived
+        assert not missing, (
+            f"reprocess omits {sorted(missing)} when computing finding_id; "
+            "re-derived findings would not match what a scan produces"
+        )
+
+
+class TestItDoesNotResurrectTheDead:
+    def test_a_fixed_finding_is_not_reopened(
+        self, client, archived, admin_auth, run_compaction
+    ) -> None:
+        """Re-derivation is not a new observation.
+
+        Re-ingesting a historical scan re-reports findings a later scan found
+        gone, and compaction's reopen rule (spec 05 §5) treats a re-reported
+        `fixed` finding as having come back. The first real run reopened 263
+        records that way, inflating the open count with work already done.
+        """
+        settings = client.app.state.settings
+        catalog = archived
+
+        # Reprocess once so the corrected finding exists, then resolve it the
+        # way a later scan would.
+        reprocess(catalog, client.app.state.buffer, settings.raw_dir)
+        run_compaction()
+        from mykronos.lake.mutate import locate_findings, update_findings
+
+        open_ids = [
+            r[0]
+            for r in catalog.query(
+                "SELECT finding_id FROM findings WHERE status = 'open'"
+            )
+        ]
+        update_findings(
+            catalog,
+            locate_findings(catalog, open_ids),
+            "status = 'fixed', resolved_at = ?",
+            [__import__("mykronos.schemas", fromlist=["utcnow"]).utcnow()],
+        )
+
+        reprocess(catalog, client.app.state.buffer, settings.raw_dir)
+        run_compaction()
+
+        assert catalog.query(
+            "SELECT count(*) FROM findings WHERE status = 'open'"
+        ) == [(0,)], "a re-derivation must not reopen a finding already fixed"
+
+    def test_a_dismissed_finding_keeps_its_dismissal(
+        self, client, archived, admin_auth, run_compaction
+    ) -> None:
+        """A false positive somebody reasoned about is a decision, and a
+        re-run of the adapter does not overturn it."""
+        settings = client.app.state.settings
+        catalog = archived
+
+        reprocess(catalog, client.app.state.buffer, settings.raw_dir)
+        run_compaction()
+        finding_id = catalog.query(
+            "SELECT finding_id FROM findings WHERE status = 'open'"
+        )[0][0]
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={"status": "false_positive", "reason": "vendored copy"},
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        reprocess(catalog, client.app.state.buffer, settings.raw_dir)
+        run_compaction()
+
+        assert catalog.query(
+            "SELECT status FROM findings WHERE finding_id = ?", [finding_id]
+        ) == [("false_positive",)]
+
+
+class TestScope:
+    def test_only_the_latest_scan_per_capability_is_re_derived(
+        self, client, archived, run_compaction
+    ) -> None:
+        """Older scans are history, not current state.
+
+        Re-materialising them resurrects findings later scans had resolved,
+        and the absence reconciler then closes each one again with
+        `resolved_at = now`. The first real run put 282 findings' worth of
+        imaginary remediation into mean-time-to-fix that way — the number the
+        `superseded` status exists to keep honest, corrupted from a direction
+        that status cannot defend.
+        """
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'atlas')}"}
+        settings = client.app.state.settings
+
+        client.post(
+            "/api/ingest/scan-run",
+            json={
+                "scan_run_id": "reproc-2",
+                "repo_full_name": REPO,
+                "capability": "atlas",
+                "tool_name": "osv-scanner",
+                "tool_version": "2.5.0",
+                "commit_sha": "b91f2c7",
+                "branch": "main",
+                "triggered_by": "push",
+                "started_at": "2026-08-12T18:00:00",
+                "scan_status": "success",
+                "finding_count": 0,
+            },
+            headers=auth,
+        )
+        run_compaction()
+        _set_raw_ref(
+            archived, "reproc-2", "raw/example-org/payments-api/reproc-1/osv.sarif"
+        )
+
+        result = reprocess(
+            archived, client.app.state.buffer, settings.raw_dir, dry_run=True
+        )
+
+        assert [s.scan_run_id for s in result.scans] == ["reproc-2"], (
+            "expected only the most recent atlas scan"
+        )
+
+    def test_all_history_is_available_when_asked_for(
+        self, client, archived, run_compaction
+    ) -> None:
+        settings = client.app.state.settings
+
+        result = reprocess(
+            archived,
+            client.app.state.buffer,
+            settings.raw_dir,
+            dry_run=True,
+            all_history=True,
+        )
+
+        assert result.scans, "expected at least the one archived scan"

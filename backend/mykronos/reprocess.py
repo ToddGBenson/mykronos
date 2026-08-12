@@ -80,6 +80,7 @@ def _archived_scans(
     catalog: Catalog,
     repo_full_name: str | None,
     capability: str | None,
+    all_history: bool,
 ) -> list[tuple[str, str, str, str, str, str, str, object]]:
     where = ["raw_output_ref IS NOT NULL", "raw_output_ref <> ''"]
     params: list[str] = []
@@ -90,13 +91,35 @@ def _archived_scans(
         where.append("capability = ?")
         params.append(capability)
 
+    # Latest scan per repo and capability only, unless asked for all history.
+    #
+    # Re-deriving every archived scan was the first attempt and it was wrong.
+    # Only the most recent scan describes what is true now; the others are
+    # history. Re-materialising them resurrects findings that later scans had
+    # already resolved, and the absence reconciler then closes each one again
+    # with `resolved_at = now` — 282 findings in the first real run, which put
+    # a day's worth of imaginary remediation into mean-time-to-fix. The
+    # `superseded` status exists to keep exactly that number honest, and this
+    # corrupted it from a direction the status could not defend.
+    ranked = (
+        "SELECT scan_run_id, repo_full_name, capability, tool_name, "
+        "       coalesce(tool_version, '') AS tool_version, "
+        "       coalesce(commit_sha, '') AS commit_sha, "
+        "       coalesce(branch, '') AS branch, "
+        "       coalesce(completed_at, started_at) AS observed_at, "
+        "       row_number() OVER ("
+        "           PARTITION BY repo_full_name, capability "
+        "           ORDER BY coalesce(completed_at, started_at) DESC"
+        "       ) AS rn "
+        "FROM scan_runs "
+        f"WHERE {' AND '.join(where)}"
+    )
+    outer = "" if all_history else "WHERE rn = 1 "
     return catalog.query(
         "SELECT scan_run_id, repo_full_name, capability, tool_name, "
-        "       coalesce(tool_version, ''), coalesce(commit_sha, ''), "
-        "       coalesce(branch, ''), coalesce(completed_at, started_at) "
-        "FROM scan_runs "
-        f"WHERE {' AND '.join(where)} "
-        "ORDER BY coalesce(completed_at, started_at)",
+        "       tool_version, commit_sha, branch, observed_at "
+        f"FROM ({ranked}) {outer}"
+        "ORDER BY observed_at",
         params,
     )
 
@@ -109,6 +132,7 @@ def reprocess(
     repo_full_name: str | None = None,
     capability: str | None = None,
     dry_run: bool = False,
+    all_history: bool = False,
 ) -> ReprocessResult:
     """Re-derive every archived scan's findings with the current adapters.
 
@@ -117,7 +141,7 @@ def reprocess(
     """
     result = ReprocessResult()
 
-    for row in _archived_scans(catalog, repo_full_name, capability):
+    for row in _archived_scans(catalog, repo_full_name, capability, all_history):
         scan_run_id, repo, cap, tool, tool_version, commit_sha, branch, seen_at = row
         scan = ScanReprocess(
             scan_run_id=str(scan_run_id),
@@ -234,7 +258,22 @@ def _ingest(
     rows = []
     ids: set[str] = set()
 
+    # Dispositions already reached on these findings. Re-derivation is not a
+    # new observation: re-ingesting a historical scan re-reports findings a
+    # *later* scan found gone, and compaction's reopen rule (spec 05 §5) would
+    # resurrect every one of them. The first real run reopened 263 records
+    # that way. A finding already fixed, dismissed or superseded keeps its
+    # disposition and is simply not written again.
+    settled = _settled_statuses(catalog, context.repo_full_name, context.capability)
+
     for finding in getattr(parsed, "findings", []):
+        # Exactly the arguments `/api/ingest/findings` passes, in the same
+        # order. Identity must be computed one way: `compute_finding_id` keys
+        # dependency findings on the package rather than the path, so omitting
+        # `package_name` here would give a re-derived finding a different id
+        # from the one a real scan produces for the same vulnerability — and
+        # the next scan would then insert a third record rather than update
+        # this one.
         finding_id, fingerprint_version = compute_finding_id(
             repo_full_name=context.repo_full_name,
             capability=context.capability,
@@ -243,8 +282,14 @@ def _ingest(
             symbol=finding.symbol,
             code_snippet=finding.code_snippet,
             line_start=finding.line_start,
+            package_name=finding.package_name,
+            title=finding.title,
         )
         ids.add(finding_id)
+        if finding_id in settled:
+            # Counted as still produced, so it is not retired as stale, but
+            # its recorded disposition stands.
+            continue
         rows.append(
             {
                 "finding_id": finding_id,
@@ -278,6 +323,16 @@ def _ingest(
     if rows and not dry_run:
         buffer.append("findings", rows)
     return ids
+
+
+def _settled_statuses(catalog: Catalog, repo_full_name: str, capability: str) -> set[str]:
+    """Findings for this repo and capability that already have a disposition."""
+    rows = catalog.query(
+        "SELECT finding_id FROM findings "
+        "WHERE repo_full_name = ? AND capability = ? AND status <> 'open'",
+        [repo_full_name, capability],
+    )
+    return {str(row[0]) for row in rows}
 
 
 def _open_ids_for(catalog: Catalog, scan_run_id: str) -> set[str]:

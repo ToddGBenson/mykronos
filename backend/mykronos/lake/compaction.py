@@ -33,6 +33,7 @@ from mykronos.lake.tables import (
     PATCH_COLUMNS,
     PRIMARY_KEY,
     TABLES,
+    add_missing_columns,
     column_names,
 )
 
@@ -269,8 +270,18 @@ def _compact_table(
         con.execute("DROP TABLE IF EXISTS part")
         con.execute(
             f"CREATE TEMP TABLE part AS "
-            f"SELECT {projection} FROM read_parquet('{pattern}', union_by_name = 1)"
+            f"SELECT * FROM read_parquet('{pattern}', union_by_name = 1)"
         )
+        # Schema evolution. `union_by_name` reconciles columns *across* files;
+        # it cannot invent one that no file has. A column added to the schema
+        # after a partition was written is absent from every file in it, and
+        # naming it in the projection fails with a binder error pointing at
+        # the column rather than at the cause.
+        #
+        # Adding a finding column is not exotic — `superseded_by` arrived with
+        # spec 05 §5a — so missing columns are filled with NULL here, which is
+        # what a row written before the column existed truthfully has.
+        add_missing_columns(con, "part", table)
 
         if table == "findings":
             reopened = con.execute(

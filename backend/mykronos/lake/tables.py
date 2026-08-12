@@ -12,7 +12,7 @@ catalog views.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 Column = tuple[str, str]
 
@@ -253,3 +253,23 @@ def empty_select(table: str) -> str:
     """
     cols = ", ".join(f"CAST(NULL AS {sql_type}) AS {name}" for name, sql_type in TABLES[table])
     return f"SELECT {cols}, CAST(NULL AS VARCHAR) AS dt WHERE 1=0"
+
+
+def add_missing_columns(con: Any, temp_table: str, table: str) -> None:
+    """Give an in-memory copy of a partition every column the schema declares.
+
+    Parquet files are immutable and carry the schema they were written with.
+    `union_by_name` reconciles columns *across* files; it cannot invent one
+    that no file has, so a column added after a partition was written is
+    absent from all of them and any query naming it fails with a binder error
+    pointing at the column rather than at the cause.
+
+    Adding a column is not exotic — `superseded_by` arrived with spec 05 §5a —
+    and the correct value for a row written before the column existed is NULL.
+    Partitions are therefore upgraded lazily, as they are rewritten, rather
+    than by a migration that touches every file in the lake at once.
+    """
+    present = {str(row[0]) for row in con.execute(f"DESCRIBE {temp_table}").fetchall()}
+    for name, sql_type in TABLES[table]:
+        if name not in present:
+            con.execute(f"ALTER TABLE {temp_table} ADD COLUMN {name} {sql_type}")

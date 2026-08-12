@@ -25,7 +25,7 @@ from typing import Any
 import duckdb
 
 from mykronos.lake.catalog import Catalog, sql_path
-from mykronos.lake.tables import TABLES, column_names
+from mykronos.lake.tables import TABLES, add_missing_columns, column_names
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +87,13 @@ def update_findings(
             con.execute("DROP TABLE IF EXISTS part")
             con.execute(
                 f"CREATE TEMP TABLE part AS "
-                f"SELECT {projection} FROM read_parquet('{pattern}', union_by_name = 1)"
+                f"SELECT * FROM read_parquet('{pattern}', union_by_name = 1)"
             )
+            # A column added to the schema after this partition was written is
+            # absent from every file in it, and `union_by_name` cannot invent
+            # one no file has. Fill it with NULL, which is what a row written
+            # before the column existed truthfully holds.
+            add_missing_columns(con, "part", "findings")
 
             placeholders = ", ".join(["?"] * len(finding_ids))
             guard = " AND status = ?" if only_if_status else ""
@@ -146,8 +151,13 @@ def purge_rows(
             con.execute("DROP TABLE IF EXISTS part")
             con.execute(
                 f"CREATE TEMP TABLE part AS "
-                f"SELECT {projection} FROM read_parquet('{pattern}', union_by_name = 1)"
+                f"SELECT * FROM read_parquet('{pattern}', union_by_name = 1)"
             )
+            # A column added to the schema after this partition was written is
+            # absent from every file in it, and `union_by_name` cannot invent
+            # one no file has. Fill it with NULL, which is what a row written
+            # before the column existed truthfully holds.
+            add_missing_columns(con, "part", table)
             before = con.execute("SELECT count(*) FROM part").fetchone()
             con.execute(f"DELETE FROM part WHERE {where}", params)
             after = con.execute("SELECT count(*) FROM part").fetchone()
