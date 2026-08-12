@@ -506,6 +506,71 @@ class TestRegistry:
             "the install step must resolve its ref from github.action_ref"
         )
 
+    def test_the_sbom_step_invokes_syft_in_a_way_that_can_work(self) -> None:
+        """The SBOM step had never once produced an SBOM, and nothing noticed.
+
+        It called `cyclonedx-py --output-format CYCLONEDX --outfile sbom.json`.
+        `--output-format` is the *serialisation* (JSON|XML), not the SBOM
+        standard, and `--outfile` is not a flag at all — it is `-o`. Both
+        halves were wrong, so every invocation died. It went unseen for months
+        because the step ran on releases only and most repositories never tag;
+        the failure surfaced the day the trigger was broadened.
+
+        The tool has since been replaced with syft, which is a better answer to
+        the same requirement. But swapping the tool does not address why the
+        breakage survived so long — nothing asserted the invocation was even
+        shaped like something that could succeed. This is that assertion, so
+        the next silent SBOM failure is caught by CI rather than by a trigger
+        change months later.
+
+        This deliberately checks only what is checkable without a container:
+        that the image is pinned, that every accepted `sbom_format` maps to a
+        syft output, and that the empty-document guard is still present.
+        """
+        from mykronos.config import get_settings
+
+        template = (
+            get_settings().workflow_templates_dir / "atlas.yml.j2"
+        ).read_text(encoding="utf-8")
+
+        # An SBOM is evidence. Evidence produced by an unknown version of the
+        # tool is worth less than none, so `latest` is not acceptable here.
+        assert re.search(r"anchore/syft:v\d+\.\d+\.\d+", template), (
+            "syft must be pinned to an exact tag in the SBOM step -- found no "
+            "`anchore/syft:vX.Y.Z`. A floating tag makes the SBOM unreproducible."
+        )
+        assert "anchore/syft:latest" not in template, (
+            "syft is pinned to `latest`; an SBOM produced by an unknown tool "
+            "version is not evidence."
+        )
+
+        # Every value the step accepts must map to a syft output. The previous
+        # bug was exactly this: a config value fed somewhere it was not valid.
+        for sbom_format, syft_output in (("spdx", "spdx-json"), ("cyclonedx", "cyclonedx-json")):
+            assert syft_output in template, (
+                f"sbom_format={sbom_format!r} has no syft output mapping "
+                f"({syft_output!r} absent). An accepted config value that reaches "
+                "no branch fails at runtime, in the lane whose job is evidence."
+            )
+
+        # Scoped to the syft invocation, NOT the whole template. A bare
+        # `"--output" in template` passes on osv-scanner's own --output further
+        # up the file -- it survived a mutation that replaced syft's --output
+        # with -o, which makes it decoration rather than a check.
+        syft_call = template[template.index("anchore/syft") :]
+        syft_call = syft_call[: syft_call.index("sbom.json")]
+        assert "--output" in syft_call, (
+            "syft is invoked without --output; it would write its default format "
+            f"regardless of sbom_format. Invocation was:\n{syft_call}"
+        )
+
+        # An empty SBOM is worse than none: the dashboard would show evidence
+        # present for a document describing no software.
+        assert re.search(r'COMPONENTS.*-eq 0|COMPONENTS.*== *"?0', template), (
+            "the zero-component guard is gone -- an empty SBOM would be archived "
+            "and would read as evidence."
+        )
+
     def test_every_third_party_action_is_pinned_to_a_sha(self) -> None:
         """A mutable tag is a standing write-access grant to someone else.
 
