@@ -83,7 +83,8 @@ results siloed in its own tool's UI only.
 | `code_snippet` | text, nullable | The few lines of source at the finding's location, captured by the adapter at scan time while the repo is checked out. Normalized and hashed into the fingerprint (§5); retained for display and for re-fingerprinting during a future migration. |
 | `fingerprint_version` | string | Which fingerprint rule produced `finding_id` (e.g. `v2-snippet`, `v1-line`). Required so a future change to the rule is detectable and migratable rather than silently re-identifying every finding. |
 | `package_name` / `package_version` | string, nullable | for SCA/dependency findings |
-| `status` | enum | `open, fixed, false_positive, accepted_risk, suppressed` |
+| `status` | enum | `open, fixed, false_positive, accepted_risk, suppressed, superseded` |
+| `superseded_by` | string, nullable | The `finding_id` that replaced this record. Set only with `status = superseded` (§5a). |
 | `first_seen_scan_run_id` | UUID | |
 | `last_seen_scan_run_id` | UUID | |
 | `first_seen_at` / `last_seen_at` | datetime | |
@@ -278,6 +279,51 @@ Notes on each:
   a repo (i.e., it was open before, not reported this time), a background
   reconciliation job marks it `fixed` — but only after two consecutive
   scans confirm its absence, to avoid flapping on flaky scanners.
+
+## 5a. Reprocessing, and the `superseded` status
+
+An adapter can be wrong. When one is corrected, every finding it already
+produced carries the old shape — and because `finding_id` is derived from the
+finding's content (§5), correcting the adapter changes the identity of every
+affected finding.
+
+Raw tool output is archived (§7), so those findings can be re-derived without
+re-running a scan. `reprocess` does exactly that: read the archived output,
+run the **current** adapter, ingest the results. The new records arrive under
+new ids; the old records must go somewhere.
+
+**They do not become `fixed`.** This is the whole reason for a sixth status.
+`fixed` is the sole input to mean-time-to-fix (spec 10 §2.3), so retiring a
+few hundred mis-identified findings as `fixed` would report them as resolved
+minutes after they were first seen, and the platform's headline maturity
+measure would show an improvement that never happened. Correcting an adapter
+would look like fixing every vulnerability it had ever mis-reported. That is
+the same claim spec 10 §2.2 refuses to let a human make by hand, arriving
+from a different direction.
+
+Letting the absence reconciler above deal with them is worse rather than
+neutral: it also writes `fixed`, and it requires two further scans, which a
+repository that cannot currently run its workflows will never produce.
+
+`superseded` therefore means: **this record was withdrawn because the adapter
+that produced it was wrong.** It is a statement about the record, not about
+the vulnerability — which is very likely still open, under a new id.
+
+Normative:
+
+- **Terminal, and machine-set only.** Reprocessing sets it. No human
+  disposition may, for the same reason no human may set `fixed`: it is a claim
+  about what a tool produced, and a person is not in a position to make it.
+- **`superseded_by` is required** and names the replacing `finding_id`, so the
+  chain is auditable and somebody challenging a disappearance can follow it.
+- **Excluded from open counts, from mean-time-to-fix, and from Oracle
+  scoring.** It is neither outstanding work nor completed work, and counting
+  it as either is a lie in one of the two directions that matter.
+- **Visible, not hidden.** A repository whose finding count drops by a hundred
+  overnight must be able to show why on its own page.
+- **Audited.** A mechanism that can retire hundreds of findings in one call
+  needs to be at least as inspectable as the one that opens them: which scan
+  run, which adapter, how many records, and what replaced them.
 
 ## 6. Rate limiting & backpressure
 

@@ -45,6 +45,13 @@ check each tool's own separate UI.
 **Trends** — per-repo and portfolio-wide series over time: finding count by
 severity, `overall_risk_score`, SSCS trust score, mean time-to-fix.
 
+**`superseded` findings are excluded from every one of these** (spec 05 §5a).
+A record withdrawn because the adapter that produced it was wrong is neither
+outstanding work nor completed work. Counting it as open overstates the
+backlog; counting it as fixed reports resolution that never happened, and
+mean-time-to-fix reads only `fixed`, so a corrected adapter would register as
+a mass remediation. The status exists precisely so neither number moves.
+
 No time-series table is needed for any of these, and adding one would be a
 mistake. Every series is reconstructible from records the lake already holds:
 a `Finding` carries `first_seen_at` and `resolved_at`, so the open count on
