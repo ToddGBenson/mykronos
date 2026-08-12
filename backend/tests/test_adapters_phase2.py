@@ -773,3 +773,96 @@ class TestRegistry:
         outcome = normalize_results("secrets", "gitleaks", results, context("secrets"))
 
         assert len(outcome.findings) == 1
+
+
+class TestTemplatesMatchTheCliTheyCall:
+    """Every flag a rendered workflow passes must exist in the module it calls.
+
+    The fourth version-skew failure in a day, and the first with a structural
+    guard. The Aegis template began passing `--reviews-file` to
+    `mykronos.aegis_signals`; the package a runner installs comes from the
+    `v1` tag, which still pointed at code without that flag. The rendered
+    workflow reached repositories the moment the resync pull request opened,
+    the package only moves when the tag does, and every Aegis run died on
+    `unrecognized arguments: --reviews-file`.
+
+    This cannot catch tag lag on its own — the tag is not visible from here.
+    What it catches is the half that is: a template passing a flag no version
+    of the collector has ever had, which is the same failure arriving earlier
+    and with a readable message.
+    """
+
+    def test_every_flag_a_template_passes_exists(self) -> None:
+        import importlib
+        import re as _re
+        from pathlib import Path
+
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        directory = get_settings().workflow_templates_dir
+        library = TemplateLibrary(directory)
+
+        sources = [
+            library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            ).content
+            for capability in sorted(library.available)
+        ]
+        sources.append(
+            (Path(directory).parent / "actions/upload-results/action.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        checked = 0
+        for source in sources:
+            for module_name in set(
+                _re.findall(r"python -m (mykronos\.[a-z_]+)", source)
+            ):
+                module = importlib.import_module(module_name)
+                # The flags the module accepts, read off its own parser.
+                accepted = _accepted_flags(module)
+
+                # The flags the template passes to it, from the same source.
+                block = source.split(f"python -m {module_name}", 1)[1]
+                block = block.split("\n\n", 1)[0]
+                passed = set(_re.findall(r"(--[a-z][a-z0-9-]+)", block))
+
+                missing = sorted(passed - accepted)
+                assert not missing, (
+                    f"{module_name} is passed {missing} by a rendered workflow "
+                    f"but its parser accepts none of them. It accepts: "
+                    f"{sorted(accepted)}"
+                )
+                checked += 1
+
+        assert checked, "no `python -m mykronos.*` invocations found to check"
+
+
+def _accepted_flags(module: object) -> set[str]:
+    """Long options a module's argparse parser accepts."""
+    import argparse
+    import contextlib
+    import io
+    import re as _re
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.suppress(SystemExit):
+        module.main(["--help"])  # type: ignore[attr-defined]
+    text = buffer.getvalue()
+    if not text:
+        # Fall back to introspecting the parser directly if --help printed
+        # nothing, so a module that formats its help unusually still passes.
+        return {
+            option
+            for action in getattr(module, "_parser", argparse.ArgumentParser())._actions
+            for option in action.option_strings
+        }
+    return set(_re.findall(r"(--[a-z][a-z0-9-]+)", text))
