@@ -49,13 +49,21 @@ class AdapterSpec:
 
 
 def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
-    from mykronos.adapters import atlas_osv, cloud_generic, dast_zap, secrets_gitleaks
+    from mykronos.adapters import (
+        atlas_osv,
+        cloud_generic,
+        containers_trivy,
+        dast_zap,
+        secrets_gitleaks,
+    )
 
     specs = [
         # --- SARIF-native: no bespoke parser needed ---
         AdapterSpec("sast", "codeql", _sarif, "*.sarif", "CodeQL"),
         AdapterSpec("sast", "semgrep", _sarif, "*.sarif", "Semgrep (spec 04 §3 secondary)"),
-        AdapterSpec("containers", "trivy", _sarif, "*.sarif", "Trivy"),
+        AdapterSpec(
+            "containers", "trivy", containers_trivy.normalize, "*.sarif", "Trivy"
+        ),
         AdapterSpec("iac", "checkov", _sarif, "*.sarif", "Checkov"),
         # Atlas scores supply-chain trust from counts (spec 07 §5), but the
         # vulnerabilities behind those counts are findings like any other and

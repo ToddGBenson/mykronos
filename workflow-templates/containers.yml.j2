@@ -101,7 +101,26 @@
             [ -n "$DOCKERFILE" ] || continue
             INDEX=$((INDEX + 1))
             CONTEXT=$(dirname "$DOCKERFILE")
-            TAG="mykronos-scan:${{ github.sha }}-$INDEX"
+
+            # The image name carries the Dockerfile, and that is load-bearing
+            # rather than cosmetic. Trivy writes the image reference into the
+            # SARIF `artifactLocation`, which becomes the finding's file path,
+            # which is part of its identity (spec 05 §5).
+            #
+            # The first version tagged every image `mykronos-scan:<sha>-N`, so
+            # every finding from every image recorded the same path
+            # `library/mykronos-scan`. The same CVE in Dockerfile and
+            # Dockerfile.hardened collapsed into one row: 600 results became
+            # 118. There was no way to tell whether the hardened image had
+            # fixed anything, which is the only reason to build one.
+            #
+            # Docker repository names allow lowercase alphanumerics and
+            # `._-/`, so the path is folded rather than passed through.
+            SAFE=$(printf '%s' "$DOCKERFILE" \
+              | sed 's|^\./||' \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
+            TAG="mykronos-scan/${SAFE}:${{ github.sha }}"
 
             echo "::group::Building $DOCKERFILE"
             if ! docker build --quiet --file "$DOCKERFILE" --tag "$TAG" "$CONTEXT"; then
@@ -112,10 +131,8 @@
             fi
             echo "::endgroup::"
 
-            # The SARIF filename carries the Dockerfile path so a finding can
-            # be traced back to which image it came from. Without it, a repo
-            # with three Dockerfiles produces one undifferentiated pile.
-            SAFE=$(printf '%s' "$DOCKERFILE" | sed 's|^\./||; s|[/. ]|_|g')
+            # One SARIF per image as well, so a partial failure loses one
+            # image's results rather than all of them.
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v "$OUT:/out" \
