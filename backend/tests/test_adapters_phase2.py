@@ -602,6 +602,57 @@ class TestRegistry:
             "the zero-component guard is gone -- an empty SBOM would be archived "
             "and would read as evidence."
         )
+    def test_templates_send_every_required_query_param_to_ingest_raw(self) -> None:
+        """The Archive step hand-rolls a curl the uploader builds properly.
+
+        `POST /api/ingest/raw` requires scan_run_id, capability and filename.
+        `upload.py` passes all three; the Atlas template's curl omitted
+        `capability`, so FastAPI rejected it 422 and the step died on
+        `curl: (22)`. Nobody saw it because the step was release-gated until
+        v2.0.0, and most repositories never tag — the same reason the two
+        bugs before it in this step went unnoticed.
+
+        The required set is read off the route signature rather than being
+        restated here, so adding a required param to the endpoint fails this
+        test instead of a workflow run in somebody else's repository.
+        """
+        import inspect
+
+        from mykronos.api.ingest import ingest_raw_output
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        required = {
+            name
+            for name, param in inspect.signature(ingest_raw_output).parameters.items()
+            if param.default is inspect.Parameter.empty
+            and name not in {"request", "token"}
+        }
+        assert required, "could not read the endpoint's required params"
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+        checked = 0
+        for capability in sorted(library.available):
+            rendered = library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            ).content
+
+            # To the closing quote, not to whitespace: the query string
+            # interpolates `${{ github.run_id }}`, which has spaces in it, so
+            # a \S* match silently truncates the URL and every later param
+            # looks absent.
+            for url in re.findall(r"/api/ingest/raw\?[^\"']*", rendered):
+                missing = sorted(p for p in required if f"{p}=" not in url)
+                assert not missing, f"{capability}: /api/ingest/raw call omits {missing}"
+                checked += 1
+
+        assert checked, "no /api/ingest/raw calls found — the discovery is broken"
 
     def test_every_third_party_action_is_pinned_to_a_sha(self) -> None:
         """A mutable tag is a standing write-access grant to someone else.
