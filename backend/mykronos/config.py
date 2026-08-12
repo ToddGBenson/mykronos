@@ -292,10 +292,24 @@ class Settings(BaseSettings):
     )
 
     upload_action_ref: str = Field(
-        default="ToddGBenson/mykronos/actions/upload-results@v1",
+        default=(
+            "ToddGBenson/mykronos/actions/upload-results@"
+            "8b329fc5c1f739eab8ad40b8a7628da7cd1ee935"  # v1
+        ),
         description=(
-            "Semver-pinned reference to the shared upload composite action "
-            "(spec 04 §2). Never a branch: every onboarded repo depends on it."
+            "Commit-pinned reference to the shared upload composite action "
+            "(spec 04 §2). A SHA, not a tag and never a branch. This is the "
+            "ONE action that runs in every onboarded repository, with that "
+            "repo's checkout on disk and its ingestion token in the "
+            "environment — so it is the highest-value ref to hold immutable, "
+            "not the one to exempt.\n\n"
+            "The `mykronos-ref` input is derived from the part after `@`, so "
+            "pinning here also pins the package the action installs; the two "
+            "cannot drift.\n\n"
+            "WHEN UPDATING: v1 is an ANNOTATED tag, so the tag-object SHA "
+            "(926d214…) is NOT the commit. Dereference it — "
+            "`gh api repos/ToddGBenson/mykronos/commits/v1 --jq .sha` — or you "
+            "pin a valid-looking 40-char ref that never resolves as a commit."
         ),
     )
 
