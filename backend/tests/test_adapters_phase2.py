@@ -538,6 +538,75 @@ class TestRegistry:
             "the install step must resolve its ref from github.action_ref"
         )
 
+    def test_no_package_sources_is_an_empty_scan_not_a_failed_one(self) -> None:
+        """"Nothing to scan" and "the scan broke" must not be the same state.
+
+        osv-scanner exits 128 with "No package sources found" when a repository
+        declares no dependencies -- a docs repo, a shell-script repo, a
+        greenfield project before its first manifest. Atlas treated that as a
+        scan failure, so such a repository's lane was permanently red.
+
+        That costs both directions. An always-red lane gets ignored, and once
+        it is ignored a genuinely broken scanner looks exactly like an empty
+        repository. `--recursive` was added for this same exit code on the
+        assumption that manifests were merely in subdirectories; that helps a
+        repo with manifests somewhere, and cannot help one with none.
+
+        The guard is deliberately two-sided. It is not enough that the empty
+        case stops failing -- a silent empty result is a false green, which is
+        worse than the false red it replaces because nobody investigates a
+        green lane. So this also asserts the run is announced, and that a 128
+        which does NOT carry that message still fails.
+        """
+        from mykronos.config import get_settings
+
+        template = (
+            get_settings().workflow_templates_dir / "atlas.yml.j2"
+        ).read_text(encoding="utf-8")
+
+        scan = template[template.index("run_osv()") :]
+        scan = scan[: scan.index("Generate the SBOM")]
+
+        # Matched on the message, not the bare exit code: 128 is overloaded and
+        # a different 128 is still a real failure.
+        assert "no package sources found" in scan.lower(), (
+            "the empty-repository case is not detected; a repo with no manifests "
+            "will fail its supply-chain lane forever"
+        )
+        assert re.search(r'rc"?\s*-eq\s*128', scan), (
+            "exit 128 is no longer special-cased"
+        )
+
+        # The escape hatch must not swallow real failures.
+        assert re.search(r'rc"?\s*-gt\s*1', scan), (
+            "the `rc > 1 is a failure` guard is gone -- a genuinely broken scan "
+            "would now pass silently, which is the failure this change must not "
+            "introduce"
+        )
+
+        # An empty result has to be announced, or it is a false green.
+        assert "::warning::" in scan, (
+            "an empty scan is recorded but not announced; a silent empty result "
+            "reads as a clean bill of health for dependencies that were never scanned"
+        )
+
+        # Downstream fails on "no output"; it needs an explicit empty document.
+        #
+        # Scoped to the SARIF emission, NOT the whole block. `"results":[]`
+        # also appears in the unrelated osv.json fallback at the end, so an
+        # unscoped check passes even with the SARIF emission deleted -- it
+        # survived exactly that mutation before this was narrowed.
+        # Anchored on the JSON itself. `printf '%s'` also appears twice earlier
+        # in run_osv for log echoing, so anchoring on that grabs the wrong block
+        # and the assertion fails even on correct input -- which it did.
+        emit = scan[scan.index('{"$schema"') :]
+        emit = emit[: emit.index("osv.sarif")]
+        assert "executionSuccessful" in emit and '"results":[]' in emit, (
+            "no explicit empty SARIF is emitted -- the upload step reports "
+            "'produced no output' as a failure, so the lane stays red anyway.\\n"
+            f"Emission block was:\\n{emit}"
+        )
+
     def test_the_sbom_step_invokes_syft_in_a_way_that_can_work(self) -> None:
         """The SBOM step had never once produced an SBOM, and nothing noticed.
 

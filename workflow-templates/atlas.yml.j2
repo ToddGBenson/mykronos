@@ -117,9 +117,39 @@
           # `bash -e`, so exit 1 would abort the step before the check below
           # ever ran. Putting the call in a compound exempts it from errexit
           # without disabling errexit for the rest of the script.
+          # osv-scanner's exit codes conflate two states this lane must keep
+          # apart. 128 with "No package sources found" means the repository
+          # declares no dependencies — a docs repo, a shell-script repo, a
+          # greenfield project before its first manifest. That is a legitimate
+          # state, not an error and not a finding.
+          #
+          # Treating it as a failure costs both directions: the lane goes
+          # permanently red for repos that will never have a manifest, so
+          # operators learn to ignore it — and a genuinely broken scanner then
+          # looks exactly like an empty repository.
+          #
+          # `--recursive` was added earlier for the same exit code, on the
+          # assumption that manifests were merely in subdirectories. That fixes
+          # the repos that have manifests somewhere. It cannot help a repo that
+          # has none, and those exist.
+          #
+          # The SBOM step twenty lines below already gets this right: zero
+          # components is a warning and an omitted artifact, not a dead lane.
+          # This brings the SCA step into line with it.
+          NO_PACKAGES=0
+
           run_osv() {
-            local rc=0
-            osv-scanner scan source --recursive --no-resolve "$@" . || rc=$?
+            local rc=0 out
+            out="$(osv-scanner scan source --recursive --no-resolve "$@" . 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+
+            # Exit 128 is overloaded, so match on the message rather than the
+            # code alone: a different 128 is still a real failure.
+            if [ "$rc" -eq 128 ] && printf '%s' "$out" | grep -qi 'no package sources found'; then
+              NO_PACKAGES=1
+              return 0
+            fi
+
             if [ "$rc" -gt 1 ]; then
               echo "::error::osv-scanner exited ${rc} — that is a scan failure, not a findings result"
               exit "$rc"
@@ -128,6 +158,42 @@
 
           run_osv --format sarif --output-file "${{ runner.temp }}/mykronos-results/osv.sarif"
           run_osv --format json --output-file osv.json
+
+          if [ "$NO_PACKAGES" -eq 1 ]; then
+            # Say it loudly. A silent empty result is the failure mode this
+            # change could otherwise introduce, and a false green is worse than
+            # the false red it replaces: nobody investigates a green lane.
+            echo "::warning::No package sources found. This repository declares no" \
+                 "dependencies for osv-scanner to read, so there is nothing to scan." \
+                 "Recording an empty result — this is NOT a clean bill of health for" \
+                 "dependencies that exist, it is a statement that none were declared."
+
+            # A valid, explicitly-empty SARIF, so downstream reads "scanned,
+            # found nothing" rather than "produced no output" — the latter is
+            # what the upload step reports as a failure.
+            #
+            # printf rather than a heredoc ON PURPOSE. The heredoc operator is
+            # also this template set's Jinja variable-start delimiter, so a
+            # heredoc here is parsed as a template expression and the template
+            # fails to compile. That applies to prose too: writing the operator
+            # in a comment breaks the build just as surely, which is why this
+            # note spells it out instead of quoting it. Do not "tidy" this back
+            # into a heredoc.
+            printf '%s' \
+              '{"$schema":"https://json.schemastore.org/sarif-2.1.0.json",' \
+              '"version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner",' \
+              '"informationUri":"https://github.com/google/osv-scanner","rules":[]}},' \
+              '"results":[],"invocations":[{"executionSuccessful":true,' \
+              '"exitCode":128,"exitCodeDescription":' \
+              '"no package sources found - repository declares no dependencies"}]}]}' \
+              > "${{ runner.temp }}/mykronos-results/osv.sarif"
+
+            # Fail loudly if that JSON is malformed rather than shipping a
+            # broken artifact that reads as evidence.
+            python -c "import json,sys; json.load(open(sys.argv[1]))" \
+              "${{ runner.temp }}/mykronos-results/osv.sarif"
+          fi
+
           test -f osv.json || echo '{"results":[]}' > osv.json
 
       - name: Generate the SBOM
