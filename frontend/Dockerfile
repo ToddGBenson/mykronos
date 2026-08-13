@@ -80,7 +80,7 @@ RUN npm run build
 # every image - the backend keeps its Debian base because it is the process
 # holding the lake, and being able to get a shell next to it matters more
 # there.
-FROM gcr.io/distroless/nodejs22-debian12:nonroot AS runtime
+FROM gcr.io/distroless/nodejs22-debian13:nonroot AS runtime
 
 # `nonroot` is uid 65532, built into the image. The previous stage created
 # uid 10001 by hand because a Debian base ships only root; distroless does
