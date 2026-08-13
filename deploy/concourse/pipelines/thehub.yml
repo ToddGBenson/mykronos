@@ -409,6 +409,69 @@ jobs:
                   su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'"                     >/dev/null 2>&1 || echo "note: extension $ext unavailable"
                 done
 
+                # -- Native enum types, which create_all cannot make --------
+                #
+                # 391 of the 433 errors on the first Postgres run were one
+                # line: `type "meal_type_enum" does not exist`. TheHub declares
+                # four enums as real Postgres types in its SQL migrations, and
+                # the models reference them without defining them, so
+                # `Base.metadata.create_all` emits a column of a type nothing
+                # created.
+                #
+                # Replayed from db/migrations rather than transcribed here.
+                # There are only four today and typing them into this file
+                # would work exactly until somebody adds a fifth, at which
+                # point the lane fails with a message about a type nobody
+                # changed. Reading them from the migrations means the pipeline
+                # follows the schema instead of tracking it.
+                #
+                # Only CREATE TYPE ... AS ENUM is replayed, not the migrations
+                # themselves: those are ordered, cumulative and assume a live
+                # database, and running 277 of them here would be a migration
+                # test wearing a unit test's name.
+                echo "Creating native enum types from db/migrations..."
+                python - <<'ENUMS'
+                import glob, re, subprocess
+                pattern = re.compile(
+                    r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
+                    re.IGNORECASE | re.DOTALL,
+                )
+                seen = {}
+                for path in sorted(glob.glob("db/migrations/*.sql")):
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        for name, values in pattern.findall(handle.read()):
+                            seen.setdefault(name.lower(), " ".join(values.split()))
+                print(f"  found {len(seen)} enum type(s): {', '.join(sorted(seen))}")
+                for name, values in seen.items():
+                    # Plain CREATE TYPE, and the statement goes to psql on
+                    # stdin rather than through `-c` in a shell string.
+                    #
+                    # The obvious version wrapped a `DO $$ ... $$` block in
+                    # double quotes for `su -c`, which the shell expands: `$$`
+                    # is the PID. It would have created a type named after
+                    # whatever process ran it, or more likely failed with a
+                    # syntax error nobody would connect to quoting.
+                    #
+                    # No duplicate guard is needed because the database is
+                    # created fresh in this task a few lines above; a failure
+                    # here is tolerated (check=False) and reported by the count
+                    # check that follows.
+                    subprocess.run(
+                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                        input=f"CREATE TYPE {name} AS ENUM ({values});",
+                        text=True,
+                        check=False,
+                    )
+                ENUMS
+
+                MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
+                echo "  created ${MADE} enum type(s) in thehub_test"
+                if [ "${MADE:-0}" -eq 0 ]; then
+                  echo "::error::No enum types were created. create_all will fail"
+                  echo "          with 'type ... does not exist' on ~400 tests."
+                  exit 1
+                fi
+
                 export TEST_DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
                 echo "PostgreSQL ready; tests will use it rather than the SQLite fallback."
 
