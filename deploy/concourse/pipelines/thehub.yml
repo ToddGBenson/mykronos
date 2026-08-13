@@ -437,7 +437,16 @@ jobs:
                     re.IGNORECASE | re.DOTALL,
                 )
                 seen = {}
-                for path in sorted(glob.glob("db/migrations/*.sql")):
+                # Searched from the repository root, not from backend/. This
+                # runs before the `cd backend` further down, and the first
+                # version globbed "db/migrations/*.sql" against the checkout
+                # root -- where TheHub keeps no such directory. It matched
+                # nothing, created nothing, and the count guard below caught it
+                # in six minutes instead of twenty-three.
+                paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
+                if not paths:
+                    print("  no db/migrations/*.sql found anywhere in the checkout")
+                for path in paths:
                     with open(path, encoding="utf-8", errors="replace") as handle:
                         for name, values in pattern.findall(handle.read()):
                             seen.setdefault(name.lower(), " ".join(values.split()))
