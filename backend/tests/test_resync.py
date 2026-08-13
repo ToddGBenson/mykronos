@@ -145,6 +145,33 @@ class TestScope:
         assert result.opened == []
         assert result.up_to_date == 1
 
+    @pytest.mark.anyio
+    async def test_a_repo_filter_narrows_the_sweep(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        """Needed because of a case the estate-wide default gets wrong: a
+        workflow a repository deleted *on purpose* reads as drift - get_file
+        returns None, and None does not equal the rendered content - so an
+        unfiltered sweep opens a pull request putting it back. Spec 16 §4
+        removed this repository's Actions deliberately, and the resync cannot
+        tell that from a file somebody lost."""
+        register(client, REPO, capabilities=["sast"])
+
+        result = await sweep(client, github, templates, repos={"someone/else"})
+
+        assert result.checked == 0
+        assert result.opened == []
+
+    @pytest.mark.anyio
+    async def test_a_repo_filter_that_matches_still_sweeps(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        register(client, REPO, capabilities=["sast"])
+
+        result = await sweep(client, github, templates, repos={REPO})
+
+        assert result.checked == 1
+
 
 class TestBoundedness:
     @pytest.mark.anyio

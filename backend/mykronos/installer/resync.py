@@ -90,6 +90,7 @@ async def resync_templates(
     package_spec: str,
     secret_name: str,
     capabilities: set[str] | None = None,
+    repos: set[str] | None = None,
     max_pull_requests: int = 10,
     dry_run: bool = False,
     now: datetime | None = None,
@@ -100,6 +101,14 @@ async def resync_templates(
     what you want before a sweep across an estate — the interesting question
     before running this is "how many repositories does this affect", and
     finding out by doing it is the expensive way to ask.
+
+    `repos` narrows the sweep, and exists because of a case the estate-wide
+    default gets wrong. A workflow this repository *deliberately deleted*
+    reads as drift — `get_file` returns None, and None is not equal to the
+    rendered content — so an unfiltered sweep would open a pull request
+    restoring it. Spec 16 §4 removed this repository's Actions on purpose;
+    the resync has no way to tell that from a file somebody lost, so the
+    operator has to.
     """
     stamp = now or utcnow()
     result = ResyncResult()
@@ -117,6 +126,8 @@ async def resync_templates(
         ]
 
     for repo_id, repo, installation_id, default_branch, enabled in targets:
+        if repos is not None and repo not in repos:
+            continue
         result.checked += 1
         wanted = sorted(
             c for c in enabled

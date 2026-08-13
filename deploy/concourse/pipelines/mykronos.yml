@@ -50,6 +50,13 @@ resources:
     icon: nodejs
     source: { repository: node, tag: "24-slim" }
 
+  # Scans the published images out of the registry directly. No daemon and no
+  # privileged task: Trivy pulls the image itself.
+  - name: trivy
+    type: registry-image
+    icon: shield-search
+    source: { repository: aquasec/trivy, tag: "0.58.1" }
+
   # Artifact storage (spec 15 §5). S3-compatible rather than a mounted share:
   # this resource handles versioning and retention, and the same pipeline runs
   # unchanged against real S3 later.
@@ -887,3 +894,108 @@ jobs:
               - -ec
               - |
                 /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --destination "${REGISTRY}/mykronos-frontend:latest"                   --insecure --skip-tls-verify                   --single-snapshot
+
+  # -- Stage 5: the images this pipeline just published --------------------
+  #
+  # The platform builds two images, publishes them, and until now scanned
+  # neither - while offering `containers` as a capability to other people's
+  # repositories. A platform that reports coverage it does not have is the
+  # exact failure it exists to catch.
+  #
+  # After publish rather than before: you cannot scan an image that does not
+  # exist yet. Nothing is gated on the result - these images are already in
+  # the registry by the time this runs, and the deploy is a deliberate manual
+  # pull (D-038). What this produces is findings in the lake, which is where
+  # the decision about them belongs.
+  - name: containers
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [publish-backend, publish-frontend]
+      - get: python
+      - get: trivy
+
+      # The SHA is resolved in a task that has git and handed over as a file.
+      # Trivy's image does not ship git, and reading `.git/HEAD` by hand works
+      # right up until the ref is packed.
+      - task: resolve-sha
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+
+      - task: scan-images
+        image: trivy
+        config:
+          platform: linux
+          inputs: [{ name: meta }]
+          outputs: [{ name: results }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                set -eu
+
+                # One report per image, and the file names differ on purpose.
+                # Container findings once collapsed 600 to 118 because every
+                # image was scanned under the same tag, so the same CVE in two
+                # different images shared an identity and the second one
+                # silently overwrote the first.
+                for image in mykronos-backend mykronos-frontend; do
+                  echo "Scanning ${REGISTRY}/${image}:latest"
+                  # `--insecure` is the registry's TLS, not the scan's rigour:
+                  # the registry is plain HTTP on the LAN (spec 15 §5).
+                  trivy image "${REGISTRY}/${image}:latest" \
+                    --insecure \
+                    --scanners vuln \
+                    --format sarif --output "results/trivy-${image}.sarif" \
+                    --exit-code 0 --quiet
+
+                  # An absent or empty report is a failed scan, and the
+                  # uploader already treats it as one. Failing here names the
+                  # image that broke instead of leaving it to be inferred from
+                  # a finding count.
+                  test -s "results/trivy-${image}.sarif" || {
+                    echo "::error::Trivy wrote no report for ${image} - the scan did not run."
+                    exit 1
+                  }
+                done
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability containers --tool trivy \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch main \
+                  --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false

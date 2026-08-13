@@ -190,6 +190,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=CAPABILITIES,
         help="Limit the sweep to these capabilities. Repeatable.",
     )
+    resync.add_argument(
+        "--repo",
+        action="append",
+        default=None,
+        dest="repos",
+        help=(
+            "Limit the sweep to these repositories. Repeatable. A workflow a "
+            "repository deleted on purpose reads as drift, so an unfiltered "
+            "sweep would open a pull request putting it back."
+        ),
+    )
 
     sub.add_parser("stats", help="Row counts and buffer depth")
 
@@ -486,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
                     package_spec=settings.mykronos_package_spec,
                     secret_name=DEFAULT_SECRET_NAME,
                     capabilities=set(args.capability) or None,
+                    repos=set(args.repos) if args.repos else None,
                     max_pull_requests=args.limit,
                     dry_run=args.dry_run,
                 )
