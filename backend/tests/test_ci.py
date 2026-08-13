@@ -206,6 +206,27 @@ class TestReporting:
 
         assert row.state == "reporting"
 
+    def test_a_naive_lake_timestamp_does_not_raise(self) -> None:
+        """The two sides come from different worlds and only one carries a
+        timezone: Concourse reports epoch seconds, the lake hands back what
+        DuckDB stored, which is naive. Subtracting them raises TypeError -
+        and did, as a 500 on the repository page, because every test here
+        used aware datetimes on both sides."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        naive = datetime(2026, 8, 13, 11, 58)  # noqa: DTZ001 - the real shape
+
+        [row] = reconcile([self._job("sast", finished=built)], {"sast": naive})
+
+        assert row.state == "reporting"
+
+    def test_a_naive_timestamp_still_detects_silence(self) -> None:
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        naive = datetime(2026, 8, 11, 12, 0)  # noqa: DTZ001
+
+        [row] = reconcile([self._job("sast", finished=built)], {"sast": naive})
+
+        assert row.state == "silent"
+
     def test_a_job_with_no_scan_run_at_all_is_named(self) -> None:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 

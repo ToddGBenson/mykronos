@@ -83,6 +83,24 @@ CAPABILITY_BY_JOB: dict[str, str] = {
 REPORTING_GRACE_SECONDS = 3600
 
 
+def _utc(moment: datetime | None) -> datetime | None:
+    """Attach UTC to a naive timestamp.
+
+    The two sides of this comparison come from different worlds and only one
+    of them carries a timezone: Concourse reports epoch seconds, which become
+    aware datetimes, while the lake stores what `utcnow()` wrote and DuckDB
+    hands back naive. Subtracting them raises TypeError, which reached
+    production as a 500 on the repository page - the unit tests used aware
+    datetimes on both sides and never saw it.
+
+    Naive lake timestamps are UTC by construction, so saying so is a
+    statement of fact rather than an assumption.
+    """
+    if moment is None or moment.tzinfo is not None:
+        return moment
+    return moment.replace(tzinfo=UTC)
+
+
 @dataclass(frozen=True)
 class Reporting:
     """Whether a job's results actually reached the lake (spec 15 §4a).
@@ -100,11 +118,13 @@ class Reporting:
 
     @property
     def state(self) -> str:
-        if self.built_at is None:
+        built = _utc(self.built_at)
+        scanned = _utc(self.scanned_at)
+        if built is None:
             return "not_run"
-        if self.scanned_at is None:
+        if scanned is None:
             return "never_reported"
-        delta = (self.built_at - self.scanned_at).total_seconds()
+        delta = (built - scanned).total_seconds()
         return "silent" if delta > REPORTING_GRACE_SECONDS else "reporting"
 
 
