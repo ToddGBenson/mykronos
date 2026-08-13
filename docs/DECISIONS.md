@@ -1335,6 +1335,53 @@ this entry: the host path is genuinely useful before the stack is up.
 
 ---
 
+## D-045 — The Oracle gate can deadlock on the images it gates
+
+**Status:** Decided, not yet implemented
+**Spec:** [15 §3](../specs/15-concourse-pipeline.md), [09 §6](../specs/09-oracle-risk-decision-engine.md)
+
+The `containers` lane scans the images the pipeline publishes. It found 5
+criticals and 46 highs in them, Oracle refused the next build at no_go, and
+the images were duly hardened — curl removed from both, npm removed from the
+frontend, dev dependencies no longer shipped.
+
+Those fixes could not ship. `build` is gated on Oracle, `publish` follows
+`build`, and `containers` scans what `publish` pushed. So the findings that
+block the gate are findings in an artifact the gate prevents replacing. There
+is no path from "vulnerability found" to "fix published" through the pipeline
+alone, and nothing in it says so — the job simply fails, with a reason that
+looks like ordinary risk rather than a cycle.
+
+It was broken by hand: the hardened images were built on the host, pushed to
+the registry, and the `containers` job triggered against them, after which the
+pipeline resumed normally. That works and should not be necessary, and an
+operator stepping outside the pipeline to unblock the pipeline is worth
+writing down rather than repeating.
+
+**Decision: scan the candidate image, not the published one.** `build`
+produces the image; the container scan moves to immediately after it and
+before `publish`, so the gate judges what is about to ship rather than what
+shipped last time. TheHub's pipeline already does exactly this — spec 16 §3
+put build before the Oracle gate for the same reason, that you cannot scan an
+image you have not built — so this makes one rule out of two.
+
+The image is tagged with the commit sha and only the deploy names a tag, so an
+image built from a commit Oracle refuses sits in the registry unreferenced.
+That is the property that makes scanning before the gate safe.
+
+**Rejected: exempt `containers` findings from the gate.** The argument is that
+an unpublished image cannot be exploited, so the gate should judge the deploy
+instead. It is true and it is the wrong trade: it means the one capability
+that scans the artifact this pipeline actually produces is the one capability
+the gate ignores.
+
+**Rejected: let the operator push a fixed image whenever this happens.** That
+is what was done here, and it is a workaround, not a design. It puts an
+artifact in the registry that no pipeline built, which is precisely the
+provenance the SBOM and the wheel-per-commit exist to establish.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
