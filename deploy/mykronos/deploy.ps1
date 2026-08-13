@@ -67,9 +67,34 @@ if ($MigrateFrom) {
     docker volume create mykronos_mykronos-data | Out-Null
     # Through a helper container: the volume is not reachable from the host
     # filesystem on Docker Desktop.
+    # Three things this has to get right, each of which failed on the first
+    # attempt and each of which failed *quietly*:
+    #
+    # 1. The SQLite write-ahead log. Copying mykronos.db alone leaves every
+    #    write since the last checkpoint behind - 1.8MB of it, including every
+    #    onboarded repository. The database opens cleanly and reports nothing.
+    # 2. The lake's _manifest.duckdb persists views naming the host's paths.
+    #    Carried across, the catalog reads 93 Parquet files as zero rows.
+    #    Deleting it makes the catalog rebuild the views where the data now is.
+    # 3. Ownership. `cp -a` preserves the host's, the container runs as uid
+    #    10001, and SQLite then fails with "attempt to write a readonly
+    #    database" - which surfaces as an unhealthy container.
+    #
+    # All three produce a platform that starts, answers, and is empty. That is
+    # the worst possible outcome for a migration, so each is handled here and
+    # the row counts are checked afterwards rather than assumed.
     $src = (Resolve-Path $MigrateFrom).Path
-    docker run --rm -v "${src}:/from:ro" -v "mykronos_mykronos-data:/data" `
-        alpine:3.19 sh -c "cp -a /from/datalake /data/ 2>/dev/null; cp -a /from/mykronos.db /data/ 2>/dev/null; ls -la /data"
+    # One line, not a here-string: PowerShell here-strings emit CRLF, and
+    # `sh -c` reads the carriage returns as part of each command. The first
+    # attempt failed with nothing useful in the output.
+    $script = "set -e; " +
+        "cp -a /from/datalake /data/; " +
+        "cp -a /from/mykronos.db /data/; " +
+        "cp -a /from/mykronos.db-wal /data/ 2>/dev/null || true; " +
+        "cp -a /from/mykronos.db-shm /data/ 2>/dev/null || true; " +
+        "rm -f /data/datalake/_manifest.duckdb; " +
+        "chown -R 10001:10001 /data; ls -la /data"
+    docker run --rm -v "${src}:/from:ro" -v "mykronos_mykronos-data:/data" alpine:3.19 sh -c $script
     if ($LASTEXITCODE -ne 0) { throw "Migration failed; not starting." }
 }
 

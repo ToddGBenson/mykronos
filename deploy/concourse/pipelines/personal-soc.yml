@@ -1,0 +1,299 @@
+# personal-soc pipeline.
+#
+# Runs the PowerShell helper scripts from https://github.com/ToddGBenson/personal-soc
+# on this Concourse. The repository is public, so unlike TheHub there is no
+# installation token here and nothing expires: the git resource checks out
+# anonymously and the pipeline keeps working after it is set.
+#
+# ---------------------------------------------------------------------------
+# The one thing to know before reading further
+# ---------------------------------------------------------------------------
+#
+# This Concourse has a single Linux garden worker, running inside Docker
+# Desktop. Every task below therefore runs `pwsh` on Debian, not Windows
+# PowerShell, and the three scripts do not survive that equally:
+#
+#   Find-DocDrift.ps1       git history only               -> runs unchanged
+#   Get-ExternalExposure.ps1  two HTTPS calls              -> runs, after a
+#                                                            path fixup
+#   Invoke-WeeklyNetworkScan.ps1  Get-NetIPConfiguration,  -> cannot enumerate
+#                                 Get-NetNeighbor, netsh,     anything here;
+#                                 net view                    see that job
+#
+# The scripts also build paths with backslashes ("$OutDir\file.json"), which
+# is correct on Windows and merely a filename character on Linux. That does
+# not lose data, but it does put output in files whose *names* contain a
+# backslash rather than in the directory the script meant. Each task puts the
+# names right rather than editing the repository, because the repository's
+# job is to run under the Scheduled Task on Windows and this pipeline is the
+# guest.
+#
+# Nothing sensitive appears in this file. `((var))` resolves through
+# `fly set-pipeline --load-vars-from`, written and deleted by
+# set-personal-soc-pipeline.ps1.
+
+resource_types:
+  - name: registry-image
+    type: registry-image
+    source: { repository: concourse/registry-image-resource, tag: "1.10" }
+
+resources:
+  - name: source
+    type: git
+    icon: github
+    source:
+      uri: https://github.com/ToddGBenson/personal-soc.git
+      branch: main
+
+  # Microsoft's own image, Debian-based so `apt-get` works the same way it
+  # does in the python tasks of the other pipelines here.
+  - name: pwsh
+    type: registry-image
+    icon: powershell
+    source: { repository: mcr.microsoft.com/powershell, tag: "7.5-debian-12" }
+
+  # The scanning jobs have no commit to react to - the network changes, not
+  # the code - so they are driven by the clock instead. One resource for both:
+  # they are the same weekly sweep, and a second timer would let them drift
+  # apart for no reason.
+  - name: weekly
+    type: time
+    icon: clock-outline
+    source:
+      location: ((scan-timezone))
+      days: [Sunday]
+      start: "3:00 AM"
+      stop: "4:00 AM"
+
+jobs:
+  # -- Documentation drift ------------------------------------------------
+  #
+  # The only one of the three that is genuinely portable: it shells out to
+  # git and nothing else. Triggered on commit rather than weekly, because
+  # drift is created by a commit and that is the moment worth reporting it.
+  #
+  # Drift is a result, not a failure - the script prints the stale files and
+  # exits 0. This job goes red only when the script itself cannot run, which
+  # in practice means a doc listed below was renamed or deleted.
+
+  - name: doc-drift
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: pwsh
+      - task: find-doc-drift
+        image: pwsh
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+
+                cd source
+
+                # git 2.35+ refuses a repository whose owner it cannot vouch
+                # for. Find-DocDrift is nothing but git history, so a refusal
+                # here would print no changed files - which reads exactly
+                # like "the docs are current".
+                git config --global --add safe.directory "$PWD"
+
+                DRIFT=skills/update-docs/scripts/Find-DocDrift.ps1
+
+                # -NonInteractive on every invocation in this pipeline. A
+                # missing mandatory parameter otherwise prompts, and a prompt
+                # on a build with no terminal is a hung task rather than an
+                # error message.
+                rc=0
+                check() {
+                  echo ""
+                  echo "=============================================="
+                  pwsh -NonInteractive -NoProfile -File "$DRIFT" \
+                    -Doc "$1" -Paths "$2" || rc=1
+                }
+
+                # Each SKILL.md against its own directory; the README against
+                # all of skills/, because summarising them is what it does.
+                check README.md                                  skills
+                check skills/network-assessment/SKILL.md         skills/network-assessment
+                check skills/personal-threat-monitor/SKILL.md    skills/personal-threat-monitor
+                check skills/update-docs/SKILL.md                skills/update-docs
+
+                exit $rc
+
+  # -- External (WAN) exposure --------------------------------------------
+  #
+  # Asks Shodan's InternetDB what the internet last saw on this connection's
+  # public IP. Two HTTPS calls and no API key, so it works from a container
+  # as well as it works from the desktop - and the container egresses through
+  # the same home connection, so it resolves the same public IP. That is the
+  # whole reason this one is worth running here at all.
+
+  - name: external-exposure
+    public: true
+    plan:
+      - get: weekly
+        trigger: true
+      - get: source
+      - get: pwsh
+      - task: shodan-internetdb
+        image: pwsh
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null
+
+                rc=0
+                pwsh -NonInteractive -NoProfile \
+                  -File source/skills/network-assessment/scripts/Get-ExternalExposure.ps1 \
+                  -OutDir results 2>&1 | tee run.log || rc=$?
+
+                # "$OutDir\external-exposure.json" is one filename on Linux,
+                # not a path, so the output landed beside results/ instead of
+                # in it. Moved rather than patched upstream - see the header.
+                shopt -s nullglob
+                for f in *'\'*; do
+                  mv -- "$f" "results/${f##*\\}"
+                done
+
+                # The script `return`s when no public IP resolves, which is
+                # exit 0 having checked nothing. Silence there would report a
+                # clean edge that was never looked at.
+                if grep -q "Could not determine public IP" run.log; then
+                  echo "::error:: no public IP resolved - the WAN view was never taken"
+                  exit 1
+                fi
+
+                echo ""
+                echo "== output =="
+                ls -l results/
+                if [ -f results/external-exposure.json ]; then
+                  cat results/external-exposure.json
+                else
+                  echo "No external-exposure.json written."
+                  echo "That is InternetDB's 404 path: this IP is not indexed by Shodan, which is the good outcome."
+                fi
+
+                exit $rc
+
+  # -- Weekly network scan -------------------------------------------------
+  #
+  # This job will fail on this worker, and that is the accurate result rather
+  # than a bug to work around.
+  #
+  # Invoke-WeeklyNetworkScan is written for the Windows Scheduled Task. Its
+  # inventory - the thing every other number in the report is derived from -
+  # is built by Invoke-NetDiscovery from `Get-NetNeighbor`, the Windows ARP
+  # table. There is no Linux branch in that script, so on this worker the
+  # inventory comes back empty however well nmap runs. `netsh wlan`, `net
+  # view` and `Get-NetIPConfiguration` are absent for the same reason, and
+  # because the script sets $ErrorActionPreference = 'Continue' it does not
+  # stop at any of them: it reaches the end and writes a network-status.md
+  # full of blanks and "unknown".
+  #
+  # Docker Desktop makes the second half of it moot anyway. A garden
+  # container here sits behind the Linux VM's NAT, on a different L2 segment
+  # from the LAN, so ARP, mDNS and SSDP - three of the four discovery
+  # mechanisms - cannot reach it regardless of the operating system.
+  #
+  # So: nmap is installed and the real CIDR is passed, giving the script the
+  # best run this worker can offer, and then the inventory is counted. Zero
+  # hosts fails the build. Publishing that fragment green would claim a
+  # network was scanned when nothing was enumerated - the same mistake the
+  # TheHub container lane calls out about reporting a clean image scan that
+  # never happened.
+  #
+  # To make this job pass, one of two things has to change, and both are
+  # decisions rather than pipeline edits:
+  #
+  #   1. Register a Windows Concourse worker on this host and run the task as
+  #      `platform: windows`. It then has the real adapters, netsh, nmap and
+  #      the LAN. It also puts a pipeline-executable agent on the desktop,
+  #      which is the risk the compose file's section 7 comments weigh.
+  #   2. Give the script a Linux discovery path (`ip neigh` in place of
+  #      Get-NetNeighbor, and nmap's own output in place of the ARP table).
+  #      That is a change to personal-soc, not to this repository.
+  #
+  # Until then, `fly pause-job -j personal-soc/weekly-network-scan` keeps it
+  # from reporting weekly.
+
+  - name: weekly-network-scan
+    public: true
+    plan:
+      - get: weekly
+        trigger: true
+      - get: source
+      - get: pwsh
+      - task: network-scan
+        image: pwsh
+        # nmap's host discovery probes (-PE ICMP, -PS TCP SYN) need raw
+        # sockets. Without this the sweep degrades to a connect scan and the
+        # failure below would have two possible causes instead of one.
+        privileged: true
+        params:
+          LAN_CIDR: ((lan-cidr))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq nmap ca-certificates >/dev/null
+
+                mkdir -p results
+
+                # -Root is not optional here. It defaults to
+                # Join-Path $env:USERPROFILE 'netassess', and USERPROFILE is
+                # unset on Linux, which throws before the scan begins.
+                rc=0
+                pwsh -NonInteractive -NoProfile \
+                  -File source/skills/network-assessment/scripts/Invoke-WeeklyNetworkScan.ps1 \
+                  -Cidr "$LAN_CIDR" -Root "$PWD/results" -NmapPath /usr/bin/nmap \
+                  2>&1 | tee run.log || rc=$?
+
+                echo ""
+                echo "== files produced =="
+                find results -maxdepth 2 | sed 's/^/  /'
+
+                # Globbed rather than named exactly: the dated output folder
+                # is created as "<root>/<date>\raw", so the files the script
+                # thinks are inside it are really siblings with a backslash
+                # in their names.
+                STATUS=$(find results -name '*network-status.md' | head -1)
+                if [ -n "$STATUS" ]; then
+                  echo ""
+                  echo "== network-status.md =="
+                  cat "$STATUS"
+                fi
+
+                INV=$(find results -name '*inventory.csv' | head -1)
+                ROWS=0
+                if [ -n "$INV" ]; then ROWS=$(( $(wc -l < "$INV") - 1 )); fi
+
+                echo ""
+                echo "inventory rows: $ROWS"
+                if [ "$ROWS" -lt 1 ]; then
+                  echo "::error:: no hosts enumerated - the scan produced a report about nothing."
+                  echo "          Invoke-NetDiscovery builds inventory.csv from Get-NetNeighbor,"
+                  echo "          which does not exist on this Linux worker. See the comments on"
+                  echo "          this job: it needs a Windows worker or a Linux discovery path."
+                  exit 1
+                fi
+
+                exit $rc

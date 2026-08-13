@@ -21,7 +21,13 @@ services:
     container_name: mykronos-backend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8100:8100"
+      # All interfaces, not loopback. Concourse task containers reach this by
+      # host IP -- they resolve through public DNS and have never heard of
+      # `host.docker.internal` -- so a loopback publish is invisible to the
+      # pipeline that feeds the lake. The perimeter gate protects it either
+      # way, and it is already reachable from the internet through the tunnel,
+      # so LAN exposure is strictly smaller than what is already true.
+      - "8100:8100"
     environment:
       # Secrets come from --env-file, never from this file. The gate token,
       # the admin token and the webhook secret are all in backend/.env, which
