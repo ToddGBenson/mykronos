@@ -221,20 +221,30 @@ class TestReporting:
         assert row.state == "not_run"
 
     def test_the_job_names_that_do_not_match_their_capability(self) -> None:
-        """`dependencies` uploads as atlas, `insider` as aegis. Each has
-        already been mistaken for a coverage gap."""
+        """`dependencies` uploads as atlas and `cloud-posture` as cloud. Both
+        have already been mistaken for a coverage gap."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         rows = reconcile(
             [
                 self._job("dependencies", finished=built),
-                self._job("insider", finished=built),
                 self._job("cloud-posture", finished=built),
             ],
-            {"atlas": built, "aegis": built, "cloud": built},
+            {"atlas": built, "cloud": built},
         )
 
-        assert [r.capability for r in rows] == ["atlas", "aegis", "cloud"]
+        assert [r.capability for r in rows] == ["atlas", "cloud"]
         assert all(r.state == "reporting" for r in rows)
+
+    def test_the_insider_job_is_not_cross_checked(self) -> None:
+        """Aegis assesses a pull request; these pipelines run on pushes to
+        main, where there is usually no pull request and correctly no
+        assessment. The job succeeds having recorded nothing on purpose -
+        submitting one anyway would score 0/100 for exactly the case Aegis
+        exists to notice. Checking it reported every green insider job as a
+        silent failure."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+        assert reconcile([self._job("insider", finished=built)], {}) == []
 
     def test_jobs_that_produce_no_findings_are_not_checked(self) -> None:
         """`unit` and `build` write nothing to the lake, and flagging them
@@ -243,6 +253,53 @@ class TestReporting:
         jobs = [self._job(n, finished=built) for n in ("unit", "build", "publish-backend")]
 
         assert reconcile(jobs, {}) == []
+
+
+class TestAegisIsLookedUpWhereItActuallyWrites:
+    """Found by running the check against the live platform: every `insider`
+    job reported as never having produced anything.
+
+    Aegis assesses a pull request rather than scanning a tree, so it writes an
+    InsiderRiskSignal and no ScanRun at all (spec 06 §3). A cross-check that
+    looks for it in scan_runs is permanently wrong in the alarming direction,
+    which is how a panel earns being ignored."""
+
+    def test_a_signal_counts_as_aegis_reporting(
+        self, client, admin_auth, run_compaction, catalog, buffer
+    ) -> None:
+        from mykronos.dashboard import DashboardQueries
+        from mykronos.schemas import utcnow
+        from tests.conftest import REPO
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth)
+        buffer.append(
+            "insider_risk_signals",
+            [
+                {
+                    "signal_id": "sig-1",
+                    "repo_full_name": REPO,
+                    "evaluated_at": utcnow(),
+                    "insider_risk_score": 0,
+                }
+            ],
+        )
+        run_compaction()
+
+        latest = DashboardQueries(catalog).last_successful_scan_at(REPO)
+
+        assert "aegis" in latest
+
+    def test_no_signals_means_no_entry(
+        self, client, admin_auth, catalog
+    ) -> None:
+        from mykronos.dashboard import DashboardQueries
+        from tests.conftest import REPO
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth)
+
+        assert "aegis" not in DashboardQueries(catalog).last_successful_scan_at(REPO)
 
 
 class TestTheEndpoint:

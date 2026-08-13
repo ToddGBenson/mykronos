@@ -50,6 +50,15 @@ services:
       MYKRONOS_CONCOURSE_URL: ${MYKRONOS_CONCOURSE_URL:-http://concourse:8080}
       MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
       MYKRONOS_CONCOURSE_TEAM: ${MYKRONOS_CONCOURSE_TEAM:-main}
+
+      # Alerting (spec 16 §12). Empty by default and nothing is posted -- but
+      # it has to be *passed* to be settable at all, and without these two
+      # lines `mykronos.notify` could never fire in the deployed stack no
+      # matter what backend/.env said. A notifier that is wired everywhere
+      # except the one process that runs is worse than no notifier: it looks
+      # configured.
+      MYKRONOS_SLACK_WEBHOOK_URL: ${MYKRONOS_SLACK_WEBHOOK_URL:-}
+      MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY: ${MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY:-high}
     volumes:
       # Every finding, decision, token and archived scan output. Without this
       # a deploy destroys the lot, including the data a day of reprocessing

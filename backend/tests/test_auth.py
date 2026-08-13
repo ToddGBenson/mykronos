@@ -246,3 +246,58 @@ class TestRevocation:
         registry.revoke_repo(REPO)
         assert registry.resolve(plaintext) is None
         assert registry.resolve("never-issued") is None
+
+
+class TestImmediateRotation:
+    """A leaked credential needs revocation, not graceful rotation.
+
+    `rotate` keeps the previous token valid for the overlap window, which is
+    correct for a scheduled swap (spec 05 §4) and exactly wrong for a token
+    somebody else has seen. A token disclosed by `fly set-pipeline` (D-043) was
+    "rotated" and kept answering 200 for the rest of the day.
+    """
+
+    def test_the_default_keeps_the_old_token_alive(self, session) -> None:
+        registry = TokenRegistry(session, overlap_hours=24)
+        old = registry.issue("owner/repo")
+        registry.rotate("owner/repo")
+        assert registry.resolve(old) is not None, "graceful rotation still honours the old token"
+
+    def test_immediate_kills_it_now(self, session) -> None:
+        registry = TokenRegistry(session, overlap_hours=24)
+        old = registry.issue("owner/repo")
+        registry.rotate("owner/repo", immediate=True)
+        assert registry.resolve(old) is None, "a revoked token must stop working at once"
+
+    def test_the_replacement_works_either_way(self, session) -> None:
+        registry = TokenRegistry(session, overlap_hours=24)
+        registry.issue("owner/repo")
+        fresh = registry.rotate("owner/repo", immediate=True)
+        resolution = registry.resolve(fresh)
+        assert resolution is not None
+        assert resolution.repo_full_name == "owner/repo"
+
+    def test_grants_survive_an_immediate_rotation(self, session) -> None:
+        """Revoking a token must not silently revoke what the repo may write —
+        that is a different decision and would turn a credential incident into
+        an outage nobody understood."""
+        registry = TokenRegistry(session, overlap_hours=24)
+        registry.issue("owner/repo")
+        registry.grant("owner/repo", "sast")
+        fresh = registry.rotate("owner/repo", immediate=True)
+        assert registry.resolve(fresh).permits("sast")
+
+    def test_immediate_expires_tokens_superseded_earlier(self, session) -> None:
+        """The case the first version of this missed.
+
+        Rotate once (the leaked token becomes superseded, still inside its
+        overlap), then rotate again with --immediate. If `immediate` only
+        touches the *active* token it expires the replacement and leaves the
+        disclosed value working — which is what happened live.
+        """
+        registry = TokenRegistry(session, overlap_hours=24)
+        leaked = registry.issue("owner/repo")
+        registry.rotate("owner/repo")                    # leaked -> superseded
+        assert registry.resolve(leaked) is not None      # still inside overlap
+        registry.rotate("owner/repo", immediate=True)
+        assert registry.resolve(leaked) is None, "an earlier superseded token must die too"

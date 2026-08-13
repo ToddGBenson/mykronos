@@ -83,6 +83,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "rotate-token", help="Rotate, keeping the previous token valid for the overlap window"
     )
     rotate.add_argument("repo")
+    rotate.add_argument(
+        "--immediate",
+        action="store_true",
+        help=(
+            "Expire the previous token now instead of after the overlap "
+            "window. For a leaked credential, where the graceful default "
+            "leaves the disclosed value working for another 24 hours. "
+            "Breaks any job still holding it, which is the point."
+        ),
+    )
 
     grant = sub.add_parser("grant", help="Allow a capability to write for this repo")
     grant.add_argument("repo")
@@ -230,14 +240,24 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "rotate-token":
             with db.session() as session:
-                plaintext = registry(session).rotate(args.repo)
+                plaintext = registry(session).rotate(args.repo, immediate=args.immediate)
             print(f"Repo      : {args.repo}")
             print(f"New token : {plaintext}")
             print("")
-            print(
-                f"The previous token stays valid for {settings.token_overlap_hours}h so "
-                "workflows already running finish cleanly."
-            )
+            if args.immediate:
+                print(
+                    "The previous token was expired immediately. Anything still "
+                    "holding it is now failing with 401, which is the point."
+                )
+            else:
+                print(
+                    f"The previous token stays valid for {settings.token_overlap_hours}h so "
+                    "workflows already running finish cleanly."
+                )
+                print(
+                    "That overlap is wrong for a leaked credential - it keeps the "
+                    "disclosed value working. Use --immediate for that."
+                )
             print("Update the repo secret now.")
             return 0
 

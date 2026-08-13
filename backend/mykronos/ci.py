@@ -52,10 +52,18 @@ def pipeline_name_for(repo_full_name: str) -> str:
 #:
 #: A heuristic, and named as one. Job names are chosen by whoever writes the
 #: pipeline and nothing enforces this; a job absent from here is simply not
-#: cross-checked, which is the safe direction to be wrong in. The three
-#: non-obvious entries are the ones that have already caused confusion:
-#: `dependencies` uploads as `atlas`, `insider` as `aegis`, and
-#: `cloud-posture` as `cloud`.
+#: cross-checked, which is the safe direction to be wrong in. `dependencies`
+#: uploads as `atlas` and `cloud-posture` as `cloud`, both of which have been
+#: mistaken for coverage gaps.
+#:
+#: **`insider` is deliberately absent.** Aegis assesses a pull request, not a
+#: commit, and these pipelines trigger on pushes to main - where there is
+#: usually no pull request and therefore correctly no assessment. The job
+#: succeeds having recorded nothing, on purpose: submitting an assessment
+#: with no reviews, no base ref and no description would score 0/100 for
+#: exactly the case Aegis exists to notice. Cross-checking it reported every
+#: green insider job as a silent failure, which was this check being wrong
+#: about what the job is for.
 CAPABILITY_BY_JOB: dict[str, str] = {
     "sast": "sast",
     "secrets": "secrets",
@@ -64,8 +72,6 @@ CAPABILITY_BY_JOB: dict[str, str] = {
     "iac": "iac",
     "dependencies": "atlas",
     "atlas": "atlas",
-    "insider": "aegis",
-    "aegis": "aegis",
     "cloud-posture": "cloud",
     "cloud": "cloud",
 }

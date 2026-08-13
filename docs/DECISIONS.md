@@ -1285,6 +1285,56 @@ token here is one command.
 
 ---
 
+## D-044 — Rotation is not revocation, and the CLI was writing to a database nobody serves
+
+**Status:** Decided, fixed
+**Spec:** [12 §2](../specs/12-security-and-secrets-management.md), [15 §6](../specs/15-concourse-pipeline.md)
+
+D-043 said a credential that has been on a screen is disclosed and should be
+rotated. It was rotated. It kept working for the rest of the day, and finding
+out why turned up two independent defects that each looked like the other's
+symptom.
+
+**1. The CLI and the running backend use different databases.** The host CLI
+resolves `sqlite:///mykronos.db` relative to `backend/`. The container resolves
+`sqlite:////data/mykronos.db` inside the `mykronos-data` volume. Since D-038
+moved the platform into containers, every `mykronos` command run from a shell
+has been writing to a database nothing serves.
+
+The rotations landed there. So did the `dast`, `cloud` and `oracle` grants for
+TheHub — which is why that pipeline's new lanes were about to 403 at the upload
+step after running perfectly, and why the *old* token kept answering 200 while
+the new one in `.env` answered 401. The symptom that finally exposed it was the
+pipeline breaking the moment `.env` was updated to match the unserved database.
+
+**2. `rotate` is graceful by design, which is exactly wrong for a leak.** It
+supersedes the old token and keeps it valid for `token_overlap_hours` (24), so
+that a job which read the secret a second earlier still finishes — spec 05 §4,
+and correct for a *scheduled* swap. For a disclosed credential the entire
+requirement is that it stops working, and the command with "rotate" in its name
+was reached for without anybody re-reading what it promised.
+
+`rotate(..., immediate=True)` and `rotate-token --immediate` now expire the old
+value at once. The success message branches, because the old one cheerfully
+printed "the previous token stays valid for 24h" while somebody was containing
+an incident.
+
+**The first attempt at that fix did not work either, and the reason is worth
+keeping.** `immediate` expired only the *active* token. The leaked one had
+already been superseded by an earlier rotation, so it sat inside its overlap
+untouched while the fix expired its replacement. Containment means every
+previously issued value, not the one that happens to be current.
+`test_immediate_expires_tokens_superseded_earlier` is that bug.
+
+**What this changes operationally.** Any `mykronos` CLI command that mutates
+state must run inside the container — `docker exec mykronos-backend python -m
+mykronos.cli ...` — until the CLI resolves the same database the API does.
+Running it on the host is not an error and produces no warning; it just edits a
+different system. That is the next thing to fix, and it is a bigger change than
+this entry: the host path is genuinely useful before the stack is up.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.

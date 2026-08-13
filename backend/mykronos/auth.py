@@ -89,20 +89,53 @@ class TokenRegistry:
         )
         return plaintext
 
-    def rotate(self, repo_full_name: str, label: str = "") -> str:
+    def rotate(
+        self, repo_full_name: str, label: str = "", *, immediate: bool = False
+    ) -> str:
         """Issue a replacement, keeping the old token valid for the overlap.
 
         Order matters: the new token is created and the old one marked
         superseded *before* the caller writes the new value to the repo
         secret. If that write then fails, the old token is still accepted and
         nothing is stranded — the rotation is simply retried.
+
+        `immediate=True` skips the overlap and expires the old token now.
+
+        That option exists because the graceful behaviour is exactly wrong for
+        the case it gets reached for in a hurry. Rotation is designed for a
+        *scheduled* swap, where a job that read the old secret a second ago
+        must still finish (spec 05 §4). A **leaked** credential is the opposite
+        problem: the whole point is that it stops working, and the default
+        leaves it valid for another 24 hours.
+
+        This was found the hard way. A token disclosed by `fly set-pipeline`
+        (D-043) was "rotated", and answered 200 for the rest of the day —
+        rotation had done precisely what it promised, which nobody had read
+        carefully enough because the command had the word in it.
+
+        Callers should default to the graceful path. Reach for this one when
+        the old value is known to be in somebody else's hands, and expect to
+        break any job still holding it — which is the intended outcome, not a
+        side effect.
         """
         now = utcnow()
         for token in self._tokens_for(repo_full_name):
             if token.status == "active":
                 token.status = "superseded"
                 token.superseded_at = now
-                token.expires_at = now + self.overlap
+                token.expires_at = now if immediate else now + self.overlap
+            elif immediate and token.status == "superseded":
+                # Every previously issued value, not just the one that happens
+                # to be active. Containment means no old secret still works,
+                # and a token superseded an hour ago is still inside its
+                # overlap and still answering 200.
+                #
+                # Missing this is what made the first attempt at this useless:
+                # the leaked token had already been superseded by an earlier
+                # rotation, so a later `--immediate` expired the *replacement*
+                # and left the disclosed value working exactly as before.
+                if token.expires_at is None or token.expires_at > now:
+                    token.expires_at = now
 
         plaintext = secrets.token_urlsafe(TOKEN_BYTES)
         self.session.add(

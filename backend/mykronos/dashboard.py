@@ -534,7 +534,23 @@ class DashboardQueries:
             """,
             [repo_full_name],
         )
-        return {str(c): at for c, at in rows if at is not None}
+        latest = {str(c): at for c, at in rows if at is not None}
+
+        # Aegis is the exception, and it is not an oversight in either place.
+        # It assesses a pull request rather than scanning a tree, so it writes
+        # an InsiderRiskSignal and never a ScanRun (spec 06 §3). Looking for
+        # it in scan_runs reports every insider job as having reported
+        # nothing, which is both wrong and the kind of permanent false alarm
+        # that trains people to ignore the panel.
+        aegis = self.catalog.query(
+            "SELECT max(evaluated_at) FROM insider_risk_signals "
+            "WHERE repo_full_name = ?",
+            [repo_full_name],
+        )
+        if aegis and aegis[0][0] is not None:
+            latest["aegis"] = aegis[0][0]
+
+        return latest
 
     def scan_health(self, repo_full_name: str, limit: int = 50) -> list[dict[str, Any]]:
         """Per-capability run history and failure rate (spec 10 §2.2)."""
