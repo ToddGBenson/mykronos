@@ -1337,7 +1337,7 @@ this entry: the host path is genuinely useful before the stack is up.
 
 ## D-045 — The Oracle gate can deadlock on the images it gates
 
-**Status:** Decided, not yet implemented
+**Status:** Decided, implemented in 566f571
 **Spec:** [15 §3](../specs/15-concourse-pipeline.md), [09 §6](../specs/09-oracle-risk-decision-engine.md)
 
 The `containers` lane scans the images the pipeline publishes. It found 5
@@ -1358,16 +1358,33 @@ pipeline resumed normally. That works and should not be necessary, and an
 operator stepping outside the pipeline to unblock the pipeline is worth
 writing down rather than repeating.
 
-**Decision: scan the candidate image, not the published one.** `build`
-produces the image; the container scan moves to immediately after it and
-before `publish`, so the gate judges what is about to ship rather than what
-shipped last time. TheHub's pipeline already does exactly this — spec 16 §3
-put build before the Oracle gate for the same reason, that you cannot scan an
-image you have not built — so this makes one rule out of two.
+**Decision as implemented: the gate moves after publish, not the scan before
+it.** This entry first decided to move the container scan between `build` and
+`publish` so the gate judged the candidate. What shipped in 566f571 is the
+stronger version of the same idea: `build` no longer waits on Oracle at all,
+and `oracle-gate` now waits on `containers`.
 
-The image is tagged with the commit sha and only the deploy names a tag, so an
-image built from a commit Oracle refuses sits in the registry unreferenced.
-That is the property that makes scanning before the gate safe.
+    before                          after
+    oracle-gate <- code scans       build       <- quality gate
+    build       <- oracle-gate      containers  <- publish
+    publish     <- build            oracle-gate <- ... + containers
+
+The reasoning that settled it: gating `build` bought nothing. A build is a
+file, and publishing is a tag that nothing deploys on its own — the deploy is
+`deploy.ps1`, run by a person on the host (D-038). So the gate was refusing to
+produce an artifact that could not hurt anyone, at the cost of never being
+able to improve one. Moving it after publish means Oracle sees container
+findings for the commit in front of it rather than the one before, and the
+thing it actually guards — a person choosing to deploy — is unchanged.
+
+TheHub's pipeline already put build before the gate (spec 16 §3) for the
+related reason that you cannot scan an image you have not built, so this makes
+one rule out of two either way.
+
+The narrower original — scan between build and publish — also works and is
+recorded because it may be the right answer once something deploys
+automatically. At that point publishing stops being inert and the tag becomes
+the thing worth gating.
 
 **Rejected: exempt `containers` findings from the gate.** The argument is that
 an unpublished image cannot be exploited, so the gate should judge the deploy
