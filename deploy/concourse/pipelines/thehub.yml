@@ -564,6 +564,84 @@ jobs:
                 ON CONFLICT DO NOTHING;
                 SEED
 
+                # -- Mirror Python-side defaults into the database ---------
+                #
+                # 22 of the remaining failures were `null value in column
+                # "tags" of relation "dev_stories"` and friends -- tags,
+                # kpi_sketch, autonomy_disabled, cached, status.
+                #
+                # Each is declared `Column(..., nullable=False, default=X)`.
+                # That default is applied by the ORM, not by the database, so
+                # create_all emits NOT NULL with no DEFAULT and any raw-SQL
+                # INSERT in the code under test fails. The real database does
+                # not fail, because those columns arrived via `ALTER TABLE ADD
+                # COLUMN ... DEFAULT`, and the migration replay above skips
+                # exactly those statements: create_all already made the column.
+                #
+                # So the defaults are read back out of SQLAlchemy's own
+                # metadata and applied, for columns that are NOT NULL, have a
+                # scalar Python-side default and no server_default. Derived
+                # rather than listed, for the same reason the enums are read
+                # from db/migrations: a list typed here is right until somebody
+                # adds a column.
+                #
+                # This is a CI accommodation, not a fix. The real correction is
+                # `server_default=` alongside `default=` in TheHub's models, so
+                # the model describes the schema it actually needs.
+                echo "Mirroring model defaults onto NOT NULL columns..."
+                python - <<'DEFAULTS'
+                import subprocess
+                import models  # noqa: F401 - populates the metadata
+                from db.session import Base
+
+                def literal_for(d):
+                    """SQL literal for a Python-side default, or None to skip.
+
+                    bool is checked before int on purpose: in Python
+                    ``False == 0`` and ``True == 1``, so a dict keyed on both
+                    collapses to one entry and every boolean column would emit
+                    ``SET DEFAULT 0`` -- which Postgres rejects for a boolean,
+                    leaving the column with no default and the failure it was
+                    meant to fix.
+                    """
+                    if d is list:
+                        return "'[]'::jsonb"
+                    if d is dict:
+                        return "'{}'::jsonb"
+                    if callable(d):
+                        return None
+                    if isinstance(d, bool):
+                        return "true" if d else "false"
+                    if isinstance(d, int) and not isinstance(d, bool):
+                        return str(d)
+                    if isinstance(d, str):
+                        return "'" + d.replace("'", "''") + "'"
+                    return None
+
+                stmts = []
+                for table in Base.metadata.tables.values():
+                    for col in table.columns:
+                        if col.nullable or col.server_default is not None:
+                            continue
+                        d = getattr(col.default, "arg", None)
+                        if d is None:
+                            continue
+                        literal = literal_for(d)
+                        if literal is None:
+                            continue
+                        stmts.append(
+                            f"ALTER TABLE {table.name} "
+                            f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
+                        )
+
+                print(f"  {len(stmts)} column default(s) to mirror")
+                if stmts:
+                    subprocess.run(
+                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                        input="\n".join(stmts), text=True, check=False,
+                    )
+                DEFAULTS
+
                 USERS=$(su postgres -c "psql -tAq -d thehub_test -c 'SELECT count(*) FROM users'")
                 echo "  users table has ${USERS} row(s)"
 
