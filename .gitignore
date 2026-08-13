@@ -60,3 +60,4 @@ frontend/openapi.json
 deploy/concourse/.env
 deploy/concourse/.env.bak-*
 deploy/concourse/bin/
+deploy/concourse/keys/

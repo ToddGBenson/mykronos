@@ -50,7 +50,12 @@ services:
     volumes:
       - ${MINIO_DATA_DIR:-minio-data}:/data
     ports:
-      - "127.0.0.1:9000:9000"
+      # 9000 is published on all interfaces because garden task containers
+      # reach it by host IP: they cannot resolve `minio`, and a loopback
+      # publish is invisible to them. Credentials are generated, never
+      # defaulted. The console stays on loopback - it has no reason to be
+      # reachable from anywhere but this machine.
+      - "9000:9000"
       - "127.0.0.1:9001:9001"
     networks: [concourse]
     healthcheck:
@@ -87,10 +92,20 @@ services:
       CONCOURSE_WORKER_GARDEN_NETWORK: host
 
       # Garden gives each task container Docker's internal resolver at
-      # 127.0.0.11, which is not reachable from inside them. Without this,
-      # every resource check fails with "Could not resolve host: github.com"
-      # — which reads as a network outage rather than as a DNS handoff that
-      # was never wired up.
+      # 127.0.0.11, which is not reachable from inside them, so every resource
+      # check failed with "Could not resolve host: github.com" — a DNS handoff
+      # that was never wired up, reading as a network outage.
+      #
+      # Public resolvers, and the consequence is accepted rather than worked
+      # around. `CONCOURSE_GARDEN_DNS_PROXY_ENABLE` looked like the tidy fix
+      # and did not bridge it: this container resolves through Docker's
+      # embedded server at 127.0.0.11, which a garden container cannot reach
+      # from its own network namespace either way.
+      #
+      # So Docker service names do not resolve inside tasks, and internal
+      # services are addressed by IP instead - see the pipeline vars. An IP
+      # needs no resolver, and the alternative was a DNS rabbit hole to save
+      # two lines of configuration.
       CONCOURSE_GARDEN_DNS_SERVER: "1.1.1.1,8.8.8.8"
 
       # Builds are pruned aggressively: this host runs several other stacks and
@@ -98,9 +113,37 @@ services:
       CONCOURSE_BAGGAGECLAIM_VOLUME_SWEEPER_MAX_IN_FLIGHT: "5"
       CONCOURSE_CONTAINER_PLACEMENT_STRATEGY: fewest-build-containers
 
+      # Persistent keys, generated once by setup.ps1 into ./keys.
+      #
+      # `quickstart` generates these fresh on every start when they are not
+      # supplied, and the session signing key is what browser cookies are
+      # signed with -- so every `docker compose up -d` that recreated this
+      # container invalidated every session and produced "invalid state
+      # token" at the login screen. Five recreates while fixing DNS and the
+      # healthcheck made that look like a broken login rather than a restart.
+      CONCOURSE_SESSION_SIGNING_KEY: /signing/session_signing_key
+
+      # Only the session signing key is pinned. Supplying the TSA host and
+      # worker keys as well left the embedded worker unable to connect --
+      # "remote host public key mismatch" on every attempt -- because
+      # quickstart manages that handshake itself and the two arrangements do
+      # not compose.
+      #
+      # Nothing is lost by leaving them ephemeral: they secure a loopback
+      # connection between two processes in one container, and a restart
+      # rebuilding them costs nothing. The signing key is the one that
+      # mattered, because it is what browser cookies are signed with.
+      #
+      # Mounted at /signing rather than /concourse-keys, which is Concourse's
+      # default key directory: putting one file there made the worker
+      # auto-discover a tsa_host_key.pub while the web half generated its own
+      # host key, and the two never agreed. Half a pair from each source is
+      # worse than none from either.
+
       CONCOURSE_LOG_LEVEL: info
     volumes:
       - concourse-worker-data:/worker-state
+      - ./keys/session_signing_key:/signing/session_signing_key:ro
     networks: [concourse]
     extra_hosts:
       # How a pipeline task reaches the Mykronos backend on the host.

@@ -53,13 +53,18 @@ if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "mykronos-pipeline-vars-$(Get-Random).yml"
 try {
     @(
-        # The host's LAN IP, not host.docker.internal: garden task containers
-        # use the DNS servers set in compose (needed for github.com) and so
-        # cannot resolve Docker's internal names. An IP needs no resolver.
+        # Host IP, not a Docker name: garden task containers resolve through
+        # the public servers set in compose and have never heard of
+        # `host.docker.internal` or `minio`. An IP needs no resolver.
         "mykronos-url: http://192.168.0.14:8100",
         "mykronos-ref: v1",
         "mykronos-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_CONCOURSE_TOKEN')",
-        "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')"
+        "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')",
+        # MinIO is on the compose network, so the task container reaches it by
+        # service name rather than through the host.
+        "minio-endpoint: http://192.168.0.14:9000",
+        "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
+        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')"
     ) | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan

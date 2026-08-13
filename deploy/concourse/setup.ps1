@@ -62,6 +62,21 @@ if ((Test-Path $EnvFile) -and -not $Rotate) {
     Write-Host "Wrote $EnvFile with generated credentials." -ForegroundColor Green
 }
 
+# Persistent session signing key. Without one, quickstart generates a fresh
+# key on every start, every browser cookie signed with the old one becomes
+# invalid, and the login page reports "invalid state token" - which reads as
+# a broken login rather than as a container restart.
+#
+# Only this key. Supplying the TSA host and worker keys too leaves the
+# embedded worker unable to connect ("remote host public key mismatch"),
+# because quickstart manages that handshake itself.
+$keyDir = Join-Path $PSScriptRoot "keys"
+New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
+    Write-Host "Generating the session signing key..." -ForegroundColor Cyan
+    docker run --rm -v "${keyDir}:/keys" concourse/concourse:7.14 generate-key -t rsa -f /keys/session_signing_key | Out-Null
+}
+
 if ($NoStart) { return }
 
 Push-Location $PSScriptRoot

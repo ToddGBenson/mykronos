@@ -26,6 +26,36 @@ resources:
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
 
+  # Artifact storage (spec 15 §5). S3-compatible rather than a mounted share:
+  # this resource handles versioning and retention, and the same pipeline runs
+  # unchanged against real S3 later.
+  #
+  # `regexp` rather than `versioned_file`: MinIO buckets here are not
+  # versioned, and the build number in the key is what makes an artifact
+  # traceable to the run that produced it.
+  - name: wheel
+    type: s3
+    icon: package-variant-closed
+    source:
+      endpoint: ((minio-endpoint))
+      bucket: mykronos-artifacts
+      regexp: wheels/mykronos-(.*)-py3-none-any.whl
+      access_key_id: ((minio-access-key))
+      secret_access_key: ((minio-secret-key))
+
+  # Kept in its own bucket because its retention differs: artifacts expire
+  # after 30 days, an SBOM is evidence and answers a question asked long
+  # afterwards.
+  - name: sbom
+    type: s3
+    icon: file-document-outline
+    source:
+      endpoint: ((minio-endpoint))
+      bucket: mykronos-sboms
+      regexp: sbom-(.*).cdx.json
+      access_key_id: ((minio-access-key))
+      secret_access_key: ((minio-secret-key))
+
 anchors:
   # Every task that reports findings does this: install the package the
   # GitHub composite action installs, then call the same uploader. The logic
@@ -276,7 +306,61 @@ jobs:
             args:
               - -ec
               - |
+                set -euo pipefail
+                # git is not in python:3.13-slim and the SHA is read from the
+                # checkout rather than from a Concourse variable.
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet build
-                python -m build --wheel --outdir ../../dist
-                ls -l ../../dist
+                python -m build --wheel --outdir "${TARGET}"
+
+                # The commit SHA, not the build number. Concourse's
+                # BUILD_NAME was empty in this task and everything landed as
+                # `b0`, which is worse than useless: it looks like a version.
+                # The SHA is also the better key - it identifies the exact
+                # code, and it is what the scan runs and the Oracle decision
+                # for this artifact are already keyed on.
+                cd ../..
+                SHA=$(git -C source rev-parse --short HEAD)
+                cd source/backend
+                for wheel in "${TARGET}"/*.whl; do
+                  base=$(basename "$wheel" .whl)
+                  mv "$wheel" "${TARGET}/${base%%-py3-none-any}+${SHA}-py3-none-any.whl"
+                done
+                ls -l "${TARGET}"
+        params:
+          TARGET: ../../dist
+
+      - task: build-sbom
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: dist }]
+          outputs: [{ name: sbom-out }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+
+                # Syft, pinned. `cyclonedx-py environment` documents the
+                # interpreter the task is running in rather than the
+                # repository -- a plausible SBOM of entirely the wrong
+                # software, which is how it shipped in the Atlas workflow.
+                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh                   | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
+                SHA=$(git -C source rev-parse --short HEAD)
+                syft scan dir:source                   --exclude './**/node_modules' --exclude './**/.venv'                   --output cyclonedx-json > "sbom-out/sbom-${SHA}.cdx.json"
+
+                COMPONENTS=$(jq '((.components // []) | length)'                   "sbom-out/sbom-${SHA}.cdx.json")
+                echo "SBOM lists $COMPONENTS component(s)"
+                if [ "$COMPONENTS" -eq 0 ]; then
+                  echo "::error::SBOM has no components; refusing to publish an empty one."
+                  exit 1
+                fi
+
+      - put: wheel
+        params: { file: dist/mykronos-*.whl }
+      - put: sbom
+        params: { file: sbom-out/sbom-*.cdx.json }
