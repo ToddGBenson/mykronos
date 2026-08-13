@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.config import get_settings
 from mykronos.db import Database
+from mykronos.db.models import RepoOnboarding
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
@@ -114,6 +115,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "purge-insider-risk",
         help="Delete insider-risk rows past their retention window (spec 06 §9)",
     )
+    ghtoken = sub.add_parser(
+        "github-token",
+        help="Mint a short-lived GitHub App installation token (spec 02 §4)",
+    )
+    ghtoken.add_argument(
+        "repo", help="owner/repo the token should be scoped to."
+    )
+
     reproc = sub.add_parser(
         "reprocess",
         help="Re-derive findings from archived tool output (spec 05 §5a)",
@@ -348,6 +357,38 @@ def main(argv: list[str] | None = None) -> int:
                 _print_table(
                     ["repo", "retention days"], sorted(purge.applied.items())
                 )
+            return 0
+
+        if args.command == "github-token":
+            # Prints the token, deliberately. It is a one-hour credential for
+            # a caller that is about to use it, and the alternative — writing
+            # it somewhere — leaves a credential outliving the need for it.
+            # Nothing here logs or persists it.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                installation_id = onboarding.github_installation_id
+
+            client = _github_factory(settings).for_installation(installation_id)
+            minter = getattr(client, "_token", None)
+            if minter is None:
+                print(
+                    "No GitHub App is configured, so there is no installation "
+                    "to mint a token for.",
+                    file=sys.stderr,
+                )
+                return 1
+            # The client's own minting path, cache included. Reimplementing it
+            # here would be a second place for App credential handling to
+            # drift from the one the platform actually uses.
+            print(asyncio.run(minter()))
             return 0
 
         if args.command == "reprocess":

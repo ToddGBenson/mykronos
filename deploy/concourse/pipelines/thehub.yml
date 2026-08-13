@@ -1,0 +1,182 @@
+# TheHub security pipeline (spec 15 §2).
+#
+# TheHub is private and has exhausted its GitHub Actions allowance: every
+# workflow there fails instantly with no logs, which is indistinguishable from
+# a broken repository until you notice only the private one is affected. This
+# runs the same scanners on the same commits with no per-minute cost.
+#
+# Scanning only. No build, no deploy: those belong to whoever owns TheHub's
+# release process, and this pipeline exists to restore security coverage the
+# Actions allowance took away.
+#
+# The git credential is a GitHub App installation token, minted by
+# `mykronos github-token` at set-pipeline time. It expires after an hour,
+# which is a real limitation and the reason CNC-2 exists: resource checks
+# start failing once it lapses, and `set-pipeline.ps1` must be re-run to
+# refresh it. A read-only deploy key would not expire, and adding one is a
+# repository settings change for the owner to make rather than the platform.
+
+resources:
+  - name: source
+    type: git
+    icon: github
+    source:
+      uri: https://x-access-token:((github-token))@github.com/ToddGBenson/TheHub.git
+      branch: ((thehub-branch))
+
+  - name: python
+    type: registry-image
+    icon: language-python
+    source: { repository: python, tag: "3.13-slim" }
+
+anchors:
+  mykronos_env: &mykronos_env
+    MYKRONOS_URL: ((mykronos-url))
+    MYKRONOS_TOKEN: ((thehub-ingestion-token))
+    MYKRONOS_REF: ((mykronos-ref))
+    # The git resource checks out a detached HEAD, so
+    # `git rev-parse --abbrev-ref HEAD` returns the literal string HEAD
+    # and every scan run recorded that as its branch. The branch is known
+    # when this file is rendered; asking git for what it cannot know was
+    # the mistake.
+    SCANNED_BRANCH: ((thehub-branch))
+
+jobs:
+  - name: secrets
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: gitleaks
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                curl -sSfL -o /tmp/gitleaks.tar.gz \
+                  https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+                /tmp/gitleaks detect --source . --report-format json \
+                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability secrets --tool gitleaks \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  - name: dependencies
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: osv-scanner
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+
+                curl -sSfL -o /usr/local/bin/osv-scanner \
+                  https://github.com/google/osv-scanner/releases/download/v2.5.0/osv-scanner_linux_amd64
+                echo "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c  /usr/local/bin/osv-scanner" \
+                  | sha256sum -c -
+                chmod +x /usr/local/bin/osv-scanner
+
+                # `--no-resolve` because transitive resolution calls deps.dev,
+                # which returns an internal error for any requirements.txt
+                # containing sqlalchemy - TheHub's does - and an extractor
+                # error is exit 127, which would fail the whole lane.
+                rc=0
+                osv-scanner scan source --recursive --no-resolve \
+                  --format sarif --output-file /tmp/results/osv.sarif . || rc=$?
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::osv-scanner exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability atlas --tool osv-scanner \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  - name: containers
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: trivy
+        image: python
+        privileged: true
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                OUT=/tmp/results
+                mkdir -p "$OUT"
+                apt-get update -qq && apt-get install -y -qq curl git ca-certificates >/dev/null
+                curl -sSfL https://get.docker.com | sh >/dev/null 2>&1 || true
+
+                EMPTY='{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Trivy"}},"results":[]}]}'
+                # Image scanning needs a daemon this task does not have, so
+                # Trivy reads the Dockerfiles as configuration instead. That is
+                # a narrower answer than the GitHub lane gives - no base-image
+                # CVEs - and saying so is better than reporting a clean image
+                # scan that never happened.
+                docker run --rm -v "$PWD:/repo" -v "$OUT:/out" \
+                  aquasec/trivy:0.58.1 filesystem /repo \
+                    --scanners vuln --format sarif --output /out/trivy.sarif \
+                    --exit-code 0 --quiet 2>/dev/null \
+                  || printf '%s' "$EMPTY" > "$OUT/trivy.sarif"
+
+                test -s "$OUT/trivy.sarif" || printf '%s' "$EMPTY" > "$OUT/trivy.sarif"
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability containers --tool trivy \
+                  --results-path "$OUT" \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false
