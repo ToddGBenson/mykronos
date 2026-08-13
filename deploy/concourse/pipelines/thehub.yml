@@ -378,26 +378,6 @@ jobs:
                 # default is 17 -- so `postgresql-16` installs nothing and the
                 # pgvector package name has to follow whatever landed. Checked
                 # against the real image rather than assumed.
-                # Redis, because the scheduler tests assume a leader lock.
-                #
-                # `services/scheduler_leader.claim_cycle` fails CLOSED when
-                # Redis is absent, and says why: "a skipped cycle costs one
-                # interval; a four-way burst against a rate-limited API cost
-                # nine days of Teller sync". Correct in production, and it
-                # means every scheduler that claims a cycle silently does
-                # nothing here -- so a test asserting the run was recorded sees
-                # an empty list and fails for the right reason in the wrong
-                # place. TheHub runs redis:7-alpine beside its backend; this is
-                # the same thing, in-task.
-                echo "Installing Redis..."
-                apt-get install -y -qq redis-server >/dev/null 2>&1
-                service redis-server start >/dev/null 2>&1                   || (redis-server --daemonize yes >/dev/null 2>&1 || true)
-                for _ in $(seq 1 15); do
-                  redis-cli ping >/dev/null 2>&1 && break
-                  sleep 1
-                done
-                redis-cli ping >/dev/null 2>&1                   && echo "  redis is up"                   || echo "  note: redis unavailable - scheduler-claim tests will skip their work"
-
                 echo "Installing PostgreSQL with pgvector..."
                 apt-get install -y -qq postgresql postgresql-contrib >/dev/null 2>&1
                 PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
