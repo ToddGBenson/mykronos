@@ -539,6 +539,34 @@ jobs:
                 done
                 echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
 
+                # -- One user, because a third of these tests assume one ---
+                #
+                # Helpers like `_mk_story` do `db.query(User).first()` and then
+                # `user.id`, so on a database with no users they raise
+                # `AttributeError: 'NoneType' object has no attribute 'id'` --
+                # 34 failures, none of them about the code under test.
+                #
+                # They pass in TheHub's own environment because `make test`
+                # runs inside a container pointed at a database that has real
+                # users in it. The tests are relying on ambient data rather
+                # than a fixture, which is worth fixing in TheHub; until then
+                # CI has to provide the environment they were written for
+                # rather than pretend the difference is theirs.
+                #
+                # Deliberately one inert row: a fixed uuid, an unroutable
+                # address and a password hash that is not a hash of anything.
+                # It exists to be found by `.first()`, not to be logged in as.
+                echo "Seeding the single user those tests expect to find..."
+                su postgres -c "psql -q -d thehub_test" <<'SEED' || true
+                INSERT INTO users (id, email, username, password_hash, is_active)
+                VALUES ('00000000-0000-0000-0000-000000000001',
+                        'ci@invalid.test', 'ci', 'x-not-a-hash', true)
+                ON CONFLICT DO NOTHING;
+                SEED
+
+                USERS=$(su postgres -c "psql -tAq -d thehub_test -c 'SELECT count(*) FROM users'")
+                echo "  users table has ${USERS} row(s)"
+
                 TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
                 echo "  schema has ${TABLES} table(s)"
                 if [ "${TABLES:-0}" -lt 50 ]; then

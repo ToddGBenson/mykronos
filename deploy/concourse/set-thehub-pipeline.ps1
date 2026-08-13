@@ -30,10 +30,11 @@
 
 .PARAMETER AllowMissingAzure
     Apply the pipeline without an Azure service principal. The delivery jobs
-    all work; cloud-posture fails at runtime with a message saying why. That is
-    the right failure isolation - a missing backup-subscription credential
-    should not block deploying TheHub - but it is opt-in, because the quiet
-    version of this is a cloud scan nobody notices never ran.
+    all work and cloud-posture is paused, because a job that cannot run should
+    be visibly off rather than red every morning. That is the right failure
+    isolation - a missing backup-subscription credential should not block
+    deploying TheHub - and it stays opt-in, because the quiet version of this
+    is a cloud scan nobody notices never ran.
 
 .NOTES
     ASCII only - see setup.ps1.
@@ -119,7 +120,7 @@ if (-not $azureClientId -or -not $azureSubscriptionId) {
               "or pass -AllowMissingAzure to apply the pipeline with the " +
               "cloud-posture job left unable to run."
     }
-    Write-Host "No Azure principal: cloud-posture will fail at runtime." -ForegroundColor Yellow
+    Write-Host "No Azure principal: cloud-posture will be paused below." -ForegroundColor Yellow
 }
 
 # Reporting into TheHub is optional. Absent, the report task says it is
@@ -248,6 +249,25 @@ if ($Pause) {
     Write-Host "`nPipeline applied and left paused." -ForegroundColor Yellow
 } else {
     & $fly --target $Target unpause-pipeline --pipeline $Pipeline
+}
+
+# cloud-posture is paused when there is nothing for it to scan.
+#
+# It runs on a daily timer, and with no Azure principal it failed every night
+# -- after spending thirteen minutes pulling the Prowler image to discover it
+# had no credentials. A job that is red every morning for a reason nobody
+# intends to fix this week is a job people learn to scroll past, which costs
+# more than the scan it was not doing.
+#
+# Paused is the honest state: visibly off in the UI rather than visibly broken,
+# and the same call personal-soc.yml makes for its network scan. Configure the
+# principal in deploy\concourse\.env and re-run this; it unpauses itself.
+if ($azureClientId -and $azureSubscriptionId) {
+    & $fly --target $Target unpause-job --job "$Pipeline/cloud-posture" | Out-Null
+    Write-Host "cloud-posture is enabled (Azure principal configured)." -ForegroundColor DarkGray
+} else {
+    & $fly --target $Target pause-job --job "$Pipeline/cloud-posture" | Out-Null
+    Write-Host "cloud-posture paused: no Azure principal, so it has nothing to scan." -ForegroundColor Yellow
 }
 
 Write-Host "`nDelivering branch '$Branch'." -ForegroundColor Green
