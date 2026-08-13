@@ -1206,7 +1206,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, sast, dependencies, containers]
+        passed: [secrets, sast, dependencies, containers, prompt-evals]
       - get: python
       - task: request-deploy
         image: python
@@ -1292,6 +1292,120 @@ jobs:
           STAGE: deploy_staging
           STATUS: success
           TARGET_ENV: staging
+  # -- Prompt evals: the AI quality gate (spec 16 section 14) --------------
+  #
+  # TheHub's prompts are code. `backend/prompts/<feature>/main.<v>.md` drives
+  # the room coordinators, and a wording change can regress behaviour no unit
+  # test can see: the code is identical and the output is not.
+  #
+  # The machinery already exists. `services/ai/eval_harness.py` runs fixture
+  # sets, `tests/eval_fixtures/eval_thresholds.yaml` holds a pass-rate, p95
+  # latency and cost baseline per prompt, and `scripts/run_prompt_evals.py` is
+  # the gate. deploy.sh has run it for 51 deploys.
+  #
+  # Concourse did not - the same gap as the lifecycle bridge in section 13, and
+  # worse in one respect: nothing failed. The eval gate simply stopped being
+  # consulted for anything this pipeline shipped, so a prompt regression would
+  # reach demo with every other lane green.
+  #
+  # **This costs nothing by default, deliberately.** The runner's own
+  # guardrail: rubric fixtures need a Claude API key, and without one they
+  # report as skipped while schema_validator and exact_match graders run
+  # normally. The deterministic half gates every commit for free; the half that
+  # needs a model is opt-in, which is the same rule spec 12 section 5.2 applies
+  # to every other outbound AI call here. The judge cache is a Concourse cache,
+  # keyed as the harness keys it - on prompt version - so a configured key pays
+  # only for prompts that actually changed.
+  #
+  # Only changed prompts are evaluated, through the runner's own --base-ref
+  # diffing. A commit touching no prompt says so and exits clean rather than
+  # re-running a suite whose inputs did not move.
+  - name: prompt-evals
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: run-evals
+        image: python
+        params:
+          PIP_CACHE_DIR: /pipcache
+          # The harness's own default key, pointed at a Concourse cache so a
+          # judged fixture is paid for once rather than once per build.
+          HUB_EVAL_CACHE_DIR: /eval-cache
+          # Empty by default. With no key the rubric graders skip and say so;
+          # supplying one turns them on without touching this file.
+          ANTHROPIC_API_KEY: ((anthropic-api-key))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          caches:
+            - path: /pipcache
+            - path: /eval-cache
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                cd source
+
+                if [ ! -f scripts/run_prompt_evals.py ]; then
+                  echo "=================================================="
+                  echo "NO PROMPT EVAL RUNNER."
+                  echo "scripts/run_prompt_evals.py is absent, so no prompt"
+                  echo "was evaluated. This green tick says nothing about"
+                  echo "prompt quality."
+                  echo "=================================================="
+                  exit 0
+                fi
+
+                git config --global --add safe.directory "$PWD"
+                pip install --quiet -r backend/requirements.txt
+
+                if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                  echo "No Claude key configured: rubric fixtures report as"
+                  echo "skipped and the gate scores the deterministic graders"
+                  echo "only. A narrower check, not a passing rubric run."
+                fi
+
+                rc=0
+                python scripts/run_prompt_evals.py --base-ref HEAD~1 2>&1 | tee /tmp/evals.log
+                rc=${PIPESTATUS[0]}
+
+                TAIL=$(tail -3 /tmp/evals.log | tr -s '[:space:]' ' ' | cut -c1-200)
+
+                # deploy.sh's semantics, kept on purpose. Exit 2 is the runner
+                # failing to run - a broken harness, an unreachable judge -
+                # which is not evidence of a prompt regression and must not be
+                # reported as one. Any other non-zero is a measured regression
+                # against the baseline and fails the job.
+                if [ "$rc" -eq 2 ]; then
+                  echo "::warning::Prompt eval harness could not run: $TAIL"
+                  printf '%s' "*TheHub*: prompt eval harness error, not a regression" > ../notify/message.txt
+                  exit 0
+                fi
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::Prompt eval regression against the baseline in"
+                  echo "          backend/tests/eval_fixtures/eval_thresholds.yaml"
+                  printf '%s' "*TheHub*: prompt eval regression - $TAIL" > ../notify/message.txt
+                  exit "$rc"
+                fi
+                echo "Prompt evals passed: $TAIL"
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: prompt_evals
+          STATUS: success
+          TARGET_ENV: prod
+
   - name: dast
     public: true
     on_failure: *slack_alert

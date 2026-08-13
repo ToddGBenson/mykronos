@@ -125,6 +125,14 @@ if (-not $azureClientId -or -not $azureSubscriptionId) {
 # Reporting into TheHub is optional. Absent, the report task says it is
 # skipping and exits 0 - which is the right failure mode for telemetry, and
 # the wrong one to discover silently, so it is announced here too.
+$hubAnthropicKey = ""
+if (Test-Path $TheHubEnvPath) {
+    $hubAnthropicKey = Read-EnvValue $TheHubEnvPath "ANTHROPIC_API_KEY" -Optional
+}
+if (-not $hubAnthropicKey) {
+    Write-Host "No Claude key: prompt evals will run the deterministic graders only." -ForegroundColor DarkGray
+}
+
 $hubDeployToken = ""
 if (Test-Path $TheHubEnvPath) {
     $hubDeployToken = Read-EnvValue $TheHubEnvPath "OPS_DEPLOY_TOKEN" -Optional
@@ -199,7 +207,16 @@ try {
         # A webhook URL is a bearer credential - anyone holding it can post to
         # the channel - so it comes from .env with the rest of them and is
         # never written into the pipeline file.
-        "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'"
+        "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'",
+        # Optional, and the prompt-eval gate is designed around its absence:
+        # without a key the rubric fixtures report as skipped and the
+        # deterministic graders still gate every commit, for free. Supplying
+        # one turns the judged fixtures on and starts costing money per
+        # changed prompt - which is why it is opt-in rather than assumed.
+        #
+        # Read from TheHub's own .env so there is one copy of the key on this
+        # machine rather than two.
+        "anthropic-api-key: '$hubAnthropicKey'"
     )
 
     $vars | Set-Content -Path $varsFile -Encoding UTF8

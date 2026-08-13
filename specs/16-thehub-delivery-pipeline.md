@@ -499,7 +499,81 @@ into an outage. With no token configured the task says so and exits 0, and
 `set-thehub-pipeline.ps1` prints a warning at apply time so the silent case is
 announced once where somebody is looking.
 
-## 14. Before the first run
+## 14. Testing the AI, where there is AI to test
+
+"Add AI testing to the pipelines" was scoped by asking which pipeline actually
+has AI in it. The answer was one of them.
+
+**Mykronos needs nothing new.** Its two AI surfaces — Aegis's
+`ai_classifier_url` (spec 06 §5) and Patchwork's `fix_generator_url` (spec 08
+§5) — are both null by default, and null means the feature is off and no
+repository content leaves the runner (spec 12 §5.2). The property worth
+testing is that contract rather than any model's output, and four test modules
+already assert it. Adding an eval lane for a model nobody has configured would
+be testing an absence.
+
+**TheHub is the opposite case, and already had the answer.** Its prompts are
+code: `backend/prompts/<feature>/main.<v>.md` drives the room coordinators, and
+a wording change can regress behaviour that no unit test can see, because the
+code is identical and only the output moves. So it has a full eval system —
+`services/ai/eval_harness.py`, fixture sets per feature, and
+`tests/eval_fixtures/eval_thresholds.yaml` holding a pass-rate, p95 latency and
+cost baseline for each prompt — gated by `scripts/run_prompt_evals.py`.
+
+`deploy.sh` has run that gate for 51 deploys. **Concourse never did**, which is
+the §13 problem again with a nastier failure mode: nothing broke. The gate
+simply stopped being consulted for anything this pipeline shipped, so a prompt
+regression would have reached demo with every other lane green.
+
+### What the lane does
+
+Runs `scripts/run_prompt_evals.py`, the same entry point `deploy.sh` calls, so
+there is one definition of the gate rather than two that drift.
+
+**It costs nothing by default, and that is a design property rather than a
+happy accident.** The runner's own guardrail: rubric fixtures need a Claude API
+key, and without one they report as `skipped` while `schema_validator` and
+`exact_match` graders run normally. So the deterministic half of the suite
+gates every commit for free, and the half that needs a model is opt-in — the
+same rule spec 12 §5.2 applies to every other outbound AI call in this
+platform. Supplying `ANTHROPIC_API_KEY` turns the judged fixtures on without
+editing the pipeline.
+
+**Only changed prompts are evaluated.** The runner diffs against `--base-ref`
+and evaluates the features whose prompt files moved. A commit touching no
+prompt says so and exits clean, rather than re-running a suite whose inputs did
+not change.
+
+**The judge cache is a Concourse cache.** The harness already caches judge
+calls on `(prompt_version, fixture_id, grader)`; pointing `HUB_EVAL_CACHE_DIR`
+at a worker-local cache means a configured key pays for a fixture once rather
+than once per build, and a prompt-version bump invalidates exactly the entries
+it should.
+
+### Two failure modes, kept distinct
+
+`deploy.sh` separates them and the lane keeps the distinction, because
+collapsing them is how an eval gate gets switched off:
+
+| Exit | Meaning | Lane |
+|---|---|---|
+| 0 | Fixtures met the baseline | passes |
+| 2 | The harness could not run — broken fixture, unreachable judge | **warns**, does not fail |
+| other | Measured regression against `eval_thresholds.yaml` | fails |
+
+A harness that cannot run is not evidence of a prompt regression, and
+reporting it as one trains people to ignore the red. A regression is measured
+against a committed baseline and is the thing the gate exists for.
+
+### What this deliberately does not run
+
+`tests/classifier_validation/` — `pytest.ini` marks it *"Operator-driven
+multimodal classifier accuracy validation. NOT auto-run; costs real Claude
+budget."* That judgement was already made by whoever wrote the marker, and a
+pipeline is the wrong place to overturn it. It stays a command a person runs
+deliberately.
+
+## 15. Before the first run
 
 Four things must be true, and three of them fail in ways that look like
 something else.
@@ -534,7 +608,7 @@ because the alternative is three jobs that cannot ever pass.
 change the deploy model asks of TheHub itself, and it is what makes "deploy"
 mean "run exactly this commit" rather than "rebuild and hope".
 
-## 15. Open questions
+## 16. Open questions
 
 0. **"Enabled capability" and "installed Actions workflow" are the same field,
    and for a Concourse-scanned repo they should not be.** TheHub's token is now
