@@ -593,8 +593,9 @@ jobs:
                 import subprocess
                 import models  # noqa: F401 - populates the metadata
                 from db.session import Base
+                from sqlalchemy import DateTime
 
-                def literal_for(d):
+                def literal_for(d, col):
                     """SQL literal for a Python-side default, or None to skip.
 
                     bool is checked before int on purpose: in Python
@@ -609,7 +610,14 @@ jobs:
                     if d is dict:
                         return "'{}'::jsonb"
                     if callable(d):
-                        return None
+                        # A timestamp default is the one callable worth
+                        # translating: `default=datetime.utcnow` and
+                        # `func.now()` both mean "now" to the database, and
+                        # raw-SQL inserts that omit started_at rely on it.
+                        # Everything else callable is Python-side logic with no
+                        # SQL equivalent, and guessing one would be worse than
+                        # leaving the column without a default.
+                        return "now()" if isinstance(col.type, DateTime) else None
                     if isinstance(d, bool):
                         return "true" if d else "false"
                     if isinstance(d, int) and not isinstance(d, bool):
@@ -626,7 +634,7 @@ jobs:
                         d = getattr(col.default, "arg", None)
                         if d is None:
                             continue
-                        literal = literal_for(d)
+                        literal = literal_for(d, col)
                         if literal is None:
                             continue
                         stmts.append(
