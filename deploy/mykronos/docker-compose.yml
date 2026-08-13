@@ -1,0 +1,77 @@
+# Mykronos, deployed (spec 15 §2, D-038).
+#
+# The deploy target decided in D-038: this host, in Docker, behind the
+# Cloudflare tunnel that already fronts mykronos.toddbenson.net. Not a new
+# idea -- TheHub runs twelve containers here the same way -- and it retires a
+# class of failure that cost real time: six manual backend restarts in a
+# session, an orphaned dev server degrading for two days, port collisions, and
+# a hand-typed bind that a reboot forgets.
+#
+#   docker compose --env-file ../../backend/.env up -d
+#
+# The tunnel's ingress already splits this hostname by path: /api, /webhooks,
+# /healthz and the docs to 8100, everything else to 3100. Both ports are
+# published on 127.0.0.1 only; cloudflared reaches them there.
+
+name: mykronos
+
+services:
+  backend:
+    image: ${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}
+    container_name: mykronos-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8100:8100"
+    environment:
+      # Secrets come from --env-file, never from this file. The gate token,
+      # the admin token and the webhook secret are all in backend/.env, which
+      # is gitignored (spec 12 §2).
+      MYKRONOS_GATE_TOKEN: ${MYKRONOS_GATE_TOKEN:?set it in backend/.env}
+      MYKRONOS_ADMIN_TOKEN: ${MYKRONOS_ADMIN_TOKEN:?set it in backend/.env}
+      MYKRONOS_VIEWER_TOKEN: ${MYKRONOS_VIEWER_TOKEN:-}
+      MYKRONOS_GITHUB_WEBHOOK_SECRET: ${MYKRONOS_GITHUB_WEBHOOK_SECRET:-}
+      MYKRONOS_GITHUB_APP_ID: ${MYKRONOS_GITHUB_APP_ID:-}
+      # Mounted read-only below. The container never holds a copy.
+      MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
+      MYKRONOS_INGESTION_API_URL: ${MYKRONOS_INGESTION_API_URL:-https://mykronos.toddbenson.net}
+    volumes:
+      # Every finding, decision, token and archived scan output. Without this
+      # a deploy destroys the lot, including the data a day of reprocessing
+      # was spent repairing.
+      - mykronos-data:/data
+      # The App private key, read-only and outside the image. Spec 12 §2 puts
+      # it in the "never in a repo, never in a layer" tier, and an image is a
+      # layer somebody can pull.
+      - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:-/dev/null}:/secrets/github-app.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8100/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: ${MYKRONOS_IMAGE_FRONTEND:-mykronos-frontend:latest}
+    container_name: mykronos-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3100:3100"
+    environment:
+      # Service name, not a host IP: these two share a compose network and
+      # Docker's resolver works between them. The garden-container DNS problem
+      # that forced IPs in the pipeline does not apply here.
+      MYKRONOS_API_URL: http://backend:8100
+      MYKRONOS_ADMIN_TOKEN: ${MYKRONOS_ADMIN_TOKEN:?set it in backend/.env}
+      MYKRONOS_GATE_TOKEN: ${MYKRONOS_GATE_TOKEN:?set it in backend/.env}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  mykronos-data:

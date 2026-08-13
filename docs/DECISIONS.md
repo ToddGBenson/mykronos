@@ -1027,6 +1027,62 @@ people's repositories is one its own pull requests failed to satisfy.
 
 ---
 
+## D-038 — Three decisions the Concourse pipeline was waiting on
+
+**Status:** Decided
+**Spec:** [15 §2, §5, §6](../specs/15-concourse-pipeline.md)
+
+Spec 15 shipped with three open questions rather than guesses. All three now
+have answers, and two of them were answered by running the thing.
+
+**What does deploy deploy to? This host, in Docker.** (CNC-10)
+
+Mykronos runs today as bare processes: no Dockerfile anywhere, no restart
+policy, no supervision. Over one working session that cost the backend being
+restarted by hand six times, an orphaned `next dev` degrading for two days
+until it was hunted down by PID -- the twenty-six-second page loads -- port
+collisions with Docker Desktop and TheHub, and a manual rebind to 0.0.0.0
+that a reboot forgets. TheHub already runs twelve containers on this host with
+`restart: unless-stopped`.
+
+So deploy means: build an image, push it, and bring the compose stack up
+behind the tunnel that already fronts it. The alternative considered was the
+NAS, and it was rejected for now because it moves the service away from the
+tunnel and the backend that Concourse reaches by host IP, solving nothing that
+is currently broken.
+
+**Does Concourse duplicate what GitHub Actions already scans? Yes, and the
+split is by purpose rather than by capability.** (CNC-9)
+
+Actions keeps pull-request feedback, because it runs for contributors who
+have no access to this Concourse instance and because the Workflow Installer's
+whole model is that a repository carries its own security configuration.
+Concourse owns the full pipeline: quality gate, security, Oracle, build,
+deploy.
+
+Where both scan the same commit the ingestion upsert makes the duplication
+invisible, which is worse than harmless -- identical findings, doubled runner
+time, and no way to tell which lane last reported. The rule is therefore that
+a repository gets one lane or the other for a given capability, not both, and
+TheHub is the current example: it has no Actions minutes, so Concourse scans
+it and its workflows stay merged but inert.
+
+**What happens when the NAS is unavailable? The pipeline fails.** (CNC-11)
+
+Concourse's Postgres and MinIO both live there. A pipeline that cannot record
+its results must not deploy anyway, which is the same reasoning as spec 05
+§4's fail-fast probe in the capability workflows: better to stop in ten
+seconds than to scan for twenty minutes and discover the results have nowhere
+to go.
+
+Concretely: the ingestion check is a gate, not a best-effort step, and the
+`put` to MinIO is a pipeline step whose failure fails the build. Neither is
+wrapped in a tolerant `|| true`. The whole session argues for that -- a
+blanket `|| true` on the osv-scanner step is what hid a missing scanner
+binary for the entire life of that lane.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.

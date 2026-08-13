@@ -1,0 +1,16 @@
+# Build context is the repo root (see backend/Dockerfile), so this keeps a
+# 1GB+ working tree out of every build.
+.git
+**/node_modules
+**/.venv
+**/.next
+datalake
+backend/datalake
+backend/mykronos.db*
+**/__pycache__
+**/*.pyc
+deploy/concourse/bin
+deploy/concourse/keys
+**/.env
+**/.env.local
+frontend/openapi.json
