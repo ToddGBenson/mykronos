@@ -104,6 +104,17 @@ jobs:
           # able to reach a shell.
           PR_BODY: ${{ github.event.pull_request.body }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bound here rather than interpolated into the script below,
+          # for the same reason PR_BODY is. `${{ }}` is substituted
+          # before bash parses the line, so a value carrying shell
+          # syntax becomes shell syntax. A login and a base branch are
+          # narrow, but the rule is cheaper to keep than to re-reason
+          # about per field.
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           printf '%s' "$PR_BODY" > pr-body.txt
@@ -116,15 +127,15 @@ jobs:
           # signals, not the whole assessment — the sensitive-path and
           # baseline signals are still worth publishing without it.
           gh api \
-            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --paginate > reviews.json || echo '[]' > reviews.json
 
           python -m mykronos.aegis_signals \
-            --pr-number "${{ github.event.pull_request.number }}" \
-            --commit-sha "${{ github.event.pull_request.head.sha }}" \
-            --author "${{ github.event.pull_request.user.login }}" \
-            --base-ref "origin/${{ github.event.pull_request.base.ref }}" \
-            --head-ref "${{ github.event.pull_request.head.sha }}" \
+            --pr-number "$PR_NUMBER" \
+            --commit-sha "$HEAD_SHA" \
+            --author "$PR_AUTHOR" \
+            --base-ref "origin/$BASE_REF" \
+            --head-ref "$HEAD_SHA" \
             --pr-body-file pr-body.txt \
             --reviews-file reviews.json \
 {%- for pattern in config.sensitive_paths | default(['**/auth/**', '**/*secret*', '**/.github/workflows/**', '**/iam/**']) %}
