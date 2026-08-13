@@ -71,9 +71,23 @@ try {
     ) | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan
+    # Output discarded, and this is not tidiness. `fly set-pipeline` prints the
+    # *resolved* configuration as a diff, with every `((var))` already
+    # substituted - so an ordinary run of this script scrolls the ingestion
+    # token, the gate token and any deploy key across the terminal, into the
+    # scrollback, and into whatever is recording the session.
+    #
+    # Spec 15 section 6 and spec 16 section 11 both say no credential appears
+    # in pipeline YAML or in build logs. Neither covered set-pipeline's own
+    # output, which is the one place they were all visible at once.
+    #
+    # Errors still surface: fly writes those to stderr, and $LASTEXITCODE is
+    # checked below either way. The real fix is a credential manager, so that
+    # the config never contains a secret to print (spec 15 section 6) - this
+    # closes the hole in the meantime.
     & $fly --target $Target set-pipeline --pipeline $Pipeline `
         --config (Join-Path $PSScriptRoot "pipelines\mykronos.yml") `
-        --load-vars-from $varsFile --non-interactive
+        --load-vars-from $varsFile --non-interactive | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "fly set-pipeline failed" }
 } finally {
     if (Test-Path $varsFile) { Remove-Item $varsFile -Force }

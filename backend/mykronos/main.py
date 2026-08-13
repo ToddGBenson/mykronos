@@ -43,6 +43,7 @@ from mykronos.jobs import (
 from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.maturity import load_model as load_maturity_model
+from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ratelimit import SlidingWindowLimiter
@@ -169,6 +170,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tier="personal",
         half_life_days=settings.knowledge_half_life_days,
     )
+    # Always constructed, even with no webhook configured. A notifier that is
+    # present and disabled is one branch at the call site; a notifier that may
+    # be absent from `app.state` is a `getattr` at every call site and an
+    # AttributeError at the one that forgot (spec 16 §14).
+    app.state.notifier = SlackNotifier(settings.slack_webhook_url)
+    if app.state.notifier.enabled:
+        logger.info("Slack notification is enabled.")
 
     tasks: list[asyncio.Task[None]] = []
 

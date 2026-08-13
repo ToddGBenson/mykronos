@@ -385,7 +385,10 @@ async function ScanHealthTab({ repoId }: { repoId: string }) {
     return (
       <EmptyState
         title="Nothing has scanned yet"
-        detail="Once a capability's install PR merges and its workflow runs, every run — success, no-op or failure — appears here."
+        // Not "once the install PR merges": a repo scanned by Concourse never
+        // has one. The lake cannot tell which CI produced a run and must not
+        // care (spec 15 §4), so neither should this sentence.
+        detail="Every run a capability records — success, no-op or failure — appears here, whichever CI produced it."
       />
     );
   }

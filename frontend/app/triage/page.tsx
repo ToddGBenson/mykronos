@@ -15,7 +15,22 @@ import { getTriage } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
-const CAPABILITIES = ["sast", "dast", "secrets", "containers", "iac", "cloud"];
+/**
+ * The capabilities that produce *findings*, which is not the same list as
+ * `ALL_CAPABILITIES`.
+ *
+ * `atlas` was missing, and it is the one that mattered: every SCA finding in
+ * the lake is filed under it — osv-scanner uploads with `--capability atlas` —
+ * so dependency vulnerabilities were the one class this queue could show but
+ * never filter down to. Easy to miss because the capability is *named* after
+ * the supply-chain product rather than after "dependencies".
+ *
+ * Deliberately absent: `aegis` records insider-risk signals, `patchwork`
+ * opens pull requests, and `oracle` scores what the others found. None of the
+ * three writes a Finding, so a filter for them would always come back empty —
+ * which reads as "no insider risk" rather than "wrong question".
+ */
+const CAPABILITIES = ["sast", "dast", "secrets", "containers", "iac", "cloud", "atlas"];
 
 export default async function TriagePage({
   searchParams,

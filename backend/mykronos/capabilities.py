@@ -47,6 +47,13 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 #: version tag, an ARN or a path glob legitimately contains.
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:@/+-]*$")
 
+#: Azure subscription and tenant identifiers. A GUID and nothing else — see
+#: `CloudConfig._guid_shape` for why this is checked rather than left to
+#: `_SAFE_TOKEN`, which would accept a hyphenated string of any shape.
+_GUID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 
 def _reject_control_characters(value: str, field: str) -> str:
     if _CONTROL_CHARS.search(value):
@@ -172,6 +179,20 @@ class DastConfig(BaseCapabilityConfig):
 
 
 class CloudConfig(BaseCapabilityConfig):
+    """Cloud posture (spec 04 §3, spec 16 §9).
+
+    Two providers, and no field saying which. That is deliberate: the scan runs
+    against whichever set of coordinates is populated, so a subscription and an
+    account can both be scanned from one repository's config without a third
+    setting that can disagree with the other two.
+
+    Nothing here is a credential. The AWS role is assumed via OIDC and the
+    Azure principal's secret comes from the runner's credential store — spec 12
+    §4.3 keeps cloud credentials out of the platform entirely, and these fields
+    are the coordinates a scan needs to know *where* to look, not permission to
+    look there.
+    """
+
     aws_role_arn: str = Field(
         default="",
         max_length=2048,
@@ -181,6 +202,39 @@ class CloudConfig(BaseCapabilityConfig):
         ),
     )
     aws_region: str = Field(default="us-east-1", max_length=32)
+
+    azure_subscription_id: str = Field(
+        default="",
+        max_length=64,
+        description=(
+            "Subscription Prowler scans. The service principal's client ID and "
+            "secret are supplied by the runner and never stored here."
+        ),
+    )
+    azure_tenant_id: str = Field(
+        default="",
+        max_length=64,
+        description="Directory the service principal authenticates against.",
+    )
+
+    @field_validator("azure_subscription_id", "azure_tenant_id")
+    @classmethod
+    def _guid_shape(cls, value: str, info: Any) -> str:
+        """Azure identifiers are GUIDs, and this is the narrowest useful check.
+
+        Both land in a `prowler azure --subscription-ids <value>` command line
+        in the generated pipeline, so the same reasoning as `aws_role_arn`
+        applies — constrain on the way in rather than escape on the way out.
+        A GUID is a stricter allow-list than `_SAFE_TOKEN`, so it is worth
+        spending here: there is exactly one shape these can legitimately be.
+        """
+        if value and not _GUID.match(value):
+            raise ValueError(
+                f"{info.field_name} must be a GUID, got {value!r}. Azure "
+                "subscription and tenant identifiers look like "
+                "'00000000-0000-0000-0000-000000000000'."
+            )
+        return value
 
     @field_validator("aws_role_arn")
     @classmethod

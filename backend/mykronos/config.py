@@ -322,6 +322,32 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Notification (spec 16 §14) ------------------------------------
+
+    slack_webhook_url: str = Field(
+        default="",
+        description=(
+            "Slack incoming webhook for the events in `mykronos.notify`. Empty "
+            "— the default — disables notification entirely and nothing is "
+            "posted anywhere. There is deliberately no default endpoint: a "
+            "deployment that changed no configuration must not be sending its "
+            "findings to a chat service (the rule spec 12 §5.2 applies to the "
+            "AI classifier, for the same reason)."
+        ),
+    )
+
+    slack_notify_min_severity: str = Field(
+        default="high",
+        pattern="^(critical|high|medium|low|info)$",
+        description=(
+            "Findings at or above this cause one summary message per ingested "
+            "batch. Not per finding: a scan uploading four hundred criticals "
+            "is one event a person needs to know about. Set to 'critical' if "
+            "'high' proves too noisy — the failure mode of an alert channel is "
+            "that people stop reading it, which costs more than it saves."
+        ),
+    )
+
     @property
     def buffer_dir(self) -> Path:
         return self.datalake_dir / "_buffer"

@@ -1083,6 +1083,119 @@ binary for the entire life of that lane.
 
 ---
 
+## D-039 — This repository's GitHub Actions are removed, superseding half of D-038
+
+**Status:** Decided
+**Spec:** [16 §4](../specs/16-thehub-delivery-pipeline.md), [15 §10](../specs/15-concourse-pipeline.md)
+
+D-038 split the two CI systems by purpose: Actions kept pull-request feedback,
+Concourse owned the full pipeline. That rule is withdrawn for repositories this
+operator owns. `.github/workflows/` is deleted and its function lives in
+`deploy/concourse/pipelines/mykronos.yml`.
+
+**Why the reasoning that created the rule also retires it.** The split only
+pays for itself when both halves run. TheHub's half never runs — it has no
+Actions minutes, which is the entire subject of spec 15 §2. Mykronos's half
+did run, against the identical commits Concourse scanned, producing identical
+findings that the ingestion upsert made indistinguishable. D-038 called that
+"worse than harmless" in the same paragraph that kept it, on the grounds that
+nothing yet ran the full capability set in Concourse. That is no longer true:
+`frontend`, `sast` and `insider` were added, and Atlas evidence — the SBOM and
+the trust score, which Concourse never reported at all — moved into
+`dependencies` where Oracle can read it before it gates.
+
+**What it costs, stated rather than discovered later.** Pull requests get no
+checks from a system running on GitHub's infrastructure. Concourse polls a
+branch; a fork's pull request is not scanned by it and must not be, because
+spec 14 §4 and spec 15 §7 both refuse to run untrusted code on a worker inside
+the LAN. For a single-operator repository that is acceptable and it is a real
+regression, not a neutral one. The trigger to revisit is the first pull request
+from somebody else, and the answer then is to restore the Actions lanes *for
+pull requests only* rather than to widen what Concourse trusts.
+
+**What is explicitly not removed.** `workflow-templates/` and
+`actions/upload-results`. They are installed into other people's repositories
+by the Workflow Installer and are the platform's product. "Remove the GitHub
+Actions" and "remove the GitHub Actions integration" are one word apart and
+opposite instructions; `.github/README.md` exists so the next person to look at
+an empty directory finds that sentence.
+
+---
+
+## D-040 — A forced-command SSH key is how Concourse deploys TheHub
+
+**Status:** Decided
+**Spec:** [16 §7](../specs/16-thehub-delivery-pipeline.md)
+
+TheHub's pipeline deploys to demo automatically and to production on a click.
+Both go through `ssh` to this host with a key whose `authorized_keys` entry
+pins one command and one environment. The client's command line is ignored by
+sshd and arrives as `SSH_ORIGINAL_COMMAND`, out of which
+`Invoke-TheHubDeploy.ps1` reads exactly one thing: a 40-character hexadecimal
+commit SHA, validated against an anchored pattern before use.
+
+**Why not the Docker socket.** D-038 and spec 15 §7 refuse it, and that refusal
+still holds: a socket mounted into one task is a socket available to every task
+in every pipeline, on a worker that sits inside the LAN. The objection was
+never "deploys are dangerous", it was "that grant is unbounded".
+
+**Why not Mykronos's registry-only handoff.** That is the right answer for
+Mykronos, where a human runs `deploy.ps1` and the pipeline's job ends at the
+registry. It is the wrong answer here, because a pipeline that waits for a
+person at *both* environments is not a delivery pipeline — the demo deploy is
+the step that makes DAST possible at all.
+
+**What the grant actually is.** The ability to deploy a commit that is already
+in the registry, to one environment. Not the ability to run a command. The demo
+key cannot reach production because sshd starts a different process for it, not
+because the script checked an argument — separation enforced against the key
+that authenticated is stronger than separation the caller opts into. Spec 15 §6
+asks for deploy credentials scoped to the deploy job; this scopes them to the
+environment.
+
+`StrictHostKeyChecking` stays on with a pinned `known_hosts`, because a deploy
+job that accepts any host key is a deploy job that can be pointed at a
+different host. And the script records the SHA each environment is on before it
+starts, so a stack that does not become healthy is rolled back rather than left
+half-landed — a deploy that half-lands and reports success is worse than one
+that fails, because DAST then probes whatever happens to be up.
+
+---
+
+## D-041 — Semgrep replaces CodeQL in Concourse, and the finding sets differ
+
+**Status:** Decided
+**Spec:** [16 §5](../specs/16-thehub-delivery-pipeline.md), [04 §3](../specs/04-scanner-workflows.md)
+
+The `sast` capability defaults to CodeQL. Both Concourse pipelines run Semgrep
+instead, and pass `--tool semgrep` explicitly rather than letting the
+capability default decide.
+
+**Why.** CodeQL's CLI needs a multi-hundred-megabyte bundle per language on
+every run, and its licence covers Actions on public repositories and GitHub
+Advanced Security customers — not a self-hosted worker scanning a private
+repository. Semgrep is already a registered `sast` tool (spec 04 §3 names it as
+the secondary), emits SARIF, and installs from PyPI.
+
+**The explicit `--tool` matters more than it looks.** Without it the lake would
+record `codeql` for findings Semgrep produced, and the dashboard would imply
+coverage from an analyser that never ran. This is the same class of mistake as
+the workflow templates defaulting `tool` to the capability name, which produced
+`tool: secrets` and an upload that failed at the last step.
+
+**Expect the finding set to move on the cutover.** Semgrep's rule packs are
+pattern-based; CodeQL's `security-extended` includes dataflow queries the free
+Semgrep rules do not reproduce. Findings will appear and disappear, and that is
+a tool change rather than a change in the code's security. Worth writing down
+because the alternative reading — that a deploy introduced or fixed a dozen
+issues — is the one the dashboard suggests.
+
+`--config auto` is deliberately not used: it reports the repository to
+semgrep.dev, which is the class of thing spec 12 §5.2 makes opt-in. Named rule
+packs download rules; the source stays on the worker.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.

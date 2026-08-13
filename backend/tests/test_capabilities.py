@@ -82,6 +82,46 @@ class TestValidation:
             validate_config("cloud", {"aws_role_arn": "my-role"})
         assert "arn:aws:iam::" in str(excinfo.value)
 
+    def test_cloud_accepts_an_azure_subscription(self) -> None:
+        """Spec 16 §9. Azure holds TheHub's backups and Prowler scans it, so
+        the config has to be able to say which subscription."""
+        config = validate_config(
+            "cloud",
+            {
+                "azure_subscription_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+                "azure_tenant_id": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+            },
+        )
+        assert config["azure_subscription_id"] == "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    def test_cloud_rejects_a_subscription_that_is_not_a_guid(self) -> None:
+        """The value reaches a `prowler azure --subscription-ids <it>` command
+        line, so a subscription *name* -- the thing people actually have to
+        hand -- has to fail the save rather than the scan."""
+        with pytest.raises(CapabilityConfigError) as excinfo:
+            validate_config("cloud", {"azure_subscription_id": "thehub-backups"})
+        assert "GUID" in str(excinfo.value)
+
+    def test_cloud_names_the_offending_azure_field(self) -> None:
+        """Two fields share one validator; a message that cannot say which one
+        was wrong sends the admin to check both."""
+        with pytest.raises(CapabilityConfigError) as excinfo:
+            validate_config("cloud", {"azure_tenant_id": "contoso.onmicrosoft.com"})
+        assert "azure_tenant_id" in str(excinfo.value)
+
+    def test_both_clouds_can_be_configured_at_once(self) -> None:
+        """There is no `provider` field on purpose: the scan runs against
+        whichever coordinates are populated, and a third setting that can
+        disagree with the other two is a way to scan nothing."""
+        config = validate_config(
+            "cloud",
+            {
+                "aws_role_arn": "arn:aws:iam::123456789012:role/mykronos",
+                "azure_subscription_id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+            },
+        )
+        assert config["aws_role_arn"] and config["azure_subscription_id"]
+
     def test_an_unknown_capability_is_refused_clearly(self) -> None:
         """Every real capability now has a schema, so the remaining case is a
         name nobody recognises — which must fail the save rather than be

@@ -210,18 +210,27 @@ about a network rather than a repository before a network scan can record one.
 
 ## 10. Open questions
 
-1. **Does Concourse duplicate scanning that GitHub Actions already does for
-   the same repo?** For `ToddGBenson/mykronos` it would. The answer is
-   probably that Concourse runs the *full* pipeline including build and
-   deploy, and repos onboarded to Mykronos keep their Actions scanners for
-   pull-request feedback — but running both on every commit doubles the
-   finding volume with identical results, and the ingestion upsert makes that
-   invisible rather than harmless. Needs deciding before both are switched on
-   for one repository.
-2. **What happens when the NAS is unavailable?** Concourse's Postgres and
-   MinIO are both on it. A pipeline that cannot record its results should fail
-   loudly rather than deploy anyway, which argues for the ingestion check
-   being a gate rather than a best-effort step.
-3. **Who owns the deploy target?** Nothing in this spec says what "deploy"
-   deploys to, and that decision changes the credential model in §6 more than
-   anything else here.
+All three are now answered. They are kept rather than deleted because the
+answers are only readable next to the questions.
+
+1. ~~**Does Concourse duplicate scanning that GitHub Actions already does for
+   the same repo?**~~ **Answered twice.** D-038 said yes, and split the two
+   lanes by purpose — Actions for pull-request feedback, Concourse for the full
+   pipeline. That rule was withdrawn once the full capability set actually ran
+   in Concourse: this repository's own workflows were scanning the identical
+   commits and producing findings the ingestion upsert made
+   indistinguishable. `.github/workflows/` is removed and its function lives in
+   `pipelines/mykronos.yml`. See [16 §4](16-thehub-delivery-pipeline.md) for
+   what that costs, and note that `workflow-templates/` — the workflows
+   *installed into other people's repositories* — are unaffected and remain the
+   platform's product.
+2. ~~**What happens when the NAS is unavailable?**~~ **The pipeline fails**
+   (D-038). The ingestion check is a gate, not a best-effort step, and the
+   `put` to MinIO is a step whose failure fails the build. Neither is wrapped
+   in a tolerant `|| true`.
+3. ~~**Who owns the deploy target?**~~ **Answered per pipeline.** For Mykronos,
+   D-038: this host, in Docker, with a one-way registry handoff and a human
+   running `deploy.ps1`. For TheHub, [16 §7](16-thehub-delivery-pipeline.md):
+   two compose stacks on the same host, reached by a forced-command SSH key
+   scoped to one environment each — narrower than a Docker socket, and enough
+   for the pipeline to act on its own between the gate and production.

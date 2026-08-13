@@ -61,3 +61,9 @@ deploy/concourse/.env
 deploy/concourse/.env.bak-*
 deploy/concourse/bin/
 deploy/concourse/keys/
+
+# TheHub deploy target (spec 16 §7). `.env` names this host's compose files;
+# `.deployed-*` is the SHA each environment is currently on, which is the
+# rollback target and is state rather than configuration.
+deploy/thehub/.env
+deploy/thehub/.deployed-*

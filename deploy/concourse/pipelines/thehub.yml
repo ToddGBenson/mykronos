@@ -1,20 +1,42 @@
-# TheHub security pipeline (spec 15 §2).
+# TheHub delivery pipeline (spec 16).
 #
-# TheHub is private and has exhausted its GitHub Actions allowance: every
-# workflow there fails instantly with no logs, which is indistinguishable from
-# a broken repository until you notice only the private one is affected. This
-# runs the same scanners on the same commits with no per-minute cost.
+# Was scanning only. It now takes a commit all the way to production:
 #
-# Scanning only. No build, no deploy: those belong to whoever owns TheHub's
-# release process, and this pipeline exists to restore security coverage the
-# Actions allowance took away.
+#   quality + build -> security -> Oracle -> demo -> DAST -> [a person] -> prod
 #
-# The git credential is a GitHub App installation token, minted by
-# `mykronos github-token` at set-pipeline time. It expires after an hour,
-# which is a real limitation and the reason CNC-2 exists: resource checks
-# start failing once it lapses, and `set-pipeline.ps1` must be re-run to
-# refresh it. A read-only deploy key would not expire, and adding one is a
-# repository settings change for the owner to make rather than the platform.
+# Three things about this file are worth knowing before reading it.
+#
+# **Build happens before the Oracle gate, and spec 15 section 3 says otherwise.**
+# You cannot scan an image you have not built, and the previous `containers`
+# lane proved the alternative: it read Dockerfiles as configuration and
+# reported no base-image CVEs at all, while looking exactly like container
+# scanning on the dashboard. The image is tagged with the commit SHA and
+# nothing else, and only the deploy jobs ever name a tag - so an image built
+# from a commit Oracle refuses sits in the registry unreferenced. The gate
+# protects the deploy, which is the step that matters. Spec 16 section 3.
+#
+# **The prod job has no `trigger: true`, and that is the manual confirmation.**
+# There is no other mechanism and none is needed: Concourse will not start a
+# job whose inputs are not set to trigger it, so production changes when
+# somebody clicks the plus and not before.
+#
+# **Deploy is a forced-command SSH key per environment, not a Docker socket.**
+# Spec 15 section 7 and D-038 both refuse a socket - it would let every task in
+# every pipeline drive the host's daemon. Each key's `authorized_keys` entry on
+# the host pins one command and one environment, so the demo key cannot reach
+# production even if this file told it to. Spec 16 section 7.
+#
+# Nothing sensitive appears here. `((var))` resolves through
+# `fly set-pipeline --load-vars-from`, written and deleted by
+# set-thehub-pipeline.ps1.
+#
+# The git credential is a GitHub App installation token and expires after an
+# hour (CNC-2). Re-run set-thehub-pipeline.ps1 to refresh it.
+
+resource_types:
+  - name: registry-image
+    type: registry-image
+    source: { repository: concourse/registry-image-resource, tag: "1.10" }
 
 resources:
   - name: source
@@ -29,24 +51,235 @@ resources:
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
 
+  # Scans the image out of the registry directly. No daemon, no privileged
+  # task, and no `curl get.docker.com` in a task that never started dockerd -
+  # which is what the previous containers lane did, and why it always wrote its
+  # empty-SARIF fallback.
+  - name: trivy
+    type: registry-image
+    icon: shield-search
+    source: { repository: aquasec/trivy, tag: "0.58.1" }
+
+  - name: zap
+    type: registry-image
+    icon: spider
+    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.16.1" }
+
+  - name: prowler
+    type: registry-image
+    icon: cloud-search-outline
+    source: { repository: toniblyx/prowler, tag: ((prowler-version)) }
+
+  - name: kaniko
+    type: registry-image
+    icon: hammer-wrench
+    source: { repository: gcr.io/kaniko-project/executor, tag: v1.23.2-debug }
+
+  # Cloud posture is about the subscription, not the commit. A push does not
+  # change an Azure storage account's public-access setting, and scanning on
+  # every push would produce one identical finding set per commit - noise in
+  # the lake and a rate limit against Resource Manager for nothing.
+  - name: daily
+    type: time
+    icon: clock-outline
+    source:
+      location: ((scan-timezone))
+      start: "2:00 AM"
+      stop: "3:00 AM"
+
 anchors:
+  # Reporting credentials. Deliberately does *not* include the deploy keys or
+  # the Azure principal: spec 15 section 6 asks for deploy credentials scoped
+  # to the deploy job, and an anchor every job pulls in is the opposite of
+  # that. Jobs that need more write their params out in full rather than
+  # merging onto this - a YAML merge key is one typo away from handing the
+  # test job the production key.
   mykronos_env: &mykronos_env
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((thehub-ingestion-token))
     MYKRONOS_REF: ((mykronos-ref))
     # The git resource checks out a detached HEAD, so
-    # `git rev-parse --abbrev-ref HEAD` returns the literal string HEAD
-    # and every scan run recorded that as its branch. The branch is known
-    # when this file is rendered; asking git for what it cannot know was
-    # the mistake.
+    # `git rev-parse --abbrev-ref HEAD` returns the literal string HEAD and
+    # every scan run recorded that as its branch. The branch is known when this
+    # file is rendered; asking git for what it cannot know was the mistake.
     SCANNED_BRANCH: ((thehub-branch))
 
+  # Failure notification. curl rather than a slack-notification resource type:
+  # this pipeline already carries no third-party resource types, and adding
+  # one to a security pipeline to send a chat message is a poor trade. It also
+  # keeps the payload under this file's control, which the insider job depends
+  # on - see the note there about what must never be sent.
+  #
+  # `notify` is an *optional* input. A job that knows more than "it failed"
+  # writes a single line to notify/message.txt and that is used verbatim;
+  # every other job falls back to its own name. That is what keeps one
+  # notification per event instead of a specific one racing a generic one.
+  slack_alert: &slack_alert
+    task: notify-slack
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      inputs:
+        - name: notify
+          optional: true
+      params:
+        SLACK_WEBHOOK_URL: ((slack-webhook-url))
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            # An unset webhook is not an error. The pipeline has to be
+            # applicable before Slack is configured, and this hook only ever
+            # runs when something has already gone wrong - a missing
+            # notification must not become a second failure on top of it.
+            if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+              echo "No Slack webhook configured - skipping notification."
+              exit 0
+            fi
+
+            BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
+
+            if [ -s notify/message.txt ]; then
+              TEXT=$(head -1 notify/message.txt)
+            else
+              TEXT="*TheHub*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+            fi
+
+            # Escaped with sed because this image has no jq. Single-line
+            # messages by construction, so backslash and quote are the only
+            # characters that can break the document.
+            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+            printf '{"text":"%s\\n%s"}' "$ESCAPED" "$BUILD_URL" > payload.json
+
+            curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
+              -d @payload.json "$SLACK_WEBHOOK_URL" \
+              || echo "Slack post failed - the build result stands regardless."
+            exit 0
+
 jobs:
-  - name: secrets
+  # == Stage 1: quality =====================================================
+
+  - name: unit
     public: true
+    on_failure: *slack_alert
     plan:
       - get: source
         trigger: true
+      - get: python
+      - task: pytest
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source
+
+                # L0001's three states, applied to a test suite. A repository
+                # with no tests is not a repository whose tests pass, and this
+                # job must not be the thing that says otherwise - but it must
+                # not be permanently red either, because a red lane gets
+                # paused and then nothing runs at all.
+                if [ ! -d tests ] && [ ! -d test ]; then
+                  echo "=================================================="
+                  echo "NO TEST SUITE FOUND."
+                  echo "There is no tests/ or test/ directory in this"
+                  echo "repository. This job did not run any tests and this"
+                  echo "green tick is NOT a passing test run."
+                  echo "=================================================="
+                  exit 0
+                fi
+
+                apt-get update -qq && apt-get install -y -qq git build-essential >/dev/null
+
+                # An install failure is a real failure: it means the declared
+                # dependencies do not resolve, which the pipeline should say
+                # out loud rather than skip past on its way to a green tick.
+                if [ -f requirements.txt ]; then
+                  pip install --quiet -r requirements.txt
+                fi
+                if [ -f requirements-dev.txt ]; then
+                  pip install --quiet -r requirements-dev.txt
+                fi
+                pip install --quiet pytest
+
+                python -m pytest -q
+
+  # == Stage 2: build =======================================================
+  #
+  # Tagged with the commit SHA and nothing else. No `latest`: a floating tag is
+  # how an environment ends up running something nobody chose, and every deploy
+  # job below names an exact SHA for that reason.
+
+  - name: build
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
+      - get: python
+      - get: kaniko
+
+      # kaniko's image is busybox with no git, so the SHA is computed here and
+      # handed over as a file.
+      - task: resolve-sha
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                echo "Building $(cat meta/sha)"
+
+      - task: kaniko
+        image: kaniko
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: meta }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                SHA=$(cat meta/sha)
+                /kaniko/executor \
+                  --context source \
+                  --dockerfile source/Dockerfile \
+                  --destination "${REGISTRY}/thehub:${SHA}" \
+                  --insecure --skip-tls-verify \
+                  --single-snapshot
+
+  # == Stage 3: security ====================================================
+  #
+  # All five report through `python -m mykronos.upload`, the same module the
+  # composite action calls. `--workspace` is not optional: without it findings
+  # record the worker's absolute paths, which are not clickable and, because
+  # identity derives from the path, change every time the checkout moves.
+
+  - name: secrets
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
       - get: python
       - task: gitleaks
         image: python
@@ -66,6 +299,10 @@ jobs:
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
                 tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+
+                # `detect` reads git history, not the working tree: the claim
+                # being made is that no secret was ever committed, not that
+                # none is present at HEAD.
                 /tmp/gitleaks detect --source . --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
 
@@ -80,11 +317,80 @@ jobs:
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
 
-  - name: dependencies
+  - name: sast
     public: true
+    on_failure: *slack_alert
     plan:
       - get: source
         trigger: true
+        passed: [unit]
+      - get: python
+      - task: semgrep
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+
+                # Semgrep rather than CodeQL, and the substitution is not
+                # cosmetic - see spec 16 section 5. CodeQL's CLI wants a
+                # multi-hundred-megabyte bundle per language on every run, and
+                # its licence covers Actions on public repositories and GHAS
+                # customers, not a self-hosted worker scanning a private repo.
+                # Semgrep is already a registered `sast` tool (spec 04 section
+                # 3 names it as the secondary) and emits SARIF.
+                #
+                # `--tool semgrep` is passed explicitly below rather than
+                # letting the capability default to codeql, so the lake records
+                # which analyser produced each finding. A dashboard implying
+                # CodeQL coverage that never ran is the failure mode here.
+                pip install --quiet semgrep==1.97.0
+
+                # Rule packs are downloaded from semgrep.dev; the source code
+                # stays on this worker. `--config auto` is deliberately not
+                # used - it reports the repository to semgrep.dev, which is
+                # exactly the class of thing spec 12 section 5.2 makes opt-in.
+                rc=0
+                semgrep scan \
+                  --config p/security-audit \
+                  --config p/owasp-top-ten \
+                  --sarif --output /tmp/results/semgrep.sarif \
+                  --metrics off --quiet . || rc=$?
+
+                # 1 means findings, which is a result. Anything else is a scan
+                # failure and must not read as clean code.
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::semgrep exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability sast --tool semgrep \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  - name: dependencies
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
       - get: python
       - task: osv-scanner
         image: python
@@ -102,6 +408,10 @@ jobs:
                 mkdir -p /tmp/results
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
 
+                # The released Go binary, checksummed. `pip install
+                # osv-scanner` installs a reserved-name placeholder with no
+                # CLI, which is how this lane once reported zero findings for
+                # its entire life.
                 curl -sSfL -o /usr/local/bin/osv-scanner \
                   https://github.com/google/osv-scanner/releases/download/v2.5.0/osv-scanner_linux_amd64
                 echo "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c  /usr/local/bin/osv-scanner" \
@@ -114,7 +424,29 @@ jobs:
                 # error is exit 127, which would fail the whole lane.
                 rc=0
                 osv-scanner scan source --recursive --no-resolve \
-                  --format sarif --output-file /tmp/results/osv.sarif . || rc=$?
+                  --format sarif --output-file /tmp/results/osv.sarif . 2>&1 | tee /tmp/osv.log
+                rc=${PIPESTATUS[0]}
+
+                # L0001. Exit 128 with that message is the third state: nothing
+                # to scan. Announced loudly and reported as an empty scan,
+                # because a repository that declares no dependencies is not a
+                # repository with clean dependencies - and a lane that goes red
+                # forever for a repo that will never have a manifest is a lane
+                # somebody pauses.
+                #
+                # Matched on the message as well as the code: 128 is overloaded
+                # and a different 128 is still a real failure.
+                if [ "$rc" -eq 128 ] && grep -qi "no package sources found" /tmp/osv.log; then
+                  echo "=================================================="
+                  echo "NO PACKAGE SOURCES FOUND."
+                  echo "This is NOT a clean bill of health for dependencies"
+                  echo "that exist; it is a statement that none were declared."
+                  echo "=================================================="
+                  printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner"}},"results":[]}]}' \
+                    > /tmp/results/osv.sarif
+                  rc=0
+                fi
+
                 if [ "$rc" -gt 1 ]; then
                   echo "::error::osv-scanner exited $rc - a scan failure, not a result"
                   exit "$rc"
@@ -131,16 +463,121 @@ jobs:
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
 
+  # Scans the image this commit produced, out of the registry. Two tasks
+  # because Trivy's image has no python and the uploader lives in the mykronos
+  # package - which is the seam that lets a Concourse task report findings the
+  # dashboard cannot distinguish from an Actions run.
   - name: containers
     public: true
+    on_failure: *slack_alert
     plan:
       - get: source
         trigger: true
+        passed: [build]
       - get: python
-      - task: trivy
+      - get: trivy
+
+      # The SHA is resolved in a task that has git, and handed over as a file.
+      # Trivy's image does not, and reading `.git/HEAD` by hand works right up
+      # until the ref is packed.
+      - task: resolve-sha
         image: python
-        privileged: true
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+
+      - task: scan-image
+        image: trivy
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: meta }]
+          outputs: [{ name: results }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                set -eu
+                SHA=$(cat meta/sha)
+                echo "Scanning ${REGISTRY}/thehub:${SHA}"
+
+                # `--insecure` is the registry's TLS, not the scan's rigour:
+                # the registry is plain HTTP on the LAN (spec 15 section 5).
+                # No daemon and no privileged task - Trivy pulls the image
+                # itself, which is the whole reason this lane can finally scan
+                # an image rather than a Dockerfile.
+                trivy image "${REGISTRY}/thehub:${SHA}" \
+                  --insecure \
+                  --scanners vuln \
+                  --format sarif --output results/trivy.sarif \
+                  --exit-code 0 --quiet
+
+                # An absent or empty report is a failed scan, and the uploader
+                # already treats it as one. Saying so here names the step that
+                # broke instead of leaving it to be inferred.
+                test -s results/trivy.sarif || {
+                  echo "::error::Trivy wrote no report - the image scan did not run."
+                  exit 1
+                }
+
+      - task: upload
+        image: python
         params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability containers --tool trivy \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
+  # Insider risk, without a pull-request event to hang it on. Spec 16 section 6
+  # is the whole explanation; the short version is that Concourse sees a branch
+  # and Aegis is built around a `pull_request`, so the missing context is
+  # recovered by asking GitHub which pull request introduced this commit.
+  - name: insider
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
+      - get: python
+      - task: aegis
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((thehub-ingestion-token))
+          MYKRONOS_REF: ((mykronos-ref))
+          # Read-only, and the same installation token the git resource uses.
+          # Aegis never needs to write: spec 06 section 6 requires that it can
+          # never merge, close or force-push.
+          GITHUB_TOKEN: ((github-token))
+          SLACK_WEBHOOK_URL: ((slack-webhook-url))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -150,33 +587,517 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 cd source
-                OUT=/tmp/results
-                mkdir -p "$OUT"
-                apt-get update -qq && apt-get install -y -qq curl git ca-certificates >/dev/null
-                curl -sSfL https://get.docker.com | sh >/dev/null 2>&1 || true
+                git config --global --add safe.directory "$PWD"
 
-                EMPTY='{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Trivy"}},"results":[]}]}'
-                # Image scanning needs a daemon this task does not have, so
-                # Trivy reads the Dockerfiles as configuration instead. That is
-                # a narrower answer than the GitHub lane gives - no base-image
-                # CVEs - and saying so is better than reporting a clean image
-                # scan that never happened.
-                docker run --rm -v "$PWD:/repo" -v "$OUT:/out" \
-                  aquasec/trivy:0.58.1 filesystem /repo \
-                    --scanners vuln --format sarif --output /out/trivy.sarif \
-                    --exit-code 0 --quiet 2>/dev/null \
-                  || printf '%s' "$EMPTY" > "$OUT/trivy.sarif"
+                SHA=$(git rev-parse HEAD)
+                API=https://api.github.com/repos/ToddGBenson/TheHub
 
-                test -s "$OUT/trivy.sarif" || printf '%s' "$EMPTY" > "$OUT/trivy.sarif"
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/commits/$SHA/pulls" > pulls.json || echo '[]' > pulls.json
+
+                PR=$(jq -r 'if type == "array" and length > 0 then .[0].number else "" end' pulls.json)
+
+                if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+                  echo "=================================================="
+                  echo "NO PULL REQUEST FOR $SHA."
+                  echo "This commit reached ${SCANNED_BRANCH:-the branch}"
+                  echo "without one, so there are no reviews to have"
+                  echo "integrity, no base ref to measure an author baseline"
+                  echo "against, and no description to check for AI"
+                  echo "disclosure."
+                  echo ""
+                  echo "NO INSIDER-RISK ASSESSMENT WAS RECORDED. That is"
+                  echo "deliberate: submitting one anyway would score 0/100"
+                  echo "for exactly the case Aegis exists to notice - the"
+                  echo "change nobody reviewed reading as the safest change"
+                  echo "in the repository."
+                  echo "=================================================="
+                  exit 0
+                fi
+
+                # Errexit from here on. Up to this point a failed fetch is a
+                # tolerated outcome that takes the no-pull-request path; past
+                # it, every call is one whose failure would produce an
+                # assessment built from an empty payload - a null author and no
+                # signals, which posts as a clean 0/100.
+                set -e
+
+                echo "Assessing pull request #$PR"
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/pulls/$PR" > pr.json
+
+                AUTHOR=$(jq -r '.user.login' pr.json)
+                BASE=$(jq -r '.base.ref' pr.json)
+                # A PR description is attacker-controlled text. Written to a
+                # file and passed by path, never interpolated into a command.
+                jq -r '.body // ""' pr.json > pr-body.txt
+
+                # A failed fetch costs the review-integrity signals, not the
+                # whole assessment.
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/pulls/$PR/reviews" > reviews.json || echo '[]' > reviews.json
+
+                # The git resource clones with full history by default, but the
+                # base branch is not fetched, and the author-baseline signal
+                # compares against it. Without this the signal is skipped
+                # rather than guessed (spec 06 section 7) - which is safe, and
+                # is still less than this could see.
+                git fetch --quiet origin "$BASE" || true
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                python -m mykronos.aegis_signals \
+                  --pr-number "$PR" \
+                  --commit-sha "$SHA" \
+                  --author "$AUTHOR" \
+                  --base-ref "FETCH_HEAD" \
+                  --head-ref "$SHA" \
+                  --pr-body-file pr-body.txt \
+                  --reviews-file reviews.json \
+                  --sensitive-path '**/auth/**' \
+                  --sensitive-path '**/*secret*' \
+                  --sensitive-path '**/.github/workflows/**' \
+                  --sensitive-path '**/iam/**' \
+                  > signals.json
+
+                echo "Signals observed:"
+                jq -r '.signals[] | "  \(.key): \(.rationale)"' signals.json
+
+                curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/aegis" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d @signals.json > result.json
+
+                echo "Aegis: $(jq -r '.recommendation' result.json) at $(jq -r '.insider_risk_score' result.json)/100"
+
+                # Slack gets a pull request number and a link. Nothing else.
+                #
+                # spec 06 section 9 treats an insider-risk row as personal
+                # data about a named colleague - kept because it is useful
+                # while reviewing the pull request it concerns, and purged
+                # after retention_days. A Slack channel is a broadcast with
+                # its own retention that no purge job can reach, so the score,
+                # the signal breakdown and the author's login stay out of it.
+                # They live in the check run, where the person they are about
+                # can read them and argue with them.
+                if [ "$(jq -r '.recommendation' result.json)" != "pass" ] \
+                   && [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+                  printf '{"text":"*TheHub / insider risk*: pull request #%s is flagged for closer review.\\nDetail is in the check run: https://github.com/ToddGBenson/TheHub/pull/%s"}' \
+                    "$PR" "$PR" > slack.json
+                  curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
+                    -d @slack.json "$SLACK_WEBHOOK_URL" \
+                    || echo "Slack post failed - not failing the assessment over a notification."
+                fi
+
+                # Advisory unless this repository opted into blocking
+                # (spec 06 section 4). Even then a human decides; this is a
+                # prompt to review the change carefully, not a judgement about
+                # the person who wrote it.
+                if [ "$(jq -r '.blocking' result.json)" = "true" ] \
+                   && [ "$(jq -r '.recommendation' result.json)" = "block_recommended" ]; then
+                  echo "::error::Aegis recommends blocking and blocking is enabled for this repository."
+                  exit 1
+                fi
+
+  # == Stage 4: the gate ====================================================
+  #
+  # After every security lane, never alongside them. Oracle scores the whole
+  # picture (spec 09 section 8); gating on a partial one produces a decision
+  # the next finding invalidates.
+
+  - name: oracle-gate
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [secrets, sast, dependencies, containers, insider]
+      - get: python
+      - task: evaluate
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((thehub-ingestion-token))
+          MYKRONOS_GATE_TOKEN: ((mykronos-gate-token))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+
+                # No repo_full_name: it comes from the ingestion token, so a
+                # pipeline cannot request a decision about somebody else's
+                # repository. The endpoint forbids extra fields, so sending it
+                # is a 422 rather than a harmless duplicate.
+                BODY=$(jq -nc \
+                  --arg sha "$(git rev-parse HEAD)" \
+                  '{commit_sha: $sha, decision_type: "portfolio"}')
+
+                curl --fail --silent --show-error --max-time 120 \
+                  -X POST "$MYKRONOS_URL/api/oracle/evaluate" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "X-Hub-Token: $MYKRONOS_GATE_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > decision.json
+
+                echo "Oracle: $(jq -r '.recommendation' decision.json) (score $(jq -r '.overall_risk_score' decision.json))"
+                jq -r '.reasoning // empty' decision.json
+
+                if [ "$(jq -r '.recommendation' decision.json)" = "no_go" ]; then
+                  # Written for the on_failure hook, which otherwise knows
+                  # only the job name. A portfolio risk score describes the
+                  # repository, not a person, so it is safe to broadcast -
+                  # unlike anything the insider lane produces.
+                  printf '*TheHub / Oracle: no_go* - risk score %s on commit `%s`. Nothing is deployed.' \
+                    "$(jq -r '.overall_risk_score' decision.json)" \
+                    "$(git rev-parse --short HEAD)" \
+                    > ../notify/message.txt
+
+                  echo "Oracle says no_go - nothing is deployed."
+                  exit 1
+                fi
+
+  # == Stage 5: deliver to demo =============================================
+
+  - name: deploy-demo
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [oracle-gate]
+      - get: python
+      - task: ssh-deploy
+        image: python
+        params:
+          DEPLOY_HOST: ((deploy-host))
+          DEPLOY_USER: ((deploy-ssh-user))
+          DEPLOY_KEY: ((demo-deploy-key))
+          KNOWN_HOSTS: ((deploy-known-hosts))
+          TARGET_URL: ((thehub-demo-url))
+          ENVIRONMENT: demo
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq openssh-client curl git >/dev/null
+
+                SHA=$(git -C source rev-parse HEAD)
+
+                # 0600 or ssh refuses the key outright. Written under /tmp,
+                # which is this container's own filesystem and is destroyed
+                # with it.
+                install -d -m 0700 /tmp/.ssh
+                printf '%s\n' "$DEPLOY_KEY" > /tmp/.ssh/id
+                printf '%s\n' "$KNOWN_HOSTS" > /tmp/.ssh/known_hosts
+                chmod 0600 /tmp/.ssh/id /tmp/.ssh/known_hosts
+
+                # StrictHostKeyChecking stays on, with a pinned host key. A
+                # deploy job that accepts any host key is a deploy job that can
+                # be pointed at a different host.
+                #
+                # The command below is ignored by sshd: this key's
+                # authorized_keys entry pins `Invoke-TheHubDeploy.ps1
+                # -Environment demo`, and what is sent here arrives as
+                # SSH_ORIGINAL_COMMAND for the script to validate. The demo key
+                # cannot deploy to production even if this file said so.
+                ssh -i /tmp/.ssh/id \
+                    -o UserKnownHostsFile=/tmp/.ssh/known_hosts \
+                    -o StrictHostKeyChecking=yes \
+                    -o BatchMode=yes \
+                    -o ConnectTimeout=20 \
+                    "${DEPLOY_USER}@${DEPLOY_HOST}" "$SHA"
+
+                # Confirmed from outside the host as well as inside it. The
+                # remote script health-checks the containers; this checks that
+                # the environment answers over the network the way a user
+                # reaches it, which is a different claim.
+                echo "Confirming ${TARGET_URL} serves the new build..."
+                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
+                  --retry-all-errors -o /dev/null "$TARGET_URL"
+                echo "demo is serving ${SHA}"
+
+  # == Stage 6: DAST against the lower environment ==========================
+  #
+  # Demo, and only demo. ZAP's baseline is a spider and a passive scan rather
+  # than an attack, but the boundary is worth being explicit about because it
+  # is the one people erode first: attack traffic against production is a
+  # decision with an incident report attached, not a pipeline setting.
+
+  - name: dast
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [deploy-demo]
+      - get: python
+      - get: zap
+
+      - task: zap-baseline
+        image: zap
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          params:
+            TARGET_URL: ((thehub-demo-url))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # Reachability first. A ZAP run against a host that is not
+                # answering produces a report with no alerts in it, which is
+                # indistinguishable from a clean scan on the dashboard and is
+                # the exact failure L0001 is about.
+                if ! curl --fail --silent --max-time 30 -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering. Refusing to report an empty scan as a clean one."
+                  exit 1
+                fi
+
+                # Written to the image's own working directory and copied out
+                # afterwards. This image runs as the `zap` user, and a report
+                # written straight into a Concourse output volume depends on
+                # that volume's ownership matching - which is a thing to
+                # discover in a failed build rather than to rely on.
+                WORK=/zap/wrk
+                [ -w "$WORK" ] || WORK=$(mktemp -d)
+                cd "$WORK"
+
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                # 0 = nothing to report, 1 = at least one FAIL, 2 = warnings.
+                # All three are results. Anything else is ZAP itself breaking.
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                test -s "$WORK/zap.json" || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+
+                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
+                  echo "::error::Could not write the report into the task output."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries"
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                # DAST findings have no file and no line - the request is the
+                # location - so `--workspace` buys nothing here beyond
+                # consistency with every other lane.
                 python -m mykronos.upload \
-                  --capability containers --tool trivy \
-                  --results-path "$OUT" \
+                  --capability dast --tool zap \
+                  --results-path results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git rev-parse HEAD)" \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
-                  --workspace "$PWD" \
+                  --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
+  # == Stage 7: production, when a person says so ===========================
+  #
+  # No `trigger: true` anywhere in this plan. That is the manual confirmation,
+  # and it is the whole mechanism: Concourse will not start this job on its
+  # own, so production changes when somebody clicks the plus in the UI (or runs
+  # `fly trigger-job -j thehub/deploy-prod`) and not before.
+  #
+  # `passed: [dast]` means the only thing that can be promoted is a commit that
+  # reached demo and was probed there. The image is pulled by SHA, so what
+  # production runs is byte-identical to what DAST looked at - promotion is a
+  # restart, never a rebuild.
+
+  - name: deploy-prod
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: source
+        passed: [dast]
+      - get: python
+      - task: ssh-deploy
+        image: python
+        params:
+          DEPLOY_HOST: ((deploy-host))
+          DEPLOY_USER: ((deploy-ssh-user))
+          DEPLOY_KEY: ((prod-deploy-key))
+          KNOWN_HOSTS: ((deploy-known-hosts))
+          TARGET_URL: ((thehub-prod-url))
+          ENVIRONMENT: prod
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq openssh-client curl git >/dev/null
+
+                SHA=$(git -C source rev-parse HEAD)
+                echo "Deploying ${SHA} to production."
+
+                install -d -m 0700 /tmp/.ssh
+                printf '%s\n' "$DEPLOY_KEY" > /tmp/.ssh/id
+                printf '%s\n' "$KNOWN_HOSTS" > /tmp/.ssh/known_hosts
+                chmod 0600 /tmp/.ssh/id /tmp/.ssh/known_hosts
+
+                ssh -i /tmp/.ssh/id \
+                    -o UserKnownHostsFile=/tmp/.ssh/known_hosts \
+                    -o StrictHostKeyChecking=yes \
+                    -o BatchMode=yes \
+                    -o ConnectTimeout=20 \
+                    "${DEPLOY_USER}@${DEPLOY_HOST}" "$SHA"
+
+                echo "Confirming ${TARGET_URL} serves the new build..."
+                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
+                  --retry-all-errors -o /dev/null "$TARGET_URL"
+                echo "production is serving ${SHA}"
+
+  # == Cloud posture ========================================================
+  #
+  # Azure holds TheHub's backups (spec 16 section 9). This runs on the clock
+  # rather than on a commit, and can be triggered by hand.
+  #
+  # The service principal needs Reader and Security Reader at subscription
+  # scope and nothing else. A posture scanner with write access to the thing it
+  # audits is a finding of its own.
+
+  - name: cloud-posture
+    public: true
+    on_failure: *slack_alert
+    plan:
+      - get: daily
+        trigger: true
+      - get: source
+      - get: python
+      - get: prowler
+
+      - task: prowler-azure
+        image: prowler
+        params:
+          AZURE_CLIENT_ID: ((azure-client-id))
+          AZURE_CLIENT_SECRET: ((azure-client-secret))
+          AZURE_TENANT_ID: ((azure-tenant-id))
+          AZURE_SUBSCRIPTION_ID: ((azure-subscription-id))
+        config:
+          platform: linux
+          outputs: [{ name: results }]
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                set -u
+                if [ -z "$AZURE_SUBSCRIPTION_ID" ] || [ -z "$AZURE_CLIENT_ID" ]; then
+                  echo "::error::No Azure subscription or principal configured."
+                  echo "Mykronos does not hold cloud credentials; these come from"
+                  echo "the credential store. Refusing to report an unscanned"
+                  echo "subscription as a clean one."
+                  exit 1
+                fi
+
+                # Written to a temp directory and copied out, for the same
+                # reason the ZAP task does: this image does not run as root and
+                # the output volume's ownership is not something to bet a
+                # nightly scan on.
+                OUT=$(mktemp -d)
+
+                # --status FAIL: only failing checks are ingested. Prowler
+                # emits passes too, and storing every passing control for every
+                # resource on every daily scan grows without bound while
+                # answering no question anyone asks.
+                rc=0
+                prowler azure --sp-env-auth \
+                  --subscription-ids "$AZURE_SUBSCRIPTION_ID" \
+                  --output-formats json-ocsf \
+                  --output-directory "$OUT" \
+                  --output-filename cloud \
+                  --status FAIL || rc=$?
+
+                # 3 means failing checks were found, which is a result.
+                if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+                  echo "::error::prowler exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                ls -l "$OUT" || true
+                # No output file at all means the scan did not run, whatever
+                # the exit code said. A subscription with nothing wrong writes
+                # an empty findings array; it does not write nothing.
+                ls "$OUT"/*.json >/dev/null 2>&1 || {
+                  echo "::error::Prowler produced no JSON. Treating as a failed scan, not a clean subscription."
+                  exit 1
+                }
+                cp "$OUT"/*.json results/
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                # Cloud findings attach to a resource in a subscription, not to
+                # a file in this checkout. The commit is recorded because every
+                # scan run needs one; it is not a claim that this commit caused
+                # the finding.
+                python -m mykronos.upload \
+                  --capability cloud --tool prowler \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD/source" \
                   --severity-threshold low --blocking false

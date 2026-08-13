@@ -4,6 +4,22 @@
 # checked-out source forward, so every job scans the commit the tests ran on
 # rather than whatever main happens to be when it starts.
 #
+# **This is now the only CI this repository has.** `.github/workflows/` is
+# gone (spec 16 §4): its five workflows scanned the identical commits these
+# jobs scan, producing findings the ingestion upsert made indistinguishable,
+# which D-038 called worse than harmless and then left in place because
+# nothing yet ran the full set here. Something does now.
+#
+# What that costs is real and is not hidden: a pull request from a fork gets no
+# checks. Concourse polls a branch, and running an untrusted contributor's code
+# on a worker inside the LAN is exactly what spec 14 §4 and spec 15 §7 refuse.
+# The day somebody else opens a pull request, the answer is to restore the
+# Actions lanes for pull requests only - not to widen what Concourse trusts.
+#
+# `workflow-templates/` and `actions/upload-results` are untouched. They are
+# the platform's product: the workflows installed into *other people's*
+# repositories by the Workflow Installer (spec 03).
+#
 # Nothing sensitive appears here. `((var))` resolves from Concourse's
 # credential manager; with none configured, `fly set-pipeline --load-vars-from`
 # supplies them from a gitignored file. Neither puts a secret in this file.
@@ -25,6 +41,14 @@ resources:
     type: registry-image
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
+
+  # The frontend half of what `ci.yml` used to guard (spec 16 §4). Same major
+  # as the workflow pinned, because the generated API client and the build both
+  # depend on it.
+  - name: node
+    type: registry-image
+    icon: nodejs
+    source: { repository: node, tag: "24-slim" }
 
   # Artifact storage (spec 15 §5). S3-compatible rather than a mounted share:
   # this resource handles versioning and retention, and the same pipeline runs
@@ -134,6 +158,72 @@ jobs:
                 cd source
                 python scripts/check_links.py
 
+  # The frontend, which had no Concourse lane at all until `ci.yml` was
+  # retired: lint, build, and the contract check that matters more than either.
+  - name: frontend
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - get: node
+
+      # The generated client is derived from the backend's OpenAPI, so the
+      # contract is regenerated here rather than trusted from the committed
+      # copy. A backend change that breaks the frontend should fail this job,
+      # not surface as a runtime error in a browser.
+      - task: dump-openapi
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: contract }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source/backend
+                pip install --quiet -e .
+                cd ..
+                python scripts/dump_openapi.py "${TARGET}/openapi.json"
+                echo "Schema is $(wc -c < "${TARGET}/openapi.json") bytes"
+        params:
+          TARGET: ../contract
+
+      - task: lint-types-build
+        image: node
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: contract }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cp contract/openapi.json source/frontend/openapi.json
+                cd source/frontend
+                npm ci
+
+                # Compared as files rather than through `git diff`. node:slim
+                # has no git, and the question being asked is whether the
+                # committed types match what the schema generates - which is a
+                # question about two files, not about the index.
+                npx openapi-typescript openapi.json -o /tmp/api-types.d.ts
+                if ! diff -q lib/api-types.d.ts /tmp/api-types.d.ts >/dev/null; then
+                  echo "::error::The committed API types are out of date."
+                  echo "The backend's OpenAPI schema has changed. Regenerate with:"
+                  echo "  python scripts/dump_openapi.py frontend/openapi.json"
+                  echo "  cd frontend && npx openapi-typescript openapi.json -o lib/api-types.d.ts"
+                  diff lib/api-types.d.ts /tmp/api-types.d.ts | head -40
+                  exit 1
+                fi
+
+                npm run lint
+                npm run build
+
   # -- Stage 2: security (spec 15 §4) -------------------------------------
   #
   # Reports through `python -m mykronos.upload`, the same module the composite
@@ -146,7 +236,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit, lint-and-types, qa-spec-links]
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
       - task: gitleaks
         image: python
@@ -184,7 +274,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit, lint-and-types, qa-spec-links]
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
       - task: osv-scanner
         image: python
@@ -192,6 +282,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: evidence }]
           run:
             path: bash
             args:
@@ -223,6 +314,14 @@ jobs:
                   exit "$rc"
                 fi
 
+                # A second copy in JSON, because the counts the trust score is
+                # built from are not derivable from the SARIF. Tolerant of a
+                # failure here: it costs the evidence step, not the findings.
+                osv-scanner scan source --recursive --no-resolve \
+                  --format json --output-file /tmp/osv.json . || true
+                test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
+                cp /tmp/osv.json ../evidence/osv.json
+
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
@@ -232,6 +331,288 @@ jobs:
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch main --workspace "$PWD" \
                   --severity-threshold low --blocking false
+
+      # Supply-chain evidence (spec 07). This only ever existed in
+      # `mykronos-atlas.yml`: Concourse uploaded the *findings* and never the
+      # SBOM or the trust score, so the dashboard's SSCS panel had nothing to
+      # show for any commit this pipeline built.
+      #
+      # It sits here rather than in `build` for a reason that matters: Oracle
+      # reads Atlas evidence, and evidence produced after the gate is evidence
+      # the gate could not use. It also means one syft run instead of two.
+      - task: sbom-and-evidence
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: evidence }]
+          outputs: [{ name: sbom-out }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                SHA=$(git -C source rev-parse HEAD)
+                SHORT=$(git -C source rev-parse --short HEAD)
+
+                # Syft, pinned. `cyclonedx-py environment` documents the
+                # interpreter this task runs in rather than the repository --
+                # a plausible SBOM of entirely the wrong software, which is how
+                # it shipped in the Atlas workflow.
+                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+                  | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
+                syft scan dir:source \
+                  --exclude './**/node_modules' --exclude './**/.venv' \
+                  --exclude './**/venv' --exclude './**/vendor' \
+                  --output cyclonedx-json > "sbom-out/sbom-${SHORT}.cdx.json"
+
+                COMPONENTS=$(jq '((.components // []) | length)' "sbom-out/sbom-${SHORT}.cdx.json")
+                echo "SBOM lists $COMPONENTS component(s)"
+                if [ "$COMPONENTS" -eq 0 ]; then
+                  # An SBOM with nothing in it is not evidence, and archiving
+                  # one is worse than recording none: the dashboard would show
+                  # an SBOM present for a file describing no software.
+                  echo "::error::SBOM has no components; refusing to publish an empty one."
+                  exit 1
+                fi
+
+                SBOM_REF=$(curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/raw?scan_run_id=${SHA}&capability=atlas&filename=sbom.json" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary "@sbom-out/sbom-${SHORT}.cdx.json" | jq -r '.raw_output_ref')
+
+                # Counts, not a score. The trust formula lives in the platform
+                # so it is reproducible and cannot drift between CI systems
+                # (spec 07 §5, §7).
+                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json)
+
+                PROVENANCE=$(jq -nc \
+                  --arg builder "concourse" \
+                  --arg repo "ToddGBenson/mykronos" \
+                  --arg commit "$SHA" \
+                  --arg run_id "${BUILD_ID:-unknown}" \
+                  --arg runner "linux-amd64" \
+                  --arg workflow "${BUILD_PIPELINE_NAME:-mykronos}/${BUILD_JOB_NAME:-dependencies}" \
+                  '{builder_id: $builder, source_repo: $repo, source_commit: $commit,
+                    build_run_id: $run_id, runner: $runner, workflow: $workflow}')
+
+                BODY=$(jq -nc \
+                  --arg commit "$SHA" \
+                  --arg sbom "$SBOM_REF" \
+                  --argjson ecosystems "$ECOSYSTEMS" \
+                  --argjson provenance "$PROVENANCE" \
+                  '{commit_sha: $commit, ecosystems: $ecosystems, provenance: $provenance}
+                   + (if $sbom == "" or $sbom == "null" then {} else {sbom_ref: $sbom} end)')
+
+                curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/atlas" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > out.json
+
+                TRUST=$(jq -r '.trust_score' out.json)
+                DEPS=$(jq -r '.dependency_count' out.json)
+                VULN=$(jq -r '.vulnerable_dependency_count' out.json)
+
+                # Null rather than a number means the scan resolved nothing
+                # (spec 07 §5a). Saying "not assessed" is the entire point of
+                # that change; printing `null/100` would undo it.
+                if [ "$TRUST" = "null" ]; then
+                  echo "Supply-chain trust: NOT ASSESSED - no dependencies were resolved."
+                else
+                  echo "Supply-chain trust: $TRUST/100 ($VULN vulnerable of $DEPS dependencies)"
+                  if [ "$(jq -r '.below_minimum' out.json)" = "true" ]; then
+                    echo "::warning::Trust score $TRUST is below this repository's floor of $(jq -r '.min_trust_score' out.json)."
+                  fi
+                fi
+
+      - put: sbom
+        params: { file: sbom-out/sbom-*.cdx.json }
+
+  # Replaces `mykronos-sast.yml`, and not like for like: that workflow ran
+  # CodeQL, which is unavailable here. Its CLI wants a multi-hundred-megabyte
+  # bundle per language on every run, and its licence covers Actions on public
+  # repositories and GHAS customers rather than a self-hosted worker. Semgrep
+  # is spec 04 §3's registered secondary, emits SARIF, and installs from PyPI.
+  #
+  # `--tool semgrep` is explicit rather than defaulted, so the lake records
+  # which analyser produced each finding. Expect findings to appear and
+  # disappear across the cutover: that is a tool change, not a change in this
+  # code's security. Spec 16 §5.
+  - name: sast
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
+      - get: python
+      - task: semgrep
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+
+                pip install --quiet semgrep==1.97.0
+
+                # Rule packs download from semgrep.dev; the source stays here.
+                # `--config auto` is deliberately not used - it reports the
+                # repository to semgrep.dev, which is the class of thing spec
+                # 12 §5.2 makes opt-in.
+                rc=0
+                semgrep scan \
+                  --config p/security-audit \
+                  --config p/owasp-top-ten \
+                  --sarif --output /tmp/results/semgrep.sarif \
+                  --metrics off --quiet . || rc=$?
+
+                # 1 means findings, which is a result. Anything else is a scan
+                # failure and must not read as clean code.
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::semgrep exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability sast --tool semgrep \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch main --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  # Replaces `mykronos-aegis.yml`. That workflow ran on `pull_request` and
+  # `pull_request_review`; Concourse sees a branch, so the pull request that
+  # introduced the commit is looked up instead. Spec 16 §6 is the full
+  # explanation.
+  #
+  # Unauthenticated: this repository is public, and the App is not installed on
+  # it (D-007). That buys a 60-requests-per-hour limit, which two calls per
+  # build sits well inside. If the limit is ever hit the lookup fails, the job
+  # takes the no-pull-request path below, and nothing is recorded - which is
+  # the honest outcome and is announced rather than inferred.
+  - name: insider
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
+      - get: python
+      - task: aegis
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+                cd source
+                git config --global --add safe.directory "$PWD"
+
+                SHA=$(git rev-parse HEAD)
+                API=https://api.github.com/repos/ToddGBenson/mykronos
+
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/commits/$SHA/pulls" > pulls.json || echo '[]' > pulls.json
+
+                PR=$(jq -r 'if type == "array" and length > 0 then .[0].number else "" end' pulls.json)
+
+                if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+                  echo "=================================================="
+                  echo "NO PULL REQUEST FOR $SHA."
+                  echo "This commit reached main without one, so there are no"
+                  echo "reviews to have integrity, no base ref to measure an"
+                  echo "author baseline against, and no description to check"
+                  echo "for AI disclosure."
+                  echo ""
+                  echo "NO INSIDER-RISK ASSESSMENT WAS RECORDED. Submitting"
+                  echo "one anyway would score 0/100 for exactly the case"
+                  echo "Aegis exists to notice."
+                  echo "=================================================="
+                  exit 0
+                fi
+
+                # Errexit from here on. Up to this point a failed fetch is a
+                # tolerated outcome that takes the no-pull-request path; past
+                # it, every call is one whose failure would produce an
+                # assessment built from an empty payload - a null author and no
+                # signals, which posts as a clean 0/100.
+                set -e
+
+                echo "Assessing pull request #$PR"
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/pulls/$PR" > pr.json
+
+                AUTHOR=$(jq -r '.user.login' pr.json)
+                BASE=$(jq -r '.base.ref' pr.json)
+                # A PR description is attacker-controlled text. Written to a
+                # file and passed by path, never interpolated into a command.
+                jq -r '.body // ""' pr.json > pr-body.txt
+
+                curl --fail --silent --show-error --max-time 30 \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/pulls/$PR/reviews" > reviews.json || echo '[]' > reviews.json
+
+                # The base branch is not fetched by the git resource, and the
+                # author-baseline signal compares against it. Without this the
+                # signal is skipped rather than guessed (spec 06 §7).
+                git fetch --quiet origin "$BASE" || true
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                python -m mykronos.aegis_signals \
+                  --pr-number "$PR" \
+                  --commit-sha "$SHA" \
+                  --author "$AUTHOR" \
+                  --base-ref "FETCH_HEAD" \
+                  --head-ref "$SHA" \
+                  --pr-body-file pr-body.txt \
+                  --reviews-file reviews.json \
+                  --sensitive-path '**/auth/**' \
+                  --sensitive-path '**/*secret*' \
+                  --sensitive-path '**/.github/workflows/**' \
+                  --sensitive-path '**/iam/**' \
+                  > signals.json
+
+                echo "Signals observed:"
+                jq -r '.signals[] | "  \(.key): \(.rationale)"' signals.json
+
+                curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/aegis" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d @signals.json > result.json
+
+                echo "Aegis: $(jq -r '.recommendation' result.json) at $(jq -r '.insider_risk_score' result.json)/100"
+
+                if [ "$(jq -r '.blocking' result.json)" = "true" ] \
+                   && [ "$(jq -r '.recommendation' result.json)" = "block_recommended" ]; then
+                  echo "::error::Aegis recommends blocking and blocking is enabled for this repository."
+                  exit 1
+                fi
 
   # -- Stage 3: the gate (spec 15 §3) -------------------------------------
   #
@@ -244,7 +625,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, dependencies]
+        passed: [secrets, dependencies, sast, insider]
       - get: python
       - task: evaluate
         image: python
@@ -331,39 +712,12 @@ jobs:
         params:
           TARGET: ../../dist
 
-      - task: build-sbom
-        image: python
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: dist }]
-          outputs: [{ name: sbom-out }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
-
-                # Syft, pinned. `cyclonedx-py environment` documents the
-                # interpreter the task is running in rather than the
-                # repository -- a plausible SBOM of entirely the wrong
-                # software, which is how it shipped in the Atlas workflow.
-                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh                   | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
-                SHA=$(git -C source rev-parse --short HEAD)
-                syft scan dir:source                   --exclude './**/node_modules' --exclude './**/.venv'                   --output cyclonedx-json > "sbom-out/sbom-${SHA}.cdx.json"
-
-                COMPONENTS=$(jq '((.components // []) | length)'                   "sbom-out/sbom-${SHA}.cdx.json")
-                echo "SBOM lists $COMPONENTS component(s)"
-                if [ "$COMPONENTS" -eq 0 ]; then
-                  echo "::error::SBOM has no components; refusing to publish an empty one."
-                  exit 1
-                fi
-
+      # The SBOM moved to the `dependencies` job, where Oracle can still see
+      # it: evidence produced after the gate is evidence the gate could not
+      # use. This job keeps the wheel, which is the artifact rather than the
+      # evidence, and their retentions differ for that reason (spec 15 5).
       - put: wheel
         params: { file: dist/mykronos-*.whl }
-      - put: sbom
-        params: { file: sbom-out/sbom-*.cdx.json }
 
   # -- Stage 5: publish (spec 15 §3, D-038) -------------------------------
   #

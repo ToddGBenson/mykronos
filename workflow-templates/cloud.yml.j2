@@ -29,21 +29,29 @@
       - name: Check cloud credentials are configured
         # Fails here, loudly, rather than letting the scan produce an empty
         # result that would be indistinguishable from a clean account.
+        #
+        # Either provider satisfies this. Before Azure was configurable the
+        # check named `aws_role_arn` unconditionally, which would have told an
+        # Azure-only repository to configure a credential its cloud does not
+        # have — a correct-sounding error pointing at the wrong thing.
         run: |
-          if [ -z "<< config.aws_role_arn | default('') >>" ]; then
-            echo "::error::No aws_role_arn configured for the Cloud capability."
+          if [ -z "<< config.aws_role_arn | default('') >>" ] \
+             && [ -z "<< config.azure_subscription_id | default('') >>" ]; then
+            echo "::error::No cloud account configured for the Cloud capability."
             echo "Mykronos does not hold your cloud credentials. Configure an"
-            echo "OIDC role for this repo, or disable the Cloud capability."
+            echo "OIDC role (AWS) or a subscription and service principal"
+            echo "(Azure) for this repo, or disable the Cloud capability."
             exit 1
           fi
+{% if config.aws_role_arn | default('') %}
 
       - name: Assume the scanning role
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
         with:
-          role-to-assume: << config.aws_role_arn | default('') >>
+          role-to-assume: << config.aws_role_arn >>
           aws-region: << config.aws_region | default('us-east-1') >>
 
-      - name: Posture scan
+      - name: Posture scan (AWS)
         continue-on-error: true
         run: |
           mkdir -p "${{ runner.temp }}/mykronos-results"
@@ -56,4 +64,37 @@
                 --output-directory /out \
                 --output-filename cloud \
                 --status FAIL
+{% endif %}
+{% if config.azure_subscription_id | default('') %}
+
+      - name: Posture scan (Azure)
+        continue-on-error: true
+        # `--sp-env-auth` reads the service principal from the environment, so
+        # the secret is a repository secret this workflow passes through and
+        # never a value rendered into this file. spec 12 §4.3 keeps the
+        # ingestion token as the only secret Mykronos itself places in a repo;
+        # this one is the repository owner's to create and rotate.
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: << config.azure_tenant_id | default('') >>
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "::error::AZURE_CLIENT_ID / AZURE_CLIENT_SECRET are not set."
+            echo "Add them as repository secrets. Reader and Security Reader at"
+            echo "subscription scope is all the principal needs."
+            exit 1
+          fi
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          docker run --rm \
+            -e AZURE_CLIENT_ID -e AZURE_CLIENT_SECRET -e AZURE_TENANT_ID \
+            -v "${{ runner.temp }}/mykronos-results:/out" \
+            toniblyx/prowler:<< config.tool_version | default('latest') >> \
+            azure --sp-env-auth \
+                  --subscription-ids << config.azure_subscription_id >> \
+                  --output-formats json-ocsf \
+                  --output-directory /out \
+                  --output-filename cloud-azure \
+                  --status FAIL
+{% endif %}
 {% endblock %}
