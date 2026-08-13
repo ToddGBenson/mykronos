@@ -48,6 +48,14 @@ RUN apt-get update -qq \
     && apt-get upgrade -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
+# pip and setuptools from the base image, not from this project's
+# dependencies. The platform's own scan found both remaining highs there:
+# setuptools 70.3.0 (CVE-2025-47273, path traversal) and the msgpack pip
+# vendors (GHSA-6v7p-g79w-8964). Neither appears in pyproject.toml, which is
+# exactly why they went unnoticed - a dependency audit of this project would
+# never have looked at them.
+RUN pip install --no-cache-dir --quiet --upgrade pip setuptools
+
 COPY --from=build /dist/*.whl /tmp/
 RUN pip install --no-cache-dir --quiet /tmp/*.whl && rm -f /tmp/*.whl
 
