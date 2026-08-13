@@ -795,8 +795,18 @@ jobs:
               - |
                 SHA=$(cat meta/sha)
                 /kaniko/executor \
-                  --context source \
-                  --dockerfile source/Dockerfile \
+                  # backend/, not the repository root. TheHub has no root
+                  # Dockerfile: docker-compose builds both `backend` and
+                  # `backend-staging` with context ./backend, dockerfile
+                  # Dockerfile. Kaniko was pointed at a path that has never
+                  # existed, so this lane failed every run with "error
+                  # resolving dockerfile path".
+                  #
+                  # The context matches compose's for the reason it matters
+                  # there: the Dockerfile COPYs relative to backend/, so a
+                  # root context resolves every path one level too high.
+                  --context source/backend \
+                  --dockerfile source/backend/Dockerfile \
                   --destination "${REGISTRY}/thehub:${SHA}" \
                   --insecure --skip-tls-verify \
                   --single-snapshot
