@@ -42,7 +42,12 @@ const TERM_LABEL: Record<string, string> = {
 };
 
 /** Higher is better here, unlike every other score in the platform. */
-function trustTone(score: number): "critical" | "warn" | "pass" {
+function trustTone(
+  score: number | null | undefined,
+): "critical" | "warn" | "pass" | "muted" {
+  // Null is not zero and not a hundred. The scan resolved nothing, so there is
+  // no trust to be good or bad about (spec 07 §5a).
+  if (score == null) return "muted";
   if (score < 50) return "critical";
   if (score < 80) return "warn";
   return "pass";
@@ -73,15 +78,25 @@ export function SscsTab({
   const detail = (latest.ecosystems_json ?? {}) as Ecosystems;
   const terms = detail.score_terms ?? [];
   const releases = evidence.filter((row) => row.sbom_ref);
+  // A scan ran; it just resolved nothing to score. That is a different state
+  // from "no scan has run", which is the empty state above, and from a low
+  // score, which is a finding about the dependencies.
+  const assessed = latest.trust_score != null;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <StatTile
           label="Trust score"
-          value={`${latest.trust_score}/100`}
-          sub={detail.floored ? "at the floor — see raw score" : "higher is better"}
-          alert={latest.trust_score < 50}
+          value={assessed ? `${latest.trust_score}/100` : "—"}
+          sub={
+            !assessed
+              ? "not assessed"
+              : detail.floored
+                ? "at the floor — see raw score"
+                : "higher is better"
+          }
+          alert={assessed && (latest.trust_score ?? 0) < 50}
         />
         <StatTile
           label="Dependencies"
@@ -101,7 +116,19 @@ export function SscsTab({
         />
       </div>
 
-      {terms.length > 0 ? (
+      {!assessed ? (
+        <section className="border border-high bg-high-wash p-2.5">
+          <Label>Not assessed</Label>
+          <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+            {terms[0]?.detail ??
+              "The scan resolved no dependencies, so no supply-chain trust was assessed."}{" "}
+            This is not a clean result. Until the manifests resolve to a pinned
+            set, the trust score is unknown rather than perfect, and it counts
+            as neither evidence for a maturity tier nor a term in a risk
+            decision.
+          </p>
+        </section>
+      ) : terms.length > 0 ? (
         <section>
           <Label>How the trust score was reached</Label>
           <table className="mt-1.5 w-auto border-collapse font-mono text-[10px]">
@@ -182,7 +209,7 @@ export function SscsTab({
                       </td>
                       <td className="px-2 py-2">
                         <Pill tone={trustTone(row.trust_score)}>
-                          {row.trust_score}
+                          {row.trust_score ?? "n/a"}
                         </Pill>
                       </td>
                       <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
@@ -215,18 +242,29 @@ export function SscsTab({
 }
 
 function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
-  if (rows.length < 2) {
+  // Unassessed scans are dropped rather than plotted at zero or carried
+  // forward (spec 07 §5a): a scan that resolved nothing is not a data point
+  // about trust, and either substitute would draw a line the evidence does
+  // not support.
+  const scored = rows.filter(
+    (row): row is SscsEvidence & { trust_score: number } => row.trust_score != null,
+  );
+  const skipped = rows.length - scored.length;
+
+  if (scored.length < 2) {
     return (
       <p className="mt-1 text-[11px] text-ink-3">
-        One data point so far. A trend needs at least two scans.
+        {scored.length === 0
+          ? `No scan has resolved dependencies yet${skipped > 0 ? ` (${skipped} assessed nothing)` : ""}.`
+          : "One data point so far. A trend needs at least two scans."}
       </p>
     );
   }
 
   const width = 420;
   const height = 56;
-  const step = width / (rows.length - 1);
-  const points = rows
+  const step = width / (scored.length - 1);
+  const points = scored
     .map((row, index) => {
       const x = index * step;
       const y = height - (Math.max(0, Math.min(100, row.trust_score)) / 100) * height;
@@ -234,7 +272,7 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
     })
     .join(" ");
 
-  const last = rows[rows.length - 1];
+  const last = scored[scored.length - 1];
   const lastX = width;
   const lastY = height - (last.trust_score / 100) * height;
 
@@ -244,7 +282,7 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
         viewBox={`0 0 ${width} ${height}`}
         className="h-14 w-full min-w-[320px] max-w-[420px] border border-rule bg-paper-2"
         role="img"
-        aria-label={`Trust score across ${rows.length} scans, currently ${last.trust_score} of 100`}
+        aria-label={`Trust score across ${scored.length} scans, currently ${last.trust_score} of 100`}
       >
         {/* The 50 line is the default release floor, so the shape is readable
             against the threshold that matters rather than in the abstract. */}
@@ -274,7 +312,8 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
         <circle cx={lastX} cy={lastY} r="2.5" className="fill-current" />
       </svg>
       <p className="mt-1 font-mono text-[9px] text-ink-3">
-        {rows.length} scans · dashed line is the default release floor of 50
+        {scored.length} scans · dashed line is the default release floor of 50
+        {skipped > 0 ? ` · ${skipped} not assessed, omitted` : ""}
       </p>
     </div>
   );

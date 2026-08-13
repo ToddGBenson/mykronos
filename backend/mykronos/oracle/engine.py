@@ -423,6 +423,12 @@ class OracleEngine:
         if not rows:
             return None
         trust, vulnerable, total, commit_sha, evaluated_at = rows[0]
+        if trust is None:
+            # The scan resolved no dependencies, so there is no trust to
+            # consume (spec 07 §5a). Treated exactly like no evidence at all:
+            # Oracle records supply chain as not assessed rather than crediting
+            # a repository that pinned nothing with a perfect score.
+            return None
         return {
             "trust_score": int(trust),
             "vulnerable_dependency_count": int(vulnerable),

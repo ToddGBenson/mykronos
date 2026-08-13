@@ -43,15 +43,23 @@ def evidence_id(repo_full_name: str, commit_sha: str) -> str:
 
 @dataclass(frozen=True)
 class TrustAssessment:
-    trust_score: int
-    raw_trust_score: float
+    #: Null when the scan resolved no dependencies (spec 07 §5a). Deliberately
+    #: not 0 and deliberately not 100: neither is true of a repository nobody
+    #: managed to inspect, and 100 is the answer this used to give.
+    trust_score: int | None
+    raw_trust_score: float | None
     dependency_count: int
     vulnerable_dependency_count: int
     terms: list[dict[str, Any]]
 
     @property
     def floored(self) -> bool:
-        return self.raw_trust_score < 0
+        return self.raw_trust_score is not None and self.raw_trust_score < 0
+
+    @property
+    def assessed(self) -> bool:
+        """Whether anything was actually resolved to score."""
+        return self.trust_score is not None
 
 
 def _curve(count: int) -> float:
@@ -147,6 +155,33 @@ def score(ecosystems: list[EcosystemEvidence]) -> TrustAssessment:
                 ),
                 "count": stale,
             }
+        )
+
+    # Nothing resolved, nothing to score (spec 07 §5a). This used to return
+    # 100 — the same answer a repository with four hundred clean dependencies
+    # gets — for a scan that inspected nothing at all. Most often it means the
+    # project declares ranges rather than pins, so there is no concrete
+    # version set to check advisories against, and the remedy is to pin them
+    # rather than to celebrate.
+    if dependency_count == 0:
+        return TrustAssessment(
+            trust_score=None,
+            raw_trust_score=None,
+            dependency_count=0,
+            vulnerable_dependency_count=0,
+            terms=[
+                {
+                    "key": "not_assessed",
+                    "penalty": 0.0,
+                    "detail": (
+                        "No dependencies were resolved, so no supply-chain "
+                        "trust was assessed. A project declaring version "
+                        "ranges rather than pinned versions has no resolved "
+                        "set for the scanner to check."
+                    ),
+                    "count": 0,
+                }
+            ],
         )
 
     raw = 100.0 - penalty

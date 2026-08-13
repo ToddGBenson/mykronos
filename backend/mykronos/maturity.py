@@ -216,8 +216,19 @@ def portfolio_decisions(catalog: Catalog, repo: str, now: datetime) -> float | N
 
 
 def sscs_evidence_count(catalog: Catalog, repo: str, now: datetime) -> float | None:
+    """Rows that actually assessed something (spec 07 §5a).
+
+    A row with a null trust score records that a scan ran and resolved no
+    dependencies. That is worth keeping — it is how the dashboard says "not
+    assessed" rather than showing nothing — but it is not supply-chain
+    evidence, and counting it would let a repository climb a maturity tier on
+    scans that inspected nothing.
+    """
     return _scalar(
-        catalog, "SELECT count(*) FROM sscs_evidence WHERE repo_full_name = ?", [repo]
+        catalog,
+        "SELECT count(*) FROM sscs_evidence "
+        "WHERE repo_full_name = ? AND trust_score IS NOT NULL",
+        [repo],
     )
 
 
@@ -477,6 +488,10 @@ def trend_series(
             """,
             [at, *repo_param],
         )
+        # Not filtered to assessed rows. If the most recent evidence at this
+        # instant resolved nothing, the point is a gap (spec 07 §5a) rather
+        # than the last real score carried forward — the line should break
+        # where the measurement stopped, not coast on an older number.
         trust = catalog.query(
             f"""
             SELECT trust_score FROM sscs_evidence
@@ -493,7 +508,11 @@ def trend_series(
                 open_high=high,
                 open_total=total,
                 risk_score=int(risk[0][0]) if risk else None,
-                trust_score=int(trust[0][0]) if trust else None,
+                trust_score=(
+                    int(trust[0][0])
+                    if trust and trust[0][0] is not None
+                    else None
+                ),
             )
         )
     return series

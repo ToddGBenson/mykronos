@@ -339,10 +339,28 @@
           DEPS=$(jq -r '.dependency_count' evidence.json)
           VULN=$(jq -r '.vulnerable_dependency_count' evidence.json)
 
+          # A null score means the scan resolved no dependencies, so nothing
+          # was assessed (spec 07 §5a). Printing "null/100" or quietly reading
+          # it as zero would both be wrong; this is the state where a repo
+          # declaring version ranges rather than pinned versions used to be
+          # told its supply chain scored a perfect 100.
+          if [ "$TRUST" = "null" ]; then
+            echo "::warning::No dependencies resolved - supply-chain trust not assessed."
+            {
+              echo "## Mykronos Atlas - not assessed"
+              echo
+              echo "The scan resolved no dependencies, so no trust score was"
+              echo "computed. This is not a clean result. Check that manifests"
+              echo "pin versions and that the scanner was allowed to resolve"
+              echo "them; a scan that inspected nothing cannot clear a floor."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           echo "Supply-chain trust: $TRUST/100 ($VULN vulnerable of $DEPS dependencies)"
 
           {
-            echo "## Mykronos Atlas — trust $TRUST/100"
+            echo "## Mykronos Atlas - trust $TRUST/100"
             echo
             echo "$VULN vulnerable of $DEPS dependencies. Repository floor: $MINIMUM."
           } >> "$GITHUB_STEP_SUMMARY"

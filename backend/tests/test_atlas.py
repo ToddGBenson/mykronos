@@ -130,6 +130,123 @@ class TestTrustScore:
         assert evidence_id(REPO, "abc") != evidence_id(REPO, "def")
 
 
+
+class TestAScanThatResolvedNothing:
+    """Spec 07 §5a. TheHub scanned clean for weeks: osv-scanner was told not to
+    resolve transitively, its manifests declare ranges rather than pins, so it
+    resolved zero dependencies — and zero vulnerabilities out of zero packages
+    took every penalty term to zero and scored a perfect 100. The failure and
+    the ideal produced the same number."""
+
+    def test_no_dependencies_scores_null_not_100(self) -> None:
+        assessment = score([eco(dependency_count=0)])
+
+        assert assessment.trust_score is None
+        assert assessment.raw_trust_score is None
+        assert assessment.assessed is False
+
+    def test_no_ecosystems_at_all_scores_null(self) -> None:
+        assert score([]).trust_score is None
+
+    def test_it_says_why(self) -> None:
+        """The reason has to travel with the row: "not assessed" on a dashboard
+        with no explanation is the kind of thing people route around."""
+        terms = score([]).terms
+
+        assert [t["key"] for t in terms] == ["not_assessed"]
+        assert "no dependencies" in terms[0]["detail"].lower()
+
+    def test_a_real_scan_is_unaffected(self) -> None:
+        assessment = score([eco(dependency_count=100)])
+
+        assert assessment.trust_score == 100
+        assert assessment.assessed is True
+
+    def test_the_null_reaches_the_lake(
+        self, client, admin_auth, atlas_auth, run_compaction, catalog
+    ) -> None:
+        onboard(client, admin_auth)
+        post(
+            client,
+            atlas_auth,
+            ecosystems=[{"ecosystem": "npm", "dependency_count": 0}],
+        )
+        run_compaction()
+
+        rows = catalog.query("SELECT trust_score, raw_trust_score FROM sscs_evidence")
+        assert rows == [(None, None)]
+
+    def test_it_is_not_reported_as_below_the_minimum(
+        self, client, admin_auth, atlas_auth
+    ) -> None:
+        """A release gate that blocks on an unassessed scan blocks on a
+        measurement that never happened. It has to say "unknown", not "bad" —
+        the same distinction the score itself is drawing."""
+        onboard(client, admin_auth)
+
+        body = post(
+            client,
+            atlas_auth,
+            ecosystems=[{"ecosystem": "npm", "dependency_count": 0}],
+        ).json()
+
+        assert body["trust_score"] is None
+        assert body["below_minimum"] is False
+
+    def test_oracle_does_not_credit_it(
+        self, client, admin_auth, atlas_auth, run_compaction, catalog
+    ) -> None:
+        """A repo with no assessed supply chain must look the same to Oracle as
+        a repo that has never run Atlas at all."""
+        from mykronos.config import get_settings
+        from mykronos.oracle.engine import OracleEngine
+        from mykronos.oracle.policy import load_policy
+
+        onboard(client, admin_auth)
+        post(
+            client,
+            atlas_auth,
+            ecosystems=[{"ecosystem": "npm", "dependency_count": 0}],
+        )
+        run_compaction()
+
+        engine = OracleEngine(catalog, load_policy(get_settings().oracle_policy_path))
+        assert engine._sscs_trust(REPO) is None
+
+    def test_maturity_does_not_count_it_as_evidence(
+        self, client, admin_auth, atlas_auth, run_compaction, catalog
+    ) -> None:
+        from mykronos.maturity import sscs_evidence_count
+        from mykronos.schemas import utcnow
+
+        onboard(client, admin_auth)
+        post(
+            client,
+            atlas_auth,
+            ecosystems=[{"ecosystem": "npm", "dependency_count": 0}],
+        )
+        run_compaction()
+
+        assert sscs_evidence_count(catalog, REPO, utcnow()) == 0
+
+    def test_the_trend_line_breaks_rather_than_coasting(
+        self, client, admin_auth, atlas_auth, run_compaction, catalog
+    ) -> None:
+        """Carrying the last real score forward would draw a flat healthy line
+        over the exact period nobody was measuring."""
+        from mykronos.maturity import trend_series
+
+        onboard(client, admin_auth)
+        post(
+            client,
+            atlas_auth,
+            ecosystems=[{"ecosystem": "npm", "dependency_count": 0}],
+        )
+        run_compaction()
+
+        assert all(point.trust_score is None for point in trend_series(catalog, REPO))
+
+
 class TestIngestion:
     def test_evidence_is_written(
         self, client, admin_auth, atlas_auth, run_compaction, catalog

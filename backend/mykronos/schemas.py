@@ -360,8 +360,11 @@ class AegisAccepted(BaseModel):
 class AtlasAccepted(BaseModel):
     accepted: int
     evidence_id: str
-    trust_score: int
-    raw_trust_score: float
+    #: Null when the scan resolved no dependencies (spec 07 §5a). The workflow
+    #: prints this, so a repository that pinned nothing sees "not assessed"
+    #: rather than a score it did not earn.
+    trust_score: int | None
+    raw_trust_score: float | None
     dependency_count: int
     vulnerable_dependency_count: int
     min_trust_score: int

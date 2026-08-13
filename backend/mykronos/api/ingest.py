@@ -436,7 +436,12 @@ async def ingest_atlas(
         vulnerable_dependency_count=assessment.vulnerable_dependency_count,
         min_trust_score=minimum,
         blocking=blocking,
-        below_minimum=assessment.trust_score < minimum,
+        # An unassessed scan is not below the floor: there is no score to
+        # compare, and reporting it as below would block a release for a
+        # measurement that never happened (spec 07 §5a).
+        below_minimum=(
+            assessment.trust_score is not None and assessment.trust_score < minimum
+        ),
     )
 
 

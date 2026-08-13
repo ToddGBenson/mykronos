@@ -867,9 +867,9 @@ export interface components {
             /** Evidence Id */
             evidence_id: string;
             /** Trust Score */
-            trust_score: number;
+            trust_score: number | null;
             /** Raw Trust Score */
-            raw_trust_score: number;
+            raw_trust_score: number | null;
             /** Dependency Count */
             dependency_count: number;
             /** Vulnerable Dependency Count */
@@ -1179,7 +1179,7 @@ export interface components {
          * FindingStatus
          * @enum {string}
          */
-        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed";
+        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed" | "superseded";
         /**
          * FindingSubmission
          * @description One normalized finding as produced by an adapter (spec 04 §4).
@@ -1782,11 +1782,8 @@ export interface components {
              * @default 0
              */
             vulnerable_dependency_count: number;
-            /**
-             * Trust Score
-             * @default 100
-             */
-            trust_score: number;
+            /** Trust Score */
+            trust_score?: number | null;
             /**
              * Raw Trust Score
              * @description Pre-clamp. Ranking has to survive the floor at 0, the same way Oracle's raw_score survives the ceiling at 100 (D-018).

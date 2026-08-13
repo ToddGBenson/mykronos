@@ -224,7 +224,11 @@ class SscsEvidenceOut(BaseModel):
     sbom_ref: str | None = None
     dependency_count: int = 0
     vulnerable_dependency_count: int = 0
-    trust_score: int = 100
+    #: Null means the scan resolved nothing, so nothing was assessed
+    #: (spec 07 §5a). The old default here was 100 — a repository declaring
+    #: version ranges rather than pinned versions got a perfect supply-chain
+    #: score for a scan that inspected no dependencies at all.
+    trust_score: int | None = None
     raw_trust_score: float | None = Field(
         default=None,
         description=(
