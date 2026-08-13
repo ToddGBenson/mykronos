@@ -314,8 +314,14 @@ Normative:
 - **Terminal, and machine-set only.** Reprocessing sets it. No human
   disposition may, for the same reason no human may set `fixed`: it is a claim
   about what a tool produced, and a person is not in a position to make it.
-- **`superseded_by` is required** and names the replacing `finding_id`, so the
-  chain is auditable and somebody challenging a disappearance can follow it.
+- **`superseded_by` names the replacing `finding_id` where there is one**, so
+  the chain is auditable and somebody challenging a disappearance can follow
+  it. It is null when a record is withdrawn with nothing taking its place —
+  which happens when the re-derivation produced no equivalent finding at all,
+  and when a record is withdrawn because the *process* that created it was
+  wrong rather than the adapter. An earlier draft called the field required;
+  that was written before either case had occurred, and a required field with
+  no honest value to put in it gets filled with a lie.
 - **Excluded from open counts, from mean-time-to-fix, and from Oracle
   scoring.** It is neither outstanding work nor completed work, and counting
   it as either is a lie in one of the two directions that matter.
