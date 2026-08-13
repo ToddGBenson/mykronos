@@ -69,7 +69,15 @@ services:
       # layer somebody can pull.
       - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:-/dev/null}:/secrets/github-app.pem:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8100/healthz"]
+      # python, not curl: curl is no longer in the image (its CVEs were 4 of
+      # the highs the platform's own scan found), and compose's healthcheck
+      # overrides the image's - so leaving this line would call a binary that
+      # is gone and report a working service as unhealthy.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/healthz', timeout=3).status == 200 else 1)"
       interval: 30s
       timeout: 5s
       retries: 3
@@ -100,7 +108,12 @@ services:
       MYKRONOS_ADMIN_TOKEN: ${MYKRONOS_ADMIN_TOKEN:?set it in backend/.env}
       MYKRONOS_GATE_TOKEN: ${MYKRONOS_GATE_TOKEN:?set it in backend/.env}
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3100/"]
+      # node, not curl - see the backend's healthcheck.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3

@@ -33,11 +33,19 @@ FROM python:3.13-slim AS runtime
 # needs and costs a container escape's worth of difference.
 RUN useradd --create-home --uid 10001 mykronos
 
-# curl is for the healthcheck, and is installed deliberately. The last
-# healthcheck written for this platform used a binary the image did not ship
-# and reported a working service as unhealthy for eleven minutes.
+# Security updates for the base image, and no curl.
+#
+# The platform's own container scan found curl and libcurl4 carrying four
+# high-severity advisories in this image - installed only so a healthcheck
+# could run, in an image that ships a Python interpreter perfectly capable of
+# making an HTTP request. Removing a package removes every CVE it will ever
+# have.
+#
+# The rule that put curl here still holds and is not being broken: a
+# healthcheck must not use a binary the image does not ship. `python` is the
+# entrypoint of this image, so it is the one binary guaranteed present.
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends curl \
+    && apt-get upgrade -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /dist/*.whl /tmp/
@@ -65,7 +73,7 @@ ENV MYKRONOS_DATALAKE_DIR=/data/datalake \
 EXPOSE 8100
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8100/healthz || exit 1
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/healthz', timeout=3).status == 200 else 1)"]
 
 CMD ["python", "-m", "uvicorn", "mykronos.main:app", \
      "--host", "0.0.0.0", "--port", "8100", "--log-level", "info"]

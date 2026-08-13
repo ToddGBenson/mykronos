@@ -174,6 +174,27 @@ jobs:
         # is where `unit` spent most of its 19 minutes.
         params:
           PIP_CACHE_DIR: /pipcache
+          # The spec 05 section 9 and spec 10 section 6 performance budgets are
+          # claims about a developer's machine -- "against a locally running
+          # instance", in the spec's own words. This worker is a container
+          # inside Docker Desktop on a host also running the Mykronos stack, a
+          # registry, MinIO, TheHub's twelve services and up to four pipeline
+          # jobs at once. The same commit measured 61.3s on one run and passed
+          # on the next two, which is contention rather than code.
+          #
+          # 3x, and the number is from the measurement rather than a round
+          # one: the worst observed run was 61.3s, so a 2x budget of 60s would
+          # have failed the very run that motivated this. 90s clears it with
+          # margin for a worse day.
+          #
+          # It still does not absorb a real regression. D-003 replaced a
+          # row-by-row insert that took 21 seconds for this batch with a
+          # vectorised scan that takes 0.7 -- a 30x difference on that step
+          # alone. Anything of that order blows through 90s as easily as
+          # through 30. What 3x buys is tolerance of a contended worker, not
+          # tolerance of slow code. The job echoes the factor below, so a
+          # relaxed budget is never a silent one.
+          MYKRONOS_PERF_MULTIPLIER: "3" 
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -185,6 +206,11 @@ jobs:
               - |
                 cd source/backend
                 pip install --quiet -e ".[dev]"
+
+                # Said out loud, every run. A performance budget that was
+                # quietly relaxed is a budget nobody knows the value of.
+                echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER:-1}"                      "for this worker (spec 05 section 9 is 30s at x1)."
+
                 python -m pytest -q
 
   - name: lint-and-types

@@ -4,10 +4,38 @@ Marked `slow` so the fast suite stays fast:
 
     pytest -m "not slow"     # inner loop
     pytest                   # everything, as CI runs it
+
+**Why these budgets scale, and why the spec numbers are still written here
+literally.**
+
+Spec 05 §9 asks for 10,000 findings ingested and compacted "in under 30
+seconds *against a locally running instance*", and spec 10 §6 for a 200-repo
+portfolio view under 2 seconds. Both are claims about what the platform can do
+on a developer's machine, which is the machine the person waiting on it is
+using.
+
+The Concourse worker is not that machine. It is a container inside Docker
+Desktop on a host that is also running the Mykronos stack, a registry, MinIO,
+TheHub's twelve services, and up to four pipeline jobs at once — including
+another job doing a cold `pip install` of a large dependency set. Measuring
+wall-clock there measures the contention, not the code: the same commit came in
+at 61.3s on one run and passed comfortably on the next two.
+
+So `MYKRONOS_PERF_MULTIPLIER` scales every budget in this file by one declared
+factor, defaulting to 1.0. The spec's numbers stay in the source unedited and
+are what a developer's run enforces; CI states its multiplier in the build log
+so a relaxed budget is never a silent one.
+
+What this deliberately does *not* do is stop measuring. Every assertion still
+runs and still fails past the scaled budget, so a genuine regression — an
+accidental O(n²), a lost vectorised path — still turns the lane red. A 2x
+tolerance absorbs a busy worker; it does not absorb 21 seconds of row-by-row
+inserts (D-003).
 """
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -16,8 +44,28 @@ from fastapi.testclient import TestClient
 from mykronos.lake import Catalog
 from tests.conftest import finding_payload, issue_token, post_findings, post_scan
 
+
+def _multiplier() -> float:
+    """Budget scaling for the machine the tests are running on.
+
+    Invalid or non-positive values fall back to 1.0 rather than raising: a
+    typo in a pipeline variable must not turn every performance test into an
+    error whose message is about parsing.
+    """
+    try:
+        value = float(os.environ.get("MYKRONOS_PERF_MULTIPLIER", "1"))
+    except ValueError:
+        return 1.0
+    return value if value > 0 else 1.0
+
+
+PERF_MULTIPLIER = _multiplier()
+
 BATCH = 10_000
-BUDGET_SECONDS = 30.0
+#: spec 05 §9. Scaled — see the module docstring.
+BUDGET_SECONDS = 30.0 * PERF_MULTIPLIER
+#: spec 10 §6.
+PORTFOLIO_BUDGET_SECONDS = 2.0 * PERF_MULTIPLIER
 
 
 @pytest.mark.slow
@@ -146,11 +194,11 @@ def test_portfolio_endpoint_stays_within_budget(
     # Printed so the headroom is visible in CI output, not just the pass/fail.
     print(
         f"\nportfolio endpoint: {elapsed:.3f}s for {repos} repos / "
-        f"{repos * per_repo} findings (budget 2.000s)"
+        f"{repos * per_repo} findings (budget {PORTFOLIO_BUDGET_SECONDS:.3f}s)"
     )
     assert len(body["repos"]) == repos
     assert body["summary"]["open_critical"] > 0
-    assert elapsed < 2.0, (
+    assert elapsed < PORTFOLIO_BUDGET_SECONDS, (
         f"portfolio endpoint took {elapsed:.2f}s for {repos} repos and "
         f"{repos * per_repo} findings; spec 10 §6 budget is 2s. Materialized "
         "views (spec 10 §3) are deferred on the strength of this measurement — "
@@ -209,4 +257,7 @@ def test_portfolio_scale_query_stays_interactive(
     elapsed = time.perf_counter() - started
 
     assert len(rows) == repos
-    assert elapsed < 2.0, f"portfolio aggregate took {elapsed:.2f}s (spec 10 §6 budget: 2s)"
+    assert elapsed < PORTFOLIO_BUDGET_SECONDS, (
+        f"portfolio aggregate took {elapsed:.2f}s "
+        f"(spec 10 §6 budget: {PORTFOLIO_BUDGET_SECONDS:.2f}s)"
+    )

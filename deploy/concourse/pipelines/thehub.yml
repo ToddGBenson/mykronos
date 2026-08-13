@@ -305,7 +305,7 @@ jobs:
                 # job must not be the thing that says otherwise - but it must
                 # not be permanently red either, because a red lane gets
                 # paused and then nothing runs at all.
-                if [ ! -d tests ] && [ ! -d test ]; then
+                if [ ! -d backend/tests/unit ] && [ ! -d tests ] && [ ! -d test ]; then
                   echo "=================================================="
                   echo "NO TEST SUITE FOUND."
                   echo "There is no tests/ or test/ directory in this"
@@ -349,7 +349,47 @@ jobs:
 
                 pip install --quiet pytest
 
-                python -m pytest -q
+                # -- What this lane runs, and what it deliberately does not --
+                #
+                # `tests/unit` only, which is TheHub's own `make test-unit`.
+                # Running the whole tree here produced several hundred errors
+                # and failures in a row and then hit the timeout, and none of
+                # it was about TheHub's code.
+                #
+                # TheHub's suite is written to run *inside its own container*:
+                # `make test` and the integration runner in scripts/deploy.sh
+                # both go through `docker-compose exec -T backend pytest`, so
+                # the tests get Postgres, Redis, the app's environment and its
+                # fixtures. This task is a bare python image with the
+                # requirements pip-installed and none of those services -- and
+                # spec 15 section 7 is why it cannot have them, since reaching
+                # the host's daemon is the grant this whole design refuses.
+                #
+                # `tests/unit` is the part with no external dependencies, which
+                # is what pytest.ini's own `unit` marker says it is. That makes
+                # this lane's claim narrow and true rather than broad and
+                # false.
+                #
+                # It is stated on every run because the gap matters: nothing
+                # downstream should read a green `unit` as "TheHub's tests
+                # pass". The integration suite still runs where it can, which
+                # is deploy.sh on the host.
+                echo "=================================================="
+                # No backticks in this string: inside double quotes bash
+                # would run `make test-unit` as a command substitution, in a
+                # container with no make and no reason to.
+                echo "Running tests/unit only - TheHub's own make test-unit."
+                echo "tests/integration is NOT run here: it needs Postgres,"
+                echo "Redis and the app environment, which live in TheHub's"
+                echo "own container. A green tick on this job means the unit"
+                echo "tests pass, not that the suite passes."
+                echo "=================================================="
+
+                cd backend
+
+                # `-p no:cacheprovider` because the checkout is thrown away
+                # after the build; writing .pytest_cache into it is pure IO.
+                python -m pytest tests/unit -q -p no:cacheprovider
 
   # == Stage 2: build =======================================================
   #

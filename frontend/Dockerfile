@@ -39,10 +39,17 @@ FROM node:22-slim AS runtime
 
 RUN useradd --create-home --uid 10001 mykronos
 
-# curl for the healthcheck, for the same reason the backend installs it: a
-# healthcheck that cannot run is indistinguishable from a service that is down.
+# Security updates for the base image, and no curl.
+#
+# This image carried every one of the five criticals the platform's own scan
+# found, plus twelve highs across curl, libcurl4 and libssh2-1 - all three
+# present only so a healthcheck could run, in an image whose entire purpose is
+# running a JavaScript runtime with `fetch` built in.
+#
+# The rule that put curl here still holds: a healthcheck must not use a binary
+# the image does not ship. `node` is that binary here.
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends curl \
+    && apt-get upgrade -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -59,6 +66,6 @@ USER mykronos
 EXPOSE 3100
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://localhost:3100/ >/dev/null || exit 1
+    CMD ["node", "-e", "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 CMD ["npx", "next", "start", "--port", "3100", "--hostname", "0.0.0.0"]
