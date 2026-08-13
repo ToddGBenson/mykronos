@@ -118,6 +118,59 @@ not the runner path an absolute SARIF URI would name.
 package and the action are versioned together, and three separate outages in
 Phase 7 came from those two drifting apart.
 
+## 4a. The return path: Mykronos reads Concourse
+
+§4 says the lake, Oracle, the dashboard and the Knowledge Store cannot tell
+which CI produced a finding, and must not care. That stands, and this section
+does not weaken it: **nothing Mykronos reads from Concourse is an input to a
+finding, a score or a decision.** A finding from Concourse and the same
+finding from Actions remain indistinguishable to every analysis path, which is
+the seam that let a second CI cost almost nothing.
+
+What was missing is narrower and entirely one-directional today. Traffic runs
+from Concourse to Mykronos and never back, so the dashboard can say a scan ran
+and cannot say *where*, and a person looking at a finding has no way to reach
+the build that produced it without knowing which of three pipelines to open.
+That is a navigation gap, not an analysis one.
+
+**Mykronos reads Concourse's own API for pipeline state.** Per repository:
+which pipeline covers it, whether that pipeline is paused, and each job's last
+build with a link to it.
+
+**Which pipeline covers a repository is derived, not configured.** The pipeline
+is the repository name, lowercased — `ToddGBenson/TheHub` to `thehub`. If
+Concourse has no pipeline by that name, the repository has no pipeline, and the
+dashboard says exactly that. `keel` is in this state and should be: it is
+onboarded and scanned by Actions, and nothing in Concourse covers it.
+
+The rejected alternative was a configured mapping, per repository, in either
+settings or a new database column. It is more flexible and it is a second place
+for the truth to live: a repository whose pipeline was renamed then shows a
+dead link rather than the honest answer, and nobody notices until they click.
+Deriving the name and checking it against the live pipeline list cannot go
+stale, because it is re-derived on every read.
+
+**Read anonymously, against exposed pipelines.** Every job in these pipelines
+is already declared `public: true`, so `fly expose-pipeline` matches the intent
+already in the YAML rather than widening it. Concourse binds to loopback and is
+not fronted by the tunnel, so the reachable audience is this host and the LAN.
+
+Two things this deliberately does *not* do:
+
+- It does not read build logs. Those contain scanner output and, until CNC-2
+  lands, resolved `((var))` values. The job list carries names, statuses and
+  timestamps, which is what a link needs.
+- It does not authenticate. Adding a Concourse credential to Mykronos to read
+  a status that is already public would create exactly the secret CNC-2 exists
+  to remove. If Concourse is ever fronted publicly, this becomes an
+  authenticated read and the credential belongs in the manager, not in
+  `.env`.
+
+**Failure is silent and visible.** Concourse being unreachable must not affect
+a page about findings: the panel says the pipeline state is unavailable and
+every other part of the repository view renders. A dashboard that 500s because
+a CI server is restarting is worse than one that admits it does not know.
+
 ## 5. Storage
 
 Two different things need keeping, with different requirements.

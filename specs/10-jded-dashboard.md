@@ -39,6 +39,16 @@ check each tool's own separate UI.
   status, and a "mark as false positive" / "accept risk" action that
   writes back to `Finding.status` (spec 05 §3) **and** logs a retro signal
   (spec 11 §4).
+- **Where this repository is built and scanned.** A link to the repository
+  on GitHub, and — where Concourse has a pipeline for it (spec 15 §4a) —
+  that pipeline with each job's last build and a link to it. A repository
+  with no Concourse pipeline says so rather than showing an empty panel: it
+  is scanned by Actions, and that is a fact about it, not a gap in the page.
+
+  Deliberately a link, not a mirror. Mykronos does not restate a build's
+  outcome as its own; the pipeline's own UI is one click away and is the
+  authority on its own state. What the dashboard adds is knowing *which*
+  pipeline, from a page that is already about this repository.
 
 ### 2.3 Maturity / trend view
 
@@ -123,6 +133,7 @@ specific thing standing between the repo and it.
 | `GET` | `/api/dashboard/repos/{id}/sscs` | Atlas evidence/trust-score history |
 | `GET` | `/api/dashboard/repos/{id}/insider-risk` | Aegis signal history |
 | `GET` | `/api/dashboard/repos/{id}/scan-health` | ScanRun history/freshness |
+| `GET` | `/api/dashboard/repos/{id}/ci` | Where this repo is built: GitHub links, and Concourse pipeline state where there is one (spec 15 §4a) |
 | `PATCH` | `/api/dashboard/findings/{finding_id}/status` | Mark false positive / accept risk (writes `Finding.status` + retro signal) |
 | `GET` | `/api/dashboard/trends` | Portfolio and per-repo trend series |
 | `GET` | `/api/dashboard/retros` | Latest synthesized retro reports (spec 11) |
