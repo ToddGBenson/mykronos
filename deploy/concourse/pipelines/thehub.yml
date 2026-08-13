@@ -75,7 +75,9 @@ resources:
   - name: python
     type: registry-image
     icon: language-python
-    source: { repository: python, tag: "3.13-slim" }
+    # 3.14 to match TheHub's own backend/Dockerfile. The lane ran 3.13 against
+    # a 3.14 codebase, which is one more variable than a test lane should have.
+    source: { repository: python, tag: "3.14-slim" }
 
   # Scans the image out of the registry directly. No daemon, no privileged
   # task, and no `curl get.docker.com` in a task that never started dockerd -
@@ -348,6 +350,67 @@ jobs:
                 fi
 
                 pip install --quiet pytest
+
+                # -- A real Postgres, because that is what these tests need --
+                #
+                # Running tests/unit against the SQLite fallback produced 258
+                # failures and 113 errors out of ~3100, and TheHub's own
+                # conftest predicts every one of them: it says the fallback
+                # creates "only tables that are compatible with SQLite" and
+                # that "some PostgreSQL-specific features won't work". The
+                # failures were `no such table: dev_epics`, `near "'7 days'":
+                # syntax error` and `unrecognized token: ":"` -- missing
+                # schema, INTERVAL literals and :: casts. Postgres SQL, run on
+                # SQLite.
+                #
+                # So the directory name is a poor guide and the `unit` marker
+                # is no better: pytest.ini declares it and not one test file
+                # uses it. About a third of tests/unit touches a database.
+                #
+                # Postgres runs inside this task rather than beside it because
+                # a Concourse task is one container, and spec 15 section 7
+                # refuses the Docker socket that would let it start a second.
+                # pgvector is not optional -- library_items.embedding is a
+                # Vector(1536), so `create_all` fails with `type "vector" does
+                # not exist` without it.
+                # Version detected rather than pinned. TheHub's compose runs
+                # pgvector/pgvector:pg16, but this base is Debian trixie, whose
+                # default is 17 -- so `postgresql-16` installs nothing and the
+                # pgvector package name has to follow whatever landed. Checked
+                # against the real image rather than assumed.
+                echo "Installing PostgreSQL with pgvector..."
+                apt-get install -y -qq postgresql postgresql-contrib >/dev/null 2>&1
+                PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
+                if [ -z "$PGVER" ]; then
+                  echo "::error::PostgreSQL did not install; these tests need it."
+                  exit 1
+                fi
+                apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1                   || echo "note: pgvector unavailable - vector-typed models will not build"
+
+                service postgresql start >/dev/null 2>&1                   || pg_ctlcluster "$PGVER" main start || true
+
+                # Readiness, not a sleep: the tests fail in a confusing way if
+                # they start before the socket is listening.
+                for _ in $(seq 1 30); do
+                  su postgres -c "pg_isready -q" && break
+                  sleep 1
+                done
+                su postgres -c "pg_isready" || {
+                  echo "::error::PostgreSQL did not start. These tests need it;"
+                  echo "          running them without it reports TheHub's code"
+                  echo "          as broken when it is this task that is."
+                  exit 1
+                }
+
+                su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\"" >/dev/null
+                su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'" >/dev/null
+                # The extensions create_all depends on, before it runs.
+                for ext in vector pgcrypto "uuid-ossp"; do
+                  su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'"                     >/dev/null 2>&1 || echo "note: extension $ext unavailable"
+                done
+
+                export TEST_DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                echo "PostgreSQL ready; tests will use it rather than the SQLite fallback."
 
                 # -- What this lane runs, and what it deliberately does not --
                 #
