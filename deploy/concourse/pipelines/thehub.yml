@@ -83,6 +83,18 @@ resources:
   # task, and no `curl get.docker.com` in a task that never started dockerd -
   # which is what the previous containers lane did, and why it always wrote its
   # empty-SARIF fallback.
+  # Semgrep does not run on 3.14 -- it dies at import with "Metaclasses with
+  # custom tp_new are not supported", which is a CPython 3.14 change one of its
+  # dependencies has not caught up with. The `python` resource above is 3.14 on
+  # purpose, to match TheHub's own backend/Dockerfile for the unit lane; that is
+  # right for running TheHub's code and irrelevant to a scanner that only reads
+  # it. So the SAST lane gets the interpreter semgrep actually works on, which
+  # is the same 3.13 the mykronos pipeline's passing sast lane uses.
+  - name: python313
+    type: registry-image
+    icon: language-python
+    source: { repository: python, tag: "3.13-slim" }
+
   - name: trivy
     type: registry-image
     icon: shield-search
@@ -847,9 +859,9 @@ jobs:
     plan:
       - get: source
         trigger: true
-      - get: python
+      - get: python313
       - task: semgrep
-        image: python
+        image: python313
         params: *mykronos_env
         config:
           platform: linux
