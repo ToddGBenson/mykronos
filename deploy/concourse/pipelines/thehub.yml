@@ -20,11 +20,31 @@
 # job whose inputs are not set to trigger it, so production changes when
 # somebody clicks the plus and not before.
 #
-# **Deploy is a forced-command SSH key per environment, not a Docker socket.**
-# Spec 15 section 7 and D-038 both refuse a socket - it would let every task in
-# every pipeline drive the host's daemon. Each key's `authorized_keys` entry on
-# the host pins one command and one environment, so the demo key cannot reach
-# production even if this file told it to. Spec 16 section 7.
+# **Deploy is a pointer the host pulls, not a connection Concourse makes.**
+# Spec 15 section 7 and D-038 both refuse a Docker socket - it would let every
+# task in every pipeline drive the host's daemon. Spec 16 section 7 answered
+# that with a forced-command SSH key per environment, which is sound but needs
+# sshd listening on a machine sitting inside the LAN.
+#
+# This does the same job with no listener at all. The deploy jobs write a
+# commit SHA to `<env>.requested` in MinIO; a Scheduled Task on the host polls
+# it, pulls that image by SHA from the registry, deploys it, and writes back
+# `<env>.deployed`. Concourse then waits for its own SHA to come back before
+# reporting success, so `passed: [deploy-demo]` still means demo is serving
+# this commit rather than that a request was filed for it.
+#
+# It is the same one-way handoff the registry already gives us, applied to the
+# instruction as well as the artifact: nothing Concourse can do restarts a
+# service, and the host opens no port to be told to.
+#
+# What this gives up is worth stating plainly. With sshd, the demo key
+# physically could not deploy to production - authorized_keys pinned the
+# command and sshd enforced it against the key that authenticated. Here the
+# separation is by object name: the poller deploys `demo.requested` to demo
+# and `prod.requested` to prod and cannot confuse them, but anything holding
+# the MinIO credentials can write either pointer. That moves the boundary from
+# sshd to the credential, which is weaker, and it is the price of having no
+# listener. The manual-only prod job still governs what Concourse writes.
 #
 # Nothing sensitive appears here. `((var))` resolves through
 # `fly set-pipeline --load-vars-from`, written and deleted by
@@ -165,6 +185,7 @@ jobs:
   - name: unit
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -221,6 +242,7 @@ jobs:
   - name: build
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -276,6 +298,7 @@ jobs:
   - name: secrets
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -320,6 +343,7 @@ jobs:
   - name: sast
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -353,7 +377,14 @@ jobs:
                 # letting the capability default to codeql, so the lake records
                 # which analyser produced each finding. A dashboard implying
                 # CodeQL coverage that never ran is the failure mode here.
-                pip install --quiet semgrep==1.97.0
+                # setuptools alongside it, held below 81: Python 3.13 images
+                # stopped shipping setuptools, semgrep's opentelemetry
+                # instrumentation imports pkg_resources at module load, and
+                # setuptools 81 removed pkg_resources - so both no setuptools
+                # and the newest setuptools produce the same
+                # ModuleNotFoundError. Caught on the mykronos pipeline, fixed
+                # here too rather than waiting for the same failure twice.
+                pip install --quiet "setuptools<81" semgrep==1.97.0
 
                 # Rule packs are downloaded from semgrep.dev; the source code
                 # stays on this worker. `--config auto` is deliberately not
@@ -387,6 +418,7 @@ jobs:
   - name: dependencies
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -470,6 +502,7 @@ jobs:
   - name: containers
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -562,6 +595,7 @@ jobs:
   - name: insider
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -717,6 +751,7 @@ jobs:
   - name: oracle-gate
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -778,18 +813,20 @@ jobs:
   - name: deploy-demo
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
         passed: [oracle-gate]
       - get: python
-      - task: ssh-deploy
+      - task: request-deploy
         image: python
         params:
-          DEPLOY_HOST: ((deploy-host))
-          DEPLOY_USER: ((deploy-ssh-user))
-          DEPLOY_KEY: ((demo-deploy-key))
-          KNOWN_HOSTS: ((deploy-known-hosts))
+          MINIO_ENDPOINT: ((minio-endpoint))
+          MINIO_ACCESS_KEY: ((minio-access-key))
+          MINIO_SECRET_KEY: ((minio-secret-key))
+          RELEASE_BUCKET: ((thehub-release-bucket))
+          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
           TARGET_URL: ((thehub-demo-url))
           ENVIRONMENT: demo
         config:
@@ -801,42 +838,55 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq openssh-client curl git >/dev/null
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                chmod +x /usr/local/bin/mc
+                SCHEME=${MINIO_ENDPOINT%%://*}
+                HOSTPORT=${MINIO_ENDPOINT#*://}
+                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
                 SHA=$(git -C source rev-parse HEAD)
+                echo "Requesting $ENVIRONMENT deploy of $SHA"
 
-                # 0600 or ssh refuses the key outright. Written under /tmp,
-                # which is this container's own filesystem and is destroyed
-                # with it.
-                install -d -m 0700 /tmp/.ssh
-                printf '%s\n' "$DEPLOY_KEY" > /tmp/.ssh/id
-                printf '%s\n' "$KNOWN_HOSTS" > /tmp/.ssh/known_hosts
-                chmod 0600 /tmp/.ssh/id /tmp/.ssh/known_hosts
+                # Concourse publishes a pointer. It does not connect to the
+                # deploy host, and the host has no listener for it to connect
+                # to - the same one-way handoff the image registry already
+                # gives us, and the reason docker-compose.yml chose a registry
+                # over mounting the Docker socket. Nothing this job can do
+                # restarts a service.
+                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                printf '%s' "$SHA" > requested
+                mc --quiet cp requested "store/$RELEASE_BUCKET/$ENVIRONMENT.requested"
 
-                # StrictHostKeyChecking stays on, with a pinned host key. A
-                # deploy job that accepts any host key is a deploy job that can
-                # be pointed at a different host.
-                #
-                # The command below is ignored by sshd: this key's
-                # authorized_keys entry pins `Invoke-TheHubDeploy.ps1
-                # -Environment demo`, and what is sent here arrives as
-                # SSH_ORIGINAL_COMMAND for the script to validate. The demo key
-                # cannot deploy to production even if this file said so.
-                ssh -i /tmp/.ssh/id \
-                    -o UserKnownHostsFile=/tmp/.ssh/known_hosts \
-                    -o StrictHostKeyChecking=yes \
-                    -o BatchMode=yes \
-                    -o ConnectTimeout=20 \
-                    "${DEPLOY_USER}@${DEPLOY_HOST}" "$SHA"
+                # Then wait to be told it happened. Fire-and-forget would let
+                # DAST probe the previous build and report it as this commit's
+                # result - `passed: [deploy-demo]` has to mean demo is actually
+                # serving this SHA, not that a request for it was filed.
+                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                while :; do
+                  if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
+                     && [ "$(cat deployed)" = "$SHA" ]; then
+                    echo "Host reports $ENVIRONMENT at $SHA"
+                    break
+                  fi
+                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                    echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
+                    echo "          The pointer is published and still stands. This means the"
+                    echo "          host-side poller is not running, or it failed and rolled back:"
+                    echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    exit 1
+                  fi
+                  sleep 20
+                done
 
                 # Confirmed from outside the host as well as inside it. The
-                # remote script health-checks the containers; this checks that
+                # host script health-checks the containers; this checks that
                 # the environment answers over the network the way a user
                 # reaches it, which is a different claim.
                 echo "Confirming ${TARGET_URL} serves the new build..."
                 curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
                   --retry-all-errors -o /dev/null "$TARGET_URL"
-                echo "demo is serving ${SHA}"
+                echo "$ENVIRONMENT is serving ${SHA}"
 
   # == Stage 6: DAST against the lower environment ==========================
   #
@@ -848,6 +898,7 @@ jobs:
   - name: dast
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -952,17 +1003,19 @@ jobs:
   - name: deploy-prod
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         passed: [dast]
       - get: python
-      - task: ssh-deploy
+      - task: request-deploy
         image: python
         params:
-          DEPLOY_HOST: ((deploy-host))
-          DEPLOY_USER: ((deploy-ssh-user))
-          DEPLOY_KEY: ((prod-deploy-key))
-          KNOWN_HOSTS: ((deploy-known-hosts))
+          MINIO_ENDPOINT: ((minio-endpoint))
+          MINIO_ACCESS_KEY: ((minio-access-key))
+          MINIO_SECRET_KEY: ((minio-secret-key))
+          RELEASE_BUCKET: ((thehub-release-bucket))
+          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
           TARGET_URL: ((thehub-prod-url))
           ENVIRONMENT: prod
         config:
@@ -974,27 +1027,55 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq openssh-client curl git >/dev/null
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                chmod +x /usr/local/bin/mc
+                SCHEME=${MINIO_ENDPOINT%%://*}
+                HOSTPORT=${MINIO_ENDPOINT#*://}
+                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
                 SHA=$(git -C source rev-parse HEAD)
-                echo "Deploying ${SHA} to production."
+                echo "Requesting $ENVIRONMENT deploy of $SHA"
 
-                install -d -m 0700 /tmp/.ssh
-                printf '%s\n' "$DEPLOY_KEY" > /tmp/.ssh/id
-                printf '%s\n' "$KNOWN_HOSTS" > /tmp/.ssh/known_hosts
-                chmod 0600 /tmp/.ssh/id /tmp/.ssh/known_hosts
+                # Concourse publishes a pointer. It does not connect to the
+                # deploy host, and the host has no listener for it to connect
+                # to - the same one-way handoff the image registry already
+                # gives us, and the reason docker-compose.yml chose a registry
+                # over mounting the Docker socket. Nothing this job can do
+                # restarts a service.
+                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                printf '%s' "$SHA" > requested
+                mc --quiet cp requested "store/$RELEASE_BUCKET/$ENVIRONMENT.requested"
 
-                ssh -i /tmp/.ssh/id \
-                    -o UserKnownHostsFile=/tmp/.ssh/known_hosts \
-                    -o StrictHostKeyChecking=yes \
-                    -o BatchMode=yes \
-                    -o ConnectTimeout=20 \
-                    "${DEPLOY_USER}@${DEPLOY_HOST}" "$SHA"
+                # Then wait to be told it happened. Fire-and-forget would let
+                # DAST probe the previous build and report it as this commit's
+                # result - `passed: [deploy-demo]` has to mean demo is actually
+                # serving this SHA, not that a request for it was filed.
+                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                while :; do
+                  if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
+                     && [ "$(cat deployed)" = "$SHA" ]; then
+                    echo "Host reports $ENVIRONMENT at $SHA"
+                    break
+                  fi
+                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                    echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
+                    echo "          The pointer is published and still stands. This means the"
+                    echo "          host-side poller is not running, or it failed and rolled back:"
+                    echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    exit 1
+                  fi
+                  sleep 20
+                done
 
+                # Confirmed from outside the host as well as inside it. The
+                # host script health-checks the containers; this checks that
+                # the environment answers over the network the way a user
+                # reaches it, which is a different claim.
                 echo "Confirming ${TARGET_URL} serves the new build..."
                 curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
                   --retry-all-errors -o /dev/null "$TARGET_URL"
-                echo "production is serving ${SHA}"
+                echo "$ENVIRONMENT is serving ${SHA}"
 
   # == Cloud posture ========================================================
   #
@@ -1008,6 +1089,7 @@ jobs:
   - name: cloud-posture
     public: true
     on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: daily
         trigger: true

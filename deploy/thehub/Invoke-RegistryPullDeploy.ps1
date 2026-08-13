@@ -1,0 +1,163 @@
+<#
+.SYNOPSIS
+    Poll MinIO for a release pointer and deploy the image it names.
+
+.DESCRIPTION
+    The host side of the pull-based deploy. Concourse never connects here and
+    this machine runs no listener for it to connect to: the pipeline writes a
+    commit SHA to `<environment>.requested` in the release bucket, this script
+    notices, and Invoke-TheHubDeploy.ps1 pulls that image by SHA and restarts
+    the stack.
+
+    Spec 16 section 7 originally answered "how does Concourse restart a
+    service" with a forced-command SSH key per environment. That works, and it
+    needs sshd listening on a machine inside the LAN. This gets the same
+    result the way docker-compose.yml already argued for over mounting the
+    Docker socket - "a registry is a one-way handoff: Concourse can publish an
+    image, and nothing it does can restart a service" - by making the
+    instruction one-way too.
+
+    What it costs, said plainly: sshd enforced environment separation against
+    the key that authenticated, so a demo key could not reach production. Here
+    the separation is by object name. This script deploys `demo.requested` to
+    demo and `prod.requested` to prod and cannot confuse the two, but anything
+    holding the MinIO credentials can write either pointer.
+
+    After a successful deploy it writes `<environment>.deployed` back. That is
+    not bookkeeping: the pipeline blocks on it, so `passed: [deploy-demo]`
+    means demo is serving that commit rather than that a request was filed.
+
+.PARAMETER Environments
+    Which pointers to check. Both by default.
+
+.PARAMETER Once
+    Check once and exit. This is how the Scheduled Task runs it; the polling
+    loop is for running it by hand while watching.
+
+.NOTES
+    ASCII only - see deploy\concourse\setup.ps1.
+
+    Credentials come from deploy\concourse\.env and are passed to mc through
+    MC_HOST_<alias> rather than `mc alias set`, which would write them to
+    %USERPROFILE%\mc\config.json and leave a second copy on disk.
+#>
+
+[CmdletBinding()]
+param(
+    [ValidateSet("demo", "prod")]
+    [string[]]$Environments = @("demo", "prod"),
+    [string]$Endpoint = "http://localhost:9000",
+    [string]$Bucket = "thehub-releases",
+    [switch]$Once,
+    [int]$IntervalSeconds = 60
+)
+
+$ErrorActionPreference = "Stop"
+$here = $PSScriptRoot
+$deployScript = Join-Path $here "Invoke-TheHubDeploy.ps1"
+if (-not (Test-Path $deployScript)) { throw "Missing $deployScript" }
+
+$stackEnv = Join-Path $here "..\concourse\.env"
+if (-not (Test-Path $stackEnv)) { throw "Missing $stackEnv" }
+
+function Read-EnvValue {
+    param([string]$Path, [string]$Key)
+    $line = Select-String -Path $Path -Pattern "^$Key=" -ErrorAction SilentlyContinue
+    if (-not $line) { throw "$Key is not set in $Path" }
+    return $line.Line.Split('=', 2)[1].Trim()
+}
+
+$mc = Join-Path $here "..\concourse\bin\mc.exe"
+if (-not (Test-Path $mc)) {
+    Write-Host "Fetching mc.exe..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri "https://dl.min.io/client/mc/release/windows-amd64/mc.exe" `
+        -OutFile $mc -UseBasicParsing
+}
+
+$uri = [System.Uri]$Endpoint
+$creds = "{0}:{1}" -f
+    [System.Uri]::EscapeDataString((Read-EnvValue $stackEnv "MINIO_ROOT_USER")),
+    [System.Uri]::EscapeDataString((Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD"))
+$env:MC_HOST_thehub = "{0}://{1}@{2}" -f $uri.Scheme, $creds, $uri.Authority
+
+function Get-Pointer {
+    param([string]$Name)
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-$Name-$(Get-Random)"
+    try {
+        & $mc --quiet cp "thehub/$Bucket/$Name" $tmp 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) { return $null }
+        return (Get-Content $tmp -Raw).Trim()
+    } finally {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+}
+
+$script:failures = 0
+
+function Invoke-Cycle {
+    foreach ($environment in $Environments) {
+        $requested = Get-Pointer "$environment.requested"
+        if (-not $requested) { continue }
+
+        # Validated here as well as in Invoke-TheHubDeploy. The pointer is
+        # read from object storage, and "whatever was in the bucket" reaching
+        # a command line is exactly the shape of input that deserves checking
+        # twice rather than trusting the writer.
+        if ($requested -notmatch '^[0-9a-f]{40}$') {
+            Write-Host "$environment.requested is not a commit SHA ('$requested') - ignoring." -ForegroundColor Red
+            $script:failures++
+            continue
+        }
+
+        # The deploy script's own state file is the authority on what is
+        # running. Reading MinIO's `.deployed` instead would let a failed
+        # write-back cause an endless redeploy of a commit already live.
+        $stateFile = Join-Path $here ".deployed-$environment"
+        $current = if (Test-Path $stateFile) { (Get-Content $stateFile -Raw).Trim() } else { "" }
+
+        if ($current -eq $requested) {
+            Write-Verbose "$environment is already at $requested"
+            continue
+        }
+
+        Write-Host "$environment : $current -> $requested" -ForegroundColor Cyan
+        & $deployScript -Environment $environment -Sha $requested
+        if ($LASTEXITCODE -ne 0) {
+            # Not written back. The pipeline is waiting on this value and a
+            # timeout there is the correct outcome - reporting a SHA that did
+            # not deploy would let DAST probe the previous build and attribute
+            # the result to this commit.
+            Write-Host "$environment deploy failed (exit $LASTEXITCODE) - pointer left unacknowledged." -ForegroundColor Red
+            $script:failures++
+            continue
+        }
+
+        $ack = Join-Path ([System.IO.Path]::GetTempPath()) "ack-$environment-$(Get-Random)"
+        try {
+            [System.IO.File]::WriteAllText($ack, $requested)
+            & $mc --quiet cp $ack "thehub/$Bucket/$environment.deployed" | Out-Null
+            Write-Host "$environment deployed and acknowledged at $requested" -ForegroundColor Green
+        } finally {
+            if (Test-Path $ack) { Remove-Item $ack -Force }
+        }
+    }
+}
+
+try {
+    if ($Once) {
+        Invoke-Cycle
+        # Explicit, because `mc` leaves a non-zero $LASTEXITCODE behind on the
+        # perfectly normal "no pointer published yet" path. Without this the
+        # Scheduled Task records every quiet run as a failure, and a task that
+        # is always red is a task nobody looks at.
+        exit $(if ($script:failures -gt 0) { 1 } else { 0 })
+    } else {
+        Write-Host "Polling $Endpoint/$Bucket every $IntervalSeconds s. Ctrl-C to stop." -ForegroundColor DarkGray
+        while ($true) {
+            try { Invoke-Cycle } catch { Write-Host "Cycle failed: $($_.Exception.Message)" -ForegroundColor Red }
+            Start-Sleep -Seconds $IntervalSeconds
+        }
+    }
+} finally {
+    Remove-Item Env:\MC_HOST_thehub -ErrorAction SilentlyContinue
+}

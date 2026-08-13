@@ -49,10 +49,17 @@ param(
     # The host both environments run on, reached by IP for the same reason
     # every other address in these pipelines is: garden task containers resolve
     # through public DNS and have never heard of `host.docker.internal`.
-    [string]$DeployHost = "192.168.0.14",
-    [string]$DeployUser = "concourse-deploy",
-    [string]$DemoUrl = "http://192.168.0.14:8200",
+    # 8002, not 8200: docker-compose.demo.yml publishes "8002:8000" and that is
+    # what thehub-demo-backend is bound to. The host IP rather than localhost
+    # because a garden task container's localhost is its own, not this machine's.
+    [string]$DemoUrl = "http://192.168.0.14:8002",
     [string]$ProdUrl = "http://192.168.0.14:8000",
+    [string]$ReleaseBucket = "thehub-releases",
+    # How long a deploy job waits for the host to report the SHA back. Long
+    # enough for an image pull and a container restart on a busy host; short
+    # enough that a poller which is not running is a failed build rather than
+    # an hour of a worker doing nothing.
+    [int]$DeployTimeoutMinutes = 15,
 
     [string]$Registry = "192.168.0.14:5000",
     [string]$ProwlerVersion = "5.5.0",
@@ -65,7 +72,6 @@ param(
 $ErrorActionPreference = "Stop"
 $fly = Join-Path $PSScriptRoot "bin\fly.exe"
 $backend = Join-Path $PSScriptRoot "..\..\backend"
-$keys = Join-Path $PSScriptRoot "keys"
 
 function Read-EnvValue {
     param([string]$Path, [string]$Key, [switch]$Optional)
@@ -77,33 +83,18 @@ function Read-EnvValue {
     return $line.Line.Split('=', 2)[1].Trim()
 }
 
-# A private key is many lines, and `key: -----BEGIN...` is not YAML. Emitted as
-# a literal block scalar with every line indented, which preserves the newlines
-# ssh requires - a key joined onto one line is rejected with "invalid format",
-# which reads like a corrupt key rather than a mangled one.
-function Format-YamlBlock {
-    param([string]$Name, [string]$Path)
-    $lines = @("${Name}: |")
-    foreach ($line in (Get-Content -Path $Path)) { $lines += "  $line" }
-    return $lines
-}
-
 $stackEnv = Join-Path $PSScriptRoot ".env"
 $backendEnv = Join-Path $backend ".env"
 foreach ($file in @($stackEnv, $backendEnv)) {
     if (-not (Test-Path $file)) { throw "Missing $file" }
 }
 
-$demoKey = Join-Path $keys "thehub-demo-deploy"
-$prodKey = Join-Path $keys "thehub-prod-deploy"
-$knownHosts = Join-Path $keys "thehub-known_hosts"
-foreach ($file in @($demoKey, $prodKey, $knownHosts)) {
-    if (-not (Test-Path $file)) {
-        throw "Missing $file. Run deploy\thehub\Install-DeployKey.ps1 first - " +
-              "this pipeline deploys, and applying it without deploy keys " +
-              "produces a pipeline whose last three jobs cannot ever pass."
-    }
-}
+# No deploy keys are read any more, and no host key is pinned, because nothing
+# here connects to the deploy host. The deploy jobs write a SHA to MinIO and
+# the host pulls it - see the header of pipelines/thehub.yml. What used to be
+# checked here is now a fact about the *host*: whether the Scheduled Task that
+# polls for the pointer is running. This script cannot see that, so the deploy
+# job reports it instead, by timing out with the task's name in the message.
 
 # Optional, and deliberately so: see -AllowMissingAzure.
 $azureClientId = Read-EnvValue $stackEnv "AZURE_CLIENT_ID" -Optional
@@ -152,8 +143,14 @@ try {
         "scan-timezone: $TimeZone",
         "thehub-demo-url: $DemoUrl",
         "thehub-prod-url: $ProdUrl",
-        "deploy-host: $DeployHost",
-        "deploy-ssh-user: $DeployUser",
+        "thehub-release-bucket: $ReleaseBucket",
+        "deploy-timeout-minutes: $DeployTimeoutMinutes",
+        # Host IP, not a Docker name: garden task containers resolve through the
+        # public servers set in compose and have never heard of `minio`. Same
+        # address, and the same reason, as the other two set-pipeline scripts.
+        "minio-endpoint: http://192.168.0.14:9000",
+        "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
+        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
         "azure-client-id: $azureClientId",
         "azure-client-secret: $azureClientSecret",
         "azure-tenant-id: $azureTenantId",
@@ -169,9 +166,6 @@ try {
         # never written into the pipeline file.
         "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'"
     )
-    $vars += Format-YamlBlock "demo-deploy-key" $demoKey
-    $vars += Format-YamlBlock "prod-deploy-key" $prodKey
-    $vars += Format-YamlBlock "deploy-known-hosts" $knownHosts
 
     $vars | Set-Content -Path $varsFile -Encoding UTF8
 
