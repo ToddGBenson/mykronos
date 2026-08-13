@@ -481,7 +481,74 @@ jobs:
                   exit 1
                 fi
 
-                export TEST_DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                export TEST_DATABASE_URL="$DATABASE_URL"
+
+                # -- Build the schema with TheHub's own initialiser ----------
+                #
+                # `tests/conftest.py` calls `Base.metadata.create_all`, but it
+                # imports exactly two model modules -- threat_intelligence and
+                # user. SQLAlchemy's metadata only holds what has been
+                # imported, so create_all builds two tables and every test
+                # touching anything else fails on `relation "..." does not
+                # exist`. That is what the remaining 133 failures were.
+                #
+                # scripts/init_db.py exists precisely for this. It does
+                # `import models`, whose package __init__ pulls in all 181
+                # model modules, and its own comment spells out the trap:
+                # "Without it, create_all() runs against an empty registry
+                # (silent no-op)". Running TheHub's initialiser rather than
+                # reimplementing it here also means the schema follows their
+                # models without this file knowing anything about them.
+                #
+                # It runs after the enum replay because create_all emits
+                # columns of those native types and cannot make them itself.
+                cd backend
+                echo "Building the full schema with scripts/init_db.py..."
+                python scripts/init_db.py 2>&1 | tail -5
+
+                # -- Then the migrations, for what the ORM does not own ----
+                #
+                # create_all builds every table SQLAlchemy knows about, and
+                # TheHub has tables it does not: deploy_runs, epic_stage_history,
+                # story_gate_history, agent_learning_ledger and friends are
+                # created and written by raw SQL (api/ops.py inserts into
+                # deploy_runs directly). No model, so no create_all, so 44
+                # `relation "..." does not exist` failures.
+                #
+                # Order matters and was measured, not guessed. Replaying the
+                # migrations into an *empty* database applies 32 of 277 and
+                # produces 31 tables -- they are overwhelmingly ALTER TABLE
+                # against a schema create_all is expected to have made. Run
+                # after it, the ALTERs land and the CREATEs that create_all
+                # could not cover fill the gaps.
+                #
+                # Most will still fail, and that is expected rather than
+                # tolerated blindly: a migration whose CREATE TABLE already
+                # exists is a no-op by another name. Each runs in its own psql
+                # session so one failure cannot poison the next, and the counts
+                # are printed so a sudden change in them is visible.
+                echo "Replaying migrations for tables the ORM does not own..."
+                applied=0; skipped=0
+                for f in $(ls db/migrations/*.sql | sort -V); do
+                  if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
+                    applied=$((applied+1))
+                  else
+                    skipped=$((skipped+1))
+                  fi
+                done
+                echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
+
+                TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
+                echo "  schema has ${TABLES} table(s)"
+                if [ "${TABLES:-0}" -lt 50 ]; then
+                  echo "::error::Only ${TABLES} tables were created. The model"
+                  echo "          registry was not fully populated, and the"
+                  echo "          failures that follow would be about missing"
+                  echo "          tables rather than about TheHub's code."
+                  exit 1
+                fi
+                cd ..
                 echo "PostgreSQL ready; tests will use it rather than the SQLite fallback."
 
                 # -- What this lane runs, and what it deliberately does not --
