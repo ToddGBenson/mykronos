@@ -364,3 +364,70 @@ jobs:
         params: { file: dist/mykronos-*.whl }
       - put: sbom
         params: { file: sbom-out/sbom-*.cdx.json }
+
+  # -- Stage 5: publish (spec 15 §3, D-038) -------------------------------
+  #
+  # Only after the Oracle gate. An image built from a commit Oracle refused is
+  # an image somebody could deploy by accident.
+  #
+  # kaniko, not oci-build-task. The latter runs buildkitd, which needs cgroup
+  # delegation this worker cannot give it -- Concourse is itself a container
+  # on Docker Desktop, and buildkit failed with "setup cgroups: exit status 1"
+  # even though privileged tasks can otherwise mount fine. kaniko builds
+  # without a daemon and without cgroups, which is exactly the constraint.
+  #
+  # The alternative was mounting the host's Docker socket into the task. That
+  # would work, and it would let any pipeline task control this machine -- the
+  # risk §7 raises about a worker inside the LAN. A slower builder is the
+  # cheaper trade.
+
+  - name: publish-backend
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [build]
+      - task: kaniko
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/kaniko-project/executor
+              tag: v1.23.2-debug
+          inputs: [{ name: source }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                # Built from the repository root: the backend reads workflow
+                # templates from disk at startup and they live outside
+                # backend/.
+                /kaniko/executor                   --context source                   --dockerfile source/backend/Dockerfile                   --destination "${REGISTRY}/mykronos-backend:latest"                   --insecure --skip-tls-verify                   --single-snapshot
+
+  - name: publish-frontend
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [build]
+      - task: kaniko
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/kaniko-project/executor
+              tag: v1.23.2-debug
+          inputs: [{ name: source }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --destination "${REGISTRY}/mykronos-frontend:latest"                   --insecure --skip-tls-verify                   --single-snapshot

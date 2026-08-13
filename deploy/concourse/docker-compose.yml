@@ -64,6 +64,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Image registry (spec 15 §5, D-038). The pipeline builds images and pushes
+  # here; the host pulls from here and restarts the stack.
+  #
+  # This split is deliberate. The obvious alternative -- mounting the host's
+  # Docker socket into a Concourse task -- would let any pipeline task control
+  # this machine, which is exactly the risk §7 raises about a worker sitting
+  # inside the LAN. A registry is a one-way handoff: Concourse can publish an
+  # image, and nothing it does can restart a service.
+  #
+  # Published on all interfaces because garden task containers reach it by
+  # host IP; they cannot resolve Docker service names. The host pulls via
+  # localhost:5000, which Docker treats as insecure-by-default, so no daemon
+  # configuration is required on this machine.
+  registry:
+    image: registry:2
+    container_name: mykronos-registry
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry-data:/var/lib/registry
+    networks: [concourse]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/v2/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   concourse:
     image: concourse/concourse:7.14
     container_name: mykronos-concourse
@@ -166,6 +194,7 @@ services:
       start_period: 90s
 
 volumes:
+  registry-data:
   concourse-db-data:
   concourse-worker-data:
   minio-data:

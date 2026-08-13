@@ -64,7 +64,10 @@ try {
         # service name rather than through the host.
         "minio-endpoint: http://192.168.0.14:9000",
         "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
-        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')"
+        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
+        # Host IP for the same reason MinIO uses one: garden task containers
+        # cannot resolve Docker service names.
+        "registry: 192.168.0.14:5000"
     ) | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan
