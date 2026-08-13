@@ -122,6 +122,46 @@ Write-Host "Deploying $image to $Environment ($project)" -ForegroundColor Cyan
 $previous = if (Test-Path $stateFile) { (Get-Content $stateFile -Raw).Trim() } else { $null }
 if ($previous) { Write-Host "  current: $previous" -ForegroundColor DarkGray }
 
+# -- The check that makes "deploy" mean what it says -------------------------
+#
+# Pulling the image proves it exists in the registry. It does not prove the
+# stack will run it, and those are not the same claim.
+#
+# A compose service that declares `build:` and no `image:` rebuilds from
+# whatever source is on disk and ignores THEHUB_IMAGE completely. Every step
+# still succeeds: the pull works, `up` works, the containers come up healthy,
+# the health URL answers, and the deploy reports that the environment is
+# serving a SHA it has never run. That is the exact failure the gate upstream
+# exists to prevent - a commit reaching an environment without having been
+# scanned - reintroduced at the last step by a compose file nobody changed.
+#
+# So the image ID is captured from the pull and compared against what is
+# actually running. Cheap, and it fails loudly on the one mistake that would
+# otherwise be invisible.
+function Assert-RunningImage {
+    param([string]$Expected, [string]$ImageRef)
+
+    $ids = docker compose --project-name $project --file $composeFile ps --quiet
+    if ($LASTEXITCODE -ne 0 -or -not $ids) {
+        throw "No containers are running for $project after docker compose up."
+    }
+
+    $running = foreach ($id in $ids) {
+        if ($id) { docker inspect --format '{{.Image}}' $id 2>$null }
+    }
+
+    if ($running -contains $Expected) {
+        Write-Host "  verified: a container is running $ImageRef" -ForegroundColor DarkGray
+        return
+    }
+
+    throw ("Nothing in $project is running $ImageRef. docker pull fetched it and " +
+           "docker compose up did not use it, which means $composeFile builds its " +
+           "services instead of taking them from image: THEHUB_IMAGE. The stack is " +
+           "running something this deploy did not choose and nothing scanned. Wire " +
+           "THEHUB_IMAGE into that compose file before deploying again.")
+}
+
 function Invoke-ComposeUp {
     param([string]$ImageRef)
 
@@ -130,9 +170,16 @@ function Invoke-ComposeUp {
         throw "Could not pull $ImageRef. Has the pipeline published it?"
     }
 
+    $expected = docker image inspect --format '{{.Id}}' $ImageRef 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $expected) {
+        throw "Pulled $ImageRef but could not read its image ID."
+    }
+
     $env:THEHUB_IMAGE = $ImageRef
     docker compose --project-name $project --file $composeFile up -d --remove-orphans
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed for $project" }
+
+    Assert-RunningImage -Expected $expected -ImageRef $ImageRef
 }
 
 function Test-Healthy {
