@@ -794,17 +794,20 @@ jobs:
               - -ec
               - |
                 SHA=$(cat meta/sha)
+                # backend/, not the repository root. TheHub has no root Dockerfile:
+                # docker-compose builds both backend and backend-staging with
+                # context ./backend, dockerfile Dockerfile. Kaniko was pointed at a
+                # path that never existed ("error resolving dockerfile path").
+                #
+                # The context matches compose's for the reason it matters there: the
+                # Dockerfile COPYs relative to backend/, so a root context resolves
+                # every path one level too high.
+                #
+                # Flags only between the continuations below. A comment line inside
+                # a backslash-continued command is joined onto it, which is how the
+                # second attempt commented out --destination and every flag after
+                # it: "you must provide --destination, or use --no-push".
                 /kaniko/executor \
-                  # backend/, not the repository root. TheHub has no root
-                  # Dockerfile: docker-compose builds both `backend` and
-                  # `backend-staging` with context ./backend, dockerfile
-                  # Dockerfile. Kaniko was pointed at a path that has never
-                  # existed, so this lane failed every run with "error
-                  # resolving dockerfile path".
-                  #
-                  # The context matches compose's for the reason it matters
-                  # there: the Dockerfile COPYs relative to backend/, so a
-                  # root context resolves every path one level too high.
                   --context source/backend \
                   --dockerfile source/backend/Dockerfile \
                   --destination "${REGISTRY}/thehub:${SHA}" \
