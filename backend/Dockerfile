@@ -49,8 +49,8 @@ RUN apt-get update -qq \
     && rm -rf /var/lib/apt/lists/*
 
 # pip and setuptools from the base image, not from this project's
-# dependencies. The platform's own scan found both remaining highs there:
-# setuptools 70.3.0 (CVE-2025-47273, path traversal) and the msgpack pip
+# dependencies. The platform's own scan found the last remaining findings
+# there: setuptools (CVE-2025-47273, path traversal) and the msgpack pip
 # vendors (GHSA-6v7p-g79w-8964). Neither appears in pyproject.toml, which is
 # exactly why they went unnoticed - a dependency audit of this project would
 # never have looked at them.
@@ -58,6 +58,25 @@ RUN pip install --no-cache-dir --quiet --upgrade pip setuptools
 
 COPY --from=build /dist/*.whl /tmp/
 RUN pip install --no-cache-dir --quiet /tmp/*.whl && rm -f /tmp/*.whl
+
+# pip goes once it has done its job, following the same rule as npm in the
+# frontend image: removing a package removes every CVE it will ever have.
+#
+# Upgrading was not enough here and the reason is worth knowing. pip carries
+# its dependencies *vendored*, and declares their versions in
+# `_vendor/vendor.txt` - which is what Trivy reads. Upgrading setuptools to
+# 84.0.0 left that file still saying `setuptools==70.3.0` and
+# `msgpack==1.1.2`, so the findings persisted against an image that no longer
+# had the vulnerable code. Both readings are defensible; the way to satisfy
+# both is for the package not to be there.
+#
+# Nothing at runtime needs pip: the entrypoint is uvicorn, and every
+# dependency is already installed. `! command -v pip` fails the build if it
+# survives, so a base-image change cannot quietly reinstate it.
+RUN python -m pip uninstall -y -q pip \
+    && rm -rf /usr/local/lib/python3.13/site-packages/pip \
+              /usr/local/bin/pip /usr/local/bin/pip3 \
+    && ! command -v pip
 
 # The lake, the write-ahead buffer and the operational database all live here.
 # Mounted as a volume in compose: without one, a deploy destroys every
