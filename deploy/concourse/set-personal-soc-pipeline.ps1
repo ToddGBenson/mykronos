@@ -33,6 +33,12 @@ param(
     [string]$TimeZone = "America/Phoenix",
     [string]$NetassessBucket = "netassess-runs",
     [string]$MonitorBucket = "personal-monitor-runs",
+    [string]$SkillsBucket = "personal-soc-releases",
+    # Five, not the fifteen TheHub allows: this unpacks a zip rather than
+    # pulling an image and restarting a stack, and the installer polls every
+    # five minutes, so a run that has not landed inside this window is a
+    # poller that is not running rather than one that is being slow.
+    [int]$SkillsInstallTimeoutMinutes = 8,
     # Ten, not seven: a weekly scan that slips a day or reboots mid-window is
     # not a dead one, and a check that cries wolf on the normal case is a
     # check that gets muted.
@@ -90,6 +96,8 @@ try {
         "netassess-bucket: $NetassessBucket",
         "netassess-max-age-days: $MaxScanAgeDays",
         "monitor-bucket: $MonitorBucket",
+        "skills-release-bucket: $SkillsBucket",
+        "skills-install-timeout-minutes: $SkillsInstallTimeoutMinutes",
         # Both may be empty; breach-check is the only job that reads them and
         # it fails with an explanation rather than a stack trace when they are.
         # Quoted because an address list is a plain scalar full of punctuation

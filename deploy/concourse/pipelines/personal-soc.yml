@@ -85,6 +85,205 @@ resources:
       secret_access_key: ((minio-secret-key))
 
 jobs:
+  # == Stage 1: guard =======================================================
+  #
+  # personal-soc's own guard.yml, moved to where delivery can depend on it.
+  #
+  # The repository ships skills. Two files inside it - references/profile.md
+  # and references/identifiers.md - are a filled identity profile and an
+  # identifier ledger, gitignored precisely so they never travel. Everything
+  # in stage 2 packages a directory and sends it to a machine, so the check
+  # that those files are not tracked has to run *before* the packaging rather
+  # than beside it. A guard that runs in parallel with the thing it guards is
+  # decoration.
+
+  - name: guard
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: pwsh
+      - task: no-personal-data
+        image: pwsh
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                cd source
+                git config --global --add safe.directory "$PWD"
+
+                fail=0
+
+                # 1. The confidential pair, never tracked. Same check as
+                #    .github/workflows/guard.yml so there is one rule, not a
+                #    second one that can disagree with it.
+                echo "== tracked-file guard =="
+                hits=$(git ls-files | grep -E '(^|/)(profile|identifiers)\.md$' || true)
+                if [ -n "$hits" ]; then
+                  echo "::error:: a confidential file is tracked - only *.example.md may be committed:"
+                  echo "$hits" | sed 's/^/          /'
+                  fail=1
+                else
+                  echo "  ok - templates only"
+                fi
+
+                # 2. Every script parses. A skill whose script has a syntax
+                #    error installs perfectly and fails at 06:30 on a Sunday,
+                #    which is the worst time to discover a missing brace.
+                echo ""
+                echo "== script parse =="
+                while read -r f; do
+                  if pwsh -NonInteractive -NoProfile -Command "
+                        \$errs = \$null
+                        [void][System.Management.Automation.Language.Parser]::ParseFile('$f', [ref]\$null, [ref]\$errs)
+                        if (\$errs) { \$errs | ForEach-Object { Write-Host \$_.Message }; exit 1 }" >/dev/null 2>&1; then
+                    echo "  ok    $f"
+                  else
+                    echo "::error:: $f does not parse:"
+                    pwsh -NonInteractive -NoProfile -Command "
+                        \$errs = \$null
+                        [void][System.Management.Automation.Language.Parser]::ParseFile('$f', [ref]\$null, [ref]\$errs)
+                        \$errs | ForEach-Object { Write-Host ('          ' + \$_.Message) }"
+                    fail=1
+                  fi
+                done < <(find skills -name '*.ps1' | sort)
+
+                # 3. Each skill declares itself. The loader reads this
+                #    frontmatter to decide when a skill applies; a SKILL.md
+                #    without it is a directory nothing will ever invoke.
+                echo ""
+                echo "== skill frontmatter =="
+                for s in skills/*/SKILL.md; do
+                  if head -1 "$s" | grep -q '^---$' \
+                     && grep -q '^name:' "$s" && grep -q '^description:' "$s"; then
+                    echo "  ok    $s"
+                  else
+                    echo "::error:: $s has no frontmatter with name and description"
+                    fail=1
+                  fi
+                done
+
+                echo ""
+                [ "$fail" -eq 0 ] && echo "Guard passed." || echo "Guard failed."
+                exit $fail
+
+  # == Stage 2: delivery ====================================================
+  #
+  # The gap this closes, stated plainly because it went unnoticed for a while:
+  # the Scheduled Tasks run the *installed* skills under ~/.claude/skills, and
+  # everything else in this pipeline reads the *repository*. Nothing kept the
+  # two the same. A fix committed here reached the thing that actually runs on
+  # Sunday morning only if somebody remembered to copy it by hand.
+  #
+  # Same handoff as TheHub, for the same reason: Concourse publishes an
+  # artifact and a pointer, and the host pulls. Concourse has no path into
+  # ~/.claude and is not given one.
+  #
+  # The bundle is checked for the confidential pair a second time, against the
+  # archive rather than against git. Stage 1 asks "is it tracked"; this asks
+  # "is it in the thing about to be sent", which is the question that actually
+  # matters and is not quite the same one - an untracked file present in the
+  # checkout would pass the first and fail this.
+
+  - name: package
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: pwsh
+      - task: bundle-and-publish
+        image: pwsh
+        params:
+          MINIO_ENDPOINT: ((minio-endpoint))
+          MINIO_ACCESS_KEY: ((minio-access-key))
+          MINIO_SECRET_KEY: ((minio-secret-key))
+          RELEASE_BUCKET: ((skills-release-bucket))
+          INSTALL_TIMEOUT_MINUTES: ((skills-install-timeout-minutes))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: bundle }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null
+                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                chmod +x /usr/local/bin/mc
+                SCHEME=${MINIO_ENDPOINT%%://*}
+                HOSTPORT=${MINIO_ENDPOINT#*://}
+                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
+
+                cd source
+                git config --global --add safe.directory "$PWD"
+                SHA=$(git rev-parse HEAD)
+                cd ..
+
+                # zip, not tar.gz: the other end is Expand-Archive on Windows,
+                # which reads zip natively and needs a shell-out for anything
+                # else.
+                ZIP="bundle/skills-$SHA.zip"
+                (cd source && zip -q -r "../$ZIP" skills)
+
+                echo "== bundle contents =="
+                unzip -Z1 "$ZIP" | sed 's/^/  /' | head -40
+                echo "  ($(unzip -Z1 "$ZIP" | wc -l) entries)"
+
+                # The check that matters. Asked of the archive, because the
+                # archive is what leaves.
+                if unzip -Z1 "$ZIP" | grep -E '(^|/)(profile|identifiers)\.md$'; then
+                  echo "::error:: the bundle contains a confidential file. Refusing to publish it."
+                  echo "          Only profile.example.md and identifiers.example.md may ship."
+                  exit 1
+                fi
+                echo ""
+                echo "no confidential files in the bundle"
+
+                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                mc --quiet cp "$ZIP" "store/$RELEASE_BUCKET/skills-$SHA.zip"
+
+                # The pointer is written last. If the upload failed, the host
+                # must not be told to go and fetch something that is not there.
+                printf '%s' "$SHA" > requested
+                mc --quiet cp requested "store/$RELEASE_BUCKET/skills.requested"
+                echo "published skills-$SHA.zip and moved the pointer"
+
+                # Then wait to be told it landed. Without this, "delivery"
+                # would mean a file was uploaded - which is exactly the claim
+                # that was already true and still left the installed copy
+                # stale.
+                DEADLINE=$(( $(date +%s) + INSTALL_TIMEOUT_MINUTES * 60 ))
+                while :; do
+                  if mc --quiet cp "store/$RELEASE_BUCKET/skills.installed" installed >/dev/null 2>&1 \
+                     && [ "$(cat installed)" = "$SHA" ]; then
+                    echo "host reports the skills installed at $SHA"
+                    break
+                  fi
+                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                    echo "::error:: no install acknowledgement for $SHA within $INSTALL_TIMEOUT_MINUTES min."
+                    echo "          The bundle and pointer are published and still stand."
+                    echo "          Check the 'personal-soc Skill Install' Scheduled Task on the host."
+                    exit 1
+                  fi
+                  sleep 20
+                done
+
+  # == Stage 3: execution ===================================================
+  #
+  # Everything below runs the skills rather than shipping them. These jobs
+  # read the repository directly - they invoke a script against a checkout,
+  # which needs no install - while the Scheduled Tasks on the host run the
+  # copy stage 2 delivers. Both halves therefore move with the same commit.
+
   # -- Documentation drift ------------------------------------------------
   #
   # The only one of the three that is genuinely portable: it shells out to
