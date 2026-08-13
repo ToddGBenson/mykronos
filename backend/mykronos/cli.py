@@ -44,6 +44,7 @@ from mykronos.main import _build_github_factory as _github_factory
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.reprocess import reprocess
+from mykronos.rescore_sscs import rescore_sscs
 from mykronos.schemas import Capability
 
 CAPABILITIES = [c.value for c in Capability]
@@ -54,9 +55,7 @@ def _print_table(columns: Sequence[str], rows: Sequence[Sequence[object]]) -> No
         print("(no rows)")
         return
     rendered = [[("" if v is None else str(v)) for v in row] for row in rows]
-    widths = [
-        max(len(str(col)), *(len(r[i]) for r in rendered)) for i, col in enumerate(columns)
-    ]
+    widths = [max(len(str(col)), *(len(r[i]) for r in rendered)) for i, col in enumerate(columns)]
     print("  ".join(str(c).ljust(w) for c, w in zip(columns, widths, strict=True)))
     print("  ".join("-" * w for w in widths))
     for row in rendered:
@@ -104,9 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Close findings absent from two consecutive scans (spec 05 §5)",
     )
     sub.add_parser("rotate-due", help="Run the token rotation sweep now")
-    sub.add_parser(
-        "sync-installations", help="Check each installation still exists on GitHub"
-    )
+    sub.add_parser("sync-installations", help="Check each installation still exists on GitHub")
     sub.add_parser(
         "score-portfolio",
         help="Give every Oracle-enabled repo a fresh standing risk decision",
@@ -119,9 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "github-token",
         help="Mint a short-lived GitHub App installation token (spec 02 §4)",
     )
-    ghtoken.add_argument(
-        "repo", help="owner/repo the token should be scoped to."
-    )
+    ghtoken.add_argument("repo", help="owner/repo the token should be scoped to.")
 
     reproc = sub.add_parser(
         "reprocess",
@@ -151,6 +146,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=CAPABILITIES,
         help="Limit to one capability — usually the one whose adapter changed.",
     )
+
+    rescore = sub.add_parser(
+        "rescore-sscs",
+        help="Re-score archived supply-chain evidence (spec 07 §5a)",
+    )
+    rescore.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change and write nothing.",
+    )
+    rescore.add_argument("--repo", default=None, help="Limit to one repository.")
 
     resync = sub.add_parser(
         "resync-templates",
@@ -262,17 +268,14 @@ def main(argv: list[str] | None = None) -> int:
                     [
                         token.repo_full_name,
                         token.status,
-                        ", ".join(sorted(reg.granted_capabilities(token.repo_full_name)))
-                        or "-",
+                        ", ".join(sorted(reg.granted_capabilities(token.repo_full_name))) or "-",
                         token.issued_at.isoformat(timespec="seconds"),
                         token.rotate_after.isoformat(timespec="seconds"),
                         token.token_sha256[:12] + "...",
                     ]
                     for token in reg.list_tokens()
                 ]
-            _print_table(
-                ["repo", "status", "grants", "issued", "rotate after", "sha256"], rows
-            )
+            _print_table(["repo", "status", "grants", "issued", "rotate after", "sha256"], rows)
             return 0
 
         if args.command == "purge-tokens":
@@ -296,9 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             outcome = reconcile_absences(catalog)
             print(f"Closed {outcome.total_fixed} absent finding(s).")
             for repo, capability in outcome.insufficient_history:
-                print(
-                    f"  skipped {repo}/{capability}: fewer than 2 qualifying scans"
-                )
+                print(f"  skipped {repo}/{capability}: fewer than 2 qualifying scans")
             return 0
 
         if args.command in {"rotate-due", "sync-installations"}:
@@ -306,9 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             factory = _github_factory(settings)
             if args.command == "rotate-due":
                 rotation = asyncio.run(
-                    rotate_ingestion_tokens(
-                        db, factory, overlap_hours=settings.token_overlap_hours
-                    )
+                    rotate_ingestion_tokens(db, factory, overlap_hours=settings.token_overlap_hours)
                 )
                 print(f"Token rotation: {rotation.summary()}")
                 for repo, reason in rotation.failed:
@@ -337,8 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             for repo, reason in run.failed:
                 print(f"  FAILED {repo}: {reason}")
             print(
-                "\nDecisions are in the write-ahead buffer; run `compact` to "
-                "make them queryable."
+                "\nDecisions are in the write-ahead buffer; run `compact` to make them queryable."
             )
             return 0
 
@@ -354,9 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{purge.partitions_rewritten} partition(s)."
             )
             if purge.applied:
-                _print_table(
-                    ["repo", "retention days"], sorted(purge.applied.items())
-                )
+                _print_table(["repo", "retention days"], sorted(purge.applied.items()))
             return 0
 
         if args.command == "github-token":
@@ -380,8 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             minter = getattr(client, "_token", None)
             if minter is None:
                 print(
-                    "No GitHub App is configured, so there is no installation "
-                    "to mint a token for.",
+                    "No GitHub App is configured, so there is no installation to mint a token for.",
                     file=sys.stderr,
                 )
                 return 1
@@ -426,6 +421,37 @@ def main(argv: list[str] | None = None) -> int:
                 print("Dry run - nothing was written.")
             else:
                 print("Run `compact` to make the re-derived findings queryable.")
+            return 0
+
+        if args.command == "rescore-sscs":
+            rescored = rescore_sscs(catalog, buffer, repo_full_name=args.repo, dry_run=args.dry_run)
+            _print_table(
+                ["repo", "commit", "deps", "was", "now"],
+                [
+                    (
+                        row.repo_full_name,
+                        row.commit_sha[:12],
+                        row.dependency_count,
+                        "null" if row.was is None else row.was,
+                        "null" if row.now is None else row.now,
+                    )
+                    for row in rescored.changed
+                ],
+            )
+            print()
+            print(
+                f"{rescored.examined} rows examined, {rescored.wrote} corrected, "
+                f"{len(rescored.unscoreable)} without usable counts."
+            )
+            if rescored.unscoreable:
+                print(
+                    "Rows without per-ecosystem counts keep their stored score. "
+                    "Re-running the scan is the only honest way to fix those."
+                )
+            if args.dry_run:
+                print("Dry run - nothing was written.")
+            else:
+                print("Run `compact` to fold the corrections into Parquet.")
             return 0
 
         if args.command == "resync-templates":
