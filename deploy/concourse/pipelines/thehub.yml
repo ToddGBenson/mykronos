@@ -2,7 +2,13 @@
 #
 # Was scanning only. It now takes a commit all the way to production:
 #
-#   quality + build -> security -> Oracle -> demo -> DAST -> [a person] -> prod
+#   quality + build -> static security -> demo -> DAST -> Oracle -> insider
+#     -> [a person] -> prod
+#
+# Oracle sits after DAST so runtime findings reach the score it gates on;
+# insider risk sits after Oracle, as the last check before a human promotes.
+# Spec 16 section 3 sets out what that ordering buys and what it costs -- the
+# cost being that insider risk is no longer an input to Oracle's score.
 #
 # Three things about this file are worth knowing before reading it.
 #
@@ -124,6 +130,75 @@ anchors:
     # file is rendered; asking git for what it cannot know was the mistake.
     SCANNED_BRANCH: ((thehub-branch))
 
+  # -- Reporting back into TheHub (spec 16 section 13) --------------------
+  #
+  # TheHub is not just a repository this pipeline scans; it runs a DevSecOps
+  # and story-lifecycle subsystem of its own, and that subsystem advances
+  # stories from evidence rather than from anybody clicking a button.
+  # `services/devops/lifecycle.py` reads `deploy_runs` and `deploy_history`:
+  # a green `integration_tests` stage moves a story in_progress -> tested, and
+  # a successful `finish` stage moves it tested -> deployed.
+  #
+  # Those tables were written by TheHub's own scripts/deploy.sh and by its
+  # GitHub Actions. Moving delivery here does not break them - deploy.sh still
+  # runs - it does something quieter and worse: Concourse becomes the thing
+  # that actually ships TheHub while its lifecycle keeps advancing stories on
+  # evidence from a different pipeline. The two would drift with nothing
+  # reporting that they had.
+  #
+  # So every stage reports. `POST /api/ops/deploys` is the endpoint deploy.sh
+  # already uses, with the same shared-secret header, so nothing in TheHub
+  # needs changing to receive this.
+  #
+  # `deploy_id` is the commit SHA rather than a build number: TheHub keys a
+  # deploy_run on it, and every job in this pipeline is working on the same
+  # commit, so all of their stages land under one run. A build number would
+  # scatter one commit's stages across seven unrelated runs.
+  #
+  # The commit *message* is not decoration either - the lifecycle matches
+  # stories by regexing the story id out of it, so a report without it
+  # advances nothing.
+  #
+  # Never fails the build. A lifecycle that did not hear about a deploy is a
+  # reporting problem; failing the deploy over it would turn it into an outage.
+  hub_report: &hub_report
+    task: report-to-hub
+    image: python
+    config:
+      platform: linux
+      inputs: [{ name: source }]
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -uo pipefail
+            if [ -z "${HUB_URL:-}" ] || [ -z "${HUB_DEPLOY_TOKEN:-}" ]; then
+              echo "TheHub reporting is not configured; skipping."
+              exit 0
+            fi
+            apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null 2>&1
+
+            SHA=$(git -C source rev-parse HEAD)
+            MSG=$(git -C source log -1 --pretty=%s)
+
+            BODY=$(jq -nc \
+              --arg d "$SHA" --arg s "$STAGE" --arg st "$STATUS" \
+              --arg sha "$SHA" --arg br "$SCANNED_BRANCH" --arg msg "$MSG" \
+              --arg env "${TARGET_ENV:-prod}" \
+              '{deploy_id: $d, stage: $s, status: $st, git_sha: $sha,
+                git_branch: $br, commit_message: $msg, actor: "concourse",
+                target_env: $env,
+                meta: {source: "concourse", pipeline: "thehub"}}')
+
+            curl -sS --fail --max-time 20 -X POST \
+              -H "Content-Type: application/json" \
+              -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
+              -d "$BODY" "$HUB_URL/api/ops/deploys" >/dev/null \
+              && echo "Reported $STAGE=$STATUS for $SHA to TheHub." \
+              || echo "Could not report $STAGE to TheHub; the build result stands."
+            exit 0
+
   # Failure notification. curl rather than a slack-notification resource type:
   # this pipeline already carries no third-party resource types, and adding
   # one to a security pipeline to send a chat message is a poor trade. It also
@@ -220,15 +295,36 @@ jobs:
 
                 apt-get update -qq && apt-get install -y -qq git build-essential >/dev/null
 
+                # Searched one level down as well as at the root. TheHub keeps
+                # its dependencies in backend/requirements.txt and its tests in
+                # backend/tests, and the first version of this job looked only
+                # at the root -- so it installed nothing, then failed on
+                # `ModuleNotFoundError: No module named 'faker'` and read like
+                # a broken test suite rather than a job that never installed
+                # anything.
+                #
                 # An install failure is a real failure: it means the declared
                 # dependencies do not resolve, which the pipeline should say
                 # out loud rather than skip past on its way to a green tick.
-                if [ -f requirements.txt ]; then
-                  pip install --quiet -r requirements.txt
+                FOUND=0
+                for req in requirements.txt requirements-dev.txt \
+                           */requirements.txt */requirements-dev.txt; do
+                  [ -f "$req" ] || continue
+                  echo "Installing $req"
+                  pip install --quiet -r "$req"
+                  FOUND=1
+                done
+
+                if [ "$FOUND" -eq 0 ]; then
+                  echo "=================================================="
+                  echo "NO REQUIREMENTS FILE FOUND."
+                  echo "There is a test directory but nothing declaring what"
+                  echo "it needs, so pytest is about to run against a bare"
+                  echo "interpreter. Whatever it reports is about this job,"
+                  echo "not about the code."
+                  echo "=================================================="
                 fi
-                if [ -f requirements-dev.txt ]; then
-                  pip install --quiet -r requirements-dev.txt
-                fi
+
                 pip install --quiet pytest
 
                 python -m pytest -q
@@ -239,6 +335,14 @@ jobs:
   # how an environment ends up running something nobody chose, and every deploy
   # job below names an exact SHA for that reason.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: integration_tests
+          STATUS: success
+          TARGET_ENV: prod
   - name: build
     public: true
     on_failure: *slack_alert
@@ -302,7 +406,6 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit]
       - get: python
       - task: gitleaks
         image: python
@@ -347,7 +450,6 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit]
       - get: python
       - task: semgrep
         image: python
@@ -422,7 +524,6 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit]
       - get: python
       - task: osv-scanner
         image: python
@@ -592,6 +693,14 @@ jobs:
   # is the whole explanation; the short version is that Concourse sees a branch
   # and Aegis is built around a `pull_request`, so the missing context is
   # recovered by asking GitHub which pull request introduced this commit.
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: trivy
+          STATUS: success
+          TARGET_ENV: prod
   - name: insider
     public: true
     on_failure: *slack_alert
@@ -599,7 +708,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [unit]
+        passed: [oracle-gate]
       - get: python
       - task: aegis
         image: python
@@ -748,6 +857,14 @@ jobs:
   # picture (spec 09 section 8); gating on a partial one produces a decision
   # the next finding invalidates.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: insider_risk
+          STATUS: success
+          TARGET_ENV: prod
   - name: oracle-gate
     public: true
     on_failure: *slack_alert
@@ -755,7 +872,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, sast, dependencies, containers, insider]
+        passed: [dast]
       - get: python
       - task: evaluate
         image: python
@@ -810,6 +927,14 @@ jobs:
 
   # == Stage 5: deliver to demo =============================================
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: oracle_gate
+          STATUS: success
+          TARGET_ENV: prod
   - name: deploy-demo
     public: true
     on_failure: *slack_alert
@@ -817,7 +942,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [oracle-gate]
+        passed: [secrets, sast, dependencies, containers]
       - get: python
       - task: request-deploy
         image: python
@@ -895,6 +1020,14 @@ jobs:
   # is the one people erode first: attack traffic against production is a
   # decision with an incident report attached, not a pipeline setting.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: deploy_staging
+          STATUS: success
+          TARGET_ENV: staging
   - name: dast
     public: true
     on_failure: *slack_alert
@@ -1000,13 +1133,21 @@ jobs:
   # production runs is byte-identical to what DAST looked at - promotion is a
   # restart, never a rebuild.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: dast_headers
+          STATUS: success
+          TARGET_ENV: prod
   - name: deploy-prod
     public: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
       - get: source
-        passed: [dast]
+        passed: [insider]
       - get: python
       - task: request-deploy
         image: python
@@ -1086,6 +1227,14 @@ jobs:
   # scope and nothing else. A posture scanner with write access to the thing it
   # audits is a finding of its own.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: finish
+          STATUS: success
+          TARGET_ENV: prod
   - name: cloud-posture
     public: true
     on_failure: *slack_alert

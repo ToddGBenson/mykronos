@@ -20,7 +20,7 @@ from mykronos.db.models import AuditLogEntry, RepoOnboarding
 from mykronos.github import FakeGitHubClient
 from mykronos.installer import BRANCH_PREFIX, DEFAULT_SECRET_NAME
 from mykronos.main import create_app
-from tests.conftest import INSTALLATION, REPO, WEBHOOK_SECRET
+from tests.conftest import INSTALLATION, REPO, WEBHOOK_SECRET, scan_run_payload
 
 
 def sign(body: bytes, secret: str = WEBHOOK_SECRET) -> str:
@@ -460,3 +460,88 @@ class TestAuditTrail:
 
         assert entries
         assert all(e.actor == "github-webhook" for e in entries)
+
+
+class TestEnablingWithoutInstallingWorkflows:
+    """spec 16 §15. A repository scanned by a pipeline Mykronos does not
+    install still has to be able to say which capabilities are enabled.
+
+    Before this existed, `enabled_capabilities` moved only when an install PR
+    merged — so TheHub, scanned entirely by Concourse, reported findings for
+    capabilities its coverage column would never show. The only way to correct
+    it was to open a pull request adding the GitHub Actions workflows spec 16
+    exists to remove.
+    """
+
+    def test_the_enabled_set_moves_without_a_pull_request(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        before = len(github.pull_request_bodies)
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={
+                "capabilities": ["sast", "dast", "cloud"],
+                "install_workflows": False,
+            },
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repo"]["enabled_capabilities"] == ["cloud", "dast", "sast"]
+        assert body["repo"]["pending_capabilities"] is None
+        assert body["pull_request_number"] is None
+        assert len(github.pull_request_bodies) == before, "no PR should have been opened"
+
+    def test_grants_are_synced_the_same_way(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        """The flag changes where workflows come from, not what a capability
+        is allowed to write. A repo enabled this way must be able to ingest,
+        and must lose the grant when the capability is turned off."""
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast", "dast"], "install_workflows": False},
+            headers=admin_auth,
+        )
+        with client.app.state.db.session() as session:
+            registry = TokenRegistry(session)
+            plaintext = registry.issue(REPO)
+        assert client.post(
+            "/api/ingest/scan-run",
+            json=scan_run_payload(capability="dast"),
+            headers={"Authorization": f"Bearer {plaintext}"},
+        ).status_code == 200
+
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"], "install_workflows": False},
+            headers=admin_auth,
+        )
+        assert client.post(
+            "/api/ingest/scan-run",
+            json=scan_run_payload(capability="dast"),
+            headers={"Authorization": f"Bearer {plaintext}"},
+        ).status_code == 403
+
+    def test_the_default_still_opens_a_pull_request(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        """The flag is opt-in. Onboarding a repository the normal way must not
+        quietly stop installing its workflows."""
+        before = len(github.pull_request_bodies)
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast", "secrets"]},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200
+        assert len(github.pull_request_bodies) > before
+        # Still pending: the enabled set moves when the PR merges (spec 03 §3.6).
+        assert response.json()["repo"]["pending_capabilities"] == ["sast", "secrets"]

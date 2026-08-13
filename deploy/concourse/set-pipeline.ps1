@@ -27,9 +27,14 @@ if (-not (Test-Path $fly)) {
 }
 
 function Read-EnvValue {
-    param([string]$Path, [string]$Key)
+    param([string]$Path, [string]$Key, [switch]$Optional)
     $line = Select-String -Path $Path -Pattern "^$Key=" -ErrorAction SilentlyContinue
-    if (-not $line) { throw "$Key is not set in $Path" }
+    if (-not $line) {
+        # Absent is a valid answer for a setting whose feature is off, and an
+        # error for one the pipeline cannot run without. The caller says which.
+        if ($Optional) { return "" }
+        throw "$Key is not set in $Path"
+    }
     return $line.Line.Split('=', 2)[1].Trim()
 }
 
@@ -67,7 +72,16 @@ try {
         "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
         # Host IP for the same reason MinIO uses one: garden task containers
         # cannot resolve Docker service names.
-        "registry: 192.168.0.14:5000"
+        "registry: 192.168.0.14:5000",
+        # Optional, and quoted so an unset webhook parses as an empty string
+        # rather than YAML null. The notify hook checks for empty and exits 0.
+        #
+        # Concourse alerts on jobs that failed before they could report; the
+        # alerting that matters -- Oracle refusing a commit, a scan recorded as
+        # failed, a batch of criticals -- comes from Mykronos itself, which is
+        # the only place that can see it whichever CI produced it (spec 16 §14).
+        # Set MYKRONOS_SLACK_WEBHOOK_URL in backend/.env for that half.
+        "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'"
     ) | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan

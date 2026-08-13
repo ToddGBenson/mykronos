@@ -62,6 +62,25 @@ class CapabilityUpdate(BaseModel):
 
     capabilities: list[Capability]
     config: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    install_workflows: bool = Field(
+        default=True,
+        description=(
+            "Whether to open a pull request installing this repo's GitHub "
+            "Actions workflows. Leave true for a repository Mykronos onboards "
+            "in the normal way.\n\n"
+            "Set false for a repository scanned by a pipeline Mykronos does "
+            "not install — TheHub's Concourse pipeline is the case this exists "
+            "for (spec 16 §4). Until this flag existed, `enabled_capabilities` "
+            "could only move when an install PR merged, so a Concourse-scanned "
+            "repo reporting six capabilities showed however many its last "
+            "Actions PR enabled, and the coverage column understated it "
+            "permanently. The alternative was opening a PR that adds the very "
+            "workflows spec 16 removes.\n\n"
+            "It changes where the workflows come from, not what is enforced: "
+            "ingestion grants, capability config validation and the audit "
+            "entry are identical either way."
+        ),
+    )
 
 
 class RepoSummary(BaseModel):
@@ -288,6 +307,52 @@ async def update_capabilities(
             else:
                 existing.config_json = config
         session.flush()
+
+        # No workflows to install, so no pull request to wait on: the enabled
+        # set moves now. Grants are synced through the same TokenRegistry call
+        # the installer makes, so what a capability may write is decided in one
+        # place regardless of which path got here (spec 16 §15).
+        if not body.install_workflows:
+            registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
+            previous = set(row.enabled_capabilities or [])
+            grants_added, grants_removed = registry.sync_grants(
+                row.github_repo_full_name, requested
+            )
+            row.enabled_capabilities = sorted(requested)
+            # Any PR left open by an earlier install is now describing a set
+            # nobody is waiting for. Clearing the pointer is not the same as
+            # closing the PR, which is a GitHub action a person should take.
+            row.pending_capabilities = None
+            row.pending_pr_number = None
+            if row.status == "pending_install":
+                row.status = "active"
+
+            db.audit(
+                session,
+                actor=actor,
+                action="repo.capabilities",
+                entity_type="repo_onboarding",
+                entity_id=row.id,
+                repo=row.github_repo_full_name,
+                requested=sorted(requested),
+                added=sorted(requested - previous),
+                removed=sorted(previous - requested),
+                install_workflows=False,
+            )
+            session.commit()
+
+            return CapabilityUpdateResult(
+                repo=_summary(row),
+                added=sorted(requested - previous),
+                removed=sorted(previous - requested),
+                secret_provisioned=False,
+                detail=(
+                    "Enabled without installing workflows. Grants are live and "
+                    f"{len(grants_added)} added / {len(grants_removed)} removed. "
+                    "Nothing will scan this repository unless a pipeline "
+                    "Mykronos does not manage is already doing so."
+                ),
+            )
 
         installer = WorkflowInstaller(
             request.app.state.github_factory.for_installation(row.github_installation_id),

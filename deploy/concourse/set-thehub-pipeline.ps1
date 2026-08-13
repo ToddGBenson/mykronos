@@ -55,6 +55,16 @@ param(
     [string]$DemoUrl = "http://192.168.0.14:8002",
     [string]$ProdUrl = "http://192.168.0.14:8000",
     [string]$ReleaseBucket = "thehub-releases",
+
+    # TheHub's own API, for reporting pipeline stages into its DevSecOps and
+    # story-lifecycle processes. The prod backend, by host IP for the same
+    # reason as everything else here: a garden task container's localhost is
+    # its own.
+    [string]$TheHubUrl = "http://192.168.0.14:8000",
+    # TheHub's .env, which holds OPS_DEPLOY_TOKEN - the shared secret its
+    # scripts/deploy.sh already presents to the same endpoint. Read rather
+    # than duplicated, so rotating it there rotates it here.
+    [string]$TheHubEnvPath = "C:\Users\tgb_\Documents\Projects\TheHub-main\.env",
     # How long a deploy job waits for the host to report the SHA back. Long
     # enough for an image pull and a container restart on a busy host; short
     # enough that a poller which is not running is a failed build rather than
@@ -112,6 +122,19 @@ if (-not $azureClientId -or -not $azureSubscriptionId) {
     Write-Host "No Azure principal: cloud-posture will fail at runtime." -ForegroundColor Yellow
 }
 
+# Reporting into TheHub is optional. Absent, the report task says it is
+# skipping and exits 0 - which is the right failure mode for telemetry, and
+# the wrong one to discover silently, so it is announced here too.
+$hubDeployToken = ""
+if (Test-Path $TheHubEnvPath) {
+    $hubDeployToken = Read-EnvValue $TheHubEnvPath "OPS_DEPLOY_TOKEN" -Optional
+}
+if ($hubDeployToken) {
+    Write-Host "Pipeline stages will report to TheHub at $TheHubUrl." -ForegroundColor DarkGray
+} else {
+    Write-Host "No OPS_DEPLOY_TOKEN found: TheHub's lifecycle will not hear about this pipeline." -ForegroundColor Yellow
+}
+
 Write-Host "Minting a GitHub App installation token (valid one hour)..." -ForegroundColor Cyan
 Push-Location $backend
 try {
@@ -145,6 +168,18 @@ try {
         "thehub-prod-url: $ProdUrl",
         "thehub-release-bucket: $ReleaseBucket",
         "deploy-timeout-minutes: $DeployTimeoutMinutes",
+        # Where this pipeline reports its stages back to, so TheHub's own
+        # DevSecOps and story-lifecycle processes advance on what Concourse
+        # actually did rather than only on what its local deploy.sh did.
+        # Same endpoint and same shared secret deploy.sh already uses, so
+        # nothing in TheHub changes to receive it.
+        #
+        # Optional: with no token the report task prints that it is skipping
+        # and exits 0. A lifecycle that did not hear about a deploy is a
+        # reporting problem, and turning it into a failed deploy would be a
+        # worse one.
+        "thehub-url: $TheHubUrl",
+        "hub-deploy-token: '$hubDeployToken'",
         # Host IP, not a Docker name: garden task containers resolve through the
         # public servers set in compose and have never heard of `minio`. Same
         # address, and the same reason, as the other two set-pipeline scripts.

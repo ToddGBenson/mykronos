@@ -3,6 +3,7 @@ import Link from "next/link";
 import { DecisionsTab } from "@/components/decisions";
 import { DispositionForm } from "@/components/disposition";
 import { InsiderRiskTab } from "@/components/insider-risk";
+import { PipelinesPanel } from "@/components/pipelines";
 import { RemediationTab } from "@/components/remediation";
 import { SscsTab } from "@/components/sscs";
 import {
@@ -17,6 +18,7 @@ import {
 } from "@/components/primitives";
 import type { Finding, Severity } from "@/lib/api";
 import {
+  getCi,
   getDecisions,
   getFindings,
   getInsiderRisk,
@@ -81,6 +83,8 @@ export default async function RepoPage({
         </div>
       ) : null}
 
+      <RepoPipelines repoId={repoId} />
+
       {/* Every tab is built as of Phase 6 — the "arrives in Phase N" branch
           that used to live here has no subject left. */}
       <nav className="flex flex-wrap border-b-2 border-ink-2" aria-label="Repository views">
@@ -114,6 +118,16 @@ export default async function RepoPage({
       )}
     </div>
   );
+}
+
+/** Rendered above the tabs: which CI builds this repo is not a view of it. */
+async function RepoPipelines({ repoId }: { repoId: string }) {
+  const result = await getCi(repoId);
+  // Silently absent on failure, deliberately. This panel is navigation; a
+  // dashboard that refuses to show findings because a link target is
+  // unreachable has its priorities backwards.
+  if (!result.ok) return null;
+  return <PipelinesPanel ci={result.data} />;
 }
 
 async function FindingsTab({

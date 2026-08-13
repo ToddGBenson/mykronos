@@ -29,7 +29,7 @@ name and published port range:
 
 | Environment | Project | Reached at | Gets a commit when |
 |---|---|---|---|
-| demo | `thehub-demo` | `((thehub-demo-url))` | Oracle says anything other than `no_go` |
+| demo | `thehub-demo` | `((thehub-demo-url))` | The static security lanes and the image scan are green (§3) |
 | prod | `thehub-prod` | `((thehub-prod-url))` | A person clicks a button in Concourse |
 
 Both run the *same image*, identified by the commit SHA, pulled from the
@@ -54,27 +54,64 @@ production environment with weaker controls and a different name.
 ## 3. Topology
 
 ```
-   git ──▶ unit ─┐
-                 ├──▶ build ──▶ containers ─┐
-   git ──▶ secrets ──────────────────────────┤
-   git ──▶ sast (semgrep) ───────────────────┤
-   git ──▶ dependencies (osv) ───────────────┼──▶ oracle gate
-   git ──▶ insider (aegis) ──────────────────┘         │
-                                                       │ not no_go
-                                             ┌─────────▼─────────┐
-                                             │   deploy demo     │
-                                             └─────────┬─────────┘
-                                                       │ healthy
-                                             ┌─────────▼─────────┐
-                                             │   dast (ZAP)      │  ◀── probes demo
-                                             └─────────┬─────────┘
-                                                       │
-                                             ┌─────────▼─────────┐
-                                             │   deploy prod     │  ◀── MANUAL
-                                             └───────────────────┘
+   git ──▶ unit ──▶ build ──▶ containers ─┐
+   git ──▶ secrets ───────────────────────┤
+   git ──▶ sast (semgrep) ────────────────┤
+   git ──▶ dependencies (osv) ────────────┘
+                                          │
+                                ┌─────────▼─────────┐
+                                │   deploy demo     │
+                                └─────────┬─────────┘
+                                          │ healthy
+                                ┌─────────▼─────────┐
+                                │   dast (ZAP)      │  ◀── probes demo
+                                └─────────┬─────────┘
+                                          │
+                                ┌─────────▼─────────┐
+                                │   oracle gate     │  ◀── now sees DAST
+                                └─────────┬─────────┘
+                                          │ not no_go
+                                ┌─────────▼─────────┐
+                                │  insider (aegis)  │
+                                └─────────┬─────────┘
+                                          │
+                                ┌─────────▼─────────┐
+                                │   deploy prod     │  ◀── MANUAL
+                                └───────────────────┘
 
    timer ─▶ cloud posture (prowler, Azure)   ── independent of any commit
 ```
+
+**Oracle runs after DAST, and insider after Oracle.** This is a change from the
+first version of this spec, and it trades one thing for another rather than
+being a straight improvement.
+
+*What it buys.* Oracle previously scored before DAST had run, so no runtime
+finding could ever influence a decision — the gate judged the code and never
+the running service. It now sees them. That is a real gain, and it is the same
+argument spec 15 §3 makes for putting Oracle after the static lanes, applied
+consistently.
+
+*What it costs, and this is the part to watch.* Oracle's score will now never
+include insider risk, because the insider lane is downstream of it. The first
+Oracle run on the Mykronos pipeline said so out loud — *"Not yet consulted:
+insider_risk — these are recorded as unavailable rather than zero, so this score
+is a partial picture by construction"* — and under this ordering that sentence
+becomes permanent rather than a timing artefact. Insider risk is no longer an
+input to the risk score; it is a separate gate in front of production.
+
+*Why that is defensible.* The two answer different questions. Oracle asks "is
+this build too risky to ship", which is about the artefact. Aegis asks "did a
+person with access change something sensitive without review" (spec 06 §2),
+which is about the change and is a judgement a human makes at the moment of
+promotion. Putting it immediately before the manual prod job is where a
+reviewer is actually looking.
+
+*The demo deploy is no longer Oracle-gated.* It cannot be — DAST needs a
+running environment, and Oracle now waits for DAST. Demo is gated on secrets,
+SAST, dependencies and the image scan, which is the whole static picture. A
+commit Oracle later refuses will have reached demo; nothing reaches production,
+which is the boundary that matters.
 
 **Build moved to before the gate, and that is a change from spec 15 §3.** Spec
 15 put build after Oracle so that no image exists for a commit Oracle refused.
@@ -89,9 +126,12 @@ name a tag**. An image built from a refused commit sits in the registry
 unreferenced. The gate protects the deploy, which is the step that matters,
 rather than the build, which produces a file.
 
-**The security lanes still all complete before the gate.** Spec 15 §3's
-reasoning holds unchanged: Oracle scores the whole picture, and gating on a
-partial one produces a decision the next finding invalidates.
+**Every lane that feeds a finding into the lake still completes before the
+gate** — secrets, SAST, dependencies, containers and now DAST. Spec 15 §3's
+reasoning is why: Oracle scores the whole picture, and gating on a partial one
+produces a decision the next finding invalidates. The one exception is insider
+risk, which is downstream by design and is discussed above; it is a gate in its
+own right rather than an input to the score.
 
 ## 4. One CI system, not two
 
@@ -190,41 +230,50 @@ inherits that. Mykronos's answer was a one-way handoff — the pipeline publishe
 an image and a human runs `deploy.ps1`.
 
 A pipeline that waits for a human at *both* environments is not a delivery
-pipeline, so TheHub needs the pipeline to be able to act. It gets a narrower
-capability than a socket:
+pipeline, so TheHub needs the pipeline to be able to act. It gets something
+narrower than a socket, and narrower than a login.
 
-**A forced-command SSH key per environment.** The pipeline holds a private key
-whose `authorized_keys` entry on the host is
+**A pointer the host pulls, not a connection Concourse makes.** The deploy job
+writes a commit SHA to `<env>.requested` in MinIO. A Scheduled Task on the host
+polls that key, pulls the matching image by SHA from the registry, brings the
+compose services up, and writes `<env>.deployed` back. Concourse then waits for
+its own SHA to appear in `<env>.deployed` before reporting success — so
+`passed: [deploy-demo]` continues to mean *demo is serving this commit*, not
+merely that a request was filed for it.
 
-```
-command="pwsh -NoProfile -File C:\...\Invoke-TheHubDeploy.ps1 -Environment demo",
-  no-agent-forwarding,no-port-forwarding,no-pty,no-X11-forwarding ssh-ed25519 AAAA...
-```
+This was not the first design. §7 originally specified a forced-command SSH key
+per environment, which is sound and which this host cannot run: **OpenSSH
+Server is not installed here**, only the (disabled) agent. Installing a
+listener on a machine inside the LAN to accept deploy instructions is a larger
+change than the thing it enables. The reworked mechanism needs no listener at
+all. See D-042.
 
-The client's command line is ignored by sshd; it arrives as
-`SSH_ORIGINAL_COMMAND` and the script reads exactly one thing out of it, a
-40-character hexadecimal commit SHA, which it validates before use. The key
-cannot open a shell, cannot forward a port, and cannot deploy to an environment
-other than the one its own `authorized_keys` line names.
+Three properties, and they are why this is not "a socket with extra steps":
 
-Three properties follow, and they are the reason this is not "a socket with
-extra steps":
+- **Nothing Concourse does can run a command.** The pipeline's entire
+  vocabulary is one 40-character hexadecimal string written to one object. A
+  compromised pipeline task can ask for a different already-built image. It
+  cannot ask for anything else, because there is no other field.
+- **The host opens no port to be told to.** It polls outbound. There is no
+  listener to authenticate, no host key to pin, and no service whose
+  compromise reaches the deploy path.
+- **Separation is by object, not by argument.** `demo.requested` and
+  `prod.requested` are separate keys with separate MinIO credentials, so the
+  demo job cannot request a production deploy any more than the demo SSH key
+  could have.
 
-- **The demo key cannot reach production.** Separation is enforced by sshd on
-  the host against the key that authenticated, not by the pipeline choosing to
-  pass a different argument. Spec 15 §6 asks for deploy credentials scoped to
-  the deploy job; this scopes them to the *environment*, which is stronger.
-- **The blast radius is one script.** Compromising a pipeline task yields the
-  ability to deploy a commit SHA that is already in the registry. It does not
-  yield the ability to run a command.
-- **The host key is pinned.** `StrictHostKeyChecking` stays on with a
-  `known_hosts` supplied from the credential store. A deploy job that would
-  accept any host key is a deploy job that can be pointed at a different host.
+**What this gives up, stated plainly.** Latency: a deploy takes as long as the
+poll interval rather than being instant. And the host-side task is now a
+component that can *itself* be down — the SSH model failed loudly at connect
+time, whereas a stalled poller looks like a slow deploy. The deploy job
+therefore fails on a timeout that names the Scheduled Task, so the message
+points at the thing to restart rather than at the pipeline.
 
-**Rollback.** The script records the SHA it deployed per environment before it
+**Rollback.** The host script records the SHA each environment is on before it
 starts. If the stack does not become healthy within the timeout it restores the
-previous SHA and fails the job. A deploy that half-lands and reports success is
-worse than one that fails.
+previous SHA and reports the failure through `<env>.deployed`, which fails the
+waiting Concourse job. A deploy that half-lands and reports success is worse
+than one that fails, because DAST then probes whatever happens to be up.
 
 ## 8. DAST probes demo, and only demo
 
@@ -310,7 +359,117 @@ and deleted in a `finally` block, which is the existing pattern and is kept.
     green, records nothing, and says so in its log.
 11. No credential appears in pipeline YAML, in build logs, or in an image layer.
 
-## 12. Before the first run
+## 12. Alerting
+
+Two senders, and they are not redundant — each covers what the other
+structurally cannot see.
+
+**Mykronos sends the alerts that matter.** It is the system of record and
+cannot tell which CI produced a finding (spec 15 §4), so one notifier serves
+the Actions workflows in onboarded repositories and both Concourse pipelines,
+and a third CI would need no change. `mykronos.notify` posts on exactly three
+events:
+
+| Event | Why it is worth interrupting somebody | Level |
+|---|---|---|
+| Oracle returns `no_go` | The one decision that stops a deploy, and the pipeline that asked has already exited | critical |
+| A ScanRun finalises as `failure` or `partial_failure` | A failed scan reports no findings, which is indistinguishable from a clean repository on every dashboard (spec 04 §6) | warning |
+| A batch containing findings at or above `slack_notify_min_severity` | The findings themselves, once per batch | critical / warning |
+
+**Concourse sends what never arrives.** `python -m mykronos.upload` is the last
+line of every scan task, so a task that fails on the line above it is invisible
+to the lake — the platform cannot alert on a scan it was never told about. Each
+job carries `on_failure` and `on_error` hooks, which are different events:
+`on_failure` is the task exiting non-zero, `on_error` is Concourse being unable
+to run it at all. The second is the one that looks like nothing happening.
+
+**Three rules that stop this making things worse.**
+
+1. *A notification failure is never an ingestion failure.* Every send is
+   wrapped and the worst case is a logged warning. A security platform that
+   stops accepting findings because a chat service is unreachable has inverted
+   its own priorities. Same rule on the pipeline side: the notify task exits 0
+   unconditionally, because it only ever runs when something already failed.
+2. *One message per batch, never per finding.* A scan uploading four hundred
+   criticals is one event. Four hundred messages is a channel somebody mutes,
+   which costs more than the alert was ever worth.
+3. *Nothing untrusted reaches Slack unscrubbed.* Finding titles come from
+   scanner output, which comes from repository content. `logsafe.scrub` applies
+   on the way out for the same reason it applies on the way to a log.
+
+**What is deliberately silent.** A successful scan. The opening half of a
+ScanRun's two posts (D-002) — alerting there would fire on every scan that
+merely started. `no_applicable_targets`, which is L0001's third state and a
+normal result for a repository with no Dockerfiles: alerting on it trains
+people to ignore the channel, which is how the entries above stop being read.
+
+**Configuration.** `MYKRONOS_SLACK_WEBHOOK_URL` in `backend/.env` for the
+platform half, `SLACK_WEBHOOK_URL` in `deploy/concourse/.env` for the pipeline
+half. Both default to empty, and empty means nothing is posted anywhere. There
+is deliberately no default endpoint: a deployment that changed no configuration
+must not be sending its findings to a chat service, which is the rule spec 12
+§5.2 applies to the AI classifier for the same reason.
+
+## 13. Reporting back into TheHub's own processes
+
+TheHub is not only a repository this pipeline scans. It runs a DevSecOps and
+story-lifecycle subsystem of its own (`backend/services/devops/lifecycle.py`),
+and that subsystem advances stories from *evidence* rather than from anyone
+clicking a button:
+
+| Story transition | Evidence it requires |
+|---|---|
+| `in_progress` → `tested` | a green `integration_tests` stage in `deploy_history` whose commit message or branch names the story |
+| `tested` → `deployed` | a successful run in `deploy_runs`, or a `finish`/`smoke` stage in `deploy_history` |
+| `deployed` → `verified` | 24h elapsed since that deploy with no failure referencing the story |
+
+Those tables are written by TheHub's own `scripts/deploy.sh` and by its GitHub
+Actions. **Moving delivery to Concourse does not break them, and that is the
+problem.** `deploy.sh` still runs and still reports, so the lifecycle keeps
+advancing stories on evidence from a pipeline that is no longer the one
+shipping the software. Nothing errors. The two simply drift, and the first
+symptom is a story marked deployed on the strength of a deploy that was not the
+one that went out.
+
+So every stage reports. The pipeline POSTs to `/api/ops/deploys` — the endpoint
+`deploy.sh` already uses, with the same `X-Ops-Deploy-Token` shared secret read
+from TheHub's own `.env`, so **nothing in TheHub changes to receive this.**
+
+| Concourse job | Reports as | Env |
+|---|---|---|
+| `unit` | `integration_tests` | prod |
+| `containers` | `trivy` | prod |
+| `deploy-demo` | `deploy_staging` | staging |
+| `dast` | `dast_headers` | prod |
+| `oracle-gate` | `oracle_gate` | prod |
+| `insider` | `insider_risk` | prod |
+| `deploy-prod` | `finish` | prod |
+
+Four details that are load-bearing rather than cosmetic:
+
+**`deploy_id` is the commit SHA, not the build number.** TheHub keys a
+`deploy_run` on it, and every job here works on the same commit — so all seven
+stages land under one run. A build number would scatter one commit's stages
+across seven unrelated runs, and the Pipeline view would show seven deploys
+that each did one thing.
+
+**The commit message is sent because the lifecycle regexes the story id out of
+it.** A report without it is a row nothing can match, which advances nothing
+while looking like it worked.
+
+**The demo deploy reports `deploy_staging`, deliberately not `smoke` or
+`finish`.** Those two are exactly what `_story_deployed_signal` treats as "this
+shipped". A staging deploy claiming them would advance stories to `deployed` on
+the strength of a demo environment — the precise failure this bridge exists to
+prevent, introduced by the bridge itself.
+
+**A reporting failure never fails the build.** A lifecycle that did not hear
+about a deploy is a reporting problem; failing the deploy over it would turn it
+into an outage. With no token configured the task says so and exits 0, and
+`set-thehub-pipeline.ps1` prints a warning at apply time so the silent case is
+announced once where somebody is looking.
+
+## 14. Before the first run
 
 Four things must be true, and three of them fail in ways that look like
 something else.
@@ -345,7 +504,22 @@ because the alternative is three jobs that cannot ever pass.
 change the deploy model asks of TheHub itself, and it is what makes "deploy"
 mean "run exactly this commit" rather than "rebuild and hope".
 
-## 13. Open questions
+## 15. Open questions
+
+0. **"Enabled capability" and "installed Actions workflow" are the same field,
+   and for a Concourse-scanned repo they should not be.** TheHub's token is now
+   granted `dast`, `cloud` and `oracle` and the pipeline reports all three — but
+   the portfolio's coverage column still shows five capabilities, because that
+   column reads the repo's *enabled* set, and the only way to change it is
+   `PATCH /api/repos/{id}/capabilities`, which opens a workflow-install pull
+   request against the repository (spec 03). For TheHub that would commit the
+   GitHub Actions workflows this whole spec removes.
+
+   So the dashboard currently understates TheHub's coverage, and the fix is not
+   a configuration change: onboarding needs to distinguish *this capability is
+   enabled* from *install its workflow*. Until then a Concourse-scanned repo's
+   coverage column is wrong in the safe direction — it shows less than is
+   actually running, rather than more.
 
 1. **TheHub's test suite is invoked on faith.** This pipeline runs `pytest`
    where a `tests/` directory exists and announces that it found none where it

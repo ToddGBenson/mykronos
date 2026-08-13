@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 #: these is the first two lines.
 MAX_TEXT = 2_500
 
+_ICONS = {
+    "critical": ":rotating_light:",
+    "warning": ":warning:",
+    "info": ":information_source:",
+}
+
 
 @dataclass(frozen=True)
 class Notification:
@@ -63,9 +69,7 @@ class Notification:
     level: str = "warning"
 
     def render(self) -> str:
-        icon = {"critical": ":rotating_light:", "warning": ":warning:", "info": ":information_source:"}.get(
-            self.level, ":warning:"
-        )
+        icon = _ICONS.get(self.level, ":warning:")
         text = (
             f"{icon} *{scrub(self.title)}*\n"
             f"`{scrub(self.repo_full_name)}`\n"

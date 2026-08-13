@@ -331,6 +331,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/ci": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Ci
+         * @description Links out to where this repository is built (spec 15 §4a).
+         *
+         *     Deliberately a link rather than a mirror: Concourse's own UI is the
+         *     authority on its state, and restating a build outcome here would create a
+         *     second version of it to disagree with. What this adds is knowing *which*
+         *     pipeline, from a page that is already about this repository.
+         */
+        get: operations["repo_ci_api_dashboard_repos__repo_id__ci_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/sscs": {
         parameters: {
             query?: never;
@@ -920,6 +945,16 @@ export interface components {
                     [key: string]: unknown;
                 };
             };
+            /**
+             * Install Workflows
+             * @description Whether to open a pull request installing this repo's GitHub Actions workflows. Leave true for a repository Mykronos onboards in the normal way.
+             *
+             *     Set false for a repository scanned by a pipeline Mykronos does not install — TheHub's Concourse pipeline is the case this exists for (spec 16 §4). Until this flag existed, `enabled_capabilities` could only move when an install PR merged, so a Concourse-scanned repo reporting six capabilities showed however many its last Actions PR enabled, and the coverage column understated it permanently. The alternative was opening a PR that adds the very workflows spec 16 removes.
+             *
+             *     It changes where the workflows come from, not what is enforced: ingestion grants, capability config validation and the audit entry are identical either way.
+             * @default true
+             */
+            install_workflows: boolean;
         };
         /** CapabilityUpdateResult */
         CapabilityUpdateResult: {
@@ -950,6 +985,47 @@ export interface components {
             failed: number;
             /** Pending */
             pending: number;
+        };
+        /** CiJobOut */
+        CiJobOut: {
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @description Concourse's own word: succeeded, failed, errored, aborted, pending. Null means the job has never finished a build, which is neither pass nor fail.
+             */
+            status?: string | null;
+            /** Build Name */
+            build_name?: string | null;
+            /** Build Url */
+            build_url?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+        };
+        /**
+         * CiPage
+         * @description Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a).
+         */
+        CiPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Github Url */
+            github_url: string;
+            /** Github Actions Url */
+            github_actions_url: string;
+            /** Pipeline */
+            pipeline?: string | null;
+            /** Pipeline Url */
+            pipeline_url?: string | null;
+            /** Jobs */
+            jobs?: components["schemas"]["CiJobOut"][];
+            /** Failing */
+            failing?: string[];
+            /**
+             * Unavailable
+             * @description Why there is no pipeline state, when there is none. 'No pipeline for this repo' and 'Concourse did not answer' are different facts, and a panel that conflates them teaches people to ignore it.
+             */
+            unavailable?: string | null;
         };
         /**
          * EcosystemEvidence
@@ -2345,6 +2421,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InsiderRiskPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_ci_api_dashboard_repos__repo_id__ci_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CiPage"];
                 };
             };
             /** @description Validation Error */

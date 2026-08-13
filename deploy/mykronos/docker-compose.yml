@@ -40,6 +40,16 @@ services:
       # Mounted read-only below. The container never holds a copy.
       MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
       MYKRONOS_INGESTION_API_URL: ${MYKRONOS_INGESTION_API_URL:-https://mykronos.toddbenson.net}
+
+      # Reading Concourse back (spec 15 §4a). Two URLs because they genuinely
+      # differ: this container reaches Concourse by service name across the
+      # shared network below, and a person clicking a link reaches it on
+      # loopback. A link to http://concourse:8080 resolves nowhere in a
+      # browser, which is the sort of thing that looks fine until somebody
+      # clicks it.
+      MYKRONOS_CONCOURSE_URL: ${MYKRONOS_CONCOURSE_URL:-http://concourse:8080}
+      MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
+      MYKRONOS_CONCOURSE_TEAM: ${MYKRONOS_CONCOURSE_TEAM:-main}
     volumes:
       # Every finding, decision, token and archived scan output. Without this
       # a deploy destroys the lot, including the data a day of reprocessing
@@ -55,6 +65,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    networks:
+      - default
+      # Concourse's own network, joined rather than published: its API is on
+      # loopback only, and `host.docker.internal` maps to the host's gateway
+      # address rather than to 127.0.0.1, so from a container there is no
+      # route to it otherwise. Read-only traffic in one direction - nothing
+      # in Concourse can reach back through this.
+      - concourse
 
   frontend:
     image: ${MYKRONOS_IMAGE_FRONTEND:-mykronos-frontend:latest}
@@ -81,3 +99,12 @@ services:
 
 volumes:
   mykronos-data:
+
+networks:
+  default:
+  # Created by deploy/concourse/docker-compose.yml. External, because that
+  # stack owns it: bringing this one up must not create a half-configured
+  # network that the real Concourse then cannot join.
+  concourse:
+    external: true
+    name: mykronos-concourse_concourse

@@ -48,6 +48,11 @@ export type InsiderRiskSignal = InsiderRiskPage["signals"][number];
 export type SscsPage =
   paths["/api/dashboard/repos/{repo_id}/sscs"]["get"]["responses"]["200"]["content"]["application/json"];
 export type SscsEvidence = SscsPage["evidence"][number];
+export type CiPage =
+  paths["/api/dashboard/repos/{repo_id}/ci"]["get"]["responses"]["200"]["content"]["application/json"];
+// `jobs` is optional in the generated type (it has a server-side default),
+// so index it through NonNullable rather than widening every use site.
+export type CiJob = NonNullable<CiPage["jobs"]>[number];
 
 /** The shape `signal_breakdown` carries when an admin is allowed to see it. */
 export type SignalBreakdown = {

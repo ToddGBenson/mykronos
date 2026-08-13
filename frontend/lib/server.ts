@@ -13,6 +13,7 @@ import "server-only";
 import {
   BackendUnavailable,
   backendClient,
+  type CiPage,
   type FindingsPage,
   type InsiderRiskPage,
   type MaturityReport,
@@ -300,6 +301,19 @@ export async function getMaturity(): Promise<Result<MaturityReport>> {
     });
     if (!data) return { ok: false, error: describe(response, "Could not load maturity") };
     return { ok: true, data: data as MaturityReport };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getCi(repoId: string): Promise<Result<CiPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/ci",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load pipeline links") };
+    return { ok: true, data };
   } catch (error) {
     return failure(error);
   }

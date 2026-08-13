@@ -81,6 +81,61 @@ resources:
       secret_access_key: ((minio-secret-key))
 
 anchors:
+  # Failure notification. curl rather than a slack-notification resource type:
+  # this pipeline already carries no third-party resource types, and adding
+  # one to a security pipeline to send a chat message is a poor trade. It also
+  # keeps the payload under this file's control, which the insider job depends
+  # on - see the note there about what must never be sent.
+  #
+  # `notify` is an *optional* input. A job that knows more than "it failed"
+  # writes a single line to notify/message.txt and that is used verbatim;
+  # every other job falls back to its own name. That is what keeps one
+  # notification per event instead of a specific one racing a generic one.
+  slack_alert: &slack_alert
+    task: notify-slack
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      inputs:
+        - name: notify
+          optional: true
+      params:
+        SLACK_WEBHOOK_URL: ((slack-webhook-url))
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            # An unset webhook is not an error. The pipeline has to be
+            # applicable before Slack is configured, and this hook only ever
+            # runs when something has already gone wrong - a missing
+            # notification must not become a second failure on top of it.
+            if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+              echo "No Slack webhook configured - skipping notification."
+              exit 0
+            fi
+
+            BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
+
+            if [ -s notify/message.txt ]; then
+              TEXT=$(head -1 notify/message.txt)
+            else
+              TEXT="*Mykronos*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+            fi
+
+            # Escaped with sed because this image has no jq. Single-line
+            # messages by construction, so backslash and quote are the only
+            # characters that can break the document.
+            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+            printf '{"text":"%s\\n%s"}' "$ESCAPED" "$BUILD_URL" > payload.json
+
+            curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
+              -d @payload.json "$SLACK_WEBHOOK_URL" \
+              || echo "Slack post failed - the build result stands regardless."
+            exit 0
+
   # Every task that reports findings does this: install the package the
   # GitHub composite action installs, then call the same uploader. The logic
   # lives in `mykronos.upload`, not in the action (DECISIONS D-012), which is
@@ -99,6 +154,8 @@ jobs:
 
   - name: unit
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -119,6 +176,8 @@ jobs:
 
   - name: lint-and-types
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -141,6 +200,8 @@ jobs:
 
   - name: qa-spec-links
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -162,6 +223,8 @@ jobs:
   # retired: lint, build, and the contract check that matters more than either.
   - name: frontend
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -233,6 +296,8 @@ jobs:
 
   - name: secrets
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -271,6 +336,8 @@ jobs:
 
   - name: dependencies
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -446,6 +513,8 @@ jobs:
   # code's security. Spec 16 §5.
   - name: sast
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -467,7 +536,18 @@ jobs:
                 mkdir -p /tmp/results
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
-                pip install --quiet semgrep==1.97.0
+                # setuptools is not optional here despite not being a semgrep
+                # dependency, and the version bound is not caution. Python
+                # 3.13 images stopped shipping setuptools, and semgrep's
+                # opentelemetry instrumentation imports pkg_resources at
+                # module load - so semgrep dies with ModuleNotFoundError
+                # before parsing an argument. Installing plain `setuptools`
+                # does not fix it: 81 removed pkg_resources, so the newest
+                # release reintroduces the exact error it was added to solve.
+                #
+                # The upload reported a failed scan rather than clean code,
+                # which is the only reason any of this was visible.
+                pip install --quiet "setuptools<81" semgrep==1.97.0
 
                 # Rule packs download from semgrep.dev; the source stays here.
                 # `--config auto` is deliberately not used - it reports the
@@ -509,6 +589,8 @@ jobs:
   # the honest outcome and is announced rather than inferred.
   - name: insider
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -622,6 +704,8 @@ jobs:
 
   - name: oracle-gate
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -671,6 +755,8 @@ jobs:
 
   - name: build
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -737,6 +823,8 @@ jobs:
 
   - name: publish-backend
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -764,6 +852,8 @@ jobs:
 
   - name: publish-frontend
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true

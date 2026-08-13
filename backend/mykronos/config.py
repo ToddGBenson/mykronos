@@ -291,6 +291,34 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Concourse (spec 15 §4a) ---------------------------------------
+
+    concourse_url: str = Field(
+        default="",
+        description=(
+            "Where this process reaches Concourse's API. Empty disables the "
+            "integration, which is the right state for a deployment that has "
+            "no Concourse -- the dashboard then says a repository has no "
+            "pipeline rather than failing to ask."
+        ),
+    )
+
+    concourse_external_url: str = Field(
+        default="",
+        description=(
+            "Where a *browser* reaches Concourse, for the links the dashboard "
+            "renders. Separate from concourse_url because they genuinely "
+            "differ: this process reaches it by container name on a shared "
+            "Docker network, and a person reaches it on localhost. Falls back "
+            "to concourse_url when unset."
+        ),
+    )
+
+    concourse_team: str = Field(
+        default="main",
+        description="Concourse team whose pipelines cover these repositories.",
+    )
+
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"

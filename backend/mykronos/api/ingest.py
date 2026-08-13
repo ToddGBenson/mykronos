@@ -21,10 +21,19 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
@@ -38,6 +47,7 @@ from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.fingerprint import compute_finding_id
 from mykronos.github.client import GitHubError
 from mykronos.logsafe import scrub
+from mykronos.notify import Notification
 from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
@@ -49,6 +59,7 @@ from mykronos.schemas import (
     InsiderRiskSubmission,
     RawAccepted,
     ScanRunSubmission,
+    ScanStatus,
     SscsEvidenceSubmission,
     utcnow,
 )
@@ -63,6 +74,15 @@ _bearer = HTTPBearer(auto_error=False, description="Per-repo ingestion token.")
 #: inside its overlap window (spec 05 §4). Lets a repo that never picked up the
 #: new secret be spotted from logs, rather than only when it starts failing.
 ROTATED_HEADER = "X-Mykronos-Token-Rotated"
+
+#: Scan outcomes worth waking somebody for (spec 16 §14).
+#:
+#: `no_applicable_targets` is deliberately absent. It is the third state from
+#: L0001 — a scanner with nothing to scan — and it is a normal, correct result
+#: for a repository that has no Dockerfiles or declares no dependencies.
+#: Alerting on it would train people to ignore this channel, which is how the
+#: two entries that *are* here stop being read.
+_FAILED_SCANS = frozenset({ScanStatus.FAILURE.value, ScanStatus.PARTIAL_FAILURE.value})
 
 
 async def require_token(
@@ -171,6 +191,7 @@ async def ingest_scan_run(
     request: Request,
     submission: ScanRunSubmission,
     token: TokenDep,
+    background: BackgroundTasks,
 ) -> IngestAccepted:
     """Register or finalise a ScanRun.
 
@@ -191,7 +212,41 @@ async def ingest_scan_run(
     row["ingested_at"] = utcnow()
 
     request.app.state.buffer.append("scan_runs", [row])
+
+    # Only on the finalising post. The same scan run is submitted twice
+    # (D-002), and the first has no `completed_at` and no meaningful status --
+    # alerting on it would fire on every scan that has merely started.
+    #
+    # This is the alert that matters most and reads as the dullest: a
+    # capability whose scan failed reports no findings, which is
+    # indistinguishable from a clean repository on every dashboard the platform
+    # has. Spec 04 §6 is the requirement; this is how a person hears about it
+    # the same day rather than during an audit.
+    if submission.completed_at is not None and row["scan_status"] in _FAILED_SCANS:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title=f"{row['capability']} scan {row['scan_status']}",
+                detail=(
+                    f"Scan run `{submission.scan_run_id}` on "
+                    f"`{submission.commit_sha or 'unknown commit'}` did not complete "
+                    "cleanly. It reported "
+                    f"{submission.finding_count or 0} finding(s), and that count "
+                    "is not evidence of a clean repository -- a failed scan and "
+                    "a clean scan look identical on the dashboard."
+                ),
+                repo_full_name=token.repo_full_name,
+                level="warning",
+            ),
+        )
+
     return IngestAccepted(accepted=1, scan_run_id=submission.scan_run_id)
+
+
+#: Severity ordered loudest-last, so "at or above the configured floor" is a
+#: comparison rather than a set membership test that has to be kept in sync.
+_SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+_SEVERITY_RANK = {name: rank for rank, name in enumerate(reversed(_SEVERITY_ORDER))}
 
 
 @router.post("/findings", response_model=IngestAccepted)
@@ -199,6 +254,7 @@ async def ingest_findings(
     request: Request,
     batch: FindingBatch,
     token: TokenDep,
+    background: BackgroundTasks,
 ) -> IngestAccepted:
     """Submit a batch of normalized findings for a scan run.
 
@@ -256,6 +312,38 @@ async def ingest_findings(
         )
 
     request.app.state.buffer.append("findings", rows)
+
+    # One summary per batch, never one per finding (spec 16 §14). A scan that
+    # uploads four hundred criticals is one event a person needs to know about;
+    # four hundred messages is a channel somebody mutes, which costs more than
+    # the alert was ever worth.
+    #
+    # These are newly *ingested*, not necessarily newly *discovered* — the
+    # compaction upsert decides that, and it has not run yet. The wording says
+    # "reported" for exactly that reason.
+    settings = request.app.state.settings
+    threshold = _SEVERITY_RANK.get(settings.slack_notify_min_severity, 3)
+    loud = [r for r in rows if _SEVERITY_RANK.get(r["severity"], 0) >= threshold]
+    if loud:
+        counts = Counter(r["severity"] for r in loud)
+        summary = ", ".join(
+            f"{counts[name]} {name}" for name in _SEVERITY_ORDER if counts.get(name)
+        )
+        worst = max(_SEVERITY_RANK.get(r["severity"], 0) for r in loud)
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title=f"{capability} reported {summary}",
+                detail=(
+                    f"Scan run `{batch.scan_run_id}`.\n"
+                    + "\n".join(f"- {r['severity']}: {r['title']}" for r in loud[:5])
+                    + (f"\n...and {len(loud) - 5} more." if len(loud) > 5 else "")
+                ),
+                repo_full_name=token.repo_full_name,
+                level="critical" if worst >= _SEVERITY_RANK["critical"] else "warning",
+            ),
+        )
+
     return IngestAccepted(accepted=len(rows), scan_run_id=batch.scan_run_id)
 
 

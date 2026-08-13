@@ -1124,7 +1124,9 @@ an empty directory finds that sentence.
 
 ## D-040 — A forced-command SSH key is how Concourse deploys TheHub
 
-**Status:** Decided
+**Status:** SUPERSEDED by D-042 — this host has no SSH server, which was not
+checked before the mechanism was specified. Kept because the reasoning about
+*why not a Docker socket* still stands and D-042 depends on it.
 **Spec:** [16 §7](../specs/16-thehub-delivery-pipeline.md)
 
 TheHub's pipeline deploys to demo automatically and to production on a click.
@@ -1193,6 +1195,93 @@ issues — is the one the dashboard suggests.
 `--config auto` is deliberately not used: it reports the repository to
 semgrep.dev, which is the class of thing spec 12 §5.2 makes opt-in. Named rule
 packs download rules; the source stays on the worker.
+
+---
+
+## D-042 — The deploy instruction is a pointer the host pulls, superseding D-040
+
+**Status:** Decided, supersedes [D-040](#d-040--a-forced-command-ssh-key-is-how-concourse-deploys-thehub)
+**Spec:** [16 §7](../specs/16-thehub-delivery-pipeline.md)
+
+D-040 chose a forced-command SSH key per environment. It was never run,
+because the host has no SSH server: `Get-Service sshd` returns nothing and only
+the disabled `ssh-agent` exists. The decision was made against an assumed
+capability rather than a checked one.
+
+**Why not just install sshd.** It would work. It also means standing up a
+listening service on the machine spec 15 §7 is already uneasy about — a worker
+inside the LAN — for the sole purpose of receiving deploy instructions. The
+installation is a bigger change to this host's attack surface than the feature
+it unlocks, and it needs an administrator, which makes it a change nobody can
+reverse by editing a file in this repository.
+
+**Why not TheHub's existing docker-socket-proxy.** This was the reflex answer —
+it is already running, and a filtered socket sounds narrower than a raw one.
+Checking what it is actually configured for killed the idea: `POST=0`,
+`ALLOW_RESTARTS=0`, `ALLOW_START=0`, `ALLOW_STOP=0`. It is read-only, serving
+uptime monitoring. Making it deploy means `POST=1` plus `CONTAINERS=1`, and
+that combination permits `/containers/create` — which permits a container with
+a host bind mount, which is root on the host. It would have been a raw socket
+wearing a proxy's name. It is also on TheHub's compose network with no
+published port, so Concourse cannot reach it without a second change.
+
+**What was built instead.** The deploy job writes a commit SHA to
+`<env>.requested` in MinIO. A Scheduled Task on the host polls, pulls that
+image by SHA, deploys, and writes `<env>.deployed`. Concourse waits for its own
+SHA to come back before reporting success, so `passed: [deploy-demo]` still
+means demo is serving this commit rather than that a request was filed.
+
+It is the one-way handoff D-038 already chose for the artifact, applied to the
+instruction as well: nothing Concourse can do restarts a service, and the host
+opens no port to be told to. The pipeline's entire vocabulary is one
+hexadecimal string in one object — a compromised task can ask for a different
+already-built image and cannot ask for anything else, because there is no other
+field to say it in.
+
+**The cost, which is real.** Deploys are as slow as the poll interval, and the
+host-side task becomes a component that can itself be down. SSH failed loudly
+at connect time; a stalled poller looks like a slow deploy. The deploy job
+therefore times out with the Scheduled Task named in the message, so the error
+points at the thing to restart.
+
+**The general lesson.** D-040 specified a mechanism against an assumed
+capability. Ten seconds of `Get-Service` would have caught it before the spec
+was written, the script was written, and the key-provisioning helper was
+written. Check the substrate before designing against it.
+
+---
+
+## D-043 — `fly set-pipeline` printed every credential it interpolated
+
+**Status:** Decided, fixed
+**Spec:** [15 §6](../specs/15-concourse-pipeline.md), [16 §11](../specs/16-thehub-delivery-pipeline.md)
+
+Running `set-pipeline.ps1` scrolled the ingestion token, the Oracle gate token
+and every other `((var))` across the terminal in plaintext. `fly set-pipeline`
+prints the *resolved* configuration as a diff, and `--load-vars-from`
+substitutes the variables before that diff is produced. `--non-interactive`
+suppresses the prompt, not the output.
+
+Every acceptance criterion about this was satisfied and none of them covered
+it: spec 15 §6 and spec 16 §11 say no credential appears in pipeline YAML, in
+build logs, or in an image layer. The vars file was written to a temp path and
+deleted in a `finally`. The pipeline file holds no secrets. And the one place
+they were all visible at once — set-pipeline's own stdout, in the scrollback of
+whoever ran it, and in any recording of that session — was named in none of
+them.
+
+**Fixed** by piping the call to `Out-Null` in all three set-pipeline scripts.
+Errors still surface: fly writes those to stderr and `$LASTEXITCODE` is checked
+regardless.
+
+**This is a mitigation, not the fix.** The real answer is spec 15 §6's
+credential manager, so that the configuration never contains a secret to print.
+Until then the property holds only because one line suppresses output, which is
+one careless edit from regressing.
+
+**Rotate anything that was displayed.** A credential that has been on a screen
+is a credential that has been disclosed, and the cost of rotating an ingestion
+token here is one command.
 
 ---
 

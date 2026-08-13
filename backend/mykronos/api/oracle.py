@@ -21,7 +21,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -30,6 +30,7 @@ from mykronos.api.ingest import TokenDep
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
 from mykronos.logsafe import scrub
+from mykronos.notify import Notification
 from mykronos.oracle.service import OracleService, decision_to_row
 from mykronos.schemas import utcnow
 
@@ -137,7 +138,10 @@ def _installation_client(request: Request, repo_full_name: str) -> Any:
 
 @router.post("/evaluate", response_model=EvaluateResult)
 async def evaluate(
-    request: Request, body: EvaluateRequest, token: TokenDep
+    request: Request,
+    body: EvaluateRequest,
+    token: TokenDep,
+    background: BackgroundTasks,
 ) -> EvaluateResult:
     """Score a commit and publish the result (spec 09 §7, §8)."""
     if not token.permits("oracle"):
@@ -160,6 +164,30 @@ async def evaluate(
         blocking=blocking,
         github=_installation_client(request, token.repo_full_name),
     )
+
+    # A no_go is the one decision that stops a deploy, and the pipeline that
+    # asked has already exited by the time anyone looks at it. Sent as a
+    # background task so a slow webhook cannot add latency to a gate every
+    # build waits on (spec 16 §14).
+    if published.decision.recommendation == "no_go":
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Oracle refused a commit",
+                detail=(
+                    f"Score {published.decision.overall_risk_score}. "
+                    f"{published.decision.reasoning or 'No reasoning recorded.'}\n"
+                    f"Commit `{body.commit_sha}`. "
+                    + (
+                        "Blocking is on: the check run is red."
+                        if published.blocking
+                        else "Advisory only: blocking is off for this repository."
+                    )
+                ),
+                repo_full_name=token.repo_full_name,
+                level="critical",
+            ),
+        )
 
     return EvaluateResult(
         decision_id=published.decision.decision_id,

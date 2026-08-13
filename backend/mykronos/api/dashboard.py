@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
+from mykronos.ci import ConcourseClient
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
 from mykronos.db.models import RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
@@ -570,6 +571,80 @@ async def repo_insider_risk(
             "person. Nothing here aggregates or ranks contributors, and rows "
             "are deleted after this repository's retention period (spec 06 §9)."
         ),
+    )
+
+
+class CiJobOut(BaseModel):
+    name: str
+    status: str | None = Field(
+        default=None,
+        description=(
+            "Concourse's own word: succeeded, failed, errored, aborted, "
+            "pending. Null means the job has never finished a build, which is "
+            "neither pass nor fail."
+        ),
+    )
+    build_name: str | None = None
+    build_url: str | None = None
+    finished_at: datetime | None = None
+
+
+class CiPage(BaseModel):
+    """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
+
+    repo_full_name: str
+    github_url: str
+    github_actions_url: str
+    pipeline: str | None = None
+    pipeline_url: str | None = None
+    jobs: list[CiJobOut] = Field(default_factory=list)
+    failing: list[str] = Field(default_factory=list)
+    unavailable: str | None = Field(
+        default=None,
+        description=(
+            "Why there is no pipeline state, when there is none. 'No pipeline "
+            "for this repo' and 'Concourse did not answer' are different "
+            "facts, and a panel that conflates them teaches people to ignore "
+            "it."
+        ),
+    )
+
+
+@router.get("/repos/{repo_id}/ci", response_model=CiPage)
+async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> CiPage:
+    """Links out to where this repository is built (spec 15 §4a).
+
+    Deliberately a link rather than a mirror: Concourse's own UI is the
+    authority on its state, and restating a build outcome here would create a
+    second version of it to disagree with. What this adds is knowing *which*
+    pipeline, from a page that is already about this repository.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    settings = request.app.state.settings
+    status = ConcourseClient(
+        settings.concourse_url,
+        team=settings.concourse_team,
+        external_url=settings.concourse_external_url,
+    ).status_for(repo_full_name)
+
+    return CiPage(
+        repo_full_name=repo_full_name,
+        github_url=f"https://github.com/{repo_full_name}",
+        github_actions_url=f"https://github.com/{repo_full_name}/actions",
+        pipeline=status.pipeline,
+        pipeline_url=status.url,
+        jobs=[
+            CiJobOut(
+                name=job.name,
+                status=job.status,
+                build_name=job.build_name,
+                build_url=job.build_url,
+                finished_at=job.finished_at,
+            )
+            for job in status.jobs
+        ],
+        failing=status.failing,
+        unavailable=status.unavailable,
     )
 
 
