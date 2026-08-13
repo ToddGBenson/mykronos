@@ -703,6 +703,25 @@ jobs:
 
                 cd backend
 
+                # TheHub resolves its YAML config through HUB_CONFIG_DIR,
+                # defaulting to /app/config -- the path inside its own
+                # container. A checkout has no /app, so lifecycle_pipelines.yaml
+                # and studio_stage_guide.yaml loaded as empty and the tests that
+                # read them failed on the consequences rather than the cause:
+                # `assert 0 == 19` canonical stages, `KeyError: 'dev_ready'`,
+                # `Stage 'loop' missing gate_md in YAML`.
+                #
+                # The env var is the mechanism the code already provides for
+                # this, so nothing in TheHub needs changing - it just has to be
+                # told where the repository is.
+                export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
+                echo "HUB_CONFIG_DIR=$HUB_CONFIG_DIR"
+                test -f "$HUB_CONFIG_DIR/lifecycle_pipelines.yaml" || {
+                  echo "::error::No lifecycle_pipelines.yaml under $HUB_CONFIG_DIR."
+                  echo "          The stage tests would fail on empty config."
+                  exit 1
+                }
+
                 # `-p no:cacheprovider` because the checkout is thrown away
                 # after the build; writing .pytest_cache into it is pure IO.
                 python -m pytest tests/unit -q -p no:cacheprovider
