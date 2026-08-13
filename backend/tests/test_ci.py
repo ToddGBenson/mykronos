@@ -10,10 +10,11 @@ ignored.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
-from mykronos.ci import ConcourseClient, pipeline_name_for
+from mykronos.ci import ConcourseClient, JobStatus, pipeline_name_for, reconcile
 
 
 class FakeResponse:
@@ -161,6 +162,87 @@ class TestStatus:
         status = ConcourseClient("").status_for("ToddGBenson/mykronos")
 
         assert status.unavailable == "No Concourse is configured for this deployment."
+
+
+class TestReporting:
+    """A green pipeline and a stale capability used to be two facts on two
+    pages that never contradicted each other. The sast lane failed on every
+    run for a day and the dashboard simply showed sast as un-scanned."""
+
+    @staticmethod
+    def _job(name, status="succeeded", finished=None):
+        return JobStatus(
+            name=name,
+            status=status,
+            build_name="1",
+            build_url="http://x",
+            finished_at=finished,
+        )
+
+    def test_a_job_that_reported_is_reporting(self) -> None:
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 8, 13, 11, 58, tzinfo=UTC)
+
+        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+
+        assert row.state == "reporting"
+
+    def test_a_job_that_ran_after_the_newest_scan_is_silent(self) -> None:
+        """The scan run predates the build, so this build's findings never
+        arrived. Green pipeline, stale data, and nothing else says so."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+
+        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+
+        assert row.state == "silent"
+
+    def test_minutes_of_lag_is_not_evidence_of_anything(self) -> None:
+        """A build finishes after its upload, and compaction is asynchronous."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 8, 13, 11, 30, tzinfo=UTC)
+
+        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+
+        assert row.state == "reporting"
+
+    def test_a_job_with_no_scan_run_at_all_is_named(self) -> None:
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+        [row] = reconcile([self._job("containers", finished=built)], {})
+
+        assert row.state == "never_reported"
+
+    def test_a_failed_job_is_not_held_against_the_lake(self) -> None:
+        """A lane that fails produces nothing, and the lake is right to be
+        empty. The failure is the pipeline's to report, not this check's."""
+        [row] = reconcile([self._job("sast", status="failed")], {})
+
+        assert row.state == "not_run"
+
+    def test_the_job_names_that_do_not_match_their_capability(self) -> None:
+        """`dependencies` uploads as atlas, `insider` as aegis. Each has
+        already been mistaken for a coverage gap."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        rows = reconcile(
+            [
+                self._job("dependencies", finished=built),
+                self._job("insider", finished=built),
+                self._job("cloud-posture", finished=built),
+            ],
+            {"atlas": built, "aegis": built, "cloud": built},
+        )
+
+        assert [r.capability for r in rows] == ["atlas", "aegis", "cloud"]
+        assert all(r.state == "reporting" for r in rows)
+
+    def test_jobs_that_produce_no_findings_are_not_checked(self) -> None:
+        """`unit` and `build` write nothing to the lake, and flagging them
+        would drown the real signal in noise nobody can act on."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        jobs = [self._job(n, finished=built) for n in ("unit", "build", "publish-backend")]
+
+        assert reconcile(jobs, {}) == []
 
 
 class TestTheEndpoint:

@@ -48,6 +48,60 @@ def pipeline_name_for(repo_full_name: str) -> str:
     return repo_full_name.rsplit("/", 1)[-1].lower()
 
 
+#: Which capability a job's results should arrive under.
+#:
+#: A heuristic, and named as one. Job names are chosen by whoever writes the
+#: pipeline and nothing enforces this; a job absent from here is simply not
+#: cross-checked, which is the safe direction to be wrong in. The three
+#: non-obvious entries are the ones that have already caused confusion:
+#: `dependencies` uploads as `atlas`, `insider` as `aegis`, and
+#: `cloud-posture` as `cloud`.
+CAPABILITY_BY_JOB: dict[str, str] = {
+    "sast": "sast",
+    "secrets": "secrets",
+    "containers": "containers",
+    "dast": "dast",
+    "iac": "iac",
+    "dependencies": "atlas",
+    "atlas": "atlas",
+    "insider": "aegis",
+    "aegis": "aegis",
+    "cloud-posture": "cloud",
+    "cloud": "cloud",
+}
+
+#: How far a successful build may lead its capability's newest scan run before
+#: the results count as missing. Generous on purpose: a job's build finishes
+#: after its upload, but compaction is asynchronous and a run started before a
+#: deploy can land minutes later. Anything under an hour is not evidence.
+REPORTING_GRACE_SECONDS = 3600
+
+
+@dataclass(frozen=True)
+class Reporting:
+    """Whether a job's results actually reached the lake (spec 15 §4a).
+
+    The gap this closes: a pipeline is green, the dashboard shows an old scan,
+    and nothing anywhere says those two facts contradict each other. It
+    happened here - the sast lane failed on every run for a day while the
+    capability simply looked un-scanned.
+    """
+
+    job: str
+    capability: str
+    built_at: datetime | None
+    scanned_at: datetime | None
+
+    @property
+    def state(self) -> str:
+        if self.built_at is None:
+            return "not_run"
+        if self.scanned_at is None:
+            return "never_reported"
+        delta = (self.built_at - self.scanned_at).total_seconds()
+        return "silent" if delta > REPORTING_GRACE_SECONDS else "reporting"
+
+
 @dataclass(frozen=True)
 class JobStatus:
     name: str
@@ -186,3 +240,31 @@ class ConcourseClient:
             if isinstance(end, int | float) and end
             else None,
         )
+
+
+def reconcile(
+    jobs: list[JobStatus], last_scan_at: dict[str, datetime]
+) -> list[Reporting]:
+    """Line each scanning job up against the newest scan run it should have
+    produced (spec 15 §4a).
+
+    Only jobs in `CAPABILITY_BY_JOB` are checked. `unit`, `build` and
+    `publish-backend` produce no findings and their absence from the lake is
+    not a fault.
+    """
+    seen: set[str] = set()
+    out: list[Reporting] = []
+    for job in jobs:
+        capability = CAPABILITY_BY_JOB.get(job.name)
+        if capability is None or job.name in seen:
+            continue
+        seen.add(job.name)
+        out.append(
+            Reporting(
+                job=job.name,
+                capability=capability,
+                built_at=job.finished_at if job.status == "succeeded" else None,
+                scanned_at=last_scan_at.get(capability),
+            )
+        )
+    return out

@@ -12,7 +12,7 @@
  */
 
 import { Label, Pill, RelativeTime } from "@/components/primitives";
-import type { CiJob, CiPage } from "@/lib/api";
+import type { CiJob, CiPage, CiReporting } from "@/lib/api";
 
 /** Concourse's vocabulary, mapped to the palette the rest of the app uses. */
 function jobTone(status: string | null | undefined): "critical" | "warn" | "pass" | "muted" {
@@ -67,6 +67,8 @@ export function PipelinesPanel({ ci }: { ci: CiPage }) {
         ) : null}
       </div>
 
+      <ReportingRow reporting={ci.reporting ?? []} />
+
       {ci.unavailable ? (
         <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-3">
           {ci.unavailable}
@@ -83,6 +85,50 @@ export function PipelinesPanel({ ci }: { ci: CiPage }) {
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * Whether each scanning job's results actually reached the lake.
+ *
+ * The failure this makes visible: a pipeline is green, the dashboard shows an
+ * old scan, and until now nothing anywhere pointed out that those two facts
+ * contradict each other. Only the problems are listed — a row per healthy
+ * capability would bury the one that matters.
+ */
+function ReportingRow({ reporting }: { reporting: CiReporting[] }) {
+  const problems = reporting.filter(
+    (row) => row.state === "silent" || row.state === "never_reported",
+  );
+  if (problems.length === 0) return null;
+
+  return (
+    <div className="border-t border-rule-soft bg-high-wash px-3 py-2">
+      <Label>Ran, but nothing arrived</Label>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {problems.map((row) => (
+          <li key={row.job} className="font-mono text-[10px] text-ink-2">
+            <span className="font-bold">{row.job}</span> succeeded
+            {row.built_at ? (
+              <>
+                {" "}
+                <RelativeTime value={row.built_at} />
+              </>
+            ) : null}
+            {row.state === "never_reported" ? (
+              <> — no successful {row.capability} scan has ever reached the lake.</>
+            ) : (
+              <>
+                {" "}
+                — newest {row.capability} scan is from{" "}
+                {row.scanned_at ? <RelativeTime value={row.scanned_at} /> : "before it"},
+                so that build&rsquo;s findings never arrived.
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

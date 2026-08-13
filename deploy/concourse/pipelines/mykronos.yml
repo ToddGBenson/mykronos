@@ -162,9 +162,15 @@ jobs:
       - get: python
       - task: pytest
         image: python
+        # Worker-local pip cache. These tasks reinstall the same dependency
+        # set on every commit; without it each run re-downloads the lot, which
+        # is where `unit` spent most of its 19 minutes.
+        params:
+          PIP_CACHE_DIR: /pipcache
         config:
           platform: linux
           inputs: [{ name: source }]
+          caches: [{ path: /pipcache }]
           run:
             path: bash
             args:
@@ -185,9 +191,15 @@ jobs:
       - get: python
       - task: ruff-and-mypy
         image: python
+        # Worker-local pip cache. These tasks reinstall the same dependency
+        # set on every commit; without it each run re-downloads the lot, which
+        # is where `unit` spent most of its 19 minutes.
+        params:
+          PIP_CACHE_DIR: /pipcache
         config:
           platform: linux
           inputs: [{ name: source }]
+          caches: [{ path: /pipcache }]
           run:
             path: bash
             args:

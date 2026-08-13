@@ -267,9 +267,24 @@ jobs:
       - get: python
       - task: pytest
         image: python
+        # 45 minutes was not a slow test suite; it was a full reinstall of
+        # TheHub's dependency set on every run, from PyPI, with nothing kept
+        # between builds. The cache is a worker-local volume Concourse mounts
+        # back into this task each time, so the second run downloads only what
+        # changed. First run after a requirements change is still slow, which
+        # is the honest cost of a changed dependency rather than a fixed tax on
+        # every commit.
+        params:
+          PIP_CACHE_DIR: /pipcache
+        # A build that hangs must fail rather than occupy a worker. One ran for
+        # 47 minutes and was still going when it was killed by hand; nothing in
+        # the pipeline would ever have stopped it, and `unit` gates build,
+        # containers, Oracle and both deploys.
+        timeout: 25m
         config:
           platform: linux
           inputs: [{ name: source }]
+          caches: [{ path: /pipcache }]
           run:
             path: bash
             args:

@@ -518,6 +518,24 @@ class DashboardQueries:
 
     # -- scan health ----------------------------------------------------
 
+    def last_successful_scan_at(self, repo_full_name: str) -> dict[str, datetime]:
+        """Newest successful scan run per capability (spec 15 §4a).
+
+        Successful only. A capability whose every run failed has reported
+        nothing usable, and treating a recorded failure as evidence of
+        reporting is how a broken lane hides behind its own error rows.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT capability, max(coalesce(completed_at, started_at))
+            FROM scan_runs
+            WHERE repo_full_name = ? AND scan_status = 'success'
+            GROUP BY capability
+            """,
+            [repo_full_name],
+        )
+        return {str(c): at for c, at in rows if at is not None}
+
     def scan_health(self, repo_full_name: str, limit: int = 50) -> list[dict[str, Any]]:
         """Per-capability run history and failure rate (spec 10 §2.2)."""
         rows = self.catalog.query(

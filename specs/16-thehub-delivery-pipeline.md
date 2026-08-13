@@ -3,6 +3,36 @@
 **Status:** Draft for review
 **Depends on:** [04 — Scanner Workflows](04-scanner-workflows.md), [06 — Aegis](06-aegis-integration.md), [09 — Oracle](09-oracle-risk-decision-engine.md), [12 — Security](12-security-and-secrets-management.md), [15 — Concourse Pipeline](15-concourse-pipeline.md)
 
+> **Process note — this spec did not go through i2i, and should have.**
+>
+> "Run through i2i" was the instruction this work started from. It was read as
+> a generic idea-to-implementation discipline — write the spec, implement
+> against it, record the decisions — and that is what happened here.
+>
+> i2i is not generic. It is TheHub's own Idea-to-Implementation funnel, with
+> four named phases whose canonical definition is
+> `config/pipeline_phases.yaml` and whose surface is Mission Control →
+> Delivery → I2I:
+>
+> | Phase | Idea to Inception |
+> |---|---|
+> | Scoping | Idea → problem definition (an oplan, `status=active`) |
+> | Discovery | Problem → validated concept (epic ideation) |
+> | Framing | Validated concept → epic (decomposition, requirements) |
+> | Inception | Epic → ready stories. *Ready-for-Dev is the output, not a phase* |
+>
+> Against that, this spec is roughly a Framing artefact — it decomposes the
+> problem and states requirements — reached without Scoping or Discovery, and
+> Inception produced no stories because none were ever created. **There is no
+> oplan and no epic in TheHub for any of this work**, so none of it appears in
+> the funnel it was supposed to run through, and the delivery pipeline this
+> spec describes reports stages against a lifecycle that has no record of why
+> they exist.
+>
+> Recorded rather than quietly corrected, because the gap is the interesting
+> part: a pipeline that reports into a lifecycle it never entered is exactly
+> the drift §13 was written to prevent, arrived at from the other direction.
+
 ---
 
 ## 1. Purpose

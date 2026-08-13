@@ -1022,10 +1022,31 @@ export interface components {
             /** Failing */
             failing?: string[];
             /**
+             * Reporting
+             * @description Each scanning job against the newest scan run it should have produced. A green pipeline and a stale capability are two facts that used to sit on different pages without contradicting each other.
+             */
+            reporting?: components["schemas"]["CiReportingOut"][];
+            /**
              * Unavailable
              * @description Why there is no pipeline state, when there is none. 'No pipeline for this repo' and 'Concourse did not answer' are different facts, and a panel that conflates them teaches people to ignore it.
              */
             unavailable?: string | null;
+        };
+        /** CiReportingOut */
+        CiReportingOut: {
+            /** Job */
+            job: string;
+            /** Capability */
+            capability: string;
+            /** Built At */
+            built_at?: string | null;
+            /** Scanned At */
+            scanned_at?: string | null;
+            /**
+             * State
+             * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. not_run: no successful build to compare against.
+             */
+            state: string;
         };
         /**
          * EcosystemEvidence

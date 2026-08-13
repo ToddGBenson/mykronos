@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
-from mykronos.ci import ConcourseClient
+from mykronos.ci import ConcourseClient, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
 from mykronos.db.models import RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
@@ -589,6 +589,22 @@ class CiJobOut(BaseModel):
     finished_at: datetime | None = None
 
 
+class CiReportingOut(BaseModel):
+    job: str
+    capability: str
+    built_at: datetime | None = None
+    scanned_at: datetime | None = None
+    state: str = Field(
+        description=(
+            "reporting: results arrived. silent: the job succeeded and its "
+            "capability's newest scan run is older than that build, so "
+            "something ran and did not report. never_reported: the job has "
+            "succeeded and the lake has no successful run for it at all. "
+            "not_run: no successful build to compare against."
+        )
+    )
+
+
 class CiPage(BaseModel):
     """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
 
@@ -599,6 +615,15 @@ class CiPage(BaseModel):
     pipeline_url: str | None = None
     jobs: list[CiJobOut] = Field(default_factory=list)
     failing: list[str] = Field(default_factory=list)
+    reporting: list[CiReportingOut] = Field(
+        default_factory=list,
+        description=(
+            "Each scanning job against the newest scan run it should have "
+            "produced. A green pipeline and a stale capability are two facts "
+            "that used to sit on different pages without contradicting each "
+            "other."
+        ),
+    )
     unavailable: str | None = Field(
         default=None,
         description=(
@@ -627,6 +652,10 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         external_url=settings.concourse_external_url,
     ).status_for(repo_full_name)
 
+    reported = reconcile(
+        status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
+    )
+
     return CiPage(
         repo_full_name=repo_full_name,
         github_url=f"https://github.com/{repo_full_name}",
@@ -644,6 +673,16 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
             for job in status.jobs
         ],
         failing=status.failing,
+        reporting=[
+            CiReportingOut(
+                job=r.job,
+                capability=r.capability,
+                built_at=r.built_at,
+                scanned_at=r.scanned_at,
+                state=r.state,
+            )
+            for r in reported
+        ],
         unavailable=status.unavailable,
     )
 
