@@ -1,0 +1,282 @@
+# Mykronos pipeline (spec 15 §3).
+#
+# Quality gate -> security -> Oracle gate -> build. Each stage passes the same
+# checked-out source forward, so every job scans the commit the tests ran on
+# rather than whatever main happens to be when it starts.
+#
+# Nothing sensitive appears here. `((var))` resolves from Concourse's
+# credential manager; with none configured, `fly set-pipeline --load-vars-from`
+# supplies them from a gitignored file. Neither puts a secret in this file.
+
+resource_types:
+  - name: registry-image
+    type: registry-image
+    source: { repository: concourse/registry-image-resource, tag: "1.10" }
+
+resources:
+  - name: source
+    type: git
+    icon: github
+    source:
+      uri: https://github.com/ToddGBenson/mykronos.git
+      branch: main
+
+  - name: python
+    type: registry-image
+    icon: language-python
+    source: { repository: python, tag: "3.13-slim" }
+
+anchors:
+  # Every task that reports findings does this: install the package the
+  # GitHub composite action installs, then call the same uploader. The logic
+  # lives in `mykronos.upload`, not in the action (DECISIONS D-012), which is
+  # the entire reason a second CI system costs almost nothing here.
+  mykronos_env: &mykronos_env
+    MYKRONOS_URL: ((mykronos-url))
+    MYKRONOS_TOKEN: ((mykronos-ingestion-token))
+    MYKRONOS_REF: ((mykronos-ref))
+    MYKRONOS_GATE_TOKEN: ((mykronos-gate-token))
+
+jobs:
+  # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
+  #
+  # In parallel, and a failure in any one stops everything downstream. There
+  # is no value in scanning a commit that does not pass its own tests.
+
+  - name: unit
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: pytest
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                cd source/backend
+                pip install --quiet -e ".[dev]"
+                python -m pytest -q
+
+  - name: lint-and-types
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: []
+      - get: python
+      - task: ruff-and-mypy
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                cd source/backend
+                pip install --quiet -e ".[dev]"
+                python -m ruff check .
+                python -m mypy mykronos
+
+  - name: qa-spec-links
+    public: true
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - task: check-links
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                cd source
+                python scripts/check_links.py
+
+  # -- Stage 2: security (spec 15 §4) -------------------------------------
+  #
+  # Reports through `python -m mykronos.upload`, the same module the composite
+  # action calls. `--workspace` is not optional: without it findings record the
+  # runner's absolute paths, which are not clickable and, because identity
+  # derives from the path, change every time the checkout moves.
+
+  - name: secrets
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit, lint-and-types, qa-spec-links]
+      - get: python
+      - task: gitleaks
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                curl -sSfL -o /tmp/gitleaks.tar.gz \
+                  https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+                /tmp/gitleaks detect --source . --report-format json \
+                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability secrets --tool gitleaks \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch main --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  - name: dependencies
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit, lint-and-types, qa-spec-links]
+      - get: python
+      - task: osv-scanner
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                cd source
+                mkdir -p /tmp/results
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+
+                # The released Go binary, checksummed. `pip install
+                # osv-scanner` installs a reserved-name placeholder with no
+                # CLI, which is how this lane reported zero findings for its
+                # entire first life.
+                curl -sSfL -o /usr/local/bin/osv-scanner \
+                  https://github.com/google/osv-scanner/releases/download/v2.5.0/osv-scanner_linux_amd64
+                echo "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c  /usr/local/bin/osv-scanner" \
+                  | sha256sum -c -
+                chmod +x /usr/local/bin/osv-scanner
+
+                # Exit 1 means vulnerabilities were found, which is a result.
+                # Anything else is a scan failure and must not read as a clean
+                # supply chain.
+                rc=0
+                osv-scanner scan source --recursive --no-resolve \
+                  --format sarif --output-file /tmp/results/osv.sarif . || rc=$?
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::osv-scanner exited $rc - that is a failure, not a result"
+                  exit "$rc"
+                fi
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability atlas --tool osv-scanner \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch main --workspace "$PWD" \
+                  --severity-threshold low --blocking false
+
+  # -- Stage 3: the gate (spec 15 §3) -------------------------------------
+  #
+  # After every security job, never alongside them. Oracle scores the whole
+  # picture (spec 09 §8); gating on a partial one produces a decision the next
+  # finding invalidates.
+
+  - name: oracle-gate
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [secrets, dependencies]
+      - get: python
+      - task: evaluate
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+
+                # No repo_full_name: it comes from the ingestion token, so a
+                # pipeline cannot request a decision about somebody else's
+                # repository. The endpoint forbids extra fields, so sending it
+                # is a 422 rather than a harmless duplicate.
+                BODY=$(jq -nc \
+                  --arg sha "$(git rev-parse HEAD)" \
+                  '{commit_sha: $sha, decision_type: "portfolio"}')
+
+                curl --fail --silent --show-error --max-time 120 \
+                  -X POST "$MYKRONOS_URL/api/oracle/evaluate" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "X-Hub-Token: $MYKRONOS_GATE_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > decision.json
+
+                RECOMMENDATION=$(jq -r '.recommendation' decision.json)
+                SCORE=$(jq -r '.overall_risk_score' decision.json)
+                echo "Oracle: $RECOMMENDATION (score $SCORE)"
+                jq -r '.reasoning // empty' decision.json
+
+                if [ "$RECOMMENDATION" = "no_go" ]; then
+                  echo "Oracle says no_go - stopping before build."
+                  exit 1
+                fi
+
+  # -- Stage 4: build (spec 15 §3) ----------------------------------------
+
+  - name: build
+    public: true
+    plan:
+      - get: source
+        trigger: true
+        passed: [oracle-gate]
+      - get: python
+      - task: build-backend
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: dist }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                cd source/backend
+                pip install --quiet build
+                python -m build --wheel --outdir ../../dist
+                ls -l ../../dist

@@ -55,3 +55,8 @@ frontend/.next/
 frontend/node_modules/
 frontend/.env.local
 frontend/openapi.json
+
+# Concourse deployment secrets (deploy/concourse/README.md).
+deploy/concourse/.env
+deploy/concourse/.env.bak-*
+deploy/concourse/bin/
