@@ -280,7 +280,14 @@ jobs:
         # 47 minutes and was still going when it was killed by hand; nothing in
         # the pipeline would ever have stopped it, and `unit` gates build,
         # containers, Oracle and both deploys.
-        timeout: 25m
+        #
+        # 40m rather than the 25m this started at, and the number came from
+        # measurement: at 25m the first run died inside `pip install -r
+        # backend/requirements.txt` with a cold cache. TheHub's dependency set
+        # is genuinely large, so a cold install is slow once and warm installs
+        # are minutes. A cap that kills the run which populates the cache never
+        # lets the cache exist.
+        timeout: 40m
         config:
           platform: linux
           inputs: [{ name: source }]
