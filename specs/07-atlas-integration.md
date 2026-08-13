@@ -40,7 +40,7 @@ not a standalone governance platform.
 | `sbom_ref` | string, nullable | path to the generated SBOM file in raw output storage (spec 05 §7) |
 | `dependency_count` | int | |
 | `vulnerable_dependency_count` | int | count with ≥1 known CVE at/above the configured severity threshold |
-| `trust_score` | int (0–100) | aggregate, higher = more trustworthy |
+| `trust_score` | int (0–100), **nullable** | aggregate, higher = more trustworthy. **Null when the scan resolved no dependencies** — see §5a. Deliberately not 0 and deliberately not 100: neither is true of a repository nobody managed to inspect |
 | `raw_trust_score` | float | Pre-clamp value. Ranking has to survive the floor: without it every repo past 0 ties and sorting by supply-chain trust silently stops working. Same rule as Oracle's `raw_score` (spec 09 §5) |
 | `provenance_json` | JSON | minimal SLSA-style statement: builder id, source repo/commit, build workflow run id, timestamp |
 | `evaluated_at` | datetime | |
@@ -98,6 +98,39 @@ difference between two hundred and three hundred. This is the same correction
 made to Oracle's finding weights (docs/DECISIONS.md D-018), for the same
 reason, and the ratio terms are left linear because a ratio is already bounded
 at 1 and cannot saturate.
+
+## 5a. A scan that resolved nothing is not a clean scan
+
+`score([])` and `score([eco(dependency_count=0)])` both returned 100 — the
+same answer given to a repository with four hundred dependencies and no known
+vulnerability in any of them. That is wrong in the direction that matters.
+
+It is not hypothetical. `ToddGBenson/TheHub` declares its Python dependencies
+as ranges (`fastapi>=0.120.0`) rather than pins. With transitive resolution
+disabled — itself a workaround, because deps.dev returns an internal error for
+any `requirements.txt` containing sqlalchemy — osv-scanner has no concrete
+versions to check advisories against. It reports nothing, the scan is recorded
+as a success, and the repository shows a supply-chain trust it never earned.
+
+**A resolved dependency count of zero produces `trust_score = null`.** The
+platform already has this distinction and applies it elsewhere: Oracle's
+`risk_score` is null rather than 0 for a repo it has not judged (spec 10
+§2.1), and Aegis records `ai_authorship_flag = null` rather than false when no
+classifier ran (§7 here). "We did not look" is a third state, and collapsing
+it into either of the other two is a claim the data does not support.
+
+Consequences, all of them required:
+
+- **Oracle must not credit it.** A null trust score contributes no term to the
+  risk decision, and the decision's reasoning says supply chain was not
+  assessed — the same treatment it already gives an unconsulted capability.
+- **The maturity model must not count it as evidence.** Supply-chain evidence
+  means a scan that resolved something.
+- **The dashboard shows "not assessed", not a number.** A repository whose
+  dependencies could not be resolved needs to look different from a clean one,
+  because the remedy is different: pin the dependencies.
+- **The finding rows are unaffected.** A scan that resolved nothing produces
+  no vulnerability findings either, which is already the correct answer.
 
 ## 6. Configuration (`CapabilityConfig` for `atlas`)
 
