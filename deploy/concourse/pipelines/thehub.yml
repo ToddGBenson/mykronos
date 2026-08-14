@@ -95,6 +95,11 @@ resources:
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
 
+  - name: checkov
+    type: registry-image
+    icon: file-cog-outline
+    source: { repository: bridgecrew/checkov, tag: "3.2.334" }
+
   - name: trivy
     type: registry-image
     icon: shield-search
@@ -1364,7 +1369,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, sast, dependencies, containers, prompt-evals]
+        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
       - task: request-deploy
         image: python
@@ -1478,6 +1483,99 @@ jobs:
   # Only changed prompts are evaluated, through the runner's own --base-ref
   # diffing. A commit touching no prompt says so and exits clean rather than
   # re-running a suite whose inputs did not move.
+  # -- IaC: the configuration nobody was scanning (spec 04 section 3) ------
+  #
+  # The platform defines ten capabilities and registers checkov as the `iac`
+  # scanner, and neither pipeline ran it. Both repositories are substantially
+  # infrastructure: Dockerfiles, compose files, an nginx config, and in this
+  # one the Concourse pipelines themselves. A privileged container, a bound
+  # 0.0.0.0 port or a missing USER directive is exactly the class of finding
+  # SAST cannot see, because it is not in the application code.
+  #
+  # This is the gap a coverage review found rather than a failure: nothing was
+  # red, the capability simply had no lane and the dashboard column for it had
+  # always been empty.
+  - name: iac
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - get: checkov
+      - task: scan-iac
+        image: checkov
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                set -eu
+                cd source
+
+                # Frameworks named rather than autodetected. Checkov will
+                # happily look for Terraform, CloudFormation and Helm, none of
+                # which exist here, and each guess is time spent on a result
+                # that cannot exist.
+                #
+                # `docker_compose` is deliberately absent because it is not a
+                # checkov framework -- the first version passed it and checkov
+                # refused the whole run with "Invalid frameworks specified".
+                # Checkov's own list is dockerfile, github_actions, kubernetes,
+                # terraform and friends; compose is not among them.
+                #
+                # So compose files are NOT covered by this lane, and nothing
+                # else covers them either. That is a real gap in IaC coverage
+                # rather than a scanner setting, and it is written here so the
+                # green tick is not read as "the compose files were checked".
+                #
+                # --soft-fail because the severity gate belongs to Mykronos and
+                # this repository's configured threshold, not to the scanner
+                # (spec 04 section 5). A findings-driven exit code here would
+                # take the decision away from the platform that owns it.
+                OUT=$(mktemp -d)
+                checkov --directory . \
+                  --framework dockerfile github_actions \
+                  --output sarif --output-file-path "$OUT" \
+                  --soft-fail --compact --quiet
+
+                # Written to a temp dir and copied out: this image does not run
+                # as root and an output volume's ownership is not something to
+                # bet a scan on.
+                ls "$OUT"/*.sarif >/dev/null 2>&1 || {
+                  echo "::error::checkov wrote no SARIF - the scan did not run."
+                  exit 1
+                }
+                cp "$OUT"/*.sarif ../results/
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability iac --tool checkov \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
   - name: prompt-evals
     public: true
     on_failure: *slack_alert
@@ -1868,3 +1966,77 @@ jobs:
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD/source" \
                   --severity-threshold low --blocking false
+
+  # -- Auto-remediation (spec 08) -----------------------------------------
+  #
+  # This repository is where Patchwork has something to do: 378 open findings
+  # against mykronos's zero. It reads them out of the lake rather than from a
+  # scanner, so it runs after the lanes that put them there - the `passed:`
+  # list is what makes the findings it reads belong to this commit.
+  #
+  # Backpressure is server-side and matters here more than anywhere: spec 08
+  # §5 caps open draft pull requests at ten per repository, because a
+  # repository that wakes up to forty of them does not triage them, it turns
+  # the capability off. Findings over the cap are recorded as `queued` and
+  # reconsidered next run; the queue is the event table, not a pile of
+  # unreviewed generated code.
+  #
+  # Every pull request is a draft and stays one - the GitHub client Patchwork
+  # holds exposes no merge operation at all (spec 08 §7).
+  - name: remediate
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [secrets, sast, dependencies, containers]
+      - get: python
+      - task: patchwork
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git jq curl >/dev/null
+                SHA="$(git -C source rev-parse HEAD)"
+
+                BODY=$(jq -nc --arg sha "$SHA" '{commit_sha: $sha}')
+
+                # --fail-with-body, not --fail: a 4xx carries its reason in
+                # the body - most often that the capability is not granted -
+                # and plain --fail discards that and reports a status code.
+                rc=0
+                curl --fail-with-body --silent --show-error --max-time 300                   -X POST "$MYKRONOS_URL/api/patchwork/run"                   -H "Authorization: Bearer $MYKRONOS_TOKEN"                   -H "Content-Type: application/json"                   -d "$BODY" > result.json || rc=$?
+
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::Patchwork run failed:"
+                  cat result.json
+                  exit "$rc"
+                fi
+
+                CONSIDERED=$(jq -r '.findings_considered' result.json)
+                OPENED=$(jq -r '.draft_prs_opened' result.json)
+                QUEUED=$(jq -r '.queued' result.json)
+                echo "Patchwork considered $CONSIDERED finding(s): opened $OPENED draft PR(s), queued $QUEUED"
+                jq -r '.by_stage | to_entries[] | "  \(.key): \(.value)"' result.json
+
+                # Toxic combinations are the output worth reading and the
+                # easiest to miss, because the stage they land in -
+                # `correlated` - reads like progress rather than a stop.
+                COMBOS=$(jq -r '[.events[]? | select(.toxic_combination_id != null)] | length' result.json)
+                if [ "${COMBOS:-0}" != "0" ] && [ "${COMBOS:-0}" != "null" ]; then
+                  echo "::warning::$COMBOS toxic combination(s) detected - these stop individual fixes and need a person (spec 08 section 2)."
+                fi
+
+                if [ "$(jq -r '.errors | length' result.json)" != "0" ]; then
+                  jq -r '.errors[]' result.json | while read -r line; do
+                    echo "::warning::Patchwork: $line"
+                  done
+                fi

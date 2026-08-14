@@ -45,6 +45,11 @@ resources:
   # The frontend half of what `ci.yml` used to guard (spec 16 §4). Same major
   # as the workflow pinned, because the generated API client and the build both
   # depend on it.
+  - name: checkov
+    type: registry-image
+    icon: file-cog-outline
+    source: { repository: bridgecrew/checkov, tag: "3.2.334" }
+
   - name: node
     type: registry-image
     icon: nodejs
@@ -741,6 +746,99 @@ jobs:
                   exit 1
                 fi
 
+  # -- IaC: the configuration nobody was scanning (spec 04 section 3) ------
+  #
+  # The platform defines ten capabilities and registers checkov as the `iac`
+  # scanner, and neither pipeline ran it. Both repositories are substantially
+  # infrastructure: Dockerfiles, compose files, an nginx config, and in this
+  # one the Concourse pipelines themselves. A privileged container, a bound
+  # 0.0.0.0 port or a missing USER directive is exactly the class of finding
+  # SAST cannot see, because it is not in the application code.
+  #
+  # This is the gap a coverage review found rather than a failure: nothing was
+  # red, the capability simply had no lane and the dashboard column for it had
+  # always been empty.
+  - name: iac
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+      - get: python
+      - get: checkov
+      - task: scan-iac
+        image: checkov
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                set -eu
+                cd source
+
+                # Frameworks named rather than autodetected. Checkov will
+                # happily look for Terraform, CloudFormation and Helm, none of
+                # which exist here, and each guess is time spent on a result
+                # that cannot exist.
+                #
+                # `docker_compose` is deliberately absent because it is not a
+                # checkov framework -- the first version passed it and checkov
+                # refused the whole run with "Invalid frameworks specified".
+                # Checkov's own list is dockerfile, github_actions, kubernetes,
+                # terraform and friends; compose is not among them.
+                #
+                # So compose files are NOT covered by this lane, and nothing
+                # else covers them either. That is a real gap in IaC coverage
+                # rather than a scanner setting, and it is written here so the
+                # green tick is not read as "the compose files were checked".
+                #
+                # --soft-fail because the severity gate belongs to Mykronos and
+                # this repository's configured threshold, not to the scanner
+                # (spec 04 section 5). A findings-driven exit code here would
+                # take the decision away from the platform that owns it.
+                OUT=$(mktemp -d)
+                checkov --directory . \
+                  --framework dockerfile github_actions \
+                  --output sarif --output-file-path "$OUT" \
+                  --soft-fail --compact --quiet
+
+                # Written to a temp dir and copied out: this image does not run
+                # as root and an output volume's ownership is not something to
+                # bet a scan on.
+                ls "$OUT"/*.sarif >/dev/null 2>&1 || {
+                  echo "::error::checkov wrote no SARIF - the scan did not run."
+                  exit 1
+                }
+                cp "$OUT"/*.sarif ../results/
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability iac --tool checkov \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch main --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
   # -- Stage 3: the gate (spec 15 §3, and spec 16 §3 for the ordering) ----
   #
   # Oracle now runs *after* the image is built, published and scanned, rather
@@ -771,7 +869,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, dependencies, sast, insider, containers]
+        passed: [secrets, dependencies, sast, insider, containers, iac]
       - get: python
       - task: evaluate
         image: python
@@ -812,6 +910,67 @@ jobs:
                   echo "Oracle says no_go - stopping before build."
                   exit 1
                 fi
+
+  # -- Promotion: what makes the Oracle gate mean anything ----------------
+  #
+  # Until this existed, publish pushed `:latest`, deploy.ps1 pulled `:latest`,
+  # and nothing depended on oracle-gate. A no_go changed nothing an operator
+  # would meet: the refused build already sat under the tag the deploy script
+  # reads. The gate was decoration.
+  #
+  # Build and publish still run ahead of the gate on purpose (D-045) -- an
+  # image has to exist before it can be scanned, and gating the build is what
+  # deadlocked this pipeline against its own container findings. What is gated
+  # is the *pointer*: images publish by commit SHA, are scanned by SHA, and
+  # `:latest` moves only once Oracle has passed.
+  #
+  # A refused commit therefore leaves an image in the registry that nothing
+  # points at, which is the shape spec 16 section 3 already chose for TheHub.
+  - name: promote
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [oracle-gate]
+      - get: python
+      - task: resolve-sha
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+
+      - task: promote-tags
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/go-containerregistry/crane
+              tag: debug
+          inputs: [{ name: meta }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                SHA=$(cat meta/sha)
+                for image in mykronos-backend mykronos-frontend; do
+                  echo "Promoting ${image}:${SHA} -> :latest"
+                  /ko-app/crane tag --insecure "${REGISTRY}/${image}:${SHA}" latest
+                done
 
   # -- Stage 4: build (spec 15 §3) ----------------------------------------
 
@@ -891,6 +1050,21 @@ jobs:
       - get: source
         trigger: true
         passed: [build]
+      - get: python
+      - task: resolve-sha
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
       - task: kaniko
         config:
           platform: linux
@@ -899,7 +1073,7 @@ jobs:
             source:
               repository: gcr.io/kaniko-project/executor
               tag: v1.23.2-debug
-          inputs: [{ name: source }]
+          inputs: [{ name: source }, { name: meta }]
           params:
             REGISTRY: ((registry))
           run:
@@ -910,7 +1084,8 @@ jobs:
                 # Built from the repository root: the backend reads workflow
                 # templates from disk at startup and they live outside
                 # backend/.
-                /kaniko/executor                   --context source                   --dockerfile source/backend/Dockerfile                   --destination "${REGISTRY}/mykronos-backend:latest"                   --insecure --skip-tls-verify                   --single-snapshot
+                SHA=$(cat meta/sha)
+                /kaniko/executor                   --context source                   --dockerfile source/backend/Dockerfile                   --destination "${REGISTRY}/mykronos-backend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
 
   - name: publish-frontend
     public: true
@@ -920,6 +1095,21 @@ jobs:
       - get: source
         trigger: true
         passed: [build]
+      - get: python
+      - task: resolve-sha
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: meta }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
       - task: kaniko
         config:
           platform: linux
@@ -928,7 +1118,7 @@ jobs:
             source:
               repository: gcr.io/kaniko-project/executor
               tag: v1.23.2-debug
-          inputs: [{ name: source }]
+          inputs: [{ name: source }, { name: meta }]
           params:
             REGISTRY: ((registry))
           run:
@@ -936,7 +1126,8 @@ jobs:
             args:
               - -ec
               - |
-                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --destination "${REGISTRY}/mykronos-frontend:latest"                   --insecure --skip-tls-verify                   --single-snapshot
+                SHA=$(cat meta/sha)
+                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --destination "${REGISTRY}/mykronos-frontend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
 
   # -- Stage 5: the images this pipeline just published --------------------
   #
@@ -994,16 +1185,21 @@ jobs:
               - |
                 set -eu
 
+                # The tag publish pushed. Images are published by commit SHA so the
+                # scan, the Oracle decision and the promoted tag all name the same
+                # artefact rather than whatever `latest` happened to be.
+                SHA=$(cat meta/sha)
+
                 # One report per image, and the file names differ on purpose.
                 # Container findings once collapsed 600 to 118 because every
                 # image was scanned under the same tag, so the same CVE in two
                 # different images shared an identity and the second one
                 # silently overwrote the first.
                 for image in mykronos-backend mykronos-frontend; do
-                  echo "Scanning ${REGISTRY}/${image}:latest"
+                  echo "Scanning ${REGISTRY}/${image}:${SHA}"
                   # `--insecure` is the registry's TLS, not the scan's rigour:
                   # the registry is plain HTTP on the LAN (spec 15 §5).
-                  trivy image "${REGISTRY}/${image}:latest" \
+                  trivy image "${REGISTRY}/${image}:${SHA}" \
                     --insecure \
                     --scanners vuln \
                     --format sarif --output "results/trivy-${image}.sarif" \
@@ -1042,3 +1238,86 @@ jobs:
                   --branch main \
                   --workspace "$PWD/source" \
                   --severity-threshold low --blocking false
+
+  # -- Auto-remediation (spec 08) -----------------------------------------
+  #
+  # Patchwork is a capability this platform offers other people's
+  # repositories and has never once run on anything - the workflow template
+  # exists, no pipeline calls it, and no repository had the grant.
+  #
+  # It runs *after* the security lanes, because it reads findings out of the
+  # lake rather than from a scanner. The `passed:` list is what guarantees
+  # the findings it reads are for this commit rather than the previous one.
+  #
+  # Two properties this job depends on and does not enforce, both server-side
+  # (spec 08 §7): every pull request Patchwork opens is a draft, and the
+  # GitHub client it holds exposes no merge operation at all. This job could
+  # not make it merge something if it tried to.
+  - name: remediate
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [secrets, dependencies, sast, containers]
+      - get: python
+      - task: patchwork
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((mykronos-ingestion-token))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git jq curl >/dev/null
+                SHA="$(git -C source rev-parse HEAD)"
+
+                BODY=$(jq -nc --arg sha "$SHA" '{commit_sha: $sha}')
+
+                # --fail-with-body, not --fail: a 4xx here carries the reason
+                # in its body - most often that the capability is not granted
+                # for this repository - and plain --fail throws that away and
+                # reports only the status code.
+                rc=0
+                curl --fail-with-body --silent --show-error --max-time 300 \
+                  -X POST "$MYKRONOS_URL/api/patchwork/run" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > result.json || rc=$?
+
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::Patchwork run failed:"
+                  cat result.json
+                  exit "$rc"
+                fi
+
+                CONSIDERED=$(jq -r '.findings_considered' result.json)
+                OPENED=$(jq -r '.draft_prs_opened' result.json)
+                QUEUED=$(jq -r '.queued' result.json)
+                echo "Patchwork considered $CONSIDERED finding(s): opened $OPENED draft PR(s), queued $QUEUED"
+                jq -r '.by_stage | to_entries[] | "  \(.key): \(.value)"' result.json
+
+                # Toxic combinations are the interesting output and are easy
+                # to miss in a stage tally, because the stage they land in -
+                # `correlated` - reads like progress rather than a stop.
+                COMBOS=$(jq -r '[.events[]? | select(.toxic_combination_id != null)] | length' result.json)
+                if [ "${COMBOS:-0}" != "0" ] && [ "${COMBOS:-0}" != "null" ]; then
+                  echo "::warning::$COMBOS toxic combination(s) detected - these stop individual fixes and need a person (spec 08 section 2)."
+                fi
+
+                # Errors are reported and never fatal. Spec 08 section 8: a
+                # pipeline that broke partway still recorded where each
+                # finding got to, and failing here would hide that behind a
+                # red X.
+                if [ "$(jq -r '.errors | length' result.json)" != "0" ]; then
+                  jq -r '.errors[]' result.json | while read -r line; do
+                    echo "::warning::Patchwork: $line"
+                  done
+                fi
