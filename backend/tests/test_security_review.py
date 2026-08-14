@@ -90,9 +90,21 @@ class TestNoCredentialsInTheTree:
             "documented placeholders cannot be committed either."
         )
 
-    def test_no_default_setting_holds_a_credential(self) -> None:
+    def test_no_default_setting_holds_a_credential(self, monkeypatch) -> None:
         """An unconfigured deployment must hold nothing worth stealing."""
         from mykronos.config import Settings
+
+        # `_env_file=None` silences the dotenv file but NOT the process
+        # environment, which pydantic-settings always reads. In CI the
+        # pipeline's shared env anchor exports MYKRONOS_GATE_TOKEN to every
+        # task, so this test failed there and only there -- reporting a
+        # credential default that does not exist in the tree. The claim under
+        # test is about the CODE, so the ambient prefix is scrubbed first.
+        import os
+
+        for var in list(os.environ):
+            if var.startswith("MYKRONOS_"):
+                monkeypatch.delenv(var)
 
         settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
