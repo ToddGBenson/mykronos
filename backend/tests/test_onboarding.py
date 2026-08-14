@@ -20,7 +20,13 @@ from mykronos.db.models import AuditLogEntry, RepoOnboarding
 from mykronos.github import FakeGitHubClient
 from mykronos.installer import BRANCH_PREFIX, DEFAULT_SECRET_NAME
 from mykronos.main import create_app
-from tests.conftest import INSTALLATION, REPO, WEBHOOK_SECRET, scan_run_payload
+from tests.conftest import (
+    INSTALLATION,
+    REPO,
+    WEBHOOK_SECRET,
+    issue_token,
+    scan_run_payload,
+)
 
 
 def sign(body: bytes, secret: str = WEBHOOK_SECRET) -> str:
@@ -54,13 +60,27 @@ def installation_payload(action: str = "created", repos: list[str] | None = None
     }
 
 
-def onboard(client: TestClient, admin_auth: dict[str, str], repo: str = REPO):
+def onboard(
+    client: TestClient,
+    admin_auth: dict[str, str],
+    repo: str = REPO,
+    scanned_by: str = "github_actions",
+):
+    """Onboard a repository.
+
+    Defaults to `github_actions` here and *only* here. The API's default is
+    `concourse` (spec 03 §3a), because that is what is true of this estate -
+    but most of this module tests the workflow installer, and a test of the
+    installer has to be about a repository the installer applies to. Saying so
+    per test beats every test inheriting an assumption it does not state.
+    """
     return client.post(
         "/api/repos",
         json={
             "github_repo_full_name": repo,
             "github_installation_id": INSTALLATION,
             "default_branch": "main",
+            "scanned_by": scanned_by,
         },
         headers=admin_auth,
     )
@@ -545,3 +565,79 @@ class TestEnablingWithoutInstallingWorkflows:
         assert len(github.pull_request_bodies) > before
         # Still pending: the enabled set moves when the PR merges (spec 03 §3.6).
         assert response.json()["repo"]["pending_capabilities"] == ["sast", "secrets"]
+
+
+class TestWhatScansTheRepository:
+    """Spec 03 §3a. `enable a capability` and `install a workflow` used to be
+    the same act. Concourse scans three repositories now and this one has no
+    `.github/workflows/` at all, so they are not."""
+
+    def test_the_default_installs_nothing(self, client, admin_auth, github) -> None:
+        """A default that installs Actions workflows into a repository whose
+        Actions were deliberately removed is a default that undoes a
+        decision."""
+        client.post(
+            "/api/repos",
+            json={
+                "github_repo_full_name": REPO,
+                "github_installation_id": INSTALLATION,
+            },
+            headers=admin_auth,
+        )
+        repo_id = client.get("/api/repos", headers=admin_auth).json()[0]["id"]
+
+        result = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        ).json()
+
+        assert result["pull_request_number"] is None
+        assert result["repo"]["enabled_capabilities"] == ["sast"]
+
+    def test_a_concourse_repo_still_gets_its_grant(
+        self, client, admin_auth, github
+    ) -> None:
+        """The capability has to be able to write, or the pipeline uploads and
+        is refused at the door - which is what happened when `containers` was
+        added to the pipeline before the grant existed."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        repo_id = client.get("/api/repos", headers=admin_auth).json()[0]["id"]
+
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        )
+
+        assert issue_token(client, REPO, "sast")
+
+    def test_an_actions_repo_still_opens_a_pull_request(
+        self, client, admin_auth, github
+    ) -> None:
+        onboard(client, admin_auth, scanned_by="github_actions")
+        repo_id = client.get("/api/repos", headers=admin_auth).json()[0]["id"]
+
+        result = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        ).json()
+
+        assert result["pull_request_number"] is not None
+
+    def test_asking_for_an_install_on_a_concourse_repo_does_not_get_one(
+        self, client, admin_auth, github
+    ) -> None:
+        """`install_workflows: true` is a request, not an override. The
+        repository says what scans it."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        repo_id = client.get("/api/repos", headers=admin_auth).json()[0]["id"]
+
+        result = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"], "install_workflows": True},
+            headers=admin_auth,
+        ).json()
+
+        assert result["pull_request_number"] is None

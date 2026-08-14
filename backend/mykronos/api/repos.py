@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,6 +55,15 @@ class OnboardRequest(BaseModel):
     github_installation_id: int
     default_branch: str = "main"
     org_login: str = ""
+    scanned_by: Literal["concourse", "github_actions", "none"] = Field(
+        default="concourse",
+        description=(
+            "Which CI is supposed to scan this repository (spec 03 §3a). "
+            "`concourse` and `none` install no workflows: enabling a "
+            "capability grants ingestion and nothing else. Only "
+            "`github_actions` opens an install pull request."
+        ),
+    )
 
 
 class CapabilityUpdate(BaseModel):
@@ -193,6 +202,7 @@ async def onboard_repo(
                 status="pending_install",
                 enabled_capabilities=[],
                 default_branch=body.default_branch,
+                scanned_by=body.scanned_by,
                 onboarded_by=actor,
             )
             session.add(row)
@@ -312,7 +322,13 @@ async def update_capabilities(
         # set moves now. Grants are synced through the same TokenRegistry call
         # the installer makes, so what a capability may write is decided in one
         # place regardless of which path got here (spec 16 §15).
-        if not body.install_workflows:
+        # Spec 03 §3a: only an Actions-scanned repository has workflows to
+        # install. For Concourse the pipeline decides what runs, so enabling
+        # a capability grants ingestion and installs nothing - and asking for
+        # an install here would open a pull request nobody wants against a
+        # repository whose Actions were deliberately removed.
+        installs_workflows = body.install_workflows and row.scanned_by == "github_actions"
+        if not installs_workflows:
             registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
             previous = set(row.enabled_capabilities or [])
             grants_added, grants_removed = registry.sync_grants(

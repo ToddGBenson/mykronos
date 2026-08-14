@@ -102,6 +102,18 @@ class RepoOnboarding(Base):
     #: pending_install | active | suspended | removed
     status: Mapped[str] = mapped_column(String(32), default="pending_install")
 
+    #: Which CI is supposed to scan this repository (spec 03 §3a):
+    #: `concourse`, `github_actions`, or `none`.
+    #:
+    #: Records intent, not coverage. Whether the scans actually arrive is a
+    #: different question answered by the cross-check in spec 15 §4a - a repo
+    #: can declare `concourse`, enable `dast`, and have no DAST job.
+    #:
+    #: Defaults to `concourse` because that is what is true here now. A
+    #: default that installs Actions workflows into a repository whose
+    #: Actions were deliberately removed is a default that undoes a decision.
+    scanned_by: Mapped[str] = mapped_column(String(32), default="concourse")
+
     #: Capabilities whose workflow-install PR has actually merged. This is the
     #: live set; `pending_capabilities` is what has been requested but not yet
     #: merged (spec 03 §4). Keeping them apart is what makes the installer
