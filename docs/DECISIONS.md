@@ -1637,6 +1637,47 @@ the difference is one line of output.
 
 ---
 
+## D-046 — Test results are ScanRuns with no findings, not a new capability
+
+**Status:** Decided
+**Spec:** [04 §3](../specs/04-scanner-workflows.md), [05 §3](../specs/05-datalake.md)
+**Story:** PIP-1
+
+Unit and functional testing are wanted as first-class pipeline stages. They
+are not security scanners: they produce a pass/fail and a count, not findings
+with a severity and a location.
+
+**Decision: they are `ScanRun` rows with `finding_count = 0`.** The lake
+already models exactly this — a capability, a `scan_status` of `success` /
+`failure` / `partial_failure`, a count, and a commit. "The suite ran and three
+failed" fits it without inventing anything, and `no_applicable_targets`
+already means "there was nothing to run", which is the state a repository with
+no tests is in.
+
+`unit` and `functional` are therefore capabilities *for the purpose of
+reporting a run*, and produce no findings.
+
+**Rejected: a failing test becomes a finding.** It is the uniform answer and
+it is untrue. A failing assertion is not a vulnerability, it has no severity
+that means the same thing as a CVE's, and it would flow into Oracle's risk
+score — so a broken test would raise a repository's *security* risk and a
+deleted test would lower it. That is a direct incentive to delete tests, which
+is the worst property a metric can have.
+
+**Rejected: a separate quality-signal table.** Cleaner in the abstract and
+worse in practice: every view that answers "what happened to this commit"
+would need to read two tables and reconcile them, and the freshness logic that
+already exists for scan runs would need a second implementation.
+
+**Consequence for Oracle, stated because it is the part that could go wrong
+quietly.** Oracle scores findings. A capability with no findings contributes
+nothing to a risk score, and that is correct — a failing unit test is a reason
+not to *ship*, which is the pipeline's job to enforce by failing the job, not
+a reason to call the repository more dangerous. The gate stops the build; the
+risk score stays about risk.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
