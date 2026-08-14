@@ -1,0 +1,103 @@
+# The demo environment (PIP-4).
+#
+# Stood up from nothing, seeded, tested, attacked, and destroyed — inside a
+# single Concourse task, on a Docker daemon that dies with it. That is what
+# makes it immutable rather than merely re-deployable: there is no long-lived
+# instance for a previous run to have modified.
+#
+# Immutability is not tidiness here, it is what makes a DAST result mean
+# anything. An active scan submits forms, creates records and follows
+# destructive links. Scanning an environment the last scan modified is not
+# scanning the application; it is scanning the wreckage of the last scan.
+#
+# It is also what the `iac` capability scans — the same file that builds it.
+#
+#   docker compose -f deploy/demo/docker-compose.yml up -d
+#
+# Nothing here is reachable from outside the task. No published ports on the
+# host, no production credential, no production data. The tokens are fixed
+# literals *because* this is throwaway: a generated secret in an environment
+# that exists for nine minutes buys nothing and would have to be passed to the
+# functional suite and to ZAP anyway.
+
+name: mykronos-demo
+
+services:
+  backend:
+    image: ${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}
+    environment:
+      # Fixed, and safe because this environment is destroyed with the task
+      # that created it. Deliberately not the production tokens: a demo that
+      # borrows production credentials is a demo that can reach production.
+      MYKRONOS_GATE_TOKEN: demo-gate-token-not-a-secret
+      MYKRONOS_ADMIN_TOKEN: demo-admin-token-not-a-secret
+      MYKRONOS_VIEWER_TOKEN: demo-viewer-token-not-a-secret
+      MYKRONOS_INGESTION_API_URL: http://backend:8100
+      # No GitHub App. The demo must not be able to reach a real repository,
+      # and the platform already degrades honestly without one — it says so
+      # in the log rather than pretending.
+      MYKRONOS_DATALAKE_DIR: /data/datalake
+      MYKRONOS_DATABASE_URL: sqlite:////data/mykronos.db
+    tmpfs:
+      # The whole point. State lives in memory and cannot outlive the
+      # container, so "rebuild from nothing" is the only thing that can
+      # happen — there is no volume for a run to inherit.
+      #
+      # `uid=10001` is not optional. A tmpfs mounts root-owned and the image
+      # runs as uid 10001, so without it the backend dies at startup with
+      # "Permission denied: /data/datalake" — the same ownership mistake the
+      # volume migration made, arriving by a different route.
+      - /data:uid=10001,gid=10001,mode=0755
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/healthz', timeout=3).status == 200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  frontend:
+    image: ${MYKRONOS_IMAGE_FRONTEND:-mykronos-frontend:latest}
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      MYKRONOS_API_URL: http://backend:8100
+      MYKRONOS_ADMIN_TOKEN: demo-admin-token-not-a-secret
+      MYKRONOS_GATE_TOKEN: demo-gate-token-not-a-secret
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+  # OWASP ZAP in daemon mode (PIP-3).
+  #
+  # Present in the compose file rather than started separately because the
+  # functional suite has to be proxied *through* it, which means it must exist
+  # before the tests run and share their network. A ZAP started afterwards
+  # sees no traffic and spiders from the login page, which is the scan this
+  # whole arrangement exists to replace.
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:2.16.1
+    command: >
+      zap.sh -daemon -host 0.0.0.0 -port 8090
+      -config api.addrs.addr.name=.*
+      -config api.addrs.addr.regex=true
+      -config api.disablekey=true
+    healthcheck:
+      # ZAP ships curl. Checking the API rather than the port because ZAP
+      # accepts connections well before it will answer a scan request.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/JSON/core/view/version/"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 10s
