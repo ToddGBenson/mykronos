@@ -87,7 +87,9 @@ production environment with weaker controls and a different name.
    git ──▶ unit ──▶ build ──▶ containers ─┐
    git ──▶ secrets ───────────────────────┤
    git ──▶ sast (semgrep) ────────────────┤
-   git ──▶ dependencies (osv) ────────────┘
+   git ──▶ dependencies (osv) ────────────┤
+   git ──▶ prompt-evals ──────────────────┤
+   git ──▶ iac (checkov) ─────────────────┘
                                           │
                                 ┌─────────▼─────────┐
                                 │   deploy demo     │
@@ -111,6 +113,14 @@ production environment with weaker controls and a different name.
 
    timer ─▶ cloud posture (prowler, Azure)   ── independent of any commit
 ```
+
+`iac` scans this repository's Dockerfiles and workflow definitions with
+checkov (D-046). Its first run found that both Dockerfiles lack a `USER`
+directive — true, and false about the running container, which drops to
+`appuser` through `gosu` in `entrypoint.sh`. Both are skipped with that
+reason recorded in the Dockerfile itself, which is the outcome worth having:
+the claim "we already handle that" is now written where a scanner will keep
+re-asking it.
 
 **Oracle runs after DAST, and insider after Oracle.** This is a change from the
 first version of this spec, and it trades one thing for another rather than

@@ -67,20 +67,36 @@ security configuration.
                           ┌─────────▼──────────┐
                           │  oracle gate       │──▶ no_go stops here
                           └─────────┬──────────┘
-                                    │
+                                    │ go
                           ┌─────────▼──────────┐
-                          │  build             │──▶ image + SBOM to registry
+                          │  promote           │──▶ :SHA retagged :latest
                           └─────────┬──────────┘
                                     │
                           ┌─────────▼──────────┐
-                          │  deploy            │
+                          │  deploy (by hand)  │  deploy.ps1 pulls :latest
                           └────────────────────┘
 ```
+
+`build` and `publish` sit **above** this, between the quality gate and the
+security jobs, rather than below the Oracle gate where an earlier draft of
+this spec put them. An image has to exist before `containers` can scan it, and
+gating the build deadlocked the pipeline against its own container findings
+(D-045).
+
+What the gate holds is therefore the tag, not the artifact. Images publish as
+`:${SHA}`, `containers` scans that SHA, and `promote` moves `:latest` — the
+tag `deploy.ps1` pulls — only after a `go` (D-047). A refused commit leaves an
+image in the registry that nothing points at.
 
 The security jobs run **in parallel** and all of them complete before the
 Oracle gate. That ordering is deliberate: Oracle scores the whole picture
 (spec 09 §8), and gating on a partial one produces a decision that a later
 finding invalidates.
+
+`iac` runs checkov over Dockerfiles and workflow definitions. It is named in
+the diagram above because it was always specified; it did not exist as a lane
+until D-046. Compose files are not covered — `docker_compose` is not a checkov
+framework — and that gap is documented rather than papered over.
 
 ## 4. Reusing the ingestion contract
 

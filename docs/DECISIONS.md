@@ -1397,6 +1397,93 @@ is what was done here, and it is a workaround, not a design. It puts an
 artifact in the registry that no pipeline built, which is precisely the
 provenance the SBOM and the wheel-per-commit exist to establish.
 
+## D-046 — The platform had ten capabilities and the pipelines ran eight
+
+**Status:** Decided, implemented
+**Spec:** [04 §3](../specs/04-capability-model.md), [15 §3](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
+
+`capabilities.py` registers ten capabilities and names checkov as the `iac`
+scanner. Neither pipeline ran it. Nothing was red about this — the dashboard
+column for `iac` was simply always empty, which reads exactly like a
+capability with nothing to report rather than one with nothing to run.
+
+Both repositories are substantially infrastructure. Dockerfiles, compose
+files, an nginx config, and in this repository the pipeline definitions
+themselves. A container that never drops root, a service bound to 0.0.0.0, a
+missing healthcheck — none of it is application code, so SAST cannot see it,
+and the container scanner sees packages rather than configuration. The gap
+was between two lanes that each correctly reported nothing.
+
+The first run proved the point in the least flattering way available: it
+found three highs in TheHub, and two of them were about the container running
+as root. Both are false in effect — `entrypoint.sh` drops to `appuser` with
+`gosu` — which is itself the finding worth having, because it means the answer
+"we already handle that" was written in a comment nobody could check.
+
+**Rejected: `--framework` left to autodetect.** Checkov will look for
+Terraform, CloudFormation, Helm and Kubernetes, none of which exist in either
+repository. Naming the frameworks is not just speed; an autodetected scan
+silently changes what it covers when a file appears.
+
+**Rejected: letting checkov's exit code fail the job.** `--soft-fail`, and
+the severity decision stays with Mykronos and the repository's configured
+threshold (spec 04 §5). A findings-driven exit code here would move the gate
+into the scanner, where this platform has consistently refused to put it. The
+job still fails on a non-zero exit or a missing SARIF, because that is the
+scan failing rather than the scan finding something.
+
+**Not covered, and said out loud: compose files.** `docker_compose` is not a
+checkov framework — passing it makes checkov refuse the entire run with
+"Invalid frameworks specified", which is how this was discovered. Compose
+files are therefore scanned by nothing, and the comment in both pipelines
+says so, because an `iac` lane going green otherwise reads as "the compose
+files were checked".
+
+---
+
+## D-047 — Publishing by SHA is what made the Oracle gate mean anything
+
+**Status:** Decided, implemented
+**Spec:** [15 §3](../specs/15-concourse-pipeline.md)
+
+D-045 moved `build` off the gate to break a deadlock, and closed by noting
+that the narrower design becomes right "once something deploys automatically.
+At that point publishing stops being inert and the tag becomes the thing worth
+gating." The condition was already met and had been all along. `publish`
+pushed `:latest`, and `deploy.ps1` pulls `:latest` (D-038, D-042). So a `no_go`
+changed nothing an operator would ever meet: the refused build was already
+sitting under the tag the deploy script reads, and the next deploy would ship
+it. Nothing in the pipeline depended on `oracle-gate` at all. The gate was
+decoration, and it had been decoration since D-045 fixed the deadlock.
+
+`build` and `publish` still run ahead of the gate, for D-045's reason — an
+image has to exist before it can be scanned. What is gated is the **pointer**.
+Images publish as `${REGISTRY}/mykronos-backend:${SHA}`, `containers` scans
+that same SHA, and a new `promote` job retags it `:latest` with crane only
+after `oracle-gate` passes.
+
+A refused commit now leaves an image in the registry that nothing points at.
+
+**Why TheHub does not need this, and why that is not an inconsistency.** Spec
+16 §2 considered a promote job for TheHub and dropped it, and that is still
+right. TheHub's deploy is a Concourse job that pulls `thehub:${SHA}`, so the
+gate can sit on the deploy directly and there is no floating tag to move. This
+pipeline's deploy is `deploy.ps1`, run by a person on the host (D-038), which
+Concourse cannot gate at all — the tag is the only handle it has on what that
+person will get. Different mechanisms because the deploys are different, not
+because the rule is.
+
+**Rejected: gate `publish` instead of adding `promote`.** That is D-045's
+deadlock again, one step later: the fix for a container finding cannot be
+published while the finding blocks publishing.
+
+**Rejected: have `deploy.ps1` pull by SHA.** It would work and it moves the
+decision onto the operator, who would have to know which SHA Oracle cleared.
+The tag is the right place to carry that, precisely because the person
+deploying should not have to look it up.
+
+---
+
 ---
 
 ## D-007 — Deferred to a later phase
