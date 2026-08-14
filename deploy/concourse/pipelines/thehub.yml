@@ -1981,8 +1981,15 @@ jobs:
                 # cwd is the repository root on purpose: global-setup.js writes
                 # tests/e2e/auth-state.json relative to it, and the config
                 # reads it back from the same relative path.
+                # JUnit alongside the human-readable reporter. Nothing
+                # reads the XML yet; the tests capability and its adapter
+                # are being built separately. The suite runs here and
+                # nowhere else though, so writing it now means wiring the
+                # upload later is one line rather than another full run to
+                # regenerate what this job already had in its hands.
+                export PLAYWRIGHT_JUNIT_OUTPUT_NAME="$FUNC/junit.xml"
                 ./tests/e2e/node_modules/.bin/playwright test \
-                  --config tests/e2e/playwright.config.js --reporter=line
+                  --config tests/e2e/playwright.config.js --reporter=line,junit
                 FUNC_RC=$?
                 cd ..
 
