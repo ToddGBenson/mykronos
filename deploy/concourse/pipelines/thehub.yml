@@ -69,8 +69,19 @@ resources:
     type: git
     icon: github
     source:
-      uri: https://x-access-token:((github-token))@github.com/ToddGBenson/TheHub.git
+      # A read-only deploy key, not the GitHub App token. The App token lives
+      # one hour, and this worker's serial queue routinely runs deeper than
+      # that -- five builds in one afternoon died fetching with a token that
+      # had expired while they waited their turn. An SSH deploy key does not
+      # expire, and it is the narrower credential: fetch-only, this repository
+      # only, no API surface. The App token remains for the one task that
+      # calls the GitHub API (GITHUB_TOKEN below), which is what it is for.
+      #
+      # The key itself is in Vault (concourse/main/thehub/source-deploy-key),
+      # so it never appears in `fly get-pipeline` output.
+      uri: git@github.com:ToddGBenson/TheHub.git
       branch: ((thehub-branch))
+      private_key: ((source-deploy-key))
 
   - name: python
     type: registry-image
