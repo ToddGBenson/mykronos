@@ -147,7 +147,31 @@ function Invoke-Cycle {
         $current = if (Test-Path $stateFile) { (Get-Content $stateFile -Raw).Trim() } else { "" }
 
         if ($current -eq $requested) {
-            Write-Verbose "$environment is already at $requested"
+            # Already there -- but the pipeline does not know that until the
+            # acknowledgement says so. This branch used to `continue` without
+            # writing one, which stranded exactly the runs where nothing was
+            # wrong: a deploy-demo retriggered for a SHA that already deployed,
+            # or a first attempt whose deploy landed and whose ack write
+            # failed, sat out the pipeline's full wait and went red with the
+            # environment serving the right commit underneath it.
+            #
+            # The state file stays the authority on what is RUNNING (see
+            # above); MinIO's `.deployed` is only the messenger, and a
+            # messenger may repeat itself. Re-writing an ack that already
+            # matches is a no-op.
+            $known = Get-Pointer "$environment.deployed"
+            if ($known -ne $requested) {
+                Write-Host "$environment already at $requested - writing the missing acknowledgement." -ForegroundColor Cyan
+                $ack = Join-Path ([System.IO.Path]::GetTempPath()) "ack-$environment-$(Get-Random)"
+                try {
+                    [System.IO.File]::WriteAllText($ack, $requested)
+                    & $mc --quiet cp $ack "thehub/$Bucket/$environment.deployed" | Out-Null
+                } finally {
+                    if (Test-Path $ack) { Remove-Item $ack -Force }
+                }
+            } else {
+                Write-Verbose "$environment is already at $requested"
+            }
             continue
         }
 
