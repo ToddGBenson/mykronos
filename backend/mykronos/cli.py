@@ -41,6 +41,7 @@ from mykronos.jobs import (
 )
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
+from mykronos.migrate_assets import migrate_assets
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.reprocess import reprocess
@@ -155,6 +156,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=CAPABILITIES,
         help="Limit to one capability — usually the one whose adapter changed.",
+    )
+
+    assets = sub.add_parser(
+        "migrate-assets",
+        help="Give findings an asset_type and asset_id (spec 14 §5)",
+    )
+    assets.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change and write nothing.",
     )
 
     rescore = sub.add_parser(
@@ -452,6 +463,19 @@ def main(argv: list[str] | None = None) -> int:
                 print("Dry run - nothing was written.")
             else:
                 print("Run `compact` to make the re-derived findings queryable.")
+            return 0
+
+        if args.command == "migrate-assets":
+            migration = migrate_assets(catalog, dry_run=args.dry_run)
+            print(migration.summary())
+            if migration.unattributable:
+                print(
+                    f"{len(migration.unattributable)} finding(s) have neither an "
+                    "asset nor a repository to derive one from and were left "
+                    "alone. Re-derivation cannot invent a subject."
+                )
+            if args.dry_run:
+                print("Dry run - nothing was written.")
             return 0
 
         if args.command == "rescore-sscs":

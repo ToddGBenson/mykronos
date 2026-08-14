@@ -284,6 +284,12 @@ async def ingest_findings(
             {
                 "finding_id": finding_id,
                 "scan_run_id": batch.scan_run_id,
+                # Every finding this endpoint accepts is about a repository:
+                # the token is scoped to one (spec 02 §6), and a network scan
+                # does not authenticate as a repo. A network finding arrives
+                # with asset_type "network" through its own path.
+                "asset_type": "repo",
+                "asset_id": token.repo_full_name,
                 "repo_full_name": token.repo_full_name,
                 "capability": capability,
                 "rule_id": finding.rule_id,

@@ -19,6 +19,20 @@ Column = tuple[str, str]
 FINDINGS_COLUMNS: Final[list[Column]] = [
     ("finding_id", "VARCHAR"),
     ("scan_run_id", "VARCHAR"),
+    # The subject of the finding (spec 14 §5). A repository is an asset; a
+    # network segment is an asset. `asset_id` holds `owner/repo` for a repo
+    # and the operator-chosen network name for a network.
+    #
+    # For a repository asset, `asset_id` is exactly `repo_full_name` - the
+    # same string. That is what makes this migration safe: `finding_id` is
+    # derived from it (spec 05 §5), so every existing finding keeps its
+    # identity and nothing reopens as new work.
+    ("asset_type", "VARCHAR"),
+    ("asset_id", "VARCHAR"),
+    # Retired in favour of asset_id and kept for one migration step only, so
+    # `migrate-assets` has something to read the mapping from. Spec 14 §5 is
+    # explicit that two columns meaning the same thing is how a data model
+    # rots; this one is on its way out, not settling in.
     ("repo_full_name", "VARCHAR"),
     ("capability", "VARCHAR"),
     ("rule_id", "VARCHAR"),
