@@ -194,13 +194,35 @@ function Invoke-Wipe {
     }
 }
 
-# Migrations then seed, both inside the container that was just deployed, so
-# the schema and the data come from the same commit as the code under test.
+# Seed the freshly-built environment.
+#
+# Migrations are NOT run here. entrypoint.sh already runs
+# `run_migrations_auto()` before it starts uvicorn, so by the time the stack
+# reports healthy the schema is done. Calling run_migrations.py again on top
+# of that is redundant, and it failed: the second pass tripped over
+# `pg_type_typname_nsp_index` -- a duplicate in Postgres's type catalogue,
+# which is what re-creating an already-created table looks like.
+#
+# One owner for the schema. The entrypoint has it.
 function Invoke-Seed {
     Write-Host "Seeding $Environment with the demo dataset..." -ForegroundColor Cyan
 
-    docker compose --project-name $project --file $composeFile exec -T demo-backend python run_migrations.py
-    if ($LASTEXITCODE -ne 0) { throw "run_migrations.py failed in $project." }
+    # Trust, but check. If the entrypoint's auto-migration hit a database that
+    # was not ready it returns silently ("Skipping auto-migration"), which
+    # would leave an empty schema for seed_demo.py to fail against in a much
+    # more confusing way. An empty history table is that failure, named.
+    $applied = docker compose --project-name $project --file $composeFile `
+        exec -T demo-backend python -c "from run_migrations import engine; from sqlalchemy import text; print(engine.connect().execute(text('select count(*) from _hub_migration_history')).scalar())"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not read the migration history in $project; the entrypoint's auto-migration may not have run."
+    }
+
+    $count = 0
+    [void][int]::TryParse(($applied | Select-Object -Last 1).ToString().Trim(), [ref]$count)
+    if ($count -lt 1) {
+        throw "No migrations are recorded in $project. entrypoint.sh skipped them, so there is no schema to seed."
+    }
+    Write-Host "  schema: $count migration(s) applied by the entrypoint" -ForegroundColor DarkGray
 
     docker compose --project-name $project --file $composeFile exec -T demo-backend python scripts/seed_demo.py
     if ($LASTEXITCODE -ne 0) { throw "seed_demo.py failed in $project." }
