@@ -116,11 +116,49 @@ requests for a human to review. **Patchwork never merges anything itself.**
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `source_capabilities` | list | `["sast", "secrets", "containers", "iac"]` | which capabilities' findings feed Patchwork |
+| `source_capabilities` | list | `["sast", "secrets", "containers", "iac"]` | which capabilities' findings Patchwork may generate a **fix** for. Code-fixable by construction — see §5a |
+| `correlation_capabilities` | list | every capability | which capabilities' findings **toxic-combination detection** may consider (§5a) |
 | `min_confidence_to_generate_fix` | float (0–1) | `0.7` | below this, stage stops at `no_fix_available` rather than generating a possibly-wrong fix |
 | `fix_generator_url` | string, nullable | `null` | Endpoint for LLM-assisted fix generation. Null — the default — restricts Patchwork to its deterministic fixers and sends no source anywhere (§2 stage 4, spec 12 §5.2) |
 | `toxic_combination_rules` | list of rule refs | built-in default set | admin-extensible rule definitions |
 | `max_open_draft_prs_per_repo` | int | `10` | Backpressure. A repository that wakes up to forty draft pull requests does not triage them, it turns the capability off. Over the limit, a candidate's event is recorded with `pipeline_stage_reached: queued` and the fix is *not* generated — the queue is the event table itself, re-examined on the next run, not a separate structure holding unreviewed generated code |
+
+### 5a. Correlation sees more than fix generation
+
+`source_capabilities` answered two different questions with one list, and got
+the second one wrong.
+
+Which findings Patchwork can write a patch for is a narrow set, correctly:
+SAST, secrets, containers and IaC findings all point at a line in a file that
+a deterministic fixer can change. A DAST finding does not. Neither does a
+cloud-posture finding, or an open port.
+
+Which findings can *participate in a toxic combination* is a different and
+much wider question, and using the narrow list for it made a whole class of
+combination undetectable. The clearest example is the one this platform is
+for:
+
+> A DAST scan reports an unauthenticated endpoint on the running application.
+> A secrets scan reports a live credential committed in the handler behind
+> it. Separately: a medium and a high. Together: an unauthenticated endpoint
+> that hands out a working credential.
+
+Under the old rule the DAST half was never a candidate, so the combination
+could not fire — and each half, viewed alone, looks like ordinary backlog.
+
+**Correlation considers every capability. Fix generation still considers
+only `source_capabilities`.** A combination whose members include a finding
+Patchwork cannot fix is not a problem: a detected combination already stops
+individual fix generation and routes to `needs_human_judgment` (§2 stage 3).
+Combinations spanning a runtime finding and a code finding are the ones most
+likely to need a person, so the path they take is the right one.
+
+**Consequence for scope.** File-scoped rules cannot express these. A DAST
+finding's `file_path` is a URL path or empty; a cloud finding's is a resource
+id. Cross-capability rules are therefore `repo`-scoped, and the rule set has
+to earn that with specific `rule_id` patterns rather than broad ones —
+repo scope plus a loose pattern is how a correlation engine starts reporting
+that everything is toxic.
 
 ## 6. Workflow behavior
 
