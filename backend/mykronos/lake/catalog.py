@@ -100,7 +100,19 @@ class Catalog:
     # -- views ----------------------------------------------------------
 
     def refresh_views(self, con: duckdb.DuckDBPyConnection) -> None:
-        """(Re)define one view per table against whatever Parquet exists now."""
+        """(Re)define one view per table against whatever Parquet exists now.
+
+        The six statements run in one transaction, and that is worth three
+        seconds. On a file-backed catalog DuckDB checkpoints after each DDL,
+        so six `CREATE OR REPLACE VIEW` statements cost six fsyncs - measured
+        at 4.5s against 1.2s for the same statements committed once.
+
+        Every `connect()` pays this, which made it the single largest cost in
+        the test suite (a fresh catalog per test) and a real cost in
+        compaction. Locating the views is not the expensive part:
+        `all_files()` for all six tables takes two milliseconds.
+        """
+        con.execute("BEGIN TRANSACTION")
         for table in TABLES:
             files = self.all_files(table)
             if files:
@@ -112,6 +124,7 @@ class Catalog:
             else:
                 body = empty_select(table)
             con.execute(f"CREATE OR REPLACE VIEW {table} AS {body}")
+        con.execute("COMMIT")
 
     # -- convenience ----------------------------------------------------
 

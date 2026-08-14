@@ -225,7 +225,11 @@ jobs:
                 # anything" are different facts and the second is worse.
                 mkdir -p ../../results
                 rc=0
-                python -m pytest -q --junitxml=../../results/unit.xml || rc=$?
+                # -n 6: the suite is dominated by per-test fixture setup - a
+                # fresh DuckDB catalog per test - and that work is already
+                # isolated, so it parallelises without touching a test. 32
+                # minutes to 6 on this host.
+                python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C ../.. rev-parse HEAD)"                   --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true

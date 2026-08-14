@@ -32,6 +32,10 @@ dev = [
     # starlette's TestClient requires httpx2; plain httpx is deprecated there.
     "httpx2>=2.9",
     "pytest-asyncio>=0.24",
+    # The suite is dominated by per-test fixture setup - a fresh DuckDB
+    # catalog per test - not by the tests. That work is already isolated per
+    # test, so it parallelises without touching a line of it.
+    "pytest-xdist>=3.8",
     "types-PyYAML>=6.0",
     "ruff>=0.7",
     "mypy>=1.13",
