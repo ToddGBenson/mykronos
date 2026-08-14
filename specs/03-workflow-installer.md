@@ -78,6 +78,43 @@ target repo. Templates are parameterized with:
    `RepoOnboarding.status = active` (if it was `pending_install`) and logs
    the change in an audit table (`WorkflowInstallEvent`).
 
+## 3a. Not every repository is scanned by Actions
+
+This spec was written when GitHub Actions was the only way a scan happened, so
+"enable a capability" and "install a workflow" were the same act. They are no
+longer. Concourse now scans three repositories, and this one has no
+`.github/workflows/` at all (spec 16 §4, D-039).
+
+That left the model saying something untrue. `enabled_capabilities` is
+documented as "capabilities whose workflow-install PR has actually merged" —
+for a Concourse-scanned repository no such PR exists or ever will, and the
+capability is enabled all the same.
+
+**A repository declares what scans it: `scanned_by`.**
+
+| Value | Meaning |
+|---|---|
+| `github_actions` | The installer renders workflows and opens a pull request, exactly as §3 describes |
+| `concourse` | A pipeline covers this repository. Enabling a capability grants ingestion and installs nothing |
+| `none` | Onboarded and not scanned yet. Findings can still be uploaded by hand |
+
+**`concourse` is the default for new repositories**, because it is what is
+true here now. A default that installs Actions workflows into a repository
+whose Actions were deliberately removed is a default that undoes a decision.
+
+**What this does *not* do is decide whether a capability is covered.**
+`scanned_by` records intent — which system is supposed to scan. Whether it
+actually does is a different question with a different answer, and spec 15
+§4a already answers it by comparing the pipeline's jobs against what reached
+the lake. A repository can declare `concourse`, enable `dast`, and have no
+DAST job; that is exactly the `no_job` state, and it stays visible rather
+than being papered over by a field that says the intent was good.
+
+The two are worth keeping apart. Intent is what an operator asked for; the
+cross-check is what happened. A model that only records the first reports
+coverage it does not have, which is the failure this platform exists to
+catch.
+
 ## 4. Idempotency
 
 - Before rendering, compare the requested `enabled_capabilities` set against
