@@ -765,6 +765,7 @@ jobs:
     plan:
       - get: source
         trigger: true
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
       - get: checkov
       - task: scan-iac
