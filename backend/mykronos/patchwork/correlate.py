@@ -29,14 +29,39 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class Requirement:
+    """One half of a combination: what to match, and optionally where.
+
+    `capability` exists because the obvious alternative does not work.
+    Cross-capability rules need to say "a DAST finding about authentication",
+    and a capability cannot be expressed as a pattern over `rule_id` — ZAP
+    emits `ZAP-10202-CWE-352` and Trivy emits `CVE-2023-45853`, neither of
+    which mentions which scanner produced it. Folding the capability into the
+    searched text instead would make the existing `secret|credential` pattern
+    match every finding from the `secrets` capability by way of its own name.
+
+    None means any capability, which is what the file-scoped rules want:
+    proximity is doing the work there, not provenance.
+    """
+
+    pattern: str
+    capability: str | None = None
+    #: Findings below this are ignored for this requirement. Used where a
+    #: rule would otherwise fire on nearly every repository: a low-severity
+    #: CVE in a reachable service is not a different kind of problem from a
+    #: low-severity CVE anywhere else.
+    min_severity: str | None = None
+
+
+@dataclass(frozen=True)
 class CombinationRule:
     """One declarative correlation rule (spec 08 §5)."""
 
     rule_id: str
     name: str
-    #: Regexes, each of which must match at least one finding's rule_id for
-    #: the combination to fire.
-    requires: tuple[str, ...]
+    #: Each requirement must be satisfied by at least one finding for the
+    #: combination to fire.
+    requires: tuple[Requirement, ...]
     #: `file` means the matches must be in the same file; `repo` means
     #: anywhere in the repository. `file` is the default because proximity is
     #: most of what makes a combination toxic rather than coincidental.
@@ -58,7 +83,10 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
     CombinationRule(
         rule_id="unauth-injectable",
         name="Unauthenticated injectable endpoint",
-        requires=(r"CWE-89|sql.?inj", r"CWE-306|CWE-287|missing.?auth|unauth"),
+        requires=(
+            Requirement(r"CWE-89|sql.?inj"),
+            Requirement(r"CWE-306|CWE-287|missing.?auth|unauth"),
+        ),
         scope="file",
         explanation=(
             "An injectable query and a missing authentication check in the "
@@ -70,7 +98,10 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
     CombinationRule(
         rule_id="secret-and-public-surface",
         name="Committed credential on a public surface",
-        requires=(r"generic-api-key|aws-|secret|credential", r"CWE-306|unauth|public"),
+        requires=(
+            Requirement(r"generic-api-key|aws-|secret|credential"),
+            Requirement(r"CWE-306|unauth|public"),
+        ),
         scope="file",
         explanation=(
             "A committed credential in a file that also has an "
@@ -79,12 +110,129 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
             "finds out it is worth using."
         ),
     ),
+    # -- cross-capability (spec 08 §5a) -----------------------------------
+    #
+    # These correlate a *running* application against its *source*, which is
+    # the pairing neither scanner can see alone: DAST knows the endpoint
+    # answers without credentials but not what the handler contains, and SAST
+    # knows the handler is injectable but not whether anything can reach it.
+    #
+    # Necessarily repo-scoped - a DAST finding's file_path is a URL path or
+    # empty - so each pattern is narrow. Repo scope plus a loose pattern is
+    # how a correlation engine starts reporting that everything is toxic.
+    CombinationRule(
+        rule_id="live-unauth-and-injectable-code",
+        name="Reachable without credentials, injectable in code",
+        requires=(
+            Requirement(
+                r"auth|401|403|access.?control|idor|session|csrf", capability="dast"
+            ),
+            Requirement(
+                r"CWE-89|CWE-78|CWE-611|sql.?inj|command.?inj", capability="sast"
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "DAST reached an endpoint on the running application without "
+            "credentials, and SAST found an injectable query or command in "
+            "the same codebase. The runtime scan proves reachability that "
+            "static analysis has to assume; the static scan proves an impact "
+            "the runtime scan only probed for. Each is a medium on its own "
+            "and neither is worth an incident; together they are an "
+            "unauthenticated path to the database."
+        ),
+    ),
+    CombinationRule(
+        rule_id="live-unauth-and-committed-credential",
+        name="Reachable without credentials, credential in the repository",
+        requires=(
+            Requirement(
+                r"auth|401|403|access.?control|exposed|disclosure", capability="dast"
+            ),
+            Requirement(
+                r"generic-api-key|aws-|private-key|token|credential",
+                capability="secrets",
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "An endpoint that answers without credentials, in a repository "
+            "that also has a credential committed to it. The credential is "
+            "already disclosed by being in git history; an unauthenticated "
+            "surface on the same service is how somebody establishes it is "
+            "worth using, and against what."
+        ),
+    ),
+    CombinationRule(
+        rule_id="public-storage-and-live-exposure",
+        name="Publicly reachable service on publicly readable storage",
+        requires=(
+            Requirement(
+                r"public|anonymous|0\.0\.0\.0|unrestricted|world.?readable",
+                capability="cloud",
+            ),
+            Requirement(
+                r"auth|exposed|directory|listing|disclosure", capability="dast"
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "Cloud posture reports storage or a security group open to the "
+            "internet, and DAST reports the application in front of it "
+            "answering without credentials. Posture scanning cannot tell "
+            "whether anything reachable uses that storage; the runtime scan "
+            "can, and does."
+        ),
+    ),
+    CombinationRule(
+        rule_id="vulnerable-image-and-live-service",
+        name="Exploitable dependency in a running, reachable service",
+        requires=(
+            # High and above only. Every image carries low-severity CVEs -
+            # this repository accepted 243 of them - and without the floor
+            # this rule would fire on every repository that runs a web
+            # server, which is the definition of a rule nobody reads.
+            Requirement(r"CVE-", capability="containers", min_severity="high"),
+            Requirement(
+                r"auth|exposed|version|banner|outdated|fingerprint", capability="dast"
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "A known-exploitable component in the image or dependency tree, "
+            "and a DAST finding showing the service running it is reachable "
+            "and disclosing something about itself. A CVE in an image nobody "
+            "can reach is backlog; the same CVE behind an endpoint that "
+            "answers and names its version is a shortlist."
+        ),
+    ),
 )
 
 
-def _matches(pattern: str, finding: dict[str, Any]) -> bool:
+#: Ascending, so "at least high" is an index comparison.
+_SEVERITY_ORDER = ("info", "low", "medium", "high", "critical")
+
+
+def _at_least(severity: str, floor: str) -> bool:
+    try:
+        return _SEVERITY_ORDER.index(severity) >= _SEVERITY_ORDER.index(floor)
+    except ValueError:
+        # An unrecognised severity is not silently treated as high enough.
+        return False
+
+
+def _matches(requirement: Requirement, finding: dict[str, Any]) -> bool:
+    if (
+        requirement.capability is not None
+        and str(finding.get("capability", "")) != requirement.capability
+    ):
+        return False
+    if requirement.min_severity is not None and not _at_least(
+        str(finding.get("severity", "")), requirement.min_severity
+    ):
+        return False
     haystack = f"{finding.get('rule_id', '')} {finding.get('title', '')}"
-    return re.search(pattern, haystack, re.IGNORECASE) is not None
+    return re.search(requirement.pattern, haystack, re.IGNORECASE) is not None
 
 
 def combination_id(rule_id: str, finding_ids: frozenset[str]) -> str:
@@ -119,8 +267,8 @@ def detect(
             if rule.scope == "file" and not key:
                 continue
             members: set[str] = set()
-            for pattern in rule.requires:
-                hit = next((f for f in group if _matches(pattern, f)), None)
+            for requirement in rule.requires:
+                hit = next((f for f in group if _matches(requirement, f)), None)
                 if hit is None:
                     members.clear()
                     break

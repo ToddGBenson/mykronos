@@ -493,6 +493,110 @@ class TestTriageUsesTheKnowledgeStore:
         assert "do not use the affected code path" in rationale
 
 
+class TestCrossCapabilityCombinations:
+    """Combinations spanning a running application and its source (spec 08 §5a).
+
+    These are the ones neither scanner can see alone: DAST knows an endpoint
+    answers without credentials but not what the handler contains; SAST knows
+    the handler is injectable but not whether anything can reach it.
+    """
+
+    def _f(self, fid, capability, rule_id, severity="high", title=""):
+        return {
+            "finding_id": fid,
+            "rule_id": rule_id,
+            "title": title or rule_id,
+            "capability": capability,
+            "severity": severity,
+            "file_path": "",
+        }
+
+    def test_every_built_in_rule_can_actually_fire(self) -> None:
+        """The bug this exists for: the first draft of these rules matched on
+        `^dast:` against a haystack of rule_id and title. Nothing puts a
+        capability there - ZAP emits `ZAP-10202-CWE-352`, Trivy emits
+        `CVE-2023-45853` - so all four rules would have matched nothing, for
+        ever, and a correlation engine that finds nothing looks exactly like
+        a codebase with no toxic combinations."""
+        for rule in correlate.BUILT_IN_RULES:
+            findings = [
+                self._f(
+                    f"f{i}",
+                    requirement.capability or "sast",
+                    self._sample_for(requirement.pattern),
+                    severity="critical",
+                )
+                for i, requirement in enumerate(rule.requires)
+            ]
+            for finding in findings:
+                finding["file_path"] = "src/api.py"
+
+            combos = correlate.detect(findings, rules=(rule,))
+
+            assert len(combos) == 1, f"{rule.rule_id} cannot fire"
+
+    @staticmethod
+    def _sample_for(pattern: str) -> str:
+        """A literal that satisfies the first alternative of a rule pattern."""
+        first = pattern.split("|")[0]
+        return first.replace(".?", "-").replace(r"\.", ".").lstrip("^")
+
+    def test_a_reachable_endpoint_plus_injectable_code(self) -> None:
+        findings = [
+            self._f("d1", "dast", "ZAP-10202", title="Missing anti-CSRF / auth token"),
+            self._f("s1", "sast", "CWE-89", title="SQL injection"),
+        ]
+
+        combos = correlate.detect(findings)
+
+        assert len(combos) == 1
+        assert combos[0].finding_ids == frozenset({"d1", "s1"})
+        assert "unauthenticated path to the database" in combos[0].rationale
+
+    def test_capability_is_required_not_just_the_pattern(self) -> None:
+        """Both halves matching the words is not enough - a SAST finding that
+        mentions authentication is not evidence the endpoint is reachable."""
+        findings = [
+            self._f("s0", "sast", "CWE-306", title="missing auth check"),
+            self._f("s1", "sast", "CWE-89", title="SQL injection"),
+        ]
+
+        combos = correlate.detect(findings, rules=(correlate.BUILT_IN_RULES[2],))
+
+        assert combos == []
+
+    def test_a_low_severity_cve_does_not_qualify(self) -> None:
+        """Every image carries low-severity CVEs - this repository accepted
+        243 of them. Without the floor the rule fires on every repository
+        that runs a web server."""
+        rule = next(
+            r for r in correlate.BUILT_IN_RULES if r.rule_id == "vulnerable-image-and-live-service"
+        )
+        low = [
+            self._f("c1", "containers", "CVE-2023-45853", severity="low"),
+            self._f("d1", "dast", "ZAP-10096", title="Server version disclosure"),
+        ]
+        high = [
+            self._f("c1", "containers", "CVE-2023-45853", severity="critical"),
+            self._f("d1", "dast", "ZAP-10096", title="Server version disclosure"),
+        ]
+
+        assert correlate.detect(low, rules=(rule,)) == []
+        assert len(correlate.detect(high, rules=(rule,))) == 1
+
+    def test_a_dast_finding_can_be_half_of_a_combination(self) -> None:
+        """The point of spec 08 §5a. Patchwork will never write a patch for a
+        DAST finding, and that is not a reason for it to be invisible to
+        correlation."""
+        from mykronos.patchwork.pipeline import (
+            DEFAULT_CORRELATION_CAPABILITIES,
+            DEFAULT_SOURCE_CAPABILITIES,
+        )
+
+        assert "dast" not in DEFAULT_SOURCE_CAPABILITIES
+        assert "dast" in DEFAULT_CORRELATION_CAPABILITIES
+
+
 class TestCombinationEvents:
     def test_a_combination_records_its_members(
         self, client, admin_auth, patchwork_auth, run_compaction, catalog

@@ -43,7 +43,24 @@ STAGES = (
 
 CLASSIFICATIONS = ("true_positive", "likely_false_positive", "needs_human_judgment")
 
+#: What Patchwork may write a patch for. Narrow by construction: each of
+#: these points at a line in a file a deterministic fixer can change.
 DEFAULT_SOURCE_CAPABILITIES = ("sast", "secrets", "containers", "iac")
+
+#: What toxic-combination detection may consider (spec 08 §5a). Wider, and
+#: deliberately so - correlation is not fix generation. A DAST finding can be
+#: half of a combination that matters enormously while being something
+#: Patchwork will never patch, and using the fix-generation list for
+#: correlation made that entire class undetectable.
+DEFAULT_CORRELATION_CAPABILITIES = (
+    "sast",
+    "secrets",
+    "containers",
+    "iac",
+    "dast",
+    "atlas",
+    "cloud",
+)
 
 
 def event_id(repo_full_name: str, finding_id: str) -> str:
@@ -106,6 +123,7 @@ class PatchworkPipeline:
         min_confidence: float = 0.7,
         max_open_draft_prs: int = 10,
         source_capabilities: tuple[str, ...] = DEFAULT_SOURCE_CAPABILITIES,
+        correlation_capabilities: tuple[str, ...] = DEFAULT_CORRELATION_CAPABILITIES,
         fix_generator_url: str | None = None,
     ) -> None:
         self.catalog = catalog
@@ -114,14 +132,22 @@ class PatchworkPipeline:
         self.min_confidence = min_confidence
         self.max_open_draft_prs = max_open_draft_prs
         self.source_capabilities = source_capabilities
+        self.correlation_capabilities = correlation_capabilities
         # Null disables LLM-assisted generation entirely (spec 08 §2). The
         # deterministic fixers are unaffected; they are the primary path.
         self.fix_generator_url = fix_generator_url
 
     # -- stage 1: ingest -------------------------------------------------
 
-    def _candidates(self, repo_full_name: str, limit: int = 200) -> list[dict[str, Any]]:
-        capabilities = ", ".join(f"'{c}'" for c in self.source_capabilities)
+    def _candidates(
+        self,
+        repo_full_name: str,
+        limit: int = 200,
+        capability_set: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        capabilities = ", ".join(
+            f"'{c}'" for c in (capability_set or self.source_capabilities)
+        )
         columns = [
             "finding_id",
             "rule_id",
@@ -217,7 +243,15 @@ class PatchworkPipeline:
         """
         result = PipelineResult()
         findings = self._candidates(repo_full_name)
-        if not findings:
+        # Correlation looks wider than fix generation (spec 08 §5a). Fetched
+        # separately rather than filtered down from one query, because the
+        # per-query limit is a severity-ordered top-N: a single query would
+        # let 200 SAST findings crowd out the one DAST finding that makes a
+        # combination.
+        correlation_pool = self._candidates(
+            repo_full_name, capability_set=self.correlation_capabilities
+        )
+        if not findings and not correlation_pool:
             return result
 
         by_id = {str(f["finding_id"]): f for f in findings}
@@ -231,7 +265,7 @@ class PatchworkPipeline:
         # Stage 3. Done before fix generation so a finding that is part of a
         # combination is never fixed in isolation — spec 08 §8's overlap case,
         # and the reason combinations are detected at all.
-        combinations = correlate.detect(findings)
+        combinations = correlate.detect(correlation_pool)
         claimed = {fid for combo in combinations for fid in combo.finding_ids}
 
         for combo in combinations:
