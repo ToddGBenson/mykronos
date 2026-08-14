@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from mykronos.adapters import network_nmap
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.schemas import ScanStatus
@@ -79,6 +80,12 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         AdapterSpec("dast", "zap", dast_zap.normalize, "*.json", "OWASP ZAP"),
         AdapterSpec("cloud", "prowler", cloud_generic.normalize, "*.json", "Prowler"),
         AdapterSpec("cloud", "generic", cloud_generic.normalize, "*.json", "Generic OCSF"),
+        # Two tools, one adapter: nmap says a port is open, nuclei says a
+        # weakness is present on it, and both key on address and port
+        # (spec 14 §5). The glob takes both because a network run produces
+        # nmap XML and nuclei JSONL side by side in one results directory.
+        AdapterSpec("network", "nmap", network_nmap.normalize, "*.xml", "nmap"),
+        AdapterSpec("network", "nuclei", network_nmap.normalize, "*.json*", "nuclei"),
     ]
     return {(spec.capability, spec.tool): spec for spec in specs}
 
@@ -107,6 +114,7 @@ DEFAULT_TOOLS: dict[str, str] = {
     "containers": "trivy",
     "iac": "checkov",
     "cloud": "prowler",
+    "network": "nmap",
 }
 
 

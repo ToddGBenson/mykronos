@@ -278,6 +278,8 @@ async def ingest_findings(
             code_snippet=finding.code_snippet,
             line_start=finding.line_start,
             package_name=finding.package_name,
+            address=finding.address,
+            port=finding.port,
             title=finding.title,
         )
         rows.append(
@@ -303,6 +305,8 @@ async def ingest_findings(
                 "symbol": finding.symbol,
                 "code_snippet": finding.code_snippet,
                 "fingerprint_version": fingerprint_version,
+                "address": finding.address,
+                "port": finding.port,
                 "package_name": finding.package_name,
                 "package_version": finding.package_version,
                 # Provisional: compaction keeps the stored first_seen_* when

@@ -29,6 +29,15 @@ FINGERPRINT_DEPENDENCY = "v2-package"
 """Dependency findings key on the package, not a source location."""
 
 FINGERPRINT_REPO_LEVEL = "v2-repo"
+
+#: Spec 14 §5. Keyed on address and port rather than hostname, which is often
+#: absent, and deliberately not on the service banner, which changes on every
+#: patch and would churn identity on exactly the events that should instead
+#: resolve the finding.
+#:
+#: Known weakness, recorded in spec 14: on DHCP a host that changes address
+#: becomes a new finding.
+FINGERPRINT_NETWORK = "v1-network"
 """Findings with neither a file nor a package (e.g. cloud posture checks)."""
 
 # Field separator: a unit-separator byte cannot appear in any of the inputs we
@@ -67,6 +76,8 @@ def compute_finding_id(
     repo_full_name: str,
     capability: str,
     rule_id: str,
+    address: str | None = None,
+    port: int | None = None,
     file_path: str | None = None,
     symbol: str | None = None,
     code_snippet: str | None = None,
@@ -85,8 +96,28 @@ def compute_finding_id(
     - ``file_path`` set     -> code finding, keyed on the normalized snippet
       and enclosing symbol. Falls back to ``line_start`` only when the adapter
       gave us neither, and says so via the returned version.
+    - ``address`` set       -> network finding, keyed on the asset, rule,
+      address and port (spec 14 §5). Checked first: a network finding has no
+      file, and the repo-level fallback would key every open port on a host
+      to a single finding.
     - neither               -> repo-level finding, keyed on rule and title.
     """
+    # Network findings first: they carry an address and no file, and the
+    # repo-level fallback at the bottom would otherwise key every open port on
+    # the same host to one finding.
+    if address:
+        return (
+            _digest(
+                "net",
+                repo_full_name,
+                capability,
+                rule_id,
+                address,
+                None if port is None else str(port),
+            ),
+            FINGERPRINT_NETWORK,
+        )
+
     if package_name:
         return (
             _digest("dep", repo_full_name, capability, rule_id, package_name),

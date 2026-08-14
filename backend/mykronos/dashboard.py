@@ -285,7 +285,10 @@ class DashboardQueries:
         record necessarily quotes context around the secret, so it is withheld
         from viewer roles rather than merely hidden in the UI.
         """
-        where = ["repo_full_name = ?"]
+        # asset_id, not repo_full_name (spec 14 §5). For a repository
+        # asset the two hold the same string, so this is a rename
+        # rather than a behaviour change.
+        where = ["asset_id = ?"]
         params: list[Any] = [repo_full_name]
         for column, value in (
             ("capability", capability),

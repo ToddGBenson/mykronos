@@ -191,6 +191,79 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
             "can, and does."
         ),
     ),
+    # -- network × application (spec 14, spec 08 §5a) ---------------------
+    #
+    # The pairing the platform could not make until findings had an asset: a
+    # network scan sees a port answering and cannot see what is behind it; a
+    # web scan sees the application and cannot see what else that host
+    # exposes. Neither is wrong alone and neither is the finding that matters.
+    CombinationRule(
+        rule_id="exposed-admin-port-and-weak-app-auth",
+        name="Administrative service exposed beside an app that does not authenticate",
+        requires=(
+            Requirement(
+                r"ssh|rdp|vnc|telnet|winrm|smb|admin|3389|22/tcp|5985",
+                capability="network",
+            ),
+            Requirement(
+                r"auth|401|403|access.?control|session|default.?cred",
+                capability="dast",
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "A management service reachable on the network, and a web "
+            "application on the same estate that does not enforce "
+            "authentication. The port scan cannot tell whether the service "
+            "matters; the web scan cannot tell what else the host runs. "
+            "Together they describe a way in and somewhere to go from it."
+        ),
+    ),
+    CombinationRule(
+        rule_id="exposed-database-and-committed-credential",
+        name="Database port reachable, credential in the repository",
+        requires=(
+            Requirement(
+                r"mysql|postgres|mongo|redis|mssql|elastic|3306|5432|27017|6379",
+                capability="network",
+            ),
+            Requirement(
+                r"generic-api-key|password|connection.?string|credential|private-key",
+                capability="secrets",
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "A database port answering on the network, and a credential "
+            "committed to the repository that deploys against it. Neither "
+            "finding names the other: the scanner sees a port, the secrets "
+            "scan sees a string in git history. The combination is a "
+            "reachable database and the means to open it."
+        ),
+    ),
+    CombinationRule(
+        rule_id="expired-tls-and-live-endpoint",
+        name="Invalid certificate on a service the application depends on",
+        requires=(
+            Requirement(
+                r"expired|self.?signed|weak.?cipher|sslv|tls.?1\.0|certificate",
+                capability="network",
+            ),
+            Requirement(
+                r"mixed.?content|cookie|secure.?flag|hsts|transport",
+                capability="dast",
+            ),
+        ),
+        scope="repo",
+        explanation=(
+            "Transport security is failing at both layers: the certificate "
+            "or cipher suite on the host is not trustworthy, and the "
+            "application is not compensating - cookies without the secure "
+            "flag, missing HSTS, or mixed content. Either alone is a hygiene "
+            "item; together the session is interceptable in practice rather "
+            "than in theory."
+        ),
+    ),
     CombinationRule(
         rule_id="vulnerable-image-and-live-service",
         name="Exploitable dependency in a running, reachable service",

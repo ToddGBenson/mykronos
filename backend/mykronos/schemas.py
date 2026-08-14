@@ -30,6 +30,9 @@ class Capability(StrEnum):
     ATLAS = "atlas"
     PATCHWORK = "patchwork"
     ORACLE = "oracle"
+    #: Spec 14. The first capability whose subject is not a repository, which
+    #: is why findings carry an asset rather than a repo name (spec 14 §5).
+    NETWORK = "network"
 
 
 class Severity(StrEnum):
@@ -176,6 +179,14 @@ class FindingSubmission(BaseModel):
 
     package_name: str | None = Field(default=None, max_length=500)
     package_version: str | None = Field(default=None, max_length=200)
+
+    #: Where a network finding is, since it has no file (spec 14 §5). Part of
+    #: the fingerprint: address and port rather than hostname, which is often
+    #: absent, and not the service banner, which changes on every patch and
+    #: would churn identity on exactly the events that should resolve a
+    #: finding instead.
+    address: str | None = Field(default=None, max_length=100)
+    port: int | None = Field(default=None, ge=0, le=65535)
 
     raw_finding_json: dict[str, Any] = Field(
         default_factory=dict,

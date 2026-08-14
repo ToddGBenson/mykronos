@@ -285,7 +285,7 @@ class OracleEngine:
             f"""
             SELECT severity, count(*) AS total{dampened_clause}
             FROM findings
-            WHERE repo_full_name = ?
+            WHERE asset_id = ?
               AND status IN ({statuses})
               AND severity IN ({severities})
               {excluded}
@@ -306,7 +306,7 @@ class OracleEngine:
             f"""
             SELECT severity, count(*)
             FROM findings
-            WHERE repo_full_name = ?
+            WHERE asset_id = ?
               AND status IN ({statuses})
               {excluded}
               AND (
@@ -395,7 +395,7 @@ class OracleEngine:
         rows = self.catalog.query(
             f"SELECT severity, count(*) FROM findings "
             f"WHERE finding_id IN ({placeholders}) "
-            "AND repo_full_name = ? AND status = 'open' "
+            "AND asset_id = ? AND status = 'open' "
             "GROUP BY severity",
             [*sorted(covered), repo_full_name],
         )

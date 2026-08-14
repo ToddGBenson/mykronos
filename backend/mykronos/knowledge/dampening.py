@@ -102,7 +102,7 @@ def dampened_rules(
                    count(*) AS total,
                    count(*) FILTER (WHERE status = 'false_positive') AS dismissed
             FROM findings
-            WHERE repo_full_name = ? AND rule_id IN ({placeholders})
+            WHERE asset_id = ? AND rule_id IN ({placeholders})
             GROUP BY rule_id
             """,
             [repo_full_name, *eligible],
@@ -160,7 +160,7 @@ def open_finding_counts_excluding_dampened(
         f"""
         SELECT severity, count(*)
         FROM findings
-        WHERE repo_full_name = ? AND status = 'open' AND rule_id IN ({placeholders})
+        WHERE asset_id = ? AND status = 'open' AND rule_id IN ({placeholders})
         GROUP BY severity
         """,
         [repo_full_name, *dampened],

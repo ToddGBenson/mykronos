@@ -100,7 +100,10 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
             WHERE f.status = 'open'
               AND EXISTS (
                   SELECT 1 FROM recent_runs r
-                  WHERE r.repo_full_name = f.repo_full_name
+                  -- scan_runs is about a repository and keeps
+                  -- repo_full_name; findings are about an asset (spec 14 §5).
+                  -- For a repository asset the two hold the same string.
+                  WHERE r.repo_full_name = f.asset_id
                     AND r.capability = f.capability
                   GROUP BY r.repo_full_name, r.capability
                   HAVING count(*) >= {required}

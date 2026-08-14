@@ -620,6 +620,25 @@ class TestCrossCapabilityCombinations:
         assert correlate.detect(low, rules=(rule,)) == []
         assert len(correlate.detect(high, rules=(rule,))) == 1
 
+    def test_every_capability_a_rule_names_is_in_the_correlation_pool(self) -> None:
+        """A rule naming a capability the pool does not fetch cannot fire, and
+        fails silently - the same shape as the `^dast:` patterns that matched
+        nothing. This has now been the failure mode twice, so it is a test
+        rather than something to remember."""
+        from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
+
+        named = {
+            requirement.capability
+            for rule in correlate.BUILT_IN_RULES
+            for requirement in rule.requires
+            if requirement.capability
+        }
+
+        assert named <= set(DEFAULT_CORRELATION_CAPABILITIES), (
+            f"{sorted(named - set(DEFAULT_CORRELATION_CAPABILITIES))} are named by a "
+            "rule but never fetched, so those rules cannot fire"
+        )
+
     def test_a_dast_finding_can_be_half_of_a_combination(self) -> None:
         """The point of spec 08 §5a. Patchwork will never write a patch for a
         DAST finding, and that is not a reason for it to be invisible to

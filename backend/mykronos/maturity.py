@@ -193,7 +193,7 @@ def stale_untouched_ratio(catalog: Catalog, repo: str, now: datetime) -> float |
     """
     rows = catalog.query(
         "SELECT count(*), count(*) FILTER (WHERE first_seen_at <= ?) "
-        "FROM findings WHERE repo_full_name = ? AND status = 'open'",
+        "FROM findings WHERE asset_id = ? AND status = 'open'",
         [now - timedelta(days=30), repo],
     )
     if not rows:
@@ -235,7 +235,7 @@ def sscs_evidence_count(catalog: Catalog, repo: str, now: datetime) -> float | N
 def aged_criticals(catalog: Catalog, repo: str, now: datetime) -> float | None:
     return _scalar(
         catalog,
-        "SELECT count(*) FROM findings WHERE repo_full_name = ? "
+        "SELECT count(*) FROM findings WHERE asset_id = ? "
         "AND status = 'open' AND severity = 'critical' AND first_seen_at <= ?",
         [repo, now - timedelta(days=30)],
     )
@@ -398,7 +398,7 @@ def _reasoned_ratio(catalog: Catalog, store: Any, repo_full_name: str) -> float 
     """
     rows = catalog.query(
         "SELECT count(*) FROM findings "
-        "WHERE repo_full_name = ? AND status = 'false_positive'",
+        "WHERE asset_id = ? AND status = 'false_positive'",
         [repo_full_name],
     )
     dismissals = int(rows[0][0]) if rows else 0
@@ -456,6 +456,12 @@ def trend_series(
     """
     now = as_of or utcnow()
     step = timedelta(days=days / points)
+    # Two scopes, because these queries read three different tables and only
+    # one of them has an asset (spec 14 §5). findings is keyed on asset_id;
+    # risk_decisions and sscs_evidence are about a repository and stay that
+    # way. One shared string would have made whichever table lost the coin
+    # toss fail with a binder error.
+    asset_scope = "AND asset_id = ?" if repo_full_name else ""
     scope = "AND repo_full_name = ?" if repo_full_name else ""
     repo_param: list[Any] = [repo_full_name] if repo_full_name else []
 
@@ -472,7 +478,7 @@ def trend_series(
             FROM findings
             WHERE first_seen_at <= ?
               AND (resolved_at IS NULL OR resolved_at > ?)
-              {scope}
+              {asset_scope}
             """,
             [at, at, *repo_param],
         )
@@ -529,7 +535,7 @@ def mean_time_to_fix(
     dismissed was not fixed, and letting dismissals into this number would
     make the fastest way to improve it a click.
     """
-    scope = "AND repo_full_name = ?" if repo_full_name else ""
+    scope = "AND asset_id = ?" if repo_full_name else ""
     params: list[Any] = [utcnow() - timedelta(days=days)]
     if repo_full_name:
         params.append(repo_full_name)

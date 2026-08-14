@@ -48,6 +48,9 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     ("fingerprint_version", "VARCHAR"),
     ("package_name", "VARCHAR"),
     ("package_version", "VARCHAR"),
+    # Network findings (spec 14 §5). Null for everything with a file.
+    ("address", "VARCHAR"),
+    ("port", "INTEGER"),
     ("status", "VARCHAR"),
     # The finding_id that replaced this record, when `status = superseded`
     # (spec 05 §5a). Null otherwise, which is the overwhelming majority.

@@ -60,6 +60,9 @@ DEFAULT_CORRELATION_CAPABILITIES = (
     "dast",
     "atlas",
     "cloud",
+    # Spec 14. A network finding is never patchable and is half of three of
+    # the rules in `correlate`, which is exactly the case §5a exists for.
+    "network",
 )
 
 
@@ -164,7 +167,7 @@ class PatchworkPipeline:
         ]
         rows = self.catalog.query(
             f"SELECT {', '.join(columns)} FROM findings "
-            f"WHERE repo_full_name = ? AND status = 'open' "
+            f"WHERE asset_id = ? AND status = 'open' "
             f"AND capability IN ({capabilities}) "
             "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
             "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, finding_id "

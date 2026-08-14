@@ -329,7 +329,7 @@ def _settled_statuses(catalog: Catalog, repo_full_name: str, capability: str) ->
     """Findings for this repo and capability that already have a disposition."""
     rows = catalog.query(
         "SELECT finding_id FROM findings "
-        "WHERE repo_full_name = ? AND capability = ? AND status <> 'open'",
+        "WHERE asset_id = ? AND capability = ? AND status <> 'open'",
         [repo_full_name, capability],
     )
     return {str(row[0]) for row in rows}
