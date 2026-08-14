@@ -78,6 +78,8 @@ CAPABILITY_BY_JOB: dict[str, str] = {
     # cross-check is the only thing that can tell whether they reported at
     # all - there is no finding count to notice the absence of.
     "unit": "unit",
+    "qa": "qa",
+    "qa-spec-links": "qa",
     "functional": "functional",
     "demo-and-dast": "functional",
 }
@@ -281,6 +283,7 @@ class ConcourseClient:
 #: side-effect of renaming something.
 ALL_STAGES: tuple[str, ...] = (
     "unit",
+    "qa",
     "sast",
     "secrets",
     "atlas",

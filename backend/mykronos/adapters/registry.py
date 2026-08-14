@@ -93,6 +93,7 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         AdapterSpec(
             "functional", "junit", tests_junit.normalize, "*.xml", "JUnit XML"
         ),
+        AdapterSpec("qa", "junit", tests_junit.normalize, "*.xml", "JUnit XML"),
     ]
     return {(spec.capability, spec.tool): spec for spec in specs}
 
@@ -124,6 +125,7 @@ DEFAULT_TOOLS: dict[str, str] = {
     "network": "nmap",
     "unit": "junit",
     "functional": "junit",
+    "qa": "junit",
 }
 
 

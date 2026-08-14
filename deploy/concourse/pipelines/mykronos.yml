@@ -276,16 +276,35 @@ jobs:
       - get: python
       - task: check-links
         image: python
+        params: *mykronos_env
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: results }]
           run:
             path: bash
             args:
               - -ec
               - |
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
-                python scripts/check_links.py
+
+                # JUnit XML so the result reaches Mykronos as a ScanRun with
+                # no findings (D-046). One case per document, so "3 of 28
+                # documents have a broken link" is a fact about the
+                # documentation rather than a raw link count that one bad file
+                # could dominate.
+                mkdir -p ../results
+                rc=0
+                python scripts/check_links.py . --junit-xml=../results/qa.xml || rc=$?
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+
+                # The QA result decides the job, and it is reported either
+                # way: "the links are broken" and "nothing told us anything"
+                # are different facts.
+                exit "$rc"
 
   # The frontend, which had no Concourse lane at all until `ci.yml` was
   # retired: lint, build, and the contract check that matters more than either.

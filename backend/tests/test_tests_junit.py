@@ -112,6 +112,11 @@ class TestShapes:
     def test_functional_uses_the_same_adapter(self) -> None:
         assert normalize(report(), context("functional")).findings == []
 
+    def test_qa_uses_the_same_adapter(self) -> None:
+        """A broken documentation link is a defect and is not a
+        vulnerability. Same reasoning as a failing assertion (D-046)."""
+        assert normalize(report(tests=28), context("qa")).findings == []
+
 
 class TestRegistration:
     def test_both_capabilities_resolve_to_junit(self) -> None:
@@ -119,4 +124,5 @@ class TestRegistration:
 
         assert default_tool("unit") == "junit"
         assert default_tool("functional") == "junit"
+        assert default_tool("qa") == "junit"
         assert get_adapter("unit", "junit").pattern == "*.xml"

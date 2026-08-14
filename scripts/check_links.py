@@ -39,9 +39,60 @@ def broken_links(root: Path) -> list[tuple[Path, str]]:
     return broken
 
 
+def junit(root: Path, broken: list[tuple[Path, str]], destination: Path) -> None:
+    """Write the result as JUnit XML so Mykronos can record it (D-046).
+
+    One test case per Markdown file rather than per broken link, because the
+    counts have to mean something: "18 of 60 documents have a broken link" is
+    a fact about the documentation, while "18 broken links" could be one file
+    with eighteen of them.
+
+    QA reports a ScanRun and no findings, like unit and functional. A broken
+    link is a defect and it is not a vulnerability, and giving it a severity
+    would put documentation drift into a security risk score.
+    """
+    from xml.etree.ElementTree import Element, ElementTree, SubElement
+
+    failures: dict[str, list[str]] = {}
+    for path, target in broken:
+        failures.setdefault(path.relative_to(root).as_posix(), []).append(target)
+
+    documents = sorted(
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*.md")
+        if not any(part in SKIP_DIRS for part in p.parts)
+    )
+
+    suite = Element(
+        "testsuite",
+        name="qa-spec-links",
+        tests=str(len(documents)),
+        failures=str(len(failures)),
+        errors="0",
+        skipped="0",
+    )
+    for document in documents:
+        case = SubElement(suite, "testcase", classname="links", name=document)
+        if document in failures:
+            targets = ", ".join(sorted(failures[document]))
+            SubElement(
+                case, "failure", message=f"broken link -> {targets}"
+            ).text = f"{document} links to {targets}, which does not exist."
+
+    root_element = Element("testsuites")
+    root_element.append(suite)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    ElementTree(root_element).write(destination, encoding="utf-8", xml_declaration=True)
+
+
 def main() -> int:
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    root = Path(args[0] if args else ".").resolve()
     broken = broken_links(root)
+
+    for flag in sys.argv[1:]:
+        if flag.startswith("--junit-xml="):
+            junit(root, broken, Path(flag.split("=", 1)[1]))
 
     for path, target in broken:
         relative = path.relative_to(root).as_posix()

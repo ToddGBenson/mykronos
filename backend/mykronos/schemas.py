@@ -39,6 +39,7 @@ class Capability(StrEnum):
     #: would let a broken test raise a security risk score.
     UNIT = "unit"
     FUNCTIONAL = "functional"
+    QA = "qa"
 
 
 class Severity(StrEnum):

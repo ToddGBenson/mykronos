@@ -533,6 +533,29 @@ class FunctionalConfig(BaseCapabilityConfig):
     fail_build_on_failure: bool = Field(default=True)
 
 
+class QaConfig(BaseCapabilityConfig):
+    """Repository quality checks (D-046, spec 15 §1).
+
+    The checks themselves belong to the repository - link integrity here,
+    contract or schema checks elsewhere. Mykronos records that they ran and
+    how they ended, and nothing about what they are.
+
+    Produces no findings, for the same reason unit and functional do not: a
+    broken documentation link is a defect and is not a vulnerability, and
+    giving it a severity would put documentation drift into a security risk
+    score.
+    """
+
+    fail_build_on_failure: bool = Field(
+        default=True,
+        description=(
+            "Whether a failing QA check stops the pipeline. Separate from any "
+            "risk score - the pipeline enforces quality, and the score stays "
+            "about risk (D-046)."
+        ),
+    )
+
+
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -547,6 +570,7 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.NETWORK.value: NetworkConfig,
     Capability.UNIT.value: UnitConfig,
     Capability.FUNCTIONAL.value: FunctionalConfig,
+    Capability.QA.value: QaConfig,
 }
 
 
