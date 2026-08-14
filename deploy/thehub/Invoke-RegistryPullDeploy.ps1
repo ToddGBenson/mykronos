@@ -83,11 +83,25 @@ $env:MC_HOST_thehub = "{0}://{1}@{2}" -f $uri.Scheme, $creds, $uri.Authority
 function Get-Pointer {
     param([string]$Name)
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-$Name-$(Get-Random)"
+
+    # ErrorActionPreference is Stop for this script, and under Windows
+    # PowerShell anything a native command writes to stderr becomes a
+    # NativeCommandError -- which Stop makes terminating. `mc` writes
+    # "Object does not exist" to stderr on the ordinary "nothing published
+    # yet" path, so this function threw instead of returning $null and took
+    # the whole run with it. `2>$null` discards the text but not the error
+    # record, which is why it looked handled.
+    #
+    # A missing pointer is the normal state of this bucket most of the time,
+    # so it is relaxed here and only here.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
         & $mc --quiet cp "thehub/$Bucket/$Name" $tmp 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) { return $null }
         return (Get-Content $tmp -Raw).Trim()
     } finally {
+        $ErrorActionPreference = $previous
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 }
@@ -139,14 +153,37 @@ function Invoke-Cycle {
         }
 
         Write-Host "$environment : $current -> $requested" -ForegroundColor Cyan
-        & $deployScript -Environment $environment -Sha $requested
-        if ($LASTEXITCODE -ne 0) {
+
+        # Invoke-TheHubDeploy reports every real failure with `throw`, not an
+        # exit code - "Could not pull", "docker compose up failed", "Nothing
+        # in $project is running $ImageRef". With ErrorActionPreference Stop
+        # those propagate straight through this call, so the whole block
+        # below used to be unreachable for exactly the failures it was written
+        # for: no marker was recorded, the no-retry protection never engaged,
+        # and the run died before the other environment was even looked at.
+        #
+        # TimeoutMinutes is raised from the script's default of 5 because a
+        # first boot into an empty environment measured ~6m47s to answer
+        # /health - so the default failed a deploy that was working, and left
+        # a .failed marker that would have stopped it being retried. 12 keeps
+        # room under the pipeline's own 15-minute wait for the acknowledgement.
+        $deployError = $null
+        try {
+            & $deployScript -Environment $environment -Sha $requested -TimeoutMinutes 12
+            $deployExit = $LASTEXITCODE
+        } catch {
+            $deployError = $_.Exception.Message
+            $deployExit = 1
+        }
+
+        if ($deployExit -ne 0) {
             # Not acknowledged. The pipeline is waiting on that value and a
             # timeout there is the correct outcome - reporting a SHA that did
             # not deploy would let DAST probe the previous build and attribute
             # the result to this commit.
             Set-Content -Path $failedFile -Value $requested -NoNewline -Encoding ASCII
-            Write-Host "$environment deploy failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            Write-Host "$environment deploy failed (exit $deployExit)." -ForegroundColor Red
+            if ($deployError) { Write-Host "  $deployError" -ForegroundColor Red }
             Write-Host "  Pointer left unacknowledged and recorded in $(Split-Path $failedFile -Leaf)." -ForegroundColor Red
             Write-Host "  This SHA will not be retried; publishing a different one clears it." -ForegroundColor Red
             $script:failures++
