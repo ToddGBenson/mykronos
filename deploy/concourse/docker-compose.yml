@@ -92,6 +92,48 @@ services:
       timeout: 5s
       retries: 10
 
+  # Credential manager for Concourse, and a personal secret store (see
+  # vault/config.hcl for why file storage and why TLS is off).
+  #
+  # Concourse stores pipeline config verbatim: a secret passed with
+  # `fly set-pipeline -l vars.yml` is readable afterwards via `fly get-pipeline`.
+  # With this, pipelines carry `((var))` references and the values never enter
+  # the config at all.
+  #
+  # Sealed after every restart by design. `vault-unseal.ps1` opens it; until
+  # then, credential lookups fail loudly rather than resolving to empty.
+  vault:
+    image: hashicorp/vault:1.21.4
+    container_name: mykronos-vault
+    restart: unless-stopped
+    command: server
+    cap_add:
+      # Lets Vault lock memory so secrets cannot be swapped to disk.
+      # disable_mlock is also set, because the file backend in a container
+      # cannot always rely on it — belt and braces, and neither is load-bearing
+      # on a single-host deployment.
+      - IPC_LOCK
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+    volumes:
+      - vault-data:/vault/file
+      - ./vault/config.hcl:/vault/config/config.hcl:ro
+    ports:
+      # Loopback only. Concourse reaches it over the compose network by service
+      # name; this publish exists so `vault` on THIS host can be used as a
+      # personal secret store. It is deliberately not on 0.0.0.0 — unlike MinIO
+      # and the registry, nothing inside a garden task needs to reach Vault.
+      - "127.0.0.1:8200:8200"
+    networks: [concourse]
+    healthcheck:
+      # sealedcode=200 and uninitcode=200: a sealed or uninitialised Vault is
+      # STARTED, just not usable yet. Reporting it unhealthy would make compose
+      # restart it forever and make a normal post-reboot state look like a
+      # crash loop.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
   concourse:
     image: concourse/concourse:7.14
     container_name: mykronos-concourse
@@ -168,6 +210,21 @@ services:
       # host key, and the two never agreed. Half a pair from each source is
       # worse than none from either.
 
+      # ── Credential manager (Vault) ─────────────────────────────────────
+      # Lookup order for ((foo)) is:
+      #   /concourse/<team>/<pipeline>/foo   then   /concourse/<team>/foo
+      # so team-wide credentials live one level up and pipeline-specific ones
+      # sit beside the pipeline.
+      #
+      # KV version 1 is mounted at concourse/ on purpose. KV v2 inserts a
+      # `data/` segment into the API path and wraps values in a metadata
+      # envelope; v1 is a flat read and is what Concourse's lookup templates
+      # expect without further configuration. The personal/ mount is v2,
+      # because there versioning is the point.
+      CONCOURSE_VAULT_URL: http://vault:8200
+      CONCOURSE_VAULT_PATH_PREFIX: /concourse
+      CONCOURSE_VAULT_CLIENT_TOKEN: ${CONCOURSE_VAULT_TOKEN:?set it in .env - see vault-init}
+
       CONCOURSE_LOG_LEVEL: info
     volumes:
       - concourse-worker-data:/worker-state
@@ -194,6 +251,7 @@ services:
       start_period: 90s
 
 volumes:
+  vault-data:
   registry-data:
   concourse-db-data:
   concourse-worker-data:

@@ -62,6 +62,14 @@ deploy/concourse/.env.bak-*
 deploy/concourse/bin/
 deploy/concourse/keys/
 
+# Vault unseal key and root token. Committing these makes the credential
+# manager worthless; losing them makes every secret in it unrecoverable, so
+# they belong in a password manager as well as here.
+deploy/concourse/vault/init.json
+deploy/concourse/vault/*.key
+# Pre-Vault compose backup, kept on disk for the rollback in VAULT.md.
+deploy/concourse/docker-compose.yml.bak-*
+
 # TheHub deploy target (spec 16 §7). `.env` names this host's compose files;
 # `.deployed-*` is the SHA each environment is currently on, which is the
 # rollback target and is state rather than configuration.
