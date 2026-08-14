@@ -1841,6 +1841,63 @@ jobs:
           STAGE: prompt_evals
           STATUS: success
           TARGET_ENV: prod
+  # -- The API inventory is a contract, not a document ---------------------
+  #
+  # docs/api/inventory.json lists all ~1,739 operations The Hub exposes. It is
+  # generated from the running application's own OpenAPI document, so it is
+  # correct by construction -- but only at the moment it is generated.
+  #
+  # This job regenerates it against the demo instance the deploy just built
+  # and fails if it differs from what is committed. That is the whole point:
+  # the surface cannot change without the change appearing in a diff that a
+  # person reviews. Without it the inventory is a snapshot that quietly ages
+  # into a confident lie, which is worse than having no inventory at all
+  # because people trust it (i2i 2026-08-13, API-1).
+  #
+  # After deploy-demo rather than off source, because it reads the API from a
+  # running instance and the instance has to be the one built from this commit.
+  - name: api-inventory
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [deploy-demo]
+      - get: python
+      - task: check-inventory
+        image: python
+        params:
+          TARGET_URL: ((thehub-demo-url))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source
+
+                # No dependencies: the generator uses only the standard
+                # library, precisely so this job needs nothing installed and
+                # cannot fail for a reason unrelated to the API.
+                python scripts/api_inventory.py --url "$TARGET_URL" --check
+
+                echo "The committed inventory matches the deployed API."
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: api_inventory
+          STATUS: success
+          TARGET_ENV: demo
+
   # -- Functional tests, then DAST seeded by their traffic -----------------
   #
   # The old lane ran zap-baseline against demo: a spider and the passive
@@ -2013,6 +2070,35 @@ jobs:
                   echo "::error::The suite ran without using the proxy, so this would be an unseeded scan wearing a seeded scan's name."
                   exit 1
                 fi
+
+                # -- Stage 1b: the API surface, from its own spec -------------
+                #
+                # The functional suite gives ZAP depth: authenticated,
+                # stateful journeys no crawler could reproduce. It does not
+                # give breadth -- the e2e specs touch a small fraction of the
+                # ~1,739 operations the inventory lists. Importing the spec
+                # adds every declared operation, so the active scan reaches
+                # endpoints no browser journey happened to visit.
+                #
+                # Not a substitute for the traffic above, and not substituted
+                # by it: the spec knows every path and nothing about how to
+                # reach a valid state; the tests know the opposite.
+                IMPORTED=0
+                if zap_api "/JSON/openapi/action/importUrl/" \
+                     --data-urlencode "url=${TARGET_URL}/openapi.json" \
+                     --data-urlencode "hostOverride=${TARGET_URL}" >/dev/null 2>&1; then
+                  IMPORTED=1
+                  echo "Imported ${TARGET_URL}/openapi.json into ZAP."
+                else
+                  # The add-on ships with the full ZAP distribution but is not
+                  # guaranteed. Said out loud rather than left as a quietly
+                  # narrower scan that still reports as a full one.
+                  echo "::warning::ZAP would not import the OpenAPI document."
+                  echo "::warning::Scanning functional traffic only - spec-only endpoints are NOT covered."
+                fi
+
+                AFTER_SPEC=$(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length')
+                echo "ZAP knows ${AFTER_SPEC:-0} URL(s) after traffic + spec import."
 
                 # -- Stage 2: spider -----------------------------------------
                 #
