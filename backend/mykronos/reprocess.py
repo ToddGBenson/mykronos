@@ -294,6 +294,14 @@ def _ingest(
             {
                 "finding_id": finding_id,
                 "scan_run_id": scan_run_id,
+                # The second writer of findings rows, and the one that made
+                # the asset migration bite: `_settled_statuses` reads
+                # `asset_id`, so a re-derived row without one is invisible to
+                # the guard that stops a fixed finding being reopened. That is
+                # D-034 exactly, reintroduced by migrating a reader without
+                # its writer.
+                "asset_type": "repo",
+                "asset_id": context.repo_full_name,
                 "repo_full_name": context.repo_full_name,
                 "capability": context.capability,
                 "rule_id": finding.rule_id,
