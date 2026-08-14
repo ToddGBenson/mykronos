@@ -1361,6 +1361,14 @@ jobs:
   # inside the authenticated surface rather than from the front door.
   - name: demo-and-dast
     public: true
+    # One at a time, and this is load-bearing rather than politeness. There is
+    # one demo environment and one ZAP daemon on the host, and the job resets
+    # ZAP's session so its site tree belongs to this run. Two builds
+    # overlapping means the second wipes the first's tree, and the first then
+    # fails its active scan with a 400 because the URL it is asking about is
+    # no longer known - which is exactly what happened to build 7 when builds
+    # 8 and 9 started while it was still scanning.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1479,7 +1487,14 @@ jobs:
                 # Attack traffic. It goes at the demo environment and nowhere
                 # else - the ports are offset from production so a mistyped
                 # host cannot reach it.
-                zap_api "/JSON/ascan/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
+                if ! zap_api "/JSON/ascan/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null; then
+                  echo "::error::ZAP refused to start the active scan for ${FRONTEND}."
+                  echo "The usual cause is the URL not being in the site tree - which"
+                  echo "means something reset ZAP's session mid-run. This job is serial"
+                  echo "for that reason; check whether anything else is driving the"
+                  echo "shared ZAP on the demo host."
+                  exit 1
+                fi
                 for _ in $(seq 1 180); do
                   st=$(zap_api "/JSON/ascan/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
