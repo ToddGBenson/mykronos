@@ -287,10 +287,24 @@ anchors:
             exit 0
 
 jobs:
+  # Every build and scan job below shares one `serial_groups: [worker]`, so at
+  # most one of them runs at a time.
+  #
+  # This is not tidiness. Seven jobs trigger on the same commit and each one
+  # apt-gets and pip-installs before it does any work; run together on a single
+  # worker that also hosts TheHub's live stack, they took the box to 1.1 GB
+  # free and the kernel killed the Concourse container itself - `Exited (137)`,
+  # which is an OOM kill, not a crash. The scheduler dying is a worse outcome
+  # than any scan being slow, and it takes every other pipeline with it.
+  #
+  # The cost is wall-clock: the fan-out is now a queue, and a full run is the
+  # sum of its lanes rather than the longest one. On one worker that was always
+  # closer to the truth than the diagram suggested.
   # == Stage 1: quality =====================================================
 
   - name: unit
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -772,6 +786,7 @@ jobs:
           TARGET_ENV: prod
   - name: build
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -841,6 +856,7 @@ jobs:
 
   - name: secrets
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -885,6 +901,7 @@ jobs:
 
   - name: sast
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -959,6 +976,7 @@ jobs:
 
   - name: dependencies
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1160,6 +1178,7 @@ jobs:
 
   - name: containers
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1279,6 +1298,7 @@ jobs:
           TARGET_ENV: prod
   - name: insider
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1646,6 +1666,7 @@ jobs:
   # always been empty.
   - name: iac
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1727,6 +1748,7 @@ jobs:
 
   - name: prompt-evals
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1813,6 +1835,7 @@ jobs:
 
   - name: dast
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -2134,6 +2157,7 @@ jobs:
   # holds exposes no merge operation at all (spec 08 §7).
   - name: remediate
     public: true
+    serial_groups: [worker]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -2189,3 +2213,178 @@ jobs:
                     echo "::warning::Patchwork: $line"
                   done
                 fi
+
+  # -- AI model inventory and retirement check ------------------------------
+  #
+  # TheHub is an AI application - anthropic, openai and pgvector are all in
+  # backend/requirements.txt - and the scanners above say nothing about that
+  # surface. gitleaks finds a leaked key; nothing checks whether the models
+  # the code asks for still exist.
+  #
+  # They do get retired. Anthropic publishes retirement dates and the ID stops
+  # resolving afterwards, so a call site naming a retired model is not a
+  # deprecation warning - it is a 404 the first time that path runs in
+  # production, and nothing in the test suite necessarily covers it.
+  #
+  # WHY THIS ASKS THE API RATHER THAN CARRYING A LIST
+  #
+  # The obvious implementation is a hardcoded set of retired IDs. That set is
+  # wrong the day after the next retirement and nobody notices, because a
+  # stale allow-list fails open - it reports clean about models it has never
+  # heard of. GET /v1/models is the same source the retirement schedule comes
+  # from: anything the API no longer serves is, by definition, retired. It
+  # cannot go stale.
+  #
+  # WHAT IS GATED AND WHAT IS ONLY REPORTED, AND WHY THE LINE IS THERE
+  #
+  # Only call-site shapes are gated: `model="..."` and `"model": "..."`. A
+  # model ID appearing anywhere else is inventoried and not failed on, because
+  # the first draft of this check would have failed the build on
+  # backend/services/aiops/request_logger.py - a per-token pricing table whose
+  # keys are model IDs, including retired ones. Those entries are correct:
+  # historical ai_request_log rows priced against a retired model still have
+  # to resolve. A check that demands their removal is asking for the cost
+  # history to be broken.
+  #
+  # Tests are inventoried rather than gated for the same reason - a fixture
+  # naming a retired model never calls it.
+  #
+  # Only `claude-*` IDs are validated. The OpenAI models are listed for the
+  # inventory and explicitly not checked: this job holds no OpenAI credential
+  # and there is no equivalent lookup here, so reporting them as fine would be
+  # claiming a check that did not happen.
+
+  - name: ai-models
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
+      - get: python
+      - task: model-inventory
+        image: python
+        params:
+          ANTHROPIC_API_KEY: ((anthropic-api-key))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl >/dev/null
+
+                if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                  echo "=================================================="
+                  echo "NO ANTHROPIC KEY - NO MODEL VALIDATION."
+                  echo "The inventory below is still produced, but nothing"
+                  echo "was checked against the API. This green tick does"
+                  echo "NOT say the models this code calls still exist."
+                  echo "=================================================="
+                  SERVED=""
+                else
+                  # --fail so an auth or network failure is a failed check
+                  # rather than an empty served-set, which would otherwise
+                  # mark every model retired and produce a very confident
+                  # wrong answer.
+                  curl --fail --silent --show-error --max-time 30 \
+                    -H "x-api-key: $ANTHROPIC_API_KEY" \
+                    -H "anthropic-version: 2023-06-01" \
+                    'https://api.anthropic.com/v1/models?limit=100' > models.json
+                  SERVED=models.json
+                fi
+
+                cat > check.py <<'PY'
+                import json, os, re, sys, pathlib
+
+                ROOT = pathlib.Path("source")
+                CALL = re.compile(r'(?:\bmodel\s*=\s*|"model"\s*:\s*)"([^"]+)"')
+                # Requires a separator and a digit. Every real model ID has
+                # both; "claude.ai", "claude_api_key", "claude_code" and
+                # "claude.md" have neither, and without this the inventory is
+                # mostly those.
+                ANY = re.compile(r'"((?:claude|gpt|o[0-9]|text-embedding|gemini|whisper)[-.][A-Za-z0-9._:-]*[0-9][A-Za-z0-9._:-]*)"')
+
+                served = set()
+                path = os.environ.get("SERVED") or ""
+                if path:
+                    served = {m["id"] for m in json.load(open(path))["data"]}
+                    print(f"models currently served by the API: {len(served)}")
+                print()
+
+                call_sites, mentions = {}, {}
+                # os.walk with in-place pruning, not rglob. rglob descends
+                # into node_modules and .venv and only then lets the filter
+                # reject what it found - on this repository that walk does not
+                # finish inside the task timeout. Pruning dirnames stops the
+                # descent before it starts.
+                # "worktrees" because a git worktree checked out inside the
+                # repository is a second copy of every file - it doubles the
+                # inventory and reports each finding at a path nobody edits.
+                SKIP = {"node_modules", ".venv", "venv", "site-packages", ".git",
+                        "__pycache__", ".mypy_cache", ".pytest_cache", "dist",
+                        "build", "worktrees"}
+                files = []
+                for dirpath, dirnames, filenames in os.walk(ROOT):
+                    dirnames[:] = [d for d in dirnames if d not in SKIP]
+                    files += [pathlib.Path(dirpath) / n for n in filenames if n.endswith(".py")]
+
+                for f in files:
+                    rel = f.relative_to(ROOT).as_posix()
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    is_test = "test" in rel or "conftest" in rel
+                    for mid in CALL.findall(text):
+                        if re.match(r"^(claude|gpt|o[0-9]|text-embedding|gemini|whisper)", mid):
+                            (mentions if is_test else call_sites).setdefault(mid, set()).add(rel)
+                    for mid in ANY.findall(text):
+                        if mid not in call_sites:
+                            mentions.setdefault(mid, set()).add(rel)
+
+                def show(title, d):
+                    print(f"== {title} ==")
+                    for mid in sorted(d):
+                        where = sorted(d[mid])
+                        print(f"  {mid:<34} {where[0]}" + (f" (+{len(where)-1} more)" if len(where) > 1 else ""))
+                    if not d:
+                        print("  (none)")
+                    print()
+
+                show("call sites (gated)", call_sites)
+                show("other references - registries, fixtures, pricing tables (not gated)", mentions)
+
+                if not served:
+                    print("No served-model list: nothing was validated.")
+                    sys.exit(0)
+
+                retired = {m: v for m, v in call_sites.items()
+                           if m.startswith("claude") and m not in served}
+                unchecked = sorted({m for m in call_sites if not m.startswith("claude")})
+
+                if unchecked:
+                    print("not checked (no lookup available for this provider): " + ", ".join(unchecked))
+                    print()
+
+                if retired:
+                    print("::error:: a call site names a model the API no longer serves.")
+                    print("          These return 404 the first time that path runs:")
+                    for mid in sorted(retired):
+                        for rel in sorted(retired[mid]):
+                            print(f"          {mid}  {rel}")
+                    pathlib.Path("notify/message.txt").write_text(
+                        "*TheHub / models*: %d call site(s) name a retired Claude model - "
+                        "these 404 in production." % len(retired), encoding="utf-8")
+                    sys.exit(1)
+
+                print("Every Claude model named at a call site is still served.")
+                PY
+
+                SERVED="$SERVED" python check.py
