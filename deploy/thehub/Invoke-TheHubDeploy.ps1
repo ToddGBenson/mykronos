@@ -273,6 +273,42 @@ function Invoke-Seed {
     }
     Write-Host "  schema: $count migration(s) applied by the entrypoint" -ForegroundColor DarkGray
 
+    # -- The migrations alone cannot build a database from nothing -----------
+    #
+    # Some tables exist only as ORM models. `practice_sessions` and
+    # `github_repositories` are never created by any file in db/migrations,
+    # and four migrations plus seed_demo.py reference them - so against a
+    # genuinely empty database those four fail with "relation does not exist"
+    # and the seed dies on the first practice_sessions insert.
+    #
+    # This was invisible until demo started being rebuilt with `down -v`.
+    # Every database this had run against was built incrementally, so the
+    # tables were already there from whenever create_all last ran.
+    #
+    # scripts/init_db.py is that missing step: Base.metadata.create_all over
+    # every model, which is idempotent (SQLAlchemy checks first) and therefore
+    # safe on a database the entrypoint has already migrated.
+    #
+    # Migrations then run a second time, and this is the part that looks
+    # redundant and is not: the four that failed above failed only because
+    # their tables did not exist yet. With create_all done they apply cleanly.
+    # Measured on a rebuilt demo - 273 applied / 4 failed, then create_all,
+    # then 4 applied / 0 failed, then the seed succeeded with 278 recorded.
+    #
+    # Ordering note, because the obvious arrangement is the untested one:
+    # create_all does NOT run before the entrypoint's migrations. That order
+    # would build the current model schema first and then replay historical
+    # ALTERs on top of it, which is a different and unverified proposition.
+    # This sequence is the one that has actually been run end to end.
+    Write-Host "  building tables that exist only as models (init_db)..." -ForegroundColor DarkGray
+    docker compose --project-name $project --file $composeFile `
+        exec -T demo-backend python scripts/init_db.py
+    if ($LASTEXITCODE -ne 0) { throw "init_db.py failed in $project; the schema is incomplete." }
+
+    docker compose --project-name $project --file $composeFile `
+        exec -T demo-backend python -c "from run_migrations import run_migrations_auto; run_migrations_auto()"
+    if ($LASTEXITCODE -ne 0) { throw "the second migration pass failed in $project." }
+
     docker compose --project-name $project --file $composeFile exec -T demo-backend python scripts/seed_demo.py
     if ($LASTEXITCODE -ne 0) { throw "seed_demo.py failed in $project." }
 
