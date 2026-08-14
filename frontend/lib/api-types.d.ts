@@ -331,6 +331,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/vulnerability-management": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Vulnerability Management
+         * @description What is outstanding, how old, and what was accepted (PIP-9).
+         *
+         *     The platform could answer "what is open" from the beginning and never
+         *     "how long has it been open, and what did we decide not to fix" — which
+         *     are the two questions a vulnerability management programme is made of.
+         *
+         *     Accepted risk is reported separately and never folded into a resolved
+         *     count. It is a decision with an owner and a reason, and the reason is the
+         *     part that decays: "no vendor fix" stops being true the day a vendor ships
+         *     one, and this repository is currently carrying 243 acceptances that each
+         *     said exactly that.
+         */
+        get: operations["vulnerability_management_api_dashboard_vulnerability_management_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/ci": {
         parameters: {
             query?: never;
@@ -2465,6 +2495,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InsiderRiskPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    vulnerability_management_api_dashboard_vulnerability_management_get: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
