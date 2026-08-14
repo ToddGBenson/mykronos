@@ -1591,6 +1591,50 @@ found by the healthiest repository, not the sickest.
 
 ---
 
+## D-051 — The pipelines install a version of the platform that is 53 commits old
+
+**Status:** Open — needs an operator decision, not a code change
+**Spec:** [15 §4](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
+
+Every scanning task installs the uploader with
+
+    pip install "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+and `mykronos-ref` is set to `v1` in both `set-pipeline.ps1` and
+`set-thehub-pipeline.ps1`. The `v1` tag has not moved in 53 commits.
+
+This was found the direct way: D-048's suppression fix was written, tested,
+committed and pushed, both pipelines were re-run, and the lane went on
+ingesting suppressed results as open findings. The fix was on `main`. CI
+installs `v1`.
+
+The consequence is general, not specific to that fix. Every change to an
+adapter, to `mykronos.upload`, to `atlas_counts` or to fingerprinting since
+the tag was cut is inert in CI while being green in the unit tests. The tests
+and the pipeline are testing two different versions of the same package, and
+nothing reports the gap — the install line prints no version.
+
+**Not resolved here, deliberately.** Moving `v1` would land 53 commits of
+platform change across both pipelines at once, including work in flight from
+others, and that is a release decision rather than a pipeline repair. The
+options, in the order they seem preferable:
+
+1. Cut `v2` from a commit chosen on purpose and point `mykronos-ref` at it.
+   Pinning stays meaningful and the jump is deliberate.
+2. Move `v1` if it was always intended as a floating major tag in the
+   `actions/checkout@v1` sense. Cheapest, and makes the next fix reach CI
+   automatically — but a floating tag that has not floated for 53 commits is
+   evidence the convention was not being followed.
+3. Point `mykronos-ref` at `main`. Fixes reach CI immediately and pinning is
+   given up entirely, so a bad commit breaks every lane in both pipelines at
+   once. Cheapest to do and the easiest to regret.
+
+**Worth doing regardless of which:** have the install step print the resolved
+commit. A pinned ref is a good practice and a silently stale one is not, and
+the difference is one line of output.
+
+---
+
 ---
 
 ## D-007 — Deferred to a later phase
