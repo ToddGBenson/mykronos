@@ -252,10 +252,18 @@ function Invoke-Seed {
     # was not ready it returns silently ("Skipping auto-migration"), which
     # would leave an empty schema for seed_demo.py to fail against in a much
     # more confusing way. An empty history table is that failure, named.
+    # to_regclass first: when the auto-migration skipped entirely the history
+    # table does not exist, and querying it raises a SQLAlchemy traceback that
+    # buries the actual answer. This reports 0 instead, so the clear message
+    # below is what an operator sees.
+    $probe = "from run_migrations import engine; from sqlalchemy import text; c = engine.connect(); " +
+             "print(0 if c.execute(text(`"select to_regclass('_hub_migration_history')`")).scalar() is None " +
+             "else c.execute(text('select count(*) from _hub_migration_history')).scalar())"
+
     $applied = docker compose --project-name $project --file $composeFile `
-        exec -T demo-backend python -c "from run_migrations import engine; from sqlalchemy import text; print(engine.connect().execute(text('select count(*) from _hub_migration_history')).scalar())"
+        exec -T demo-backend python -c $probe
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not read the migration history in $project; the entrypoint's auto-migration may not have run."
+        throw "Could not reach the database in $project to check the migration history."
     }
 
     $count = 0
