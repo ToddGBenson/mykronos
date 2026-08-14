@@ -1678,6 +1678,54 @@ risk score stays about risk.
 
 ---
 
+## D-047 — "AI" is four concerns; three become a capability and one stays where it is
+
+**Status:** Decided
+**Spec:** [04 §3](../specs/04-scanner-workflows.md), [06 §2](../specs/06-aegis-integration.md)
+**Story:** PIP-7
+
+PIP-7 sat in `intake` because the word covers at least four separable things,
+and building the wrong one is expensive. Named explicitly:
+
+1. **Prompt-injection surface** — untrusted input reaching a model prompt
+   without separation.
+2. **Model and dependency provenance** — which model, pinned to what, from
+   where.
+3. **Evaluation regression** — an AI feature whose measured quality dropped.
+4. **Disclosure of AI-authored changes** — a pull request written by a model
+   and not saying so.
+
+**Decision: 1–3 become the `ai` capability. 4 stays in Aegis.**
+
+The boundary is the subject. Aegis assesses a *pull request and its author*
+(spec 06 §2): it answers "did a person disclose how this was written", which
+is about conduct and belongs beside review integrity and the sensitive-path
+signals. The other three assess *the code and its configuration* — they are
+true of a commit whether or not anyone opened a pull request, and they are
+found by reading the repository.
+
+Moving disclosure into `ai` would split Aegis's one coherent question across
+two capabilities and give the AI stage a per-author dimension that spec 06 §9
+deliberately refuses to build.
+
+**`ai` produces findings, unlike unit, functional and QA.** D-046 kept those
+finding-free because a failing assertion is not a vulnerability. A prompt
+injection that succeeds *is* one; an unpinned model is a supply-chain fact of
+the same kind as an unpinned dependency, which Atlas already treats as a
+finding. They have a location, a severity that means what it means everywhere
+else, and something to fix.
+
+Evaluation regression is the exception inside the exception: it is a quality
+signal, so it sets `scan_status` and produces no finding, exactly as a unit
+suite does.
+
+**SARIF, not a bespoke format.** The capability accepts SARIF so any tool can
+feed it, and the first-party checker emits SARIF like everything else. A
+capability that only accepts its own tool's output is a capability with one
+tool for ever.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
