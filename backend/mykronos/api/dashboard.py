@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
-from mykronos.ci import ConcourseClient, reconcile
+from mykronos.ci import ConcourseClient, coverage, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
 from mykronos.db.models import RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
@@ -605,6 +605,21 @@ class CiReportingOut(BaseModel):
     )
 
 
+class StageCoverageOut(BaseModel):
+    stage: str
+    enabled: bool
+    state: str = Field(
+        description=(
+            "not_enabled: nobody asked for this stage here. no_job: enabled, "
+            "and nothing in the pipeline produces it - the gap hardest to see "
+            "otherwise, because the repository believes it is covered and no "
+            "job disagrees. reporting / silent / never_reported / not_run "
+            "carry their meaning from the cross-check."
+        )
+    )
+    problem: bool
+
+
 class CiPage(BaseModel):
     """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
 
@@ -615,6 +630,15 @@ class CiPage(BaseModel):
     pipeline_url: str | None = None
     jobs: list[CiJobOut] = Field(default_factory=list)
     failing: list[str] = Field(default_factory=list)
+    stages: list[StageCoverageOut] = Field(
+        default_factory=list,
+        description=(
+            "Every stage the platform covers, against what this repository "
+            "actually has (PIP-6). A stage nobody enabled and a stage that is "
+            "enabled and not answering both look like an absence, and only "
+            "one of them is a problem."
+        ),
+    )
     reporting: list[CiReportingOut] = Field(
         default_factory=list,
         description=(
@@ -656,6 +680,14 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
     )
 
+    with request.app.state.db.session() as session:
+        row = session.execute(
+            select(RepoOnboarding).where(
+                RepoOnboarding.github_repo_full_name == repo_full_name
+            )
+        ).scalar_one_or_none()
+        enabled = set(row.enabled_capabilities or []) if row else set()
+
     return CiPage(
         repo_full_name=repo_full_name,
         github_url=f"https://github.com/{repo_full_name}",
@@ -673,6 +705,12 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
             for job in status.jobs
         ],
         failing=status.failing,
+        stages=[
+            StageCoverageOut(
+                stage=c.stage, enabled=c.enabled, state=c.state, problem=c.problem
+            )
+            for c in coverage(enabled, reported)
+        ],
         reporting=[
             CiReportingOut(
                 job=r.job,

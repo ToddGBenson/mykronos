@@ -14,7 +14,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from mykronos.ci import ConcourseClient, JobStatus, pipeline_name_for, reconcile
+from mykronos.ci import (
+    ALL_STAGES,
+    ConcourseClient,
+    JobStatus,
+    coverage,
+    pipeline_name_for,
+    reconcile,
+)
 
 
 class FakeResponse:
@@ -267,13 +274,94 @@ class TestReporting:
 
         assert reconcile([self._job("insider", finished=built)], {}) == []
 
-    def test_jobs_that_produce_no_findings_are_not_checked(self) -> None:
-        """`unit` and `build` write nothing to the lake, and flagging them
-        would drown the real signal in noise nobody can act on."""
+    def test_jobs_that_write_nothing_are_not_checked(self) -> None:
+        """`build` and `publish` produce no lake record at all, and flagging
+        them would drown the real signal in noise nobody can act on.
+
+        `unit` used to be in this list and is deliberately no longer: since
+        D-046 it reports a ScanRun, and because that run carries no findings
+        the cross-check is the *only* thing that can notice its absence -
+        there is no finding count to be conspicuously zero."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
-        jobs = [self._job(n, finished=built) for n in ("unit", "build", "publish-backend")]
+        jobs = [
+            self._job(n, finished=built)
+            for n in ("build", "publish-backend", "publish-frontend", "promote")
+        ]
 
         assert reconcile(jobs, {}) == []
+
+    def test_unit_is_checked_because_nothing_else_would_notice(self) -> None:
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+        [row] = reconcile([self._job("unit", finished=built)], {})
+
+        assert row.capability == "unit"
+        assert row.state == "never_reported"
+
+
+class TestStageCoverage:
+    """PIP-6. The distinction that matters is between a stage nobody asked for
+    and a stage somebody asked for that is not answering. Both look like an
+    absence and only one is a problem."""
+
+    @staticmethod
+    def _reporting(**states):
+        from mykronos.ci import Reporting
+
+        rows = []
+        for capability, state in states.items():
+            built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+            scanned = {
+                "reporting": built,
+                "silent": datetime(2026, 8, 1, tzinfo=UTC),
+                "never_reported": None,
+            }[state]
+            rows.append(
+                Reporting(
+                    job=capability,
+                    capability=capability,
+                    built_at=built,
+                    scanned_at=scanned,
+                )
+            )
+        return rows
+
+    def test_a_stage_nobody_enabled_is_not_a_problem(self) -> None:
+        rows = coverage({"sast"}, self._reporting(sast="reporting"))
+        dast = next(r for r in rows if r.stage == "dast")
+
+        assert dast.state == "not_enabled"
+        assert dast.problem is False
+
+    def test_enabled_with_no_job_is_a_problem(self) -> None:
+        """The gap hardest to see otherwise: the repository believes it is
+        covered and no job disagrees, because no job exists."""
+        rows = coverage({"sast", "dast"}, self._reporting(sast="reporting"))
+        dast = next(r for r in rows if r.stage == "dast")
+
+        assert dast.state == "no_job"
+        assert dast.problem is True
+
+    def test_enabled_and_silent_is_a_problem(self) -> None:
+        rows = coverage({"sast"}, self._reporting(sast="silent"))
+
+        assert next(r for r in rows if r.stage == "sast").problem is True
+
+    def test_enabled_and_reporting_is_not(self) -> None:
+        rows = coverage({"sast"}, self._reporting(sast="reporting"))
+
+        assert next(r for r in rows if r.stage == "sast").problem is False
+
+    def test_every_stage_is_accounted_for(self) -> None:
+        """No stage silently missing from the answer - the whole point is that
+        a stage the platform claims to cover appears either way."""
+        rows = coverage(set(), [])
+
+        assert [r.stage for r in rows] == list(ALL_STAGES)
+
+    def test_the_quality_stages_are_covered(self) -> None:
+        assert "unit" in ALL_STAGES
+        assert "functional" in ALL_STAGES
 
 
 class TestAegisIsLookedUpWhereItActuallyWrites:

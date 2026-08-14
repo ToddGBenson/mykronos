@@ -54,6 +54,7 @@ export type CiPage =
 // so index it through NonNullable rather than widening every use site.
 export type CiJob = NonNullable<CiPage["jobs"]>[number];
 export type CiReporting = NonNullable<CiPage["reporting"]>[number];
+export type CiStage = NonNullable<CiPage["stages"]>[number];
 
 /** The shape `signal_breakdown` carries when an admin is allowed to see it. */
 export type SignalBreakdown = {

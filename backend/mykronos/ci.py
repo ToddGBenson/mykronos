@@ -74,6 +74,12 @@ CAPABILITY_BY_JOB: dict[str, str] = {
     "atlas": "atlas",
     "cloud-posture": "cloud",
     "cloud": "cloud",
+    # Quality stages (D-046). They report a run and no findings, so the
+    # cross-check is the only thing that can tell whether they reported at
+    # all - there is no finding count to notice the absence of.
+    "unit": "unit",
+    "functional": "functional",
+    "demo-and-dast": "functional",
 }
 
 #: How far a successful build may lead its capability's newest scan run before
@@ -266,6 +272,71 @@ class ConcourseClient:
             if isinstance(end, int | float) and end
             else None,
         )
+
+
+#: Every stage the platform claims to cover, in the order a pipeline runs
+#: them. Listed explicitly rather than derived from the Capability enum
+#: because the enum is an implementation detail and this is a promise: a
+#: stage that disappears from here should be a deliberate edit, not a
+#: side-effect of renaming something.
+ALL_STAGES: tuple[str, ...] = (
+    "unit",
+    "sast",
+    "secrets",
+    "atlas",
+    "containers",
+    "iac",
+    "functional",
+    "dast",
+    "cloud",
+    "network",
+    "aegis",
+    "oracle",
+    "patchwork",
+)
+
+
+@dataclass(frozen=True)
+class StageCoverage:
+    """One stage, and whether this repository is actually covered by it.
+
+    The distinction the portfolio view needs is between a stage nobody asked
+    for and a stage somebody asked for that is not answering. Both look like
+    an absence, and only one of them is a problem.
+    """
+
+    stage: str
+    enabled: bool
+    state: str
+
+    @property
+    def problem(self) -> bool:
+        return self.state in {"silent", "never_reported", "no_job"}
+
+
+def coverage(
+    enabled_capabilities: set[str], reporting: list[Reporting]
+) -> list[StageCoverage]:
+    """Every stage against what this repository actually has (PIP-6)."""
+    by_capability = {row.capability: row for row in reporting}
+
+    out: list[StageCoverage] = []
+    for stage in ALL_STAGES:
+        if stage not in enabled_capabilities:
+            out.append(StageCoverage(stage, enabled=False, state="not_enabled"))
+            continue
+
+        row = by_capability.get(stage)
+        if row is None:
+            # Enabled, and nothing in the pipeline produces it. The gap that
+            # is hardest to see otherwise: the repository believes it is
+            # covered and no job disagrees, because no job exists.
+            out.append(StageCoverage(stage, enabled=True, state="no_job"))
+            continue
+
+        out.append(StageCoverage(stage, enabled=True, state=row.state))
+
+    return out
 
 
 def reconcile(

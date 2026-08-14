@@ -918,7 +918,7 @@ export interface components {
          * Capability
          * @enum {string}
          */
-        Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle";
+        Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle" | "network" | "unit" | "functional";
         /** CapabilityStateOut */
         CapabilityStateOut: {
             /** Capability */
@@ -1021,6 +1021,11 @@ export interface components {
             jobs?: components["schemas"]["CiJobOut"][];
             /** Failing */
             failing?: string[];
+            /**
+             * Stages
+             * @description Every stage the platform covers, against what this repository actually has (PIP-6). A stage nobody enabled and a stage that is enabled and not answering both look like an absence, and only one of them is a problem.
+             */
+            stages?: components["schemas"]["StageCoverageOut"][];
             /**
              * Reporting
              * @description Each scanning job against the newest scan run it should have produced. A green pipeline and a stale capability are two facts that used to sit on different pages without contradicting each other.
@@ -1318,6 +1323,10 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Address */
+            address?: string | null;
+            /** Port */
+            port?: number | null;
             /**
              * Raw Finding Json
              * @description Original tool record, preserved verbatim (spec 05 §3).
@@ -1929,6 +1938,20 @@ export interface components {
             evidence: components["schemas"]["SscsEvidenceOut"][];
             /** @description Convenience for the header; the same row as evidence[0]. */
             latest?: components["schemas"]["SscsEvidenceOut"] | null;
+        };
+        /** StageCoverageOut */
+        StageCoverageOut: {
+            /** Stage */
+            stage: string;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * State
+             * @description not_enabled: nobody asked for this stage here. no_job: enabled, and nothing in the pipeline produces it - the gap hardest to see otherwise, because the repository believes it is covered and no job disagrees. reporting / silent / never_reported / not_run carry their meaning from the cross-check.
+             */
+            state: string;
+            /** Problem */
+            problem: boolean;
         };
         /** StatusChange */
         StatusChange: {

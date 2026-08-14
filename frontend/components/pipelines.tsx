@@ -12,7 +12,7 @@
  */
 
 import { Label, Pill, RelativeTime } from "@/components/primitives";
-import type { CiJob, CiPage, CiReporting } from "@/lib/api";
+import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
 
 /** Concourse's vocabulary, mapped to the palette the rest of the app uses. */
 function jobTone(status: string | null | undefined): "critical" | "warn" | "pass" | "muted" {
@@ -67,6 +67,8 @@ export function PipelinesPanel({ ci }: { ci: CiPage }) {
         ) : null}
       </div>
 
+      <StageCoverage stages={ci.stages ?? []} />
+
       <ReportingRow reporting={ci.reporting ?? []} />
 
       {ci.unavailable ? (
@@ -86,6 +88,75 @@ export function PipelinesPanel({ ci }: { ci: CiPage }) {
       )}
     </section>
   );
+}
+
+/**
+ * Every stage the platform covers, against what this repository has (PIP-6).
+ *
+ * The distinction worth the space: a stage nobody enabled and a stage that is
+ * enabled and not answering both render as an absence everywhere else, and
+ * only one of them is a problem. `no_job` is the one that is hardest to see
+ * otherwise — the repository believes it is covered and no job disagrees,
+ * because no job exists.
+ */
+function StageCoverage({ stages }: { stages: CiStage[] }) {
+  if (stages.length === 0) return null;
+
+  const covered = stages.filter((s) => s.state === "reporting");
+  const problems = stages.filter((s) => s.problem);
+
+  return (
+    <div className="border-t border-rule-soft px-3 py-2">
+      <div className="flex items-baseline gap-3">
+        <Label>Stage coverage</Label>
+        <span className="font-mono text-[10px] text-ink-3">
+          {covered.length} of {stages.length} reporting
+          {problems.length > 0 ? ` · ${problems.length} need attention` : null}
+        </span>
+      </div>
+      <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+        {stages.map((stage) => (
+          <li key={stage.stage} className="flex items-baseline gap-1">
+            <Pill tone={stageTone(stage)}>{stageLabel(stage)}</Pill>
+            <span
+              className={`font-mono text-[10px] ${
+                stage.enabled ? "text-ink-2" : "text-ink-3"
+              }`}
+            >
+              {stage.stage}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function stageTone(stage: CiStage): "critical" | "warn" | "pass" | "muted" {
+  if (stage.state === "reporting") return "pass";
+  // Enabled and not answering. `no_job` is the loudest of these because
+  // nothing else in the platform will ever mention it.
+  if (stage.state === "no_job" || stage.state === "never_reported") return "critical";
+  if (stage.state === "silent") return "warn";
+  // Not enabled, or enabled with no successful build yet. Neither is a fault.
+  return "muted";
+}
+
+function stageLabel(stage: CiStage): string {
+  switch (stage.state) {
+    case "reporting":
+      return "ok";
+    case "no_job":
+      return "no job";
+    case "never_reported":
+      return "never reported";
+    case "silent":
+      return "silent";
+    case "not_run":
+      return "not run";
+    default:
+      return "off";
+  }
 }
 
 /**
