@@ -485,6 +485,54 @@ class NetworkConfig(BaseCapabilityConfig):
     )
 
 
+class UnitConfig(BaseCapabilityConfig):
+    """The repository's own unit suite (D-046).
+
+    No tool field: a repository's test runner is decided by its language and
+    its own conventions, not by this platform. What Mykronos records is that
+    the suite ran, how it ended, and how many cases failed.
+    """
+
+    fail_build_on_failure: bool = Field(
+        default=True,
+        description=(
+            "Whether a failing suite stops the pipeline. Separate from any "
+            "risk score - a failing test is a reason not to ship, which the "
+            "pipeline enforces, and not a reason to call the repository more "
+            "dangerous (D-046)."
+        ),
+    )
+
+
+class FunctionalConfig(BaseCapabilityConfig):
+    """Functional tests against a deployed lower environment (D-046, PIP-2).
+
+    The traffic these generate is the input to proxy-first DAST: functional
+    tests already know how to log in and drive multi-step flows, which is the
+    surface a spider starting at the login page never reaches.
+    """
+
+    target_environment: str = Field(
+        default="demo",
+        max_length=100,
+        description=(
+            "Which environment the suite runs against. Never production: the "
+            "DAST lane that consumes this traffic sends attack requests, and "
+            "an active scan writes data."
+        ),
+    )
+    proxy_through_dast: bool = Field(
+        default=True,
+        description=(
+            "Route the suite's HTTP through the DAST proxy so ZAP records an "
+            "authenticated request corpus before it spiders (PIP-3). Turning "
+            "this off does not break the functional run; it reduces DAST to "
+            "what an unauthenticated crawl can find."
+        ),
+    )
+    fail_build_on_failure: bool = Field(default=True)
+
+
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -497,6 +545,8 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.PATCHWORK.value: PatchworkConfig,
     Capability.ORACLE.value: OracleConfig,
     Capability.NETWORK.value: NetworkConfig,
+    Capability.UNIT.value: UnitConfig,
+    Capability.FUNCTIONAL.value: FunctionalConfig,
 }
 
 

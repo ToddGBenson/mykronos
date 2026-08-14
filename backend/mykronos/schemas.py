@@ -34,6 +34,12 @@ class Capability(StrEnum):
     #: is why findings carry an asset rather than a repo name (spec 14 §5).
     NETWORK = "network"
 
+    #: Quality stages (D-046). These report a ScanRun and never a finding: a
+    #: failing assertion is not a vulnerability, and giving it a severity
+    #: would let a broken test raise a security risk score.
+    UNIT = "unit"
+    FUNCTIONAL = "functional"
+
 
 class Severity(StrEnum):
     INFO = "info"

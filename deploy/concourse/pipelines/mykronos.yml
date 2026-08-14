@@ -178,6 +178,7 @@ jobs:
         # set on every commit; without it each run re-downloads the lot, which
         # is where `unit` spent most of its 19 minutes.
         params:
+          <<: *mykronos_env
           PIP_CACHE_DIR: /pipcache
           # The spec 05 section 9 and spec 10 section 6 performance budgets are
           # claims about a developer's machine -- "against a locally running
@@ -209,6 +210,7 @@ jobs:
             args:
               - -ec
               - |
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet -e ".[dev]"
 
@@ -216,7 +218,19 @@ jobs:
                 # quietly relaxed is a budget nobody knows the value of.
                 echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER:-1}"                      "for this worker (spec 05 section 9 is 30s at x1)."
 
-                python -m pytest -q
+                # JUnit XML so the result reaches Mykronos as a ScanRun with
+                # no findings (D-046). `|| true` on pytest, then the exit code
+                # is recovered from the report: a failing suite must still
+                # report, because "the tests failed" and "nothing told us
+                # anything" are different facts and the second is worse.
+                mkdir -p ../../results
+                rc=0
+                python -m pytest -q --junitxml=../../results/unit.xml || rc=$?
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C ../.. rev-parse HEAD)"                   --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+
+                exit "$rc"
 
   - name: lint-and-types
     public: true

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mykronos.adapters import network_nmap
+from mykronos.adapters import network_nmap, tests_junit
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.schemas import ScanStatus
@@ -86,6 +86,13 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         # nmap XML and nuclei JSONL side by side in one results directory.
         AdapterSpec("network", "nmap", network_nmap.normalize, "*.xml", "nmap"),
         AdapterSpec("network", "nuclei", network_nmap.normalize, "*.json*", "nuclei"),
+        # Quality stages (D-046). JUnit XML because every runner emits it, and
+        # neither produces findings - what reaches the lake is that a suite
+        # ran and how it ended.
+        AdapterSpec("unit", "junit", tests_junit.normalize, "*.xml", "JUnit XML"),
+        AdapterSpec(
+            "functional", "junit", tests_junit.normalize, "*.xml", "JUnit XML"
+        ),
     ]
     return {(spec.capability, spec.tool): spec for spec in specs}
 
@@ -115,6 +122,8 @@ DEFAULT_TOOLS: dict[str, str] = {
     "iac": "checkov",
     "cloud": "prowler",
     "network": "nmap",
+    "unit": "junit",
+    "functional": "junit",
 }
 
 
