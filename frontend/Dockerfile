@@ -92,6 +92,11 @@ ENV NODE_ENV=production     NEXT_TELEMETRY_DISABLED=1
 COPY --from=build --chown=nonroot:nonroot /app/.next ./.next
 COPY --from=build --chown=nonroot:nonroot /app/public ./public
 COPY --from=build --chown=nonroot:nonroot /app/package.json ./package.json
+# `next start` reads this at run time, and without it every security header
+# and `poweredByHeader: false` is silently dropped - the server starts, serves
+# 200s, and simply does not set them. Found by adding the headers, rebuilding,
+# and seeing none of them on the response.
+COPY --from=build --chown=nonroot:nonroot /app/next.config.ts ./next.config.ts
 COPY --from=prod-deps --chown=nonroot:nonroot /app/node_modules ./node_modules
 
 USER nonroot
