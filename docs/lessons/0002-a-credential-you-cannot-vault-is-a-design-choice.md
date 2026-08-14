@@ -27,8 +27,17 @@ secret:
 
 ```
 https://hooks.slack.com/services/{workspace}/{app}/{24-char-secret}
-                                 └──────────── the credential ────────────┘
+                                 └────────── the credential ──────────┘
 ```
+
+<!-- The path segments are braced placeholders rather than a realistic-looking
+     token. GitHub push protection blocks a push containing anything shaped like
+     a Slack webhook URL, and it does not care that the values are obviously
+     fake — an earlier draft of this file used T00000000/B00000000/XXXX... and
+     was rejected. A lesson about credentials being unable to reach the repo
+     because it describes a credential is L0007, so the example is written in a
+     shape no detector will match. -->
+
 
 There is no header. The URL is the authentication. Vault had just been stood up on this
 host specifically so that pipelines *reference* credentials rather than *contain* them —
