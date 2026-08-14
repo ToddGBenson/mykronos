@@ -118,10 +118,10 @@ resources:
     icon: shield-search
     source: { repository: aquasec/trivy, tag: "0.58.1" }
 
-  - name: zap
+  - name: playwright
     type: registry-image
-    icon: spider
-    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.16.1" }
+    icon: test-tube
+    source: { repository: mcr.microsoft.com/playwright, tag: "v1.62.1-noble" }
 
   - name: prowler
     type: registry-image
@@ -333,7 +333,16 @@ jobs:
         # is genuinely large, so a cold install is slow once and warm installs
         # are minutes. A cap that kills the run which populates the cache never
         # lets the cache exist.
-        timeout: 40m
+        #
+        # 60m now, for the same reason one more time. The kernel OOM-killed
+        # the Concourse container and the restart swept the worker's volumes,
+        # including /pipcache - so the next run was cold again and died at 40m,
+        # having spent almost all of it installing. The measurement that
+        # settles the number: unit/24 ran 3173 tests in 187 seconds. Three
+        # minutes of that half-hour is testing; the rest is pip. The cap has to
+        # cover a cold install or the cache can never come back, and every run
+        # after it is minutes.
+        timeout: 60m
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -1468,7 +1477,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [dast]
+        passed: [functional-dast]
       - get: python
       - task: evaluate
         image: python
@@ -1832,8 +1841,22 @@ jobs:
           STAGE: prompt_evals
           STATUS: success
           TARGET_ENV: prod
-
-  - name: dast
+  # -- Functional tests, then DAST seeded by their traffic -----------------
+  #
+  # The old lane ran zap-baseline against demo: a spider and the passive
+  # rules. That finds what an anonymous crawler can reach, which for this
+  # application is the login page and very little else. Everything behind
+  # authentication -- which is the entire product -- was never scanned, and
+  # the lane went green saying so.
+  #
+  # So the functional suite runs first, through ZAP as a proxy. Playwright
+  # signs in and drives real journeys, ZAP records every request, and only
+  # then does it spider outward and actively attack what it has learned.
+  # The order matters: capture, then spider, then scan.
+  #
+  # All three phases live in one job because they share one ZAP process, and
+  # a Concourse task cannot hand a running daemon to the next one.
+  - name: functional-dast
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
@@ -1843,61 +1866,208 @@ jobs:
         trigger: true
         passed: [deploy-demo]
       - get: python
-      - get: zap
-
-      - task: zap-baseline
-        image: zap
+      - get: playwright
+      - task: functional-and-scan
+        image: playwright
+        timeout: 90m
+        params:
+          TARGET_URL: ((thehub-demo-url))
+          # No HUB_API_TOKEN: the demo compose sets it empty, which disables
+          # the API gate. global-setup.js warns and carries on, and inventing
+          # a credential the environment does not check would be theatre.
+          ZAP_VERSION: "2.16.1"
+          SPIDER_MAX_MINUTES: "10"
+          ASCAN_MAX_MINUTES: "30"
+          MIN_SEEDED_URLS: "5"
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
-          params:
-            TARGET_URL: ((thehub-demo-url))
+          outputs: [{ name: results }, { name: functional }]
+          caches: [{ path: /zapcache }]
           run:
             path: bash
             args:
-              - -ec
+              - -c
               - |
                 set -uo pipefail
 
-                # Reachability first. A ZAP run against a host that is not
-                # answering produces a report with no alerts in it, which is
-                # indistinguishable from a clean scan on the dashboard and is
-                # the exact failure L0001 is about.
+                OUT="$PWD/results"
+                FUNC="$PWD/functional"
+                mkdir -p "$OUT" "$FUNC"
+
+                ZAP_PORT=8090
+                ZAP_BASE="http://127.0.0.1:${ZAP_PORT}"
+                ZAP_KEY="concourse-${BUILD_ID:-0}-$$"
+                ZAP_DIR="/zapcache/ZAP_${ZAP_VERSION}"
+
+                # Reachability first, for the reason the baseline lane had it:
+                # a scan of a host that is not answering produces a report with
+                # no alerts, which on the dashboard is indistinguishable from a
+                # clean scan (L0001).
                 if ! curl --fail --silent --max-time 30 -o /dev/null "$TARGET_URL"; then
                   echo "::error::$TARGET_URL is not answering. Refusing to report an empty scan as a clean one."
                   exit 1
                 fi
 
-                # Written to the image's own working directory and copied out
-                # afterwards. This image runs as the `zap` user, and a report
-                # written straight into a Concourse output volume depends on
-                # that volume's ownership matching - which is a thing to
-                # discover in a failed build rather than to rely on.
-                WORK=/zap/wrk
-                [ -w "$WORK" ] || WORK=$(mktemp -d)
-                cd "$WORK"
+                apt-get update -qq
+                apt-get install -y -qq openjdk-21-jre-headless jq >/dev/null
 
-                rc=0
-                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+                # ZAP into a task cache. The tarball is ~250MB and does not
+                # change between builds; downloading it every run would cost
+                # more than the scan.
+                if [ ! -x "${ZAP_DIR}/zap.sh" ]; then
+                  echo "Fetching ZAP ${ZAP_VERSION} (cached for later builds)..."
+                  mkdir -p /zapcache
+                  curl -sSfL -o /tmp/zap.tgz \
+                    "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz"
+                  tar -xzf /tmp/zap.tgz -C /zapcache
+                  rm -f /tmp/zap.tgz
+                fi
+                test -x "${ZAP_DIR}/zap.sh" || {
+                  echo "::error::ZAP did not unpack to ${ZAP_DIR}"
+                  ls -1 /zapcache || true
+                  exit 1
+                }
 
-                # 0 = nothing to report, 1 = at least one FAIL, 2 = warnings.
-                # All three are results. Anything else is ZAP itself breaking.
-                if [ "$rc" -gt 2 ]; then
-                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
-                  exit "$rc"
+                # -- ZAP as a proxy, not as a scanner (yet) ------------------
+                #
+                # Daemon mode so it sits in front of the browser and records
+                # what the tests do. The scan comes later, against the tree
+                # this traffic builds.
+                "${ZAP_DIR}/zap.sh" -daemon -host 127.0.0.1 -port "${ZAP_PORT}" \
+                  -config api.key="${ZAP_KEY}" \
+                  -config api.addrs.addr.name=.* \
+                  -config api.addrs.addr.regex=true \
+                  -config database.recoverylog=false \
+                  > /tmp/zap.log 2>&1 &
+
+                ready=0
+                for _ in $(seq 1 60); do
+                  if curl -sf "${ZAP_BASE}/JSON/core/view/version/?apikey=${ZAP_KEY}" >/dev/null 2>&1; then
+                    ready=1
+                    break
+                  fi
+                  sleep 5
+                done
+                if [ "$ready" -ne 1 ]; then
+                  echo "::error::ZAP did not start within 5 minutes."
+                  tail -40 /tmp/zap.log || true
+                  exit 1
+                fi
+                echo "ZAP is up on ${ZAP_BASE}"
+
+                zap_api() {
+                  local path="$1"
+                  shift
+                  curl -sf -G "${ZAP_BASE}${path}" --data-urlencode "apikey=${ZAP_KEY}" "$@"
+                }
+
+                # -- Stage 1: functional tests, through the proxy ------------
+                #
+                # This is the part that makes the scan worth running. A spider
+                # follows links; it does not know how to sign in, which button
+                # opens the briefing, or what a valid POST body looks like.
+                # These tests do, so every request they make lands in ZAP's
+                # site tree and the active scan afterwards attacks the real
+                # surface instead of the subset a crawler can reach.
+                cd source
+
+                npm --prefix tests/e2e ci --no-audit --no-fund >/dev/null 2>&1 \
+                  || npm --prefix tests/e2e install --no-audit --no-fund >/dev/null
+
+                export BASE_URL="$TARGET_URL"
+                export ZAP_PROXY="${ZAP_BASE}"
+
+                # cwd is the repository root on purpose: global-setup.js writes
+                # tests/e2e/auth-state.json relative to it, and the config
+                # reads it back from the same relative path.
+                ./tests/e2e/node_modules/.bin/playwright test \
+                  --config tests/e2e/playwright.config.js --reporter=line
+                FUNC_RC=$?
+                cd ..
+
+                echo "$FUNC_RC" > "$FUNC/exit-code"
+                if [ "$FUNC_RC" -eq 0 ]; then
+                  echo "Functional suite passed."
+                else
+                  echo "::warning::Functional suite exited $FUNC_RC. Scanning the traffic it did produce; the job fails at the end."
                 fi
 
-                test -s "$WORK/zap.json" || {
+                # Whether the tests passed or failed, they must have reached
+                # ZAP. If they did not, the proxy wiring is broken and
+                # everything below degrades into a bare unauthenticated
+                # spider -- which would still produce a plausible report.
+                # That is the failure worth refusing.
+                SEEDED=$(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length')
+                SEEDED=${SEEDED:-0}
+                echo "Functional traffic seeded ${SEEDED} URL(s) into ZAP."
+                if [ "$SEEDED" -lt "$MIN_SEEDED_URLS" ]; then
+                  echo "::error::Only ${SEEDED} URL(s) reached ZAP (expected at least ${MIN_SEEDED_URLS})."
+                  echo "::error::The suite ran without using the proxy, so this would be an unseeded scan wearing a seeded scan's name."
+                  exit 1
+                fi
+
+                # -- Stage 2: spider -----------------------------------------
+                #
+                # Seeded by the above rather than starting cold: ZAP already
+                # knows these URLs, so the spider extends the map outward from
+                # pages the tests proved are reachable.
+                zap_api "/JSON/spider/action/setOptionMaxDuration/" \
+                  --data-urlencode "Integer=${SPIDER_MAX_MINUTES}" >/dev/null
+
+                SPIDER_ID=$(zap_api "/JSON/spider/action/scan/" \
+                  --data-urlencode "url=${TARGET_URL}" \
+                  --data-urlencode "recurse=true" | jq -r '.scan // empty')
+                if [ -z "$SPIDER_ID" ]; then
+                  echo "::error::ZAP refused to start the spider."
+                  exit 1
+                fi
+
+                echo "Spider ${SPIDER_ID} running..."
+                while :; do
+                  ST=$(zap_api "/JSON/spider/view/status/" --data-urlencode "scanId=${SPIDER_ID}" | jq -r '.status // "0"')
+                  [ "$ST" = "100" ] && break
+                  sleep 10
+                done
+                echo "Spider complete. ZAP now knows $(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length') URL(s)."
+
+                # -- Stage 3: active scan ------------------------------------
+                #
+                # This one sends attacks. It is pointed at demo, which the
+                # deploy rebuilt from the compose file and reseeded moments
+                # ago, so the damage it does is thrown away before the next
+                # run rather than accumulating in an environment people use.
+                zap_api "/JSON/ascan/action/setOptionMaxScanDurationInMins/" \
+                  --data-urlencode "Integer=${ASCAN_MAX_MINUTES}" >/dev/null
+
+                ASCAN_ID=$(zap_api "/JSON/ascan/action/scan/" \
+                  --data-urlencode "url=${TARGET_URL}" \
+                  --data-urlencode "recurse=true" | jq -r '.scan // empty')
+                if [ -z "$ASCAN_ID" ]; then
+                  echo "::error::ZAP refused to start the active scan."
+                  exit 1
+                fi
+
+                echo "Active scan ${ASCAN_ID} running (capped at ${ASCAN_MAX_MINUTES}m)..."
+                while :; do
+                  ST=$(zap_api "/JSON/ascan/view/status/" --data-urlencode "scanId=${ASCAN_ID}" | jq -r '.status // "0"')
+                  [ "$ST" = "100" ] && break
+                  sleep 15
+                done
+                echo "Active scan complete."
+
+                # -- The report ----------------------------------------------
+                curl -sf -G "${ZAP_BASE}/OTHER/core/other/jsonreport/" \
+                  --data-urlencode "apikey=${ZAP_KEY}" -o "${OUT}/zap.json"
+
+                test -s "${OUT}/zap.json" || {
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
+                echo "ZAP reported $(jq '[.site[]?.alerts[]?] | length' "${OUT}/zap.json" 2>/dev/null || echo '?') alert(s)"
 
-                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
-                  echo "::error::Could not write the report into the task output."
-                  exit 1
-                }
-                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries"
+                zap_api "/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
+                exit 0
 
       - task: upload
         image: python
@@ -1913,31 +2083,23 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-
-                # DAST findings have no file and no line - the request is the
-                # location - so `--workspace` buys nothing here beyond
-                # consistency with every other lane.
                 python -m mykronos.upload \
                   --capability dast --tool zap \
                   --results-path results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" \
-                  --workspace "$PWD/source" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                   --severity-threshold low --blocking false
 
-  # == Stage 7: production, when a person says so ===========================
-  #
-  # No `trigger: true` anywhere in this plan. That is the manual confirmation,
-  # and it is the whole mechanism: Concourse will not start this job on its
-  # own, so production changes when somebody clicks the plus in the UI (or runs
-  # `fly trigger-job -j thehub/deploy-prod`) and not before.
-  #
-  # `passed: [dast]` means the only thing that can be promoted is a commit that
-  # reached demo and was probed there. The image is pulled by SHA, so what
-  # production runs is byte-identical to what DAST looked at - promotion is a
-  # restart, never a rebuild.
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: functional
+          STATUS: success
+          TARGET_ENV: demo
 
       - <<: *hub_report
         params:
@@ -1947,6 +2109,31 @@ jobs:
           STAGE: dast_headers
           STATUS: success
           TARGET_ENV: prod
+
+      # Last, so the DAST findings reach Mykronos and both stages reach
+      # TheHub even when the functional suite failed. A red functional run
+      # still has to stop the pipeline -- it just should not also cost the
+      # scan evidence it produced on the way down.
+      - task: functional-verdict
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: functional }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                RC=$(cat functional/exit-code)
+                if [ "$RC" -ne 0 ]; then
+                  echo "::error::The functional suite failed (exit $RC)."
+                  echo "The DAST findings above were uploaded, and were seeded by an incomplete run."
+                  exit "$RC"
+                fi
+                echo "Functional suite passed."
+
+
   - name: deploy-prod
     public: true
     on_failure: *slack_alert
