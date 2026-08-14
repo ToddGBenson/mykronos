@@ -54,6 +54,16 @@ resources:
     icon: powershell
     source: { repository: mcr.microsoft.com/powershell, tag: "7.5-debian-12" }
 
+  # For the two jobs that are text analysis rather than PowerShell: the secret
+  # scan (which uploads through mykronos.upload, a Python package) and the
+  # skill-integrity check (which parses markdown). Same tag as TheHub's
+  # `python313` resource, so both pipelines pull one layer set rather than two
+  # on a worker where disk is the scarce thing.
+  - name: python
+    type: registry-image
+    icon: language-python
+    source: { repository: python, tag: "3.13-slim" }
+
   # The scanning jobs have no commit to react to - the network changes, not
   # the code - so they are driven by the clock instead. One resource for both:
   # they are the same weekly sweep, and a second timer would let them drift
@@ -84,7 +94,100 @@ resources:
       access_key_id: ((minio-access-key))
       secret_access_key: ((minio-secret-key))
 
+anchors:
+  # -- Failure notification -------------------------------------------------
+  #
+  # Neither value is supplied by set-personal-soc-pipeline.ps1. Both resolve
+  # through the Vault credential manager at `concourse/main/<name>`, which is
+  # team scope - so this pipeline and TheHub's read the same credential and
+  # neither file contains it. That matters more than tidiness here: Concourse
+  # stores pipeline configuration verbatim, so a token passed with
+  # `--load-vars-from` is readable afterwards by anyone who can run
+  # `fly get-pipeline`.
+  #
+  # A bot token rather than an incoming webhook, and the reason is the same
+  # one that makes it vaultable: chat.postMessage authenticates with a header,
+  # which Vault can substitute at egress. A webhook carries its secret in the
+  # URL path, where it cannot.
+  #
+  # WHAT MUST NEVER BE SENT
+  #
+  # breach-check is `public: false` because its log names each address and the
+  # breaches it appears in. This notifier must not undo that. The default text
+  # is the job name and a link - the link needs a Concourse login to follow -
+  # and breach-check deliberately writes no notify/message.txt, so the address
+  # list cannot reach a channel that is not the private build log.
+  slack_alert: &slack_alert
+    task: notify-slack
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      inputs:
+        - name: notify
+          optional: true
+      params:
+        SLACK_BOT_TOKEN: ((slack-bot-token))
+        SLACK_CHANNEL: ((slack-alert-channel))
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            # Unset is not an error. This hook only ever runs when something
+            # has already gone wrong, and a missing notification must not
+            # become a second failure on top of it.
+            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
+              echo "No Slack bot token or channel configured - skipping notification."
+              exit 0
+            fi
+
+            BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
+
+            if [ -s notify/message.txt ]; then
+              TEXT=$(head -1 notify/message.txt)
+            else
+              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+            fi
+
+            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+
+            # /tmp, not the working directory. curlimages/curl runs as an
+            # unprivileged user and Concourse creates the task's working
+            # directory owned by root, so `> payload.json` is
+            # "Permission denied" - which failed the notify task and printed
+            # nothing about Slack at all. /tmp is world-writable in this image.
+            printf '{"channel":"%s","text":"%s\\n%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+
+            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H 'Content-Type: application/json; charset=utf-8' \
+              -d @/tmp/payload.json) || RESP=""
+
+            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
+            # rejected. The status code proves nothing; without reading the
+            # body, a silently undelivered alert reads exactly like a
+            # delivered one.
+            case "$RESP" in
+              *'"ok":true'*) echo "Posted to Slack." ;;
+              *) echo "Slack post failed: $RESP" ;;
+            esac
+            exit 0
+
 jobs:
+  # `serial_groups: [worker]` on every job that installs a toolchain before it
+  # does any work. One Linux worker runs this pipeline, TheHub's and mykronos';
+  # seven of TheHub's jobs fanning out on one commit took the box to 1.1 GB
+  # free and the kernel OOM-killed the Concourse container itself.
+  #
+  # Worth being exact about what this does and does not buy, because the name
+  # invites the wrong reading: **serial groups are scoped to a pipeline.** This
+  # `worker` group is not the same group as TheHub's `worker`, and the two do
+  # not coordinate. It bounds *this* pipeline's fan-out to one job at a time,
+  # which is the part that was under this file's control. Cross-pipeline
+  # contention is still governed only by the worker's own container limits.
   # == Stage 1: guard =======================================================
   #
   # personal-soc's own guard.yml, moved to where delivery can depend on it.
@@ -99,6 +202,9 @@ jobs:
 
   - name: guard
     public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -173,6 +279,695 @@ jobs:
                 [ "$fail" -eq 0 ] && echo "Guard passed." || echo "Guard failed."
                 exit $fail
 
+  # -- Secret scanning -----------------------------------------------------
+  #
+  # This repository already had secret scanning. It was in
+  # .github/workflows/mykronos-secrets.yml, installed by the Mykronos workflow
+  # installer - and it has not run since Actions minutes ran out. A gate that
+  # cannot execute is not a gate, and its presence in the tree makes the
+  # coverage look better than it is, which is worse than not having it.
+  #
+  # So it moves here, the same way TheHub's did. Same tool, same version, same
+  # `--redact`.
+  #
+  # TWO CHECKS, NOT ONE, AND THE SECOND IS THE POINT
+  #
+  # gitleaks looks for things shaped like credentials. That is not the leak
+  # this repository is most exposed to. `references/profile.md` and
+  # `references/identifiers.md` are an identity profile and an identifier
+  # ledger - addresses, phone numbers, previous employers - and none of that
+  # matches a credential pattern. gitleaks would pass a commit that published
+  # the lot.
+  #
+  # The guard job checks `git ls-files`, which answers "is it tracked *now*".
+  # A file committed and later removed is untracked now and still in history,
+  # still served by GitHub's API, still in every clone. That is the same
+  # question about a different tense, and only the history check asks it.
+  #
+  # NOT public. The repository is, but a finding here names a file and a line
+  # where a credential lives; publishing the map is a separate decision from
+  # publishing the code.
+
+  - name: secrets
+    public: false
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: python
+      - task: gitleaks
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+          MYKRONOS_REF: ((mykronos-ref))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                curl -sSfL -o /tmp/gitleaks.tar.gz \
+                  https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+
+                cd source
+                git config --global --add safe.directory "$PWD"
+                mkdir -p /tmp/results
+                fail=0
+
+                # -- 1. credential patterns, across history ------------------
+                #
+                # `detect` reads git history rather than the working tree: the
+                # claim is that no secret was ever committed, not that none is
+                # present at HEAD. --exit-code 0 because the gate below is
+                # this file's decision, not the scanner's.
+                echo "== gitleaks =="
+                /tmp/gitleaks detect --source . --report-format json \
+                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
+                grc=$?
+
+                # A missing report is "did not run", which is not "found
+                # nothing". Distinguishing those is the whole lesson of
+                # docs/lessons/0001 and it applies to the tool's own failure
+                # exactly as much as to an empty repository.
+                if [ ! -f /tmp/results/gitleaks.json ]; then
+                  echo "::error:: gitleaks wrote no report (exit $grc). This is a failed scan,"
+                  echo "          not a clean one - nothing was checked."
+                  echo "*personal-soc / secrets*: the secret scan did not run." > ../notify/message.txt
+                  exit 1
+                fi
+
+                COUNT=$(python3 -c 'import json,sys; print(len(json.load(open("/tmp/results/gitleaks.json"))))')
+                echo "gitleaks findings: $COUNT"
+                if [ "$COUNT" -gt 0 ]; then
+                  echo "::error:: gitleaks found $COUNT secret(s) in history. Values are redacted below;"
+                  echo "          treat every one as live and rotate it before removing it from history."
+                  python3 - <<'PY'
+                import json
+                for f in json.load(open("/tmp/results/gitleaks.json")):
+                    print("          %-28s %s:%s  (commit %s)" % (
+                        f.get("RuleID", "?"), f.get("File", "?"),
+                        f.get("StartLine", "?"), str(f.get("Commit", "?"))[:8]))
+                PY
+                  fail=1
+                fi
+
+                # -- 2. the confidential pair, across history ----------------
+                #
+                # --diff-filter=A over --all: every commit on every ref that
+                # ever *added* a path. A file added on a branch that was later
+                # deleted still published its contents.
+                echo ""
+                echo "== confidential files, ever committed on any ref =="
+                EVER=$(git log --all --diff-filter=A --name-only --pretty=format: \
+                       | grep -E '(^|/)(profile|identifiers)\.md$' | sort -u || true)
+                if [ -n "$EVER" ]; then
+                  echo "::error:: an identity file was committed at some point. It is still in"
+                  echo "          history and still served by GitHub, whatever HEAD looks like now:"
+                  echo "$EVER" | sed 's/^/          /'
+                  echo "          This needs history rewritten and the contents treated as public."
+                  fail=1
+                else
+                  echo "  ok - profile.md and identifiers.md have never been committed on any ref"
+                fi
+
+                # -- 3. file the result ---------------------------------------
+                #
+                # Optional, and last. personal-soc is granted exactly one
+                # capability in Mykronos - secrets - so this is the only lane
+                # here that has anywhere to report to. With no token the scan
+                # still ran and still gated; it simply is not recorded, and
+                # saying so beats a green tick that implies it was.
+                echo ""
+                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                  echo "=================================================="
+                  echo "NO MYKRONOS TOKEN - RESULTS WERE NOT FILED."
+                  echo "The scan above ran and its verdict stands, but"
+                  echo "nothing was recorded in the lake, so this commit"
+                  echo "will show as unscanned on the dashboard."
+                  echo "Mint one with:"
+                  echo "  mykronos rotate-token ToddGBenson/personal-soc"
+                  echo "=================================================="
+                else
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -m mykronos.upload \
+                    --capability secrets --tool gitleaks \
+                    --results-path /tmp/results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch main \
+                    --workspace "$PWD" \
+                    --severity-threshold low --blocking false \
+                    || echo "upload failed - the scan verdict above still stands."
+                fi
+
+                if [ "$fail" -ne 0 ]; then
+                  echo "*personal-soc / secrets*: a secret or identity file was found in git history." \
+                    > ../notify/message.txt
+                fi
+                echo ""
+                [ "$fail" -eq 0 ] && echo "Secret scan passed." || echo "Secret scan failed."
+                exit $fail
+
+  # -- Static analysis -----------------------------------------------------
+  #
+  # guard parses every script, which proves only that PowerShell can read it.
+  # A script that parses can still assign to an automatic variable, swallow
+  # every error with a bare catch, or compare against $null the wrong way
+  # round. PSScriptAnalyzer is the check that reads what the code means.
+  #
+  # GATED ON ERROR, REPORTED ON WARNING, AND THAT LINE IS DELIBERATE
+  #
+  # These are real scripts written for a person, not a lint-clean corpus.
+  # Turning Warning into a build failure on the first run would paint the lane
+  # red for style, and a lane that is red for style is a lane nobody reads -
+  # which costs more than the warnings are worth. Error severity is where
+  # PSScriptAnalyzer puts things that are defects rather than opinions.
+  #
+  # Finding no files is a failure, not a pass. If skills/ is ever restructured
+  # and the glob stops matching, "0 problems" is exactly what a broken check
+  # prints.
+
+  - name: lint
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: pwsh
+      - task: psscriptanalyzer
+        image: pwsh
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: pwsh
+            args:
+              - -NonInteractive
+              - -NoProfile
+              - -Command
+              - |
+                $ErrorActionPreference = 'Stop'
+                Set-PSRepository PSGallery -InstallationPolicy Trusted
+                Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -AcceptLicense
+                Import-Module PSScriptAnalyzer
+
+                $files = @(Get-ChildItem source/skills -Recurse -Filter *.ps1)
+                Write-Host ("scripts analysed: {0}" -f $files.Count)
+                if ($files.Count -eq 0) {
+                  Write-Host "::error:: no .ps1 files found under skills/."
+                  Write-Host "          A check that examined nothing has not passed - it has"
+                  Write-Host "          lost track of what it was pointed at."
+                  exit 1
+                }
+
+                $all = @(Invoke-ScriptAnalyzer -Path source/skills -Recurse)
+                $errors = @($all | Where-Object Severity -eq 'Error')
+                $warnings = @($all | Where-Object Severity -eq 'Warning')
+
+                function Show($title, $items) {
+                  Write-Host ""
+                  Write-Host "== $title ($($items.Count)) =="
+                  if ($items.Count -eq 0) { Write-Host "  (none)"; return }
+                  foreach ($d in $items) {
+                    $rel = $d.ScriptPath -replace '.*[/\\]skills[/\\]', 'skills/'
+                    Write-Host ("  {0,-42} {1}:{2}" -f $d.RuleName, $rel, $d.Line)
+                    Write-Host ("      {0}" -f $d.Message)
+                  }
+                }
+
+                Show 'errors (gating)' $errors
+                Show 'warnings (reported, not gating)' $warnings
+
+                Write-Host ""
+                if ($errors.Count -gt 0) {
+                  "*personal-soc / lint*: $($errors.Count) PSScriptAnalyzer error(s)." |
+                    Set-Content notify/message.txt
+                  Write-Host "::error:: $($errors.Count) analyser error(s) - these are defects, not style."
+                  exit 1
+                }
+                Write-Host "No analyser errors. $($warnings.Count) warning(s) recorded above."
+
+  # -- Functional tests ----------------------------------------------------
+  #
+  # The gap this closes: nothing in this pipeline had ever *executed* a script
+  # and checked what came out. guard parses, lint reads, and both would pass a
+  # function that returns the wrong number.
+  #
+  # That is not hypothetical here. Invoke-BreachCheck's diff step shipped with
+  # a bug where a local `$prev` overwrote the parameter `$Prev` - PowerShell
+  # variable names being case-insensitive - so every run decided it was the
+  # first one and no comparison was ever made. It parsed. It linted. It ran
+  # green weekly while doing nothing, and only reading the output line by line
+  # found it. A test that asserts on a value would have caught it immediately.
+  #
+  # WHAT IS TESTED AND WHAT IS NOT
+  #
+  # Two scripts are pure enough to test hermetically: Compare-Assessment
+  # (JSON in, JSON out) and Find-DocDrift (git history only). They get real
+  # assertions against fixtures built here.
+  #
+  # The rest are not skipped quietly, because that is how coverage gets
+  # overstated: Invoke-BreachCheck needs a paid HIBP key and a live endpoint,
+  # Get-ExternalExposure is exercised for real by the external-exposure job
+  # every week, and the discovery scripts need Windows. Each is named below
+  # with the reason, so this job's green says what it actually covers.
+
+  - name: functional
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: pwsh
+      - task: run-tests
+        image: pwsh
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+
+                cat > tests.ps1 <<'PS'
+                $ErrorActionPreference = 'Stop'
+                $failed = 0
+                $passed = 0
+
+                function Assert-Equal($actual, $expected, $what) {
+                  if ($actual -eq $expected) {
+                    $script:passed++
+                    Write-Host ("  PASS  {0} (= {1})" -f $what, $expected)
+                  } else {
+                    $script:failed++
+                    Write-Host ("::error:: FAIL  {0}: expected {1}, got {2}" -f $what, $expected, $actual)
+                  }
+                }
+                function Assert-True($cond, $what) {
+                  if ($cond) { $script:passed++; Write-Host "  PASS  $what" }
+                  else { $script:failed++; Write-Host "::error:: FAIL  $what" }
+                }
+
+                # ============================================================
+                # Compare-Assessment.ps1
+                # ============================================================
+                Write-Host ""
+                Write-Host "== Compare-Assessment =="
+
+                $cmp = 'source/skills/network-assessment/scripts/Compare-Assessment.ps1'
+                $base = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/base') -Force
+                $cur  = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/cur')  -Force
+
+                # Baseline: one open high (6) + one open low (1) -> 100-7 = 93
+                @(
+                  @{ id='F-1'; title='Telnet open';  severity='high';   status='open' },
+                  @{ id='F-2'; title='UPnP enabled'; severity='low';    status='open' }
+                ) | ConvertTo-Json | Set-Content (Join-Path $base 'findings.json')
+
+                # Current: F-1 resolved, F-2 still open (1), F-3 new critical (15)
+                #          -> 100-16 = 84, delta -9
+                @(
+                  @{ id='F-1'; title='Telnet open';  severity='high';     status='resolved' },
+                  @{ id='F-2'; title='UPnP enabled'; severity='low';      status='open' },
+                  @{ id='F-3'; title='SMBv1 on NAS'; severity='critical'; status='open' }
+                ) | ConvertTo-Json | Set-Content (Join-Path $cur 'findings.json')
+
+                & $cmp -Baseline $base -Current $cur | Out-Null
+
+                $sumPath = Join-Path $cur 'change-summary.json'
+                Assert-True (Test-Path $sumPath) 'change-summary.json is written'
+                $s = Get-Content $sumPath -Raw | ConvertFrom-Json
+
+                # The documented weights: critical 15, high 6, medium 2, low 1.
+                Assert-Equal $s.score_baseline 93 'baseline score'
+                Assert-Equal $s.score_current  84 'current score'
+                Assert-Equal $s.score_delta    -9 'score delta'
+                Assert-Equal $s.resolved        1 'resolved count'
+                Assert-Equal $s.new             1 'new count'
+                Assert-Equal $s.band_current 'Good' 'band at 84'
+
+                # A severity that changes but stays open is its own bucket.
+                $cur2 = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/cur2') -Force
+                @(
+                  @{ id='F-1'; title='Telnet open';  severity='critical'; status='open' },
+                  @{ id='F-2'; title='UPnP enabled'; severity='low';      status='open' }
+                ) | ConvertTo-Json | Set-Content (Join-Path $cur2 'findings.json')
+                & $cmp -Baseline $base -Current $cur2 | Out-Null
+                $s2 = Get-Content (Join-Path $cur2 'change-summary.json') -Raw | ConvertFrom-Json
+                Assert-Equal $s2.severity_changed 1 'severity_changed count'
+                Assert-Equal $s2.score_current   84 'score after high -> critical'
+
+                # ============================================================
+                # Find-DocDrift.ps1
+                # ============================================================
+                Write-Host ""
+                Write-Host "== Find-DocDrift =="
+
+                $drift = (Resolve-Path 'source/skills/update-docs/scripts/Find-DocDrift.ps1').Path
+                $repo = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/repo') -Force
+                Push-Location $repo
+                git init -q -b main .
+                git config user.email t@example.com
+                git config user.name test
+                New-Item -ItemType Directory -Path src -Force | Out-Null
+                Set-Content README.md 'doc'
+                Set-Content src/a.ps1 'Write-Output 1'
+                git add -A; git commit -q -m 'initial'
+
+                # `*>&1`, not `2>&1`. Find-DocDrift reports through Write-Host,
+                # which writes to the information stream - stream 6 - and
+                # `2>&1` only redirects stderr. Capturing with 2>&1 left
+                # $clean empty, so the first assertion failed and, worse, the
+                # 'does not report current' assertion below passed vacuously
+                # against an empty string. A test that cannot see the output
+                # it is asserting on is not a weaker test, it is a test that
+                # reports the wrong answer in both directions.
+                #
+                # Doc is the newest thing to touch anything -> no drift.
+                $clean = & $drift -Doc README.md -Paths src *>&1 | Out-String
+                Assert-True ($clean -match 'likely current') 'clean repo reports no drift'
+
+                # Now change source after the doc -> drift.
+                Set-Content src/a.ps1 'Write-Output 2'
+                git add -A; git commit -q -m 'change source'
+                $dirty = & $drift -Doc README.md -Paths src *>&1 | Out-String
+                Assert-True ($dirty -match 'src/a\.ps1') 'changed source file is listed as drift'
+                Assert-True ($dirty -notmatch 'likely current') 'drifted repo does not report current'
+                Pop-Location
+
+                # ============================================================
+                # Reported, not gated: a real weakness found while writing
+                # these tests.
+                # ============================================================
+                Write-Host ""
+                Write-Host "== known weakness (reported, does not fail the build) =="
+
+                # Get-Score does $W[$f.severity.ToLower()] against a fixed
+                # hashtable. A severity outside {critical,high,medium,low} -
+                # "sev:high" from a different tool, or "Informational" - looks
+                # up to $null, and [int]$null is 0. The finding scores as
+                # harmless rather than as unrecognised.
+                #
+                # Not gated because it is pre-existing behaviour in another
+                # repository and this job's first run should not be red for
+                # something it did not introduce. Recorded here so it is a
+                # decision on the record rather than an oversight.
+                $odd = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/odd') -Force
+                @( @{ id='F-9'; title='Unknown severity'; severity='catastrophic'; status='open' } ) |
+                  ConvertTo-Json | Set-Content (Join-Path $odd 'findings.json')
+                & $cmp -Baseline $odd -Current $odd | Out-Null
+                $so = Get-Content (Join-Path $odd 'change-summary.json') -Raw | ConvertFrom-Json
+                if ($so.score_current -eq 100) {
+                  Write-Host "  NOTE  an unrecognised severity scores 0 - the finding is counted as"
+                  Write-Host "        harmless rather than flagged as unscoreable (score 100/100)."
+                  Write-Host "        Same shape as docs/lessons/0001: unknown is not a pass."
+                } else {
+                  Write-Host "  (unrecognised severity now scores $($so.score_current) - weakness addressed)"
+                }
+
+                # ============================================================
+                Write-Host ""
+                Write-Host "== not covered here, and why =="
+                Write-Host "  Invoke-BreachCheck.ps1   needs a paid HIBP key and a live endpoint;"
+                Write-Host "                           exercised weekly by the breach-check job."
+                Write-Host "  Get-ExternalExposure.ps1 exercised for real by external-exposure."
+                Write-Host "  Invoke-NetDiscovery /    need the Windows ARP table and netsh; they"
+                Write-Host "  ServiceScan / ShareEnum /  cannot run on this worker at all - see the"
+                Write-Host "  VulnScan / WifiPosture     netassess-ingest note."
+                Write-Host "  Invoke-WeeklyNetworkScan"
+
+                Write-Host ""
+                Write-Host ("assertions: {0} passed, {1} failed" -f $passed, $failed)
+                if ($failed -gt 0) { exit 1 }
+                PS
+
+                rc=0
+                pwsh -NonInteractive -NoProfile -File tests.ps1 || rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "*personal-soc / functional*: a script no longer behaves as its tests expect." \
+                    > notify/message.txt
+                fi
+                exit $rc
+
+  # -- Skill integrity (the AI check) --------------------------------------
+  #
+  # What this repository ships is not a program. It is instructions a model
+  # reads at runtime, and that changes what "broken" means.
+  #
+  # A SKILL.md is a router and an index. Its frontmatter `description` decides
+  # whether the skill is ever loaded, and its knowledgebase list decides which
+  # references get pulled into context. Both fail *silently*: a reference that
+  # points at a file which is not there does not raise anything - the model
+  # simply proceeds without that guidance and produces a confident answer with
+  # a piece of the methodology missing. For network-assessment, the file most
+  # likely to go missing that way is rules-of-engagement.md, which is the
+  # authorization gate.
+  #
+  # That is the AI equivalent of a broken import, except nothing crashes. It is
+  # the reason this job exists and the reason it gates delivery.
+  #
+  # THE ONE CASE THAT LOOKS LIKE A BUG AND IS NOT
+  #
+  # personal-threat-monitor's SKILL.md references `references/profile.md` and
+  # `references/identifiers.md`, and neither is in the repository - they are
+  # gitignored on purpose, because they hold the identity profile and the
+  # identifier ledger. A naive "every referenced path exists" check fails here
+  # on the first run, and the obvious fix - committing them - is precisely the
+  # thing guard and secrets exist to prevent.
+  #
+  # So those two are expected-absent, and what is required instead is that
+  # their .example.md counterpart is present: that is the file a new user
+  # copies, and its absence is what would actually break the skill.
+
+  - name: skill-integrity
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: python
+      - task: check-skills
+        image: python
+        params:
+          ANTHROPIC_API_KEY: ((anthropic-api-key))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl >/dev/null
+
+                cat > check.py <<'PY'
+                import json, os, pathlib, re, subprocess, sys
+
+                ROOT = pathlib.Path("source")
+                SKILLS = ROOT / "skills"
+                fail = 0
+                def err(msg):
+                    global fail
+                    print("::error:: " + msg)
+                    fail = 1
+
+                # Gitignored by design - see the note above this job.
+                USER_SUPPLIED = {"profile.md", "identifiers.md"}
+
+                skill_dirs = sorted(p for p in SKILLS.iterdir() if p.is_dir())
+                if not skill_dirs:
+                    err("no skill directories under skills/ - this check examined nothing.")
+                    sys.exit(1)
+
+                # Every path that exists anywhere in the tree, for telling a
+                # cross-skill reference apart from a dangling one.
+                all_rel = {p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*") if p.is_file()}
+
+                REF = re.compile(r'`((?:references|scripts)/[A-Za-z0-9._\-]+\.(?:md|ps1))`')
+
+                for d in skill_dirs:
+                    md = d / "SKILL.md"
+                    print("")
+                    print("== %s ==" % d.name)
+                    if not md.exists():
+                        err("%s has no SKILL.md - nothing will ever load it." % d.name)
+                        continue
+
+                    text = md.read_text(encoding="utf-8", errors="replace")
+
+                    # -- frontmatter: this is the routing contract ------------
+                    if not text.startswith("---"):
+                        err("%s/SKILL.md does not open with frontmatter." % d.name)
+                    else:
+                        fm = text.split("---", 2)[1]
+                        name = re.search(r'^name:\s*(.+)$', fm, re.M)
+                        desc = re.search(r'^description:\s*(.+)$', fm, re.M)
+                        if not name:
+                            err("%s/SKILL.md frontmatter has no name." % d.name)
+                        elif name.group(1).strip() != d.name:
+                            err("%s/SKILL.md declares name '%s' - it must match the directory, "
+                                "or the loader and the tree disagree about what this skill is called."
+                                % (d.name, name.group(1).strip()))
+                        else:
+                            print("  ok    name matches directory")
+
+                        if not desc:
+                            err("%s/SKILL.md frontmatter has no description." % d.name)
+                        else:
+                            n = len(desc.group(1).strip())
+                            # The description is the only thing a model sees
+                            # when deciding whether to load the skill. A short
+                            # one is not a style problem; it is a skill that
+                            # does not get selected.
+                            if n < 60:
+                                err("%s/SKILL.md description is %d chars - too thin to route on. "
+                                    "It must say what the skill covers and when to use it." % (d.name, n))
+                            else:
+                                print("  ok    description is %d chars" % n)
+
+                    # -- the knowledgebase index actually resolves ------------
+                    refs = sorted(set(REF.findall(text)))
+                    dangling, cross = [], []
+                    for r in refs:
+                        base = os.path.basename(r)
+                        target = d / r
+                        if target.exists():
+                            continue
+                        if base in USER_SUPPLIED:
+                            # Expected absent. What must exist is the template.
+                            example = target.with_name(base.replace(".md", ".example.md"))
+                            if example.exists():
+                                print("  ok    %s is user-supplied; %s ships" % (r, example.name))
+                            else:
+                                err("%s references %s (correctly gitignored) but ships no %s - "
+                                    "a new user has nothing to copy."
+                                    % (d.name, r, example.name))
+                            continue
+                        # Somewhere else in the tree = a cross-skill mention.
+                        elsewhere = [p for p in all_rel if p.endswith("/" + r)]
+                        (cross if elsewhere else dangling).append((r, elsewhere))
+
+                    for r, where in cross:
+                        print("  note  %s resolves under another skill (%s), not this one"
+                              % (r, where[0]))
+                    for r, _ in dangling:
+                        err("%s references %s and no such file exists. The model loads nothing "
+                            "and continues without it - this fails silently at runtime."
+                            % (d.name, r))
+                    if refs and not dangling:
+                        print("  ok    %d referenced path(s) resolve" % len(refs))
+
+                    # -- reference files nothing points at --------------------
+                    #
+                    # Reported, never gated. A .example.md is unreferenced on
+                    # purpose, and a reference kept for a human reader is a
+                    # judgement call rather than a defect. Failing here would
+                    # be a checker crying wolf.
+                    refdir = d / "references"
+                    if refdir.is_dir():
+                        named = {os.path.basename(r) for r in refs}
+                        orphans = sorted(
+                            f.name for f in refdir.glob("*.md")
+                            if f.name not in named and not f.name.endswith(".example.md"))
+                        if orphans:
+                            print("  note  not named by SKILL.md, so never loaded on demand: %s"
+                                  % ", ".join(orphans))
+
+                    # -- scripts the skill promises --------------------------
+                    scriptdir = d / "scripts"
+                    if scriptdir.is_dir():
+                        n = len(list(scriptdir.glob("*.ps1")))
+                        print("  ok    %d script(s) present" % n)
+
+                # -- model IDs -----------------------------------------------
+                #
+                # Same check as TheHub's ai-models lane, and here for the same
+                # reason: a retired model ID is a 404 the first time that path
+                # runs, not a deprecation warning. The API is asked rather than
+                # a hardcoded list being carried, because a stale allow-list
+                # fails open - it reports clean about IDs it has never heard of.
+                print("")
+                print("== model IDs ==")
+                CLAUDE = re.compile(r'\b(claude-[a-z0-9]+(?:-[a-z0-9]+)*-?[0-9][A-Za-z0-9.\-]*)\b')
+                found = {}
+                for p in ROOT.rglob("*"):
+                    if not p.is_file() or p.suffix not in (".md", ".ps1", ".json", ".yml", ".yaml"):
+                        continue
+                    rel = p.relative_to(ROOT).as_posix()
+                    if rel.startswith(".git/"):
+                        continue
+                    for m in CLAUDE.findall(p.read_text(encoding="utf-8", errors="replace")):
+                        found.setdefault(m, set()).add(rel)
+
+                if not found:
+                    print("  no Claude model IDs named anywhere in this repository.")
+                elif not os.environ.get("ANTHROPIC_API_KEY"):
+                    print("  ==================================================")
+                    print("  NO ANTHROPIC KEY - MODEL IDS WERE NOT VALIDATED.")
+                    print("  The inventory below is not a statement that these")
+                    print("  models still exist.")
+                    print("  ==================================================")
+                    for m in sorted(found):
+                        print("    %-34s %s" % (m, sorted(found[m])[0]))
+                else:
+                    import urllib.request
+                    req = urllib.request.Request(
+                        "https://api.anthropic.com/v1/models?limit=100",
+                        headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                                 "anthropic-version": "2023-06-01"})
+                    # No try/except: a lookup that failed must not become an
+                    # empty served-set, which would mark every model retired
+                    # and produce a very confident wrong answer.
+                    served = {m["id"] for m in
+                              json.load(urllib.request.urlopen(req, timeout=30))["data"]}
+                    print("  models currently served: %d" % len(served))
+                    for m in sorted(found):
+                        where = sorted(found[m])[0]
+                        if m in served:
+                            print("    ok       %-32s %s" % (m, where))
+                        else:
+                            err("%s names model %s, which the API no longer serves." % (where, m))
+
+                print("")
+                print("Skill integrity passed." if not fail else "Skill integrity failed.")
+                sys.exit(fail)
+                PY
+
+                rc=0
+                python3 check.py || rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  echo "*personal-soc / skills*: a SKILL.md references something that is not there." \
+                    > notify/message.txt
+                fi
+                exit $rc
+
   # == Stage 2: delivery ====================================================
   #
   # The gap this closes, stated plainly because it went unnoticed for a while:
@@ -193,10 +988,17 @@ jobs:
 
   - name: package
     public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
+      # Every gate, not just guard. This job puts a bundle on the host and the
+      # Scheduled Tasks then run it unattended at 03:00 on a Sunday, which is
+      # the worst moment to discover that a SKILL.md points at a reference that
+      # is not there. A gate that delivery does not wait for is advice.
       - get: source
         trigger: true
-        passed: [guard]
+        passed: [guard, secrets, lint, functional, skill-integrity]
       - get: pwsh
       - task: bundle-and-publish
         image: pwsh
@@ -296,6 +1098,8 @@ jobs:
 
   - name: doc-drift
     public: true
+    serial_groups: [worker]
+    on_error: *slack_alert
     plan:
       - get: source
         trigger: true
@@ -352,8 +1156,29 @@ jobs:
   # the same home connection, so it resolves the same public IP. That is the
   # whole reason this one is worth running here at all.
 
+  # No serial_groups here, and the reason is worth stating because adding one
+  # looked obviously correct and deadlocked the pipeline.
+  #
+  # Concourse starts the builds in a serial group in id order. The three
+  # `weekly`-triggered jobs have had a build queued since the pipeline was
+  # first set, because a `time` resource produces no version until its window
+  # arrives - the first Sunday 03:00 window had not happened yet. Those builds
+  # sat pending and harmless. Putting them in a serial group made them the
+  # oldest members of it, so five newer builds queued behind three that can
+  # never start, and nothing in the pipeline ran at all.
+  #
+  # The group exists to stop the commit fan-out installing four toolchains at
+  # once on a worker that OOMed doing exactly that. These three do not fan out:
+  # they fire once a week inside a one-hour window and do two HTTPS calls, an
+  # `mc ls`, and a handful of HIBP lookups between them.
+  #
+  # The general rule: a job whose trigger resource may legitimately have no
+  # version yet must not sit in a serial group, because a build that can never
+  # start still holds its place in the queue.
   - name: external-exposure
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: weekly
         trigger: true
@@ -421,6 +1246,9 @@ jobs:
 
   - name: netassess-ingest
     public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: netassess-run
         trigger: true
@@ -584,8 +1412,11 @@ jobs:
   # absence. It is the reason the whole "scan on Windows, verify in
   # Concourse" split is trustworthy rather than merely tidy.
 
+  # Clock-triggered: no serial group. See the note on external-exposure.
   - name: netassess-freshness
     public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: weekly
         trigger: true
@@ -664,8 +1495,17 @@ jobs:
   # the first run - it never shrinks, so failing on its existence would mean
   # a permanently red job that everyone learns to ignore.
 
+  # The alert hooks here send the job name and a link and nothing else. This
+  # job writes no notify/message.txt, and that omission is the control: the
+  # anchor falls back to "job `breach-check` failed", so the addresses and the
+  # breach names stay in a build log that `public: false` keeps behind a login.
+  # A helpful one-line summary here would put exactly the confidential list
+  # into a chat channel.
+  # Clock-triggered: no serial group. See the note on external-exposure.
   - name: breach-check
     public: false
+    on_failure: *slack_alert
+    on_error: *slack_alert
     plan:
       - get: weekly
         trigger: true
