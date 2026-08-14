@@ -158,5 +158,25 @@ if ($Pause) {
     Write-Host "`nPipeline applied and unpaused." -ForegroundColor Green
 }
 
+# breach-check is paused when there is no key for it to check with.
+#
+# Same call set-thehub-pipeline.ps1 makes for cloud-posture without an Azure
+# principal, and the same lesson L0001 recorded for the osv lane: a job that is
+# red forever for a reason nobody intends to fix this week is a job people
+# learn to scroll past, which costs more than the check it was not doing. The
+# in-job error message stays -- it is what greets whoever unpauses it early --
+# but the resting state is visibly off, not visibly broken.
+#
+# Put HIBP_API_KEY (and MONITOR_EMAILS) in deploy\concourse\.env and re-run
+# this; it unpauses itself.
+$hibpKey = Read-EnvValueOptional $stackEnv 'HIBP_API_KEY'
+if ($hibpKey) {
+    & $fly --target $Target unpause-job --job "$Pipeline/breach-check" | Out-Null
+    Write-Host "breach-check is enabled (HIBP key configured)." -ForegroundColor DarkGray
+} else {
+    & $fly --target $Target pause-job --job "$Pipeline/breach-check" | Out-Null
+    Write-Host "breach-check paused: no HIBP API key (~`$4/mo, haveibeenpwned.com/API/Key)." -ForegroundColor Yellow
+}
+
 Write-Host "  Weekly triggers in $TimeZone; scans read from '$NetassessBucket', stale after $MaxScanAgeDays days"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"
