@@ -115,9 +115,48 @@ switch ($Action) {
 
     # Piped on stdin (`value=-`) rather than passed as an argument, for the same
     # reason: an argument is visible in the container's process list.
-    $plain | docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -i $Container `
-      vault kv put $path value=- | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Error "write failed" }
+    #
+    # Written through .NET rather than `$plain | docker exec`, because the
+    # PowerShell pipeline terminates what it sends with CRLF. That stored a
+    # 57-character bot token as 59 bytes, and a trailing "\r\n" inside an
+    # `Authorization: Bearer` header is a 401 that nothing in the logs
+    # explains - the value looks correct everywhere except on the wire.
+    # StandardInput.Write() sends exactly the characters given.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = 'docker'
+    foreach ($a in @('exec', '-e', 'VAULT_ADDR=http://127.0.0.1:8200',
+                     '-i', $Container, 'vault', 'kv', 'put', $path, 'value=-')) {
+      $psi.ArgumentList.Add($a)
+    }
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write($plain)
+    $proc.StandardInput.Close()
+    $null = $proc.StandardOutput.ReadToEnd()
+    $writeErr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) {
+      if ($writeErr -match 'Vault is sealed') { Write-Error "Vault is sealed. Run .\vault-unseal.ps1 first." }
+      Write-Error "write failed: $writeErr"
+    }
+
+    # Read the length back. A secret that stored two bytes longer than it
+    # should is exactly the failure this rewrite fixes, so it is worth
+    # confirming rather than assuming - and the length is safe to print.
+    $check = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 $Container `
+      vault read -format=json $path 2>$null | Out-String
+    if ($check) {
+      $stored = ($check | ConvertFrom-Json).data
+      if ($Scope -eq 'personal') { $stored = $stored.data }
+      $storedLen = $stored.value.Length
+      if ($storedLen -ne $plain.Length) {
+        Write-Warning "stored $storedLen chars but $($plain.Length) were given - the value was altered in transit."
+      }
+    }
 
     Write-Host "Wrote $path" -ForegroundColor Green
     if ($Scope -ne 'personal') {
