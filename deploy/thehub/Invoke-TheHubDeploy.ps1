@@ -120,6 +120,47 @@ if (-not (Test-Path $composeFile)) { throw "No compose file at $composeFile" }
 $image = "${registry}/thehub:${Sha}"
 $stateFile = Join-Path $here ".deployed-$Environment"
 
+# -- One deployer at a time --------------------------------------------------
+#
+# Two deploys of the same project will interleave destructively. Found the
+# obvious way: a manual run and the Scheduled Task both reached this script for
+# demo at once, one called `docker compose down -v` while the other was
+# bringing the stack up, and postgres died with exit 137 -- which reads as an
+# out-of-memory kill and sends you to look at Docker's memory limits.
+#
+# MultipleInstances=IgnoreNew on the task only stops the task racing itself.
+# Nothing stopped an operator, or another tool, running this alongside it.
+#
+# An exclusive file handle rather than a lock file with a PID in it: if this
+# process dies the OS closes the handle, so the lock cannot outlive its owner
+# and there is no stale-lock heuristic to get wrong.
+$lockPath = Join-Path $here ".deploy-lock-$Environment"
+try {
+    $lock = [System.IO.File]::Open(
+        $lockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+} catch {
+    Write-Host "Another deploy of '$Environment' is already running." -ForegroundColor Red
+    Write-Host "  Lock held on $lockPath" -ForegroundColor Yellow
+    Write-Host "  Refusing rather than interleaving: two `docker compose` runs on one" -ForegroundColor Yellow
+    Write-Host "  project take each other's containers down mid-start." -ForegroundColor Yellow
+    exit 3
+}
+
+# Stamped both to say who holds it and to keep a live reference to $lock, so
+# the handle is not finalised early by the garbage collector. Never explicitly
+# released: every exit path from here ends the process, and the OS closes the
+# handle then. That is the point of doing it this way.
+$stamp = [System.Text.Encoding]::ASCII.GetBytes(
+    "pid=$PID env=$Environment sha=$Sha at=$((Get-Date).ToUniversalTime().ToString('s'))Z"
+)
+$lock.SetLength(0)
+$lock.Write($stamp, 0, $stamp.Length)
+$lock.Flush()
+
 Write-Host "Deploying $image to $Environment ($project)" -ForegroundColor Cyan
 
 # What is running now, so there is something to go back to. Recorded before

@@ -76,3 +76,6 @@ deploy/concourse/docker-compose.yml.bak-*
 deploy/thehub/.env
 deploy/thehub/.deployed-*
 deploy/thehub/.failed-*
+# Held open for the life of a deploy so two of them cannot interleave. Purely
+# a runtime handle - it exists only while a deploy is in flight.
+deploy/thehub/.deploy-lock-*
