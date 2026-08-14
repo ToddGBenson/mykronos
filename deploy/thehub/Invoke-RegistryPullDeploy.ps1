@@ -120,17 +120,42 @@ function Invoke-Cycle {
             continue
         }
 
+        # A pointer this host has already failed on is not retried. Without
+        # this the loop is genuinely harmful rather than merely useless: a
+        # SHA that cannot deploy - because the compose file is not wired to
+        # THEHUB_IMAGE, or because its fixed container_name collides with a
+        # container another project already owns - is retried every interval
+        # forever, and each attempt runs `docker compose up`, which rebuilds
+        # the image from source before failing. That is a build loop on a
+        # machine nobody is watching.
+        #
+        # The marker is cleared by a *different* SHA arriving, so a fix
+        # deploys immediately without anyone clearing state by hand.
+        $failedFile = Join-Path $here ".failed-$environment"
+        $failed = if (Test-Path $failedFile) { (Get-Content $failedFile -Raw).Trim() } else { "" }
+        if ($failed -eq $requested) {
+            Write-Verbose "$environment already failed on $requested - not retrying"
+            continue
+        }
+
         Write-Host "$environment : $current -> $requested" -ForegroundColor Cyan
         & $deployScript -Environment $environment -Sha $requested
         if ($LASTEXITCODE -ne 0) {
-            # Not written back. The pipeline is waiting on this value and a
+            # Not acknowledged. The pipeline is waiting on that value and a
             # timeout there is the correct outcome - reporting a SHA that did
             # not deploy would let DAST probe the previous build and attribute
             # the result to this commit.
-            Write-Host "$environment deploy failed (exit $LASTEXITCODE) - pointer left unacknowledged." -ForegroundColor Red
+            Set-Content -Path $failedFile -Value $requested -NoNewline -Encoding ASCII
+            Write-Host "$environment deploy failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            Write-Host "  Pointer left unacknowledged and recorded in $(Split-Path $failedFile -Leaf)." -ForegroundColor Red
+            Write-Host "  This SHA will not be retried; publishing a different one clears it." -ForegroundColor Red
             $script:failures++
             continue
         }
+
+        # A success supersedes any earlier failure, including one on this same
+        # SHA from before whatever was wrong got fixed.
+        if (Test-Path $failedFile) { Remove-Item $failedFile -Force -EA SilentlyContinue }
 
         $ack = Join-Path ([System.IO.Path]::GetTempPath()) "ack-$environment-$(Get-Random)"
         try {

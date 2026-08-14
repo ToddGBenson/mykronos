@@ -67,3 +67,4 @@ deploy/concourse/keys/
 # rollback target and is state rather than configuration.
 deploy/thehub/.env
 deploy/thehub/.deployed-*
+deploy/thehub/.failed-*
