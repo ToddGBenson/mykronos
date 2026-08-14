@@ -1203,7 +1203,8 @@ jobs:
                     --insecure \
                     --scanners vuln \
                     --format sarif --output "results/trivy-${image}.sarif" \
-                    --exit-code 0 --quiet
+                    --exit-code 0 --quiet \
+                    --timeout 30m
 
                   # An absent or empty report is a failed scan, and the
                   # uploader already treats it as one. Failing here names the
