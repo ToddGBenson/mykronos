@@ -521,6 +521,105 @@ class DashboardQueries:
 
     # -- scan health ----------------------------------------------------
 
+    def vulnerability_management(
+        self, repo_full_name: str | None = None
+    ) -> dict[str, Any]:
+        """What is outstanding, how old, and what was accepted (PIP-9).
+
+        The platform could always answer "what is open" and never "how long
+        has it been open, and what did we decide not to fix". Those are the
+        two questions a vulnerability management programme is actually made
+        of, and the data for both was already here - open findings carry
+        `first_seen_at`, and an acceptance is a status with a reason in the
+        audit log.
+
+        Age is measured from `first_seen_at`, which survives rescans because
+        finding identity is anchored to content rather than line numbers
+        (D-001). Without that, every refactor would reset the clock and
+        nothing would ever look old.
+        """
+        scope = "AND asset_id = ?" if repo_full_name else ""
+        params: list[Any] = [repo_full_name] if repo_full_name else []
+
+        aging = self.catalog.query(
+            f"""
+            SELECT severity,
+                   CASE
+                     WHEN first_seen_at > now() - INTERVAL 7 DAY  THEN '0-7'
+                     WHEN first_seen_at > now() - INTERVAL 30 DAY THEN '8-30'
+                     WHEN first_seen_at > now() - INTERVAL 90 DAY THEN '31-90'
+                     ELSE '90+'
+                   END AS age_band,
+                   count(*)
+            FROM findings
+            WHERE status = 'open' {scope}
+            GROUP BY 1, 2
+            """,
+            params,
+        )
+
+        # Accepted risk is not a resolved finding and must never be counted as
+        # one. It is a decision with an owner and a reason, and the reason is
+        # the part that decays - "no vendor fix" stops being true the day a
+        # vendor ships one.
+        accepted = self.catalog.query(
+            f"""
+            SELECT capability, severity, count(*)
+            FROM findings
+            WHERE status = 'accepted_risk' {scope}
+            GROUP BY 1, 2
+            ORDER BY 3 DESC
+            """,
+            params,
+        )
+
+        oldest = self.catalog.query(
+            f"""
+            SELECT finding_id, severity, capability, title, first_seen_at
+            FROM findings
+            WHERE status = 'open' AND severity IN ('critical', 'high') {scope}
+            ORDER BY first_seen_at
+            LIMIT 10
+            """,
+            params,
+        )
+
+        # One row per combination, not per member. A toxic combination is one
+        # decision to make; listing its members separately is how it stops
+        # looking like a single thing.
+        combinations = self.catalog.query(
+            f"""
+            SELECT count(DISTINCT toxic_combination_id)
+            FROM remediation_events
+            WHERE toxic_combination_id IS NOT NULL
+              {"AND repo_full_name = ?" if repo_full_name else ""}
+            """,
+            params,
+        )
+
+        return {
+            "scope": repo_full_name or "portfolio",
+            "aging": [
+                {"severity": str(sev), "age_band": str(band), "count": int(n)}
+                for sev, band, n in aging
+            ],
+            "accepted_risk": [
+                {"capability": str(cap), "severity": str(sev), "count": int(n)}
+                for cap, sev, n in accepted
+            ],
+            "oldest_open": [
+                {
+                    "finding_id": str(fid),
+                    "severity": str(sev),
+                    "capability": str(cap),
+                    "title": str(title),
+                    "first_seen_at": seen,
+                }
+                for fid, sev, cap, title, seen in oldest
+            ],
+            "toxic_combinations": int(combinations[0][0]) if combinations else 0,
+        }
+
     def last_successful_scan_at(self, repo_full_name: str) -> dict[str, datetime]:
         """Newest successful scan run per capability (spec 15 §4a).
 

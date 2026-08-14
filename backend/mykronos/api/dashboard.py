@@ -659,6 +659,28 @@ class CiPage(BaseModel):
     )
 
 
+@router.get("/vulnerability-management")
+async def vulnerability_management(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """What is outstanding, how old, and what was accepted (PIP-9).
+
+    The platform could answer "what is open" from the beginning and never
+    "how long has it been open, and what did we decide not to fix" — which
+    are the two questions a vulnerability management programme is made of.
+
+    Accepted risk is reported separately and never folded into a resolved
+    count. It is a decision with an owner and a reason, and the reason is the
+    part that decays: "no vendor fix" stops being true the day a vendor ships
+    one, and this repository is currently carrying 243 acceptances that each
+    said exactly that.
+    """
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    return _queries(request).vulnerability_management(repo_full_name)
+
+
 @router.get("/repos/{repo_id}/ci", response_model=CiPage)
 async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> CiPage:
     """Links out to where this repository is built (spec 15 §4a).
