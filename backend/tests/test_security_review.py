@@ -92,6 +92,8 @@ class TestNoCredentialsInTheTree:
 
     def test_no_default_setting_holds_a_credential(self, monkeypatch) -> None:
         """An unconfigured deployment must hold nothing worth stealing."""
+        import os
+
         from mykronos.config import Settings
 
         # `_env_file=None` silences the dotenv file but NOT the process
@@ -100,7 +102,6 @@ class TestNoCredentialsInTheTree:
         # task, so this test failed there and only there -- reporting a
         # credential default that does not exist in the tree. The claim under
         # test is about the CODE, so the ambient prefix is scrubbed first.
-        import os
 
         for var in list(os.environ):
             if var.startswith("MYKRONOS_"):
