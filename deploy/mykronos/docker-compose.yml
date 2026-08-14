@@ -108,10 +108,18 @@ services:
       MYKRONOS_ADMIN_TOKEN: ${MYKRONOS_ADMIN_TOKEN:?set it in backend/.env}
       MYKRONOS_GATE_TOKEN: ${MYKRONOS_GATE_TOKEN:?set it in backend/.env}
     healthcheck:
-      # node, not curl - see the backend's healthcheck.
+      # `/nodejs/bin/node`, not `node`. The frontend image is distroless
+      # now: there is no shell, nothing is on PATH, and the binary sits at an
+      # absolute path. Compose's healthcheck overrides the image's, so this
+      # line kept calling a name that no longer resolves and reported a
+      # container serving 200s as unhealthy for a day.
+      #
+      # Same trap as curl, one base image later. The rule that survives both:
+      # a healthcheck must name something the image is known to contain, and
+      # the image is the only place that knows.
       test:
         - CMD
-        - node
+        - /nodejs/bin/node
         - -e
         - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 30s

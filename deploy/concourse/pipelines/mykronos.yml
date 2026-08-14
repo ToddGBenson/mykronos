@@ -1338,26 +1338,27 @@ jobs:
                   done
                 fi
 
-  # -- Demo environment, functional tests, proxy-first DAST ----------------
+  # -- Functional tests and proxy-first DAST (PIP-2, PIP-3) ---------------
   #
-  # One job, and it has to be one job. The demo environment lives on a Docker
-  # daemon started inside this task and dies with it (PIP-4), so everything
-  # that needs it - seeding, functional tests, ZAP - has to happen while it is
-  # up. Splitting the lane would mean a long-lived environment, and a
-  # long-lived environment is one a previous active scan has already modified.
+  # The demo environment is *not* built here, and the first two versions of
+  # this job were wrong about that. They started dockerd inside the task and
+  # composed the stack up; dockerd never starts on this worker - the same
+  # constraint that moved image builds to kaniko - and both runs failed after
+  # ten and twenty-four minutes respectively.
   #
-  # The order is the whole design (PIP-3):
+  # It is built on the host by deploy/demo/Invoke-DemoRebuild.ps1, where
+  # Docker works, and this job reaches it over the network by host IP - the
+  # same way every other task reaches the ingestion API. The task itself needs
+  # nothing but python and a route.
   #
-  #   up -> seed -> functional tests *through ZAP* -> spider -> active scan
+  # The order is still the whole design:
   #
-  # A baseline ZAP scan crawls from the landing page and never authenticates,
-  # so it sees the login screen and almost nothing else. The functional suite
-  # already knows how to hold a session and walk multi-step flows; proxying it
-  # hands ZAP that request corpus, and the spider then explores *from inside*
-  # the authenticated surface rather than from the front door.
+  #   functional tests *through ZAP* -> spider -> active scan
   #
-  # Active scanning sends attack traffic and writes data. It runs here and
-  # only here, against an environment that is destroyed afterwards.
+  # A baseline scan crawls from the landing page and never authenticates. The
+  # functional suite already holds a session and walks multi-step flows;
+  # proxying it hands ZAP that corpus, and the spider then explores from
+  # inside the authenticated surface rather than from the front door.
   - name: demo-and-dast
     public: true
     on_failure: *slack_alert
@@ -1367,15 +1368,11 @@ jobs:
         trigger: true
         passed: [publish-backend, publish-frontend]
       - get: python
-      - task: stand-up-and-scan
-        # dockerd inside the task. The alternative - the host's socket - is
-        # what D-038 refuses, because a task holding it could restart
-        # anything on this machine.
-        privileged: true
+      - task: functional-and-dast
         image: python
         params:
           <<: *mykronos_env
-          REGISTRY: ((registry))
+          DEMO_HOST: ((demo-host))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -1387,139 +1384,91 @@ jobs:
               - |
                 set -uo pipefail
                 apt-get update -qq && apt-get install -y -qq git curl jq >/dev/null
-                curl -sSfL https://get.docker.com | sh >/dev/null 2>&1
-                # cgroups v2: a nested dockerd needs the controllers
-                # delegated into the subtree before it can make its own
-                # groups. The docker:dind entrypoint does exactly this; a
-                # bare `dockerd &` in a task container does not get it for
-                # free, and the failure is silent without the log below.
-                if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-                  mkdir -p /sys/fs/cgroup/init
-                  ( xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs ) 2>/dev/null || true
-                  sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers                     > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
-                fi
-
-                dockerd >/tmp/dockerd.log 2>&1 &
-                for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
-
-                # overlay2 cannot stack on the task's own overlay rootfs on
-                # some worker setups; vfs is slow and always works. Tried
-                # second so the fast path wins where it can.
-                if ! docker info >/dev/null 2>&1; then
-                  echo "::warning::dockerd failed with default storage; log tail:"
-                  tail -20 /tmp/dockerd.log || true
-                  pkill dockerd 2>/dev/null || true
-                  sleep 3
-                  echo "::warning::retrying with --storage-driver=vfs"
-                  dockerd --storage-driver=vfs >/tmp/dockerd-vfs.log 2>&1 &
-                  for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
-                fi
-                docker info >/dev/null 2>&1 || {
-                  echo "::error::dockerd never started; vfs log tail:"
-                  tail -30 /tmp/dockerd-vfs.log || true
-                  exit 1
-                }
-
                 cd source
                 SHA="$(git rev-parse HEAD)"
-                export MYKRONOS_IMAGE_BACKEND="${REGISTRY}/mykronos-backend:latest"
-                export MYKRONOS_IMAGE_FRONTEND="${REGISTRY}/mykronos-frontend:latest"
 
-                COMPOSE="docker compose -f deploy/demo/docker-compose.yml"
+                FRONTEND="http://${DEMO_HOST}:3200"
+                BACKEND="http://${DEMO_HOST}:8201"
+                ZAP="http://${DEMO_HOST}:8290"
 
-                # Always tear down, however this exits. An orphaned demo
-                # environment on a worker is a running copy of the platform
-                # with fixed credentials in it.
-                cleanup() { $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true; }
-                trap cleanup EXIT
-
-                echo "== Standing up the demo environment (PIP-4) =="
-                $COMPOSE pull --quiet 2>/dev/null || true
-                $COMPOSE up -d
-                $COMPOSE ps
-
-                # Healthy, not merely started. A functional suite that races
-                # the application reports the race, not the application.
-                for _ in $(seq 1 60); do
-                  up=$($COMPOSE ps --format json 2>/dev/null | jq -s '[.[] | select(.Health == "healthy")] | length')
-                  [ "${up:-0}" -ge 3 ] && break
-                  sleep 3
-                done
-                if [ "${up:-0}" -lt 3 ]; then
-                  echo "::error::The demo environment never became healthy."
-                  $COMPOSE logs --tail 40
+                # The environment is somebody else's job to build, so this
+                # says so plainly rather than failing with a connection error
+                # forty lines later.
+                if ! curl -fsS --max-time 10 "$BACKEND/healthz" >/dev/null; then
+                  echo "::error::No demo environment at $BACKEND."
+                  echo "Rebuild it on the host: deploy/demo/Invoke-DemoRebuild.ps1"
+                  exit 1
+                fi
+                if ! curl -fsS --max-time 10 "$ZAP/JSON/core/view/version/" >/dev/null; then
+                  echo "::error::No ZAP daemon at $ZAP - the proxy is part of the demo stack."
                   exit 1
                 fi
 
-                NET="$($COMPOSE ps -q backend | head -1)"
-                run_in() { docker run --rm --network "container:${NET}" "$@"; }
+                # A stale environment is worse than none: it answers, so the
+                # suite passes, and the DAST result describes an application
+                # nobody is shipping. The seed writes one repository per run,
+                # so an empty portfolio means the rebuild did not seed.
+                REPOS=$(curl -fsS --max-time 20 \
+                  -H "X-Hub-Token: demo-gate-token-not-a-secret" \
+                  -H "Authorization: Bearer demo-admin-token-not-a-secret" \
+                  "$BACKEND/api/dashboard/portfolio" | jq '.repos | length')
+                echo "Demo environment has ${REPOS} repository(ies)."
+                if [ "${REPOS:-0}" -lt 1 ]; then
+                  echo "::error::The demo environment is empty - it was never seeded."
+                  exit 1
+                fi
 
-                echo "== Seeding (PIP-5) =="
-                docker cp deploy/demo/seed.py "$($COMPOSE ps -q backend)":/tmp/seed.py
-                $COMPOSE exec -T backend python /tmp/seed.py --url http://localhost:8100
+                # Reset ZAP's session so the site tree belongs to this run.
+                # Without it a second run spiders URLs the first one left
+                # behind, and the "traffic reached the proxy" check below
+                # would pass on somebody else's traffic.
+                curl -fsS --max-time 30 "$ZAP/JSON/core/action/newSession/?name=run-${SHA}&overwrite=true" >/dev/null
 
                 echo "== Functional tests, proxied through ZAP (PIP-2, PIP-3) =="
-                ZAP="$($COMPOSE ps -q zap)"
-                docker cp functional "$(docker ps -q --filter id=$ZAP)":/tmp/functional 2>/dev/null || true
-
-                mkdir -p ../results
-                # The suite runs in its own container on the *backend's*
-                # network namespace, so `backend` and `frontend` resolve and
-                # the proxy is reachable at the same names the compose file
-                # uses.
+                pip install --quiet pytest httpx2
                 set +e
-                docker run --rm \
-                  --network "container:${NET}" \
-                  -v "$PWD/functional:/functional:ro" \
-                  -v "$PWD/../results:/results" \
-                  -e HTTP_PROXY=http://localhost:8090 \
-                  -e HTTPS_PROXY=http://localhost:8090 \
-                  -e NO_PROXY= \
-                  -e DEMO_FRONTEND_URL=http://localhost:3100 \
-                  -e DEMO_BACKEND_URL=http://localhost:8100 \
-                  python:3.13-slim bash -ec '
-                    pip install --quiet pytest httpx2
-                    python -m pytest /functional -q --junitxml=/results/functional.xml
-                  '
+                HTTP_PROXY="$ZAP" HTTPS_PROXY="$ZAP" \
+                DEMO_FRONTEND_URL="$FRONTEND" DEMO_BACKEND_URL="$BACKEND" \
+                  python -m pytest functional -q -p no:cacheprovider \
+                    --junitxml=../results/functional.xml
                 FUNC_RC=$?
                 set -e
                 echo "Functional suite exited ${FUNC_RC}"
 
-                echo "== What ZAP saw =="
-                ZAP_API="http://localhost:8090"
-                URLS=$(run_in curlimages/curl:8.11.1 -sS "${ZAP_API}/JSON/core/view/urls/" | jq '.urls | length')
+                URLS=$(curl -fsS "$ZAP/JSON/core/view/urls/" | jq '.urls | length')
                 echo "ZAP recorded ${URLS} URL(s) from the functional run."
 
-                # The failure this guards against: a proxy nobody routed
-                # through produces an empty site tree, and an active scan of
-                # an empty site tree is a clean DAST report of nothing.
+                # A proxy nobody routed through yields an empty site tree, and
+                # an active scan of an empty site tree is a clean DAST report
+                # of nothing. That is the failure this whole design exists to
+                # prevent, so it is fatal rather than a warning.
                 if [ "${URLS:-0}" -lt 5 ]; then
-                  echo "::error::ZAP recorded ${URLS} URLs - the functional traffic did not reach the proxy."
+                  echo "::error::Only ${URLS} URLs reached the proxy - the functional traffic was not proxied."
                   exit 1
                 fi
 
                 echo "== Spider, from inside the authenticated surface =="
-                run_in curlimages/curl:8.11.1 -sS \
-                  "${ZAP_API}/JSON/spider/action/scan/?url=http://localhost:3100&recurse=true" >/dev/null
+                curl -fsS "$ZAP/JSON/spider/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
                 for _ in $(seq 1 60); do
-                  st=$(run_in curlimages/curl:8.11.1 -sS "${ZAP_API}/JSON/spider/view/status/" | jq -r '.status')
+                  st=$(curl -fsS "$ZAP/JSON/spider/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 5
                 done
-                AFTER=$(run_in curlimages/curl:8.11.1 -sS "${ZAP_API}/JSON/core/view/urls/" | jq '.urls | length')
-                echo "Site tree after spidering: ${AFTER} URL(s) (from ${URLS} seeded by the tests)."
+                AFTER=$(curl -fsS "$ZAP/JSON/core/view/urls/" | jq '.urls | length')
+                echo "Site tree: ${AFTER} URL(s) after spidering, from ${URLS} seeded by the tests."
 
                 echo "== Active scan =="
-                run_in curlimages/curl:8.11.1 -sS \
-                  "${ZAP_API}/JSON/ascan/action/scan/?url=http://localhost:3100&recurse=true" >/dev/null
-                for _ in $(seq 1 120); do
-                  st=$(run_in curlimages/curl:8.11.1 -sS "${ZAP_API}/JSON/ascan/view/status/" | jq -r '.status')
+                # Attack traffic. It goes at the demo environment and nowhere
+                # else - the ports are offset from production so a mistyped
+                # host cannot reach it.
+                curl -fsS "$ZAP/JSON/ascan/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
+                for _ in $(seq 1 180); do
+                  st=$(curl -fsS "$ZAP/JSON/ascan/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 10
                 done
 
-                run_in curlimages/curl:8.11.1 -sS "${ZAP_API}/OTHER/core/other/jsonreport/" \
-                  > ../results/zap.json
+                curl -fsS "$ZAP/OTHER/core/other/jsonreport/" > ../results/zap.json
                 test -s ../results/zap.json || {
                   echo "::error::ZAP produced no report."
                   exit 1
@@ -1547,6 +1496,6 @@ jobs:
                   --severity-threshold low --blocking false
 
                 # The functional result decides the job. DAST findings are
-                # recorded and do not fail it - Oracle gates on them later,
+                # recorded and do not fail it: Oracle gates on them later,
                 # which is where a risk decision belongs.
                 exit "$FUNC_RC"

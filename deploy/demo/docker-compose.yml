@@ -14,17 +14,44 @@
 #
 #   docker compose -f deploy/demo/docker-compose.yml up -d
 #
-# Nothing here is reachable from outside the task. No published ports on the
-# host, no production credential, no production data. The tokens are fixed
-# literals *because* this is throwaway: a generated secret in an environment
-# that exists for nine minutes buys nothing and would have to be passed to the
-# functional suite and to ZAP anyway.
+# It runs on the host rather than inside a Concourse task, and that is not a
+# preference. dockerd will not start inside a task on this worker - the same
+# constraint that moved image builds to kaniko - so a design that stood the
+# environment up in-task failed twice before this one replaced it.
+#
+# Immutability is preserved by the rebuild script, which destroys and
+# recreates rather than restarting: state is tmpfs, so nothing survives the
+# teardown even by accident.
+#
+# The ports are published on all interfaces because the Concourse task
+# reaches them by host IP, and they are offset from production (8201/3200
+# for 8100/3100) so that a mistyped URL cannot aim an active scan at prod.
+#
+# 8201 rather than the obvious 8200: Vault already holds 8200 on this host,
+# so the demo backend failed to bind and the stack came up without it -
+# visibly, because compose exits non-zero, but only if somebody reads it.
+#
+# What that costs: a LAN-visible instance holding fixed credentials. It is
+# acceptable only because of what is inside - synthetic data, no GitHub App
+# key, no production credential - and because it is destroyed after each run.
+# The tokens are fixed literals because a generated secret in an environment
+# that exists for ten minutes buys nothing and has to be handed to the
+# functional suite and ZAP regardless.
 
 name: mykronos-demo
 
 services:
   backend:
     image: ${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}
+    ports:
+      # Published on all interfaces because the Concourse task that runs the
+      # functional suite reaches this by host IP - it has no route to a
+      # loopback publish, exactly as the production backend found.
+      #
+      # Ports deliberately offset from production (8100/3100) so a mistyped
+      # URL cannot point a scan at prod, which is the failure this
+      # environment exists to make impossible.
+      - "8201:8100"
     environment:
       # Fixed, and safe because this environment is destroyed with the task
       # that created it. Deliberately not the production tokens: a demo that
@@ -61,6 +88,8 @@ services:
 
   frontend:
     image: ${MYKRONOS_IMAGE_FRONTEND:-mykronos-frontend:latest}
+    ports:
+      - "3200:3100"
     depends_on:
       backend:
         condition: service_healthy
@@ -71,7 +100,12 @@ services:
     healthcheck:
       test:
         - CMD
-        - node
+        # `/nodejs/bin/node`, not `node`: the frontend image is distroless,
+        # so there is no shell and nothing is on PATH. Same mistake as the
+        # production compose, in a second file, which is the argument for
+        # the image declaring its own healthcheck and compose not overriding
+        # it at all.
+        - /nodejs/bin/node
         - -e
         - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 5s
@@ -88,6 +122,8 @@ services:
   # whole arrangement exists to replace.
   zap:
     image: ghcr.io/zaproxy/zaproxy:2.16.1
+    ports:
+      - "8290:8090"
     command: >
       zap.sh -daemon -host 0.0.0.0 -port 8090
       -config api.addrs.addr.name=.*

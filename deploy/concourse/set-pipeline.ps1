@@ -73,6 +73,12 @@ try {
         # Host IP for the same reason MinIO uses one: garden task containers
         # cannot resolve Docker service names.
         "registry: 192.168.0.14:5000",
+        # The demo environment, rebuilt on the host by
+        # deploy/demo/Invoke-DemoRebuild.ps1 because dockerd will not start
+        # inside a task on this worker. Reached by host IP for the same
+        # reason MinIO and the registry are: a garden task container cannot
+        # resolve a Docker service name.
+        "demo-host: 192.168.0.14",
         # Optional, and quoted so an unset webhook parses as an empty string
         # rather than YAML null. The notify hook checks for empty and exits 0.
         #
