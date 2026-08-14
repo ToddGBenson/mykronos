@@ -1388,9 +1388,37 @@ jobs:
                 set -uo pipefail
                 apt-get update -qq && apt-get install -y -qq git curl jq >/dev/null
                 curl -sSfL https://get.docker.com | sh >/dev/null 2>&1
+                # cgroups v2: a nested dockerd needs the controllers
+                # delegated into the subtree before it can make its own
+                # groups. The docker:dind entrypoint does exactly this; a
+                # bare `dockerd &` in a task container does not get it for
+                # free, and the failure is silent without the log below.
+                if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+                  mkdir -p /sys/fs/cgroup/init
+                  ( xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs ) 2>/dev/null || true
+                  sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers                     > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+                fi
+
                 dockerd >/tmp/dockerd.log 2>&1 &
                 for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
-                docker info >/dev/null || { echo "::error::dockerd never started"; exit 1; }
+
+                # overlay2 cannot stack on the task's own overlay rootfs on
+                # some worker setups; vfs is slow and always works. Tried
+                # second so the fast path wins where it can.
+                if ! docker info >/dev/null 2>&1; then
+                  echo "::warning::dockerd failed with default storage; log tail:"
+                  tail -20 /tmp/dockerd.log || true
+                  pkill dockerd 2>/dev/null || true
+                  sleep 3
+                  echo "::warning::retrying with --storage-driver=vfs"
+                  dockerd --storage-driver=vfs >/tmp/dockerd-vfs.log 2>&1 &
+                  for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
+                fi
+                docker info >/dev/null 2>&1 || {
+                  echo "::error::dockerd never started; vfs log tail:"
+                  tail -30 /tmp/dockerd-vfs.log || true
+                  exit 1
+                }
 
                 cd source
                 SHA="$(git rev-parse HEAD)"
