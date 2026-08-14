@@ -1520,6 +1520,13 @@ export interface components {
              * @default
              */
             org_login: string;
+            /**
+             * Scanned By
+             * @description Which CI is supposed to scan this repository (spec 03 §3a). `concourse` and `none` install no workflows: enabling a capability grants ingestion and nothing else. Only `github_actions` opens an install pull request.
+             * @default concourse
+             * @enum {string}
+             */
+            scanned_by: "concourse" | "github_actions" | "none";
         };
         /** OverrideRequest */
         OverrideRequest: {
