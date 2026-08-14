@@ -134,6 +134,39 @@ if (-not $hubAnthropicKey) {
     Write-Host "No Claude key: prompt evals will run the deterministic graders only." -ForegroundColor DarkGray
 }
 
+# Slack is a bot token plus a channel rather than an incoming webhook.
+# TheHub's webhook is bound to the channel its app posts to, so borrowing it
+# would interleave pipeline alerts with messages meant for people. A bot token
+# names the channel explicitly - #alerts - and authenticates with a header.
+#
+# Neither value is read here any more, and that is the change: both now live
+# in Vault at `concourse/main/slack-bot-token` and
+# `concourse/main/slack-alert-channel`, which is team scope, so this pipeline
+# and personal-soc resolve the same credential and neither config contains it.
+#
+# The header/URL distinction is exactly what made that possible. Vault
+# substitutes a `((var))` wherever it appears, so a token in an
+# `Authorization:` header moves cleanly; a webhook's secret sits in the URL
+# path of the endpoint being called, so the pipeline would still have had to
+# hold it. Switching to chat.postMessage was a prerequisite for this, not a
+# separate tidy-up.
+#
+# Only presence is checked, so applying the pipeline still tells you whether
+# alerts will work.
+$slackReady = $false
+try {
+    $probe = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 `
+        -e "VAULT_TOKEN=$(Read-EnvValue $stackEnv 'CONCOURSE_VAULT_TOKEN')" `
+        mykronos-vault vault read -format=json concourse/main/slack-bot-token 2>$null
+    if ($LASTEXITCODE -eq 0 -and $probe) { $slackReady = $true }
+} catch { }
+if ($slackReady) {
+    Write-Host "Slack alerts resolve from Vault (concourse/main/slack-bot-token)." -ForegroundColor DarkGray
+} else {
+    Write-Host "Slack credential not readable in Vault: every notifier will skip." -ForegroundColor Yellow
+    Write-Host "  Is Vault sealed? .\vault-unseal.ps1" -ForegroundColor DarkGray
+}
+
 $hubDeployToken = ""
 if (Test-Path $TheHubEnvPath) {
     $hubDeployToken = Read-EnvValue $TheHubEnvPath "OPS_DEPLOY_TOKEN" -Optional
@@ -199,16 +232,12 @@ try {
         "azure-client-secret: $azureClientSecret",
         "azure-tenant-id: $azureTenantId",
         "azure-subscription-id: $azureSubscriptionId",
-        # Optional, and quoted so an unset webhook parses as an empty string
-        # rather than YAML null. Every job's notifier checks for empty and
-        # skips: the pipeline has to be applicable before Slack exists, and a
-        # missing notification must never become a second failure on top of
-        # the one it was trying to report.
-        #
-        # A webhook URL is a bearer credential - anyone holding it can post to
-        # the channel - so it comes from .env with the rest of them and is
-        # never written into the pipeline file.
-        "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'",
+        # slack-bot-token and slack-alert-channel used to be written here. They
+        # are not any more: both resolve through Vault at team scope, so the
+        # value never enters this config and `fly get-pipeline` has nothing to
+        # print. Every job's notifier still checks for empty and skips, so a
+        # sealed Vault degrades to "no notification" rather than to a second
+        # failure on top of the one it was trying to report.
         # Optional, and the prompt-eval gate is designed around its absence:
         # without a key the rubric fixtures report as skipped and the
         # deterministic graders still gate every commit, for free. Supplying

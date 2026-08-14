@@ -103,7 +103,28 @@ try {
         # Quoted because an address list is a plain scalar full of punctuation
         # and an empty value must parse as a string, not as YAML null.
         "hibp-api-key: '$(Read-EnvValueOptional $stackEnv 'HIBP_API_KEY')'",
-        "monitor-emails: '$(Read-EnvValueOptional $stackEnv 'MONITOR_EMAILS')'"
+        "monitor-emails: '$(Read-EnvValueOptional $stackEnv 'MONITOR_EMAILS')'",
+
+        # Reporting. Same host address as the MinIO endpoint above and for the
+        # same reason: a garden task container has never heard of `mykronos`.
+        "mykronos-url: http://192.168.0.14:8100",
+        "mykronos-ref: v1",
+        # personal-soc is granted exactly one capability - secrets - so the
+        # secrets job is the only lane with anywhere to report. Empty is
+        # allowed: the scan still runs and still gates, and says loudly in the
+        # build log that nothing was filed. Mint one with
+        # `mykronos rotate-token ToddGBenson/personal-soc`.
+        "personal-soc-ingestion-token: '$(Read-EnvValueOptional $stackEnv 'PERSONAL_SOC_INGESTION_TOKEN')'",
+        # Optional. Without it skill-integrity inventories the model IDs it
+        # finds and states plainly that it validated none of them.
+        "anthropic-api-key: '$(Read-EnvValueOptional $stackEnv 'ANTHROPIC_API_KEY')'"
+
+        # slack-bot-token and slack-alert-channel are deliberately NOT here.
+        # They resolve through the Vault credential manager at team scope
+        # (`concourse/main/<name>`), which is the difference between a pipeline
+        # that *references* a secret and one that *contains* it - `fly
+        # get-pipeline` prints this config back to anyone on the team, and
+        # everything written to $varsFile ends up in it.
     ) | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan
