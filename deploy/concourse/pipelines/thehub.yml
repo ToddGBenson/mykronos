@@ -252,18 +252,27 @@ anchors:
         - name: notify
           optional: true
       params:
-        SLACK_WEBHOOK_URL: ((slack-webhook-url))
+        SLACK_BOT_TOKEN: ((slack-bot-token))
+        SLACK_CHANNEL: ((slack-alert-channel))
       run:
         path: sh
         args:
           - -ec
           - |
-            # An unset webhook is not an error. The pipeline has to be
-            # applicable before Slack is configured, and this hook only ever
-            # runs when something has already gone wrong - a missing
-            # notification must not become a second failure on top of it.
-            if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-              echo "No Slack webhook configured - skipping notification."
+            # chat.postMessage with TheHub's bot token, not an incoming
+            # webhook. A webhook is bound to whichever channel it was created
+            # for, so borrowing TheHub's would interleave pipeline alerts with
+            # the messages its app posts to users. This names the channel
+            # explicitly, and it authenticates with a header - which the Vault
+            # credential manager can substitute at egress, where a webhook's
+            # secret sits in the URL path and cannot be.
+            #
+            # Unset is not an error. The pipeline has to be applicable before
+            # Slack is configured, and this hook only ever runs when something
+            # has already gone wrong - a missing notification must not become
+            # a second failure on top of it.
+            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
+              echo "No Slack bot token or channel configured - skipping notification."
               exit 0
             fi
 
@@ -279,11 +288,32 @@ anchors:
             # messages by construction, so backslash and quote are the only
             # characters that can break the document.
             ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-            printf '{"text":"%s\\n%s"}' "$ESCAPED" "$BUILD_URL" > payload.json
 
-            curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
-              -d @payload.json "$SLACK_WEBHOOK_URL" \
-              || echo "Slack post failed - the build result stands regardless."
+            # /tmp, not the working directory. curlimages/curl runs as an
+            # unprivileged user and Concourse creates the task's working
+            # directory owned by root, so `> payload.json` is
+            # "Permission denied" and the notify task dies before it reaches
+            # curl. This predates the switch to chat.postMessage - the webhook
+            # version wrote to the same place - so no alert from this anchor
+            # has ever been delivered. It failed inside an on_failure hook,
+            # where the only symptom is a red job that was already red.
+            printf '{"channel":"%s","text":"%s\\n%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+
+            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H 'Content-Type: application/json; charset=utf-8' \
+              -d @/tmp/payload.json) || RESP=""
+
+            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
+            # rejected - a wrong channel, a bot that was removed, a revoked
+            # scope. The status code proves nothing here; the body is the
+            # result, and without this check a silently undelivered alert
+            # reads exactly like a delivered one.
+            case "$RESP" in
+              *'"ok":true'*) echo "Posted to Slack." ;;
+              *) echo "Slack post failed: $RESP" ;;
+            esac
             exit 0
 
 jobs:
@@ -863,6 +893,16 @@ jobs:
   # record the worker's absolute paths, which are not clickable and, because
   # identity derives from the path, change every time the checkout moves.
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: package_artifact
+          STATUS: success
+          TARGET_ENV: prod
+
+
   - name: secrets
     public: true
     serial_groups: [worker]
@@ -1325,7 +1365,8 @@ jobs:
           # Aegis never needs to write: spec 06 section 6 requires that it can
           # never merge, close or force-push.
           GITHUB_TOKEN: ((github-token))
-          SLACK_WEBHOOK_URL: ((slack-webhook-url))
+          SLACK_BOT_TOKEN: ((slack-bot-token))
+          SLACK_CHANNEL: ((slack-alert-channel))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -1438,11 +1479,13 @@ jobs:
                 # They live in the check run, where the person they are about
                 # can read them and argue with them.
                 if [ "$(jq -r '.recommendation' result.json)" != "pass" ] \
-                   && [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-                  printf '{"text":"*TheHub / insider risk*: pull request #%s is flagged for closer review.\\nDetail is in the check run: https://github.com/ToddGBenson/TheHub/pull/%s"}' \
-                    "$PR" "$PR" > slack.json
-                  curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
-                    -d @slack.json "$SLACK_WEBHOOK_URL" \
+                   && [ -n "${SLACK_BOT_TOKEN:-}" ]; then
+                  printf '{"channel":"%s","text":"*TheHub / insider risk*: pull request #%s is flagged for closer review.\\nDetail is in the check run: https://github.com/ToddGBenson/TheHub/pull/%s"}' \
+                    "$SLACK_CHANNEL" "$PR" "$PR" > slack.json
+                  curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
+                    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+                    -H 'Content-Type: application/json; charset=utf-8' \
+                    -d @slack.json \
                     || echo "Slack post failed - not failing the assessment over a notification."
                 fi
 
@@ -2494,6 +2537,16 @@ jobs:
                   done
                 fi
 
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: auto_remediation
+          STATUS: success
+          TARGET_ENV: prod
+
+
   # -- AI model inventory and retirement check ------------------------------
   #
   # TheHub is an AI application - anthropic, openai and pgvector are all in
@@ -2668,3 +2721,13 @@ jobs:
                 PY
 
                 SERVED="$SERVED" python check.py
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: model_inventory
+          STATUS: success
+          TARGET_ENV: prod
+
