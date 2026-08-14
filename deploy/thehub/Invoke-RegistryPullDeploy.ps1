@@ -37,6 +37,23 @@
 .NOTES
     ASCII only - see deploy\concourse\setup.ps1.
 
+    THE TASK'S REPETITION INTERVAL IS PART OF THE DEPLOY BUDGET.
+
+    The pipeline's deploy job publishes a pointer and then waits
+    deploy-timeout-minutes for the acknowledgement. Everything between those
+    two moments has to fit, and this task's interval is dead time at the front
+    of it: at PT5M the agent could sit for five minutes before it even looked.
+
+    Against a demo rebuild that now runs init_db, 273 migrations, four workers
+    and a seed, five minutes of polling latency was enough to fail the job
+    while the deploy underneath it was succeeding. Set to PT1M:
+
+      Set-ScheduledTask -TaskName "TheHub Registry Pull Deploy" -Trigger $t
+
+    A quiet cycle is one `mc cp` that finds nothing, so a one-minute interval
+    costs almost nothing. If you lengthen it, lengthen the pipeline's
+    deploy-timeout-minutes to match.
+
     Credentials come from deploy\concourse\.env and are passed to mc through
     MC_HOST_<alias> rather than `mc alias set`, which would write them to
     %USERPROFILE%\mc\config.json and leave a second copy on disk.

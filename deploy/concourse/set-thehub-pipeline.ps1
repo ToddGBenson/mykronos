@@ -70,7 +70,24 @@ param(
     # enough for an image pull and a container restart on a busy host; short
     # enough that a poller which is not running is a failed build rather than
     # an hour of a worker doing nothing.
-    [int]$DeployTimeoutMinutes = 15,
+    #
+    # 15 was set when a deploy was a pull and a restart. Demo is now rebuilt
+    # from empty volumes on every run, and the budget has to cover the whole
+    # chain, not just the part Concourse can see:
+    #
+    #   up to 5 min   the agent's poll interval before it notices the request
+    #   ~1 min        wipe and recreate the stack
+    #   ~7-9 min      init_db, 273 migrations, four workers, first health
+    #   ~1-2 min      seed_demo.py
+    #   ---------
+    #   up to ~17 min, against a 15 minute budget
+    #
+    # So the job failed intermittently while the deploy underneath it was
+    # succeeding -- the worst kind of red, because the thing it names is fine
+    # and the thing at fault is a number nobody looks at. The agent's poll
+    # interval is separately cut to 1 minute; this is the headroom over what
+    # remains.
+    [int]$DeployTimeoutMinutes = 25,
 
     [string]$Registry = "192.168.0.14:5000",
     [string]$ProwlerVersion = "5.5.0",
