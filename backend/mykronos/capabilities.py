@@ -431,6 +431,60 @@ class OracleConfig(BaseCapabilityConfig):
 
 
 #: Every capability's per-repo configuration.
+class NetworkConfig(BaseCapabilityConfig):
+    """Network scanning (spec 14 §3).
+
+    This is the only capability whose configuration is an authorization
+    decision rather than a preference. Everything else here tunes how a scan
+    runs; these fields decide whether it is allowed to run at all, and
+    `mykronos.network.resolve` re-checks them immediately before the packets
+    rather than trusting that they were valid when saved.
+
+    An empty `cidr_ranges` scans nothing and is the default. A capability that
+    starts pointed at something is a capability that scans something nobody
+    chose.
+    """
+
+    cidr_ranges: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exactly what may be scanned. No discovery outside these, no "
+            "'whatever the host can reach', and no default. Empty scans "
+            "nothing and is not an error."
+        ),
+    )
+    authorization_reference: str = Field(
+        default="",
+        max_length=500,
+        description=(
+            "Who authorised this and where that is recorded - a ticket, a "
+            "change record, a note. Mandatory before any range is scanned, "
+            "and carried onto the audit record for every run, because 'who "
+            "said this was allowed' is the first question asked afterwards "
+            "and the hardest to reconstruct later."
+        ),
+    )
+    external_scan_acknowledged: bool = Field(
+        default=False,
+        description=(
+            "Required before any range outside RFC1918/RFC4193/loopback is "
+            "scanned. A deliberate speed bump against the most likely serious "
+            "mistake: 192.168.0.0/16 is a home lab and 192.169.0.0/16 is "
+            "somebody else's network."
+        ),
+    )
+    max_rate_pps: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Packet rate ceiling, well below tool maximums. A security tool "
+            "that knocks a device over has caused an incident, not prevented "
+            "one (spec 14 §3.6)."
+        ),
+    )
+
+
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -442,6 +496,7 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.ATLAS.value: AtlasConfig,
     Capability.PATCHWORK.value: PatchworkConfig,
     Capability.ORACLE.value: OracleConfig,
+    Capability.NETWORK.value: NetworkConfig,
 }
 
 
