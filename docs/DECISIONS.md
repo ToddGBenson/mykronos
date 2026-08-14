@@ -1400,7 +1400,7 @@ provenance the SBOM and the wheel-per-commit exist to establish.
 ## D-046 — The platform had ten capabilities and the pipelines ran eight
 
 **Status:** Decided, implemented
-**Spec:** [04 §3](../specs/04-capability-model.md), [15 §3](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
+**Spec:** [04 §3](../specs/04-scanner-workflows.md), [15 §3](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
 
 `capabilities.py` registers ten capabilities and names checkov as the `iac`
 scanner. Neither pipeline ran it. Nothing was red about this — the dashboard
