@@ -1209,11 +1209,28 @@ jobs:
                 # No daemon and no privileged task - Trivy pulls the image
                 # itself, which is the whole reason this lane can finally scan
                 # an image rather than a Dockerfile.
+                # `--parallel 1`, and the reason is not caution for its own
+                # sake. At the default of 5 this lane failed twice with
+                #
+                #   failed to analyze .../coverage/tracer...so:
+                #   semaphore acquire: context deadline exceeded
+                #
+                # after ten and fourteen minutes of a thirty-minute budget -
+                # so it was not the timeout running out, it was five analyser
+                # goroutines contending for a worker that is also building
+                # images for two other pipelines. Serialising the analysis
+                # trades wall-clock for a scan that finishes.
+                #
+                # It matters which way that trade goes. The step below
+                # refuses to upload an empty report, so contention here does
+                # not become a clean container scan - it becomes a red lane,
+                # which is correct and also blocks everything behind it.
                 trivy image "${REGISTRY}/thehub:${SHA}" \
                   --insecure \
                   --scanners vuln \
                   --format sarif --output results/trivy.sarif \
                   --exit-code 0 --quiet \
+                  --parallel 1 \
                   --timeout 30m
 
                 # An absent or empty report is a failed scan, and the uploader
