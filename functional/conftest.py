@@ -19,6 +19,13 @@ import os
 import httpx2
 import pytest
 
+#: Generous, and it has to be. Every request in this suite goes through ZAP
+#: when the DAST lane runs it, and a proxy that is also building a site tree
+#: is materially slower than a direct call — the first run in CI timed out at
+#: 60s on the session fixture, which errored every test that depended on it
+#: and looked like fifteen broken flows rather than one slow proxy.
+TIMEOUT = float(os.environ.get("DEMO_HTTP_TIMEOUT", "180"))
+
 FRONTEND = os.environ.get("DEMO_FRONTEND_URL", "http://frontend:3100")
 BACKEND = os.environ.get("DEMO_BACKEND_URL", "http://backend:8100")
 GATE_TOKEN = os.environ.get("DEMO_GATE_TOKEN", "demo-gate-token-not-a-secret")
@@ -28,14 +35,14 @@ ADMIN_TOKEN = os.environ.get("DEMO_ADMIN_TOKEN", "demo-admin-token-not-a-secret"
 @pytest.fixture(scope="session")
 def anonymous() -> httpx2.Client:
     """No credentials, against the dashboard."""
-    with httpx2.Client(base_url=FRONTEND, timeout=60, follow_redirects=True) as client:
+    with httpx2.Client(base_url=FRONTEND, timeout=TIMEOUT, follow_redirects=True) as client:
         yield client
 
 
 @pytest.fixture(scope="session")
 def anonymous_api() -> httpx2.Client:
     """No credentials, against the API - which is where the gate lives."""
-    with httpx2.Client(base_url=BACKEND, timeout=60) as client:
+    with httpx2.Client(base_url=BACKEND, timeout=TIMEOUT) as client:
         yield client
 
 
@@ -44,7 +51,7 @@ def browser() -> httpx2.Client:
     """A signed-in session, as a person's browser would hold it."""
     with httpx2.Client(
         base_url=FRONTEND,
-        timeout=60,
+        timeout=TIMEOUT,
         follow_redirects=True,
         cookies={"hub_token": GATE_TOKEN},
     ) as client:
@@ -55,7 +62,7 @@ def browser() -> httpx2.Client:
 def api() -> httpx2.Client:
     with httpx2.Client(
         base_url=BACKEND,
-        timeout=60,
+        timeout=TIMEOUT,
         headers={
             "Authorization": f"Bearer {ADMIN_TOKEN}",
             "X-Hub-Token": GATE_TOKEN,

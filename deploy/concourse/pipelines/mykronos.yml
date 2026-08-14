@@ -1389,7 +1389,16 @@ jobs:
 
                 FRONTEND="http://${DEMO_HOST}:3200"
                 BACKEND="http://${DEMO_HOST}:8201"
-                ZAP="http://${DEMO_HOST}:8290"
+
+                # ZAP serves its API on the same port it proxies, and it
+                # decides which you meant from the Host header: anything
+                # that is not one of its own names is treated as traffic
+                # to forward, and answers 502. Every API call therefore
+                # goes *through* the proxy to the pseudo-host `zap`,
+                # which is the documented way and the only one that works
+                # from another machine.
+                ZAP_PROXY="http://${DEMO_HOST}:8290"
+                zap_api() { curl -fsS --max-time 60 -x "$ZAP_PROXY" "http://zap$1"; }
 
                 # The environment is somebody else's job to build, so this
                 # says so plainly rather than failing with a connection error
@@ -1399,8 +1408,8 @@ jobs:
                   echo "Rebuild it on the host: deploy/demo/Invoke-DemoRebuild.ps1"
                   exit 1
                 fi
-                if ! curl -fsS --max-time 10 "$ZAP/JSON/core/view/version/" >/dev/null; then
-                  echo "::error::No ZAP daemon at $ZAP - the proxy is part of the demo stack."
+                if ! zap_api "/JSON/core/view/version/" >/dev/null; then
+                  echo "::error::No ZAP daemon behind $ZAP_PROXY - the proxy is part of the demo stack."
                   exit 1
                 fi
 
@@ -1422,12 +1431,12 @@ jobs:
                 # Without it a second run spiders URLs the first one left
                 # behind, and the "traffic reached the proxy" check below
                 # would pass on somebody else's traffic.
-                curl -fsS --max-time 30 "$ZAP/JSON/core/action/newSession/?name=run-${SHA}&overwrite=true" >/dev/null
+                zap_api "/JSON/core/action/newSession/?name=run-${SHA}&overwrite=true" >/dev/null
 
                 echo "== Functional tests, proxied through ZAP (PIP-2, PIP-3) =="
                 pip install --quiet pytest httpx2
                 set +e
-                HTTP_PROXY="$ZAP" HTTPS_PROXY="$ZAP" \
+                HTTP_PROXY="$ZAP_PROXY" HTTPS_PROXY="$ZAP_PROXY" \
                 DEMO_FRONTEND_URL="$FRONTEND" DEMO_BACKEND_URL="$BACKEND" \
                   python -m pytest functional -q -p no:cacheprovider \
                     --junitxml=../results/functional.xml
@@ -1435,7 +1444,7 @@ jobs:
                 set -e
                 echo "Functional suite exited ${FUNC_RC}"
 
-                URLS=$(curl -fsS "$ZAP/JSON/core/view/urls/" | jq '.urls | length')
+                URLS=$(zap_api "/JSON/core/view/urls/" | jq '.urls | length')
                 echo "ZAP recorded ${URLS} URL(s) from the functional run."
 
                 # A proxy nobody routed through yields an empty site tree, and
@@ -1447,28 +1456,37 @@ jobs:
                   exit 1
                 fi
 
+                # Static chunks are most of a Next.js site tree and none of
+                # its attack surface. Excluding them is not a shortcut: the
+                # active scan spends its time where a finding can exist, and
+                # the first run spent ten minutes reaching 6% mostly on
+                # hashed .js files.
+                zap_api "/JSON/core/action/excludeFromProxy/?regex=.*/_next/static/.*" >/dev/null || true
+                zap_api "/JSON/spider/action/excludeFromScan/?regex=.*/_next/static/.*" >/dev/null || true
+                zap_api "/JSON/ascan/action/excludeFromScan/?regex=.*/_next/static/.*" >/dev/null || true
+
                 echo "== Spider, from inside the authenticated surface =="
-                curl -fsS "$ZAP/JSON/spider/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
+                zap_api "/JSON/spider/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
                 for _ in $(seq 1 60); do
-                  st=$(curl -fsS "$ZAP/JSON/spider/view/status/" | jq -r '.status')
+                  st=$(zap_api "/JSON/spider/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 5
                 done
-                AFTER=$(curl -fsS "$ZAP/JSON/core/view/urls/" | jq '.urls | length')
+                AFTER=$(zap_api "/JSON/core/view/urls/" | jq '.urls | length')
                 echo "Site tree: ${AFTER} URL(s) after spidering, from ${URLS} seeded by the tests."
 
                 echo "== Active scan =="
                 # Attack traffic. It goes at the demo environment and nowhere
                 # else - the ports are offset from production so a mistyped
                 # host cannot reach it.
-                curl -fsS "$ZAP/JSON/ascan/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
+                zap_api "/JSON/ascan/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
                 for _ in $(seq 1 180); do
-                  st=$(curl -fsS "$ZAP/JSON/ascan/view/status/" | jq -r '.status')
+                  st=$(zap_api "/JSON/ascan/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 10
                 done
 
-                curl -fsS "$ZAP/OTHER/core/other/jsonreport/" > ../results/zap.json
+                zap_api "/OTHER/core/other/jsonreport/" > ../results/zap.json
                 test -s ../results/zap.json || {
                   echo "::error::ZAP produced no report."
                   exit 1
