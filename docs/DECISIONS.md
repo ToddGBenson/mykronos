@@ -1484,6 +1484,60 @@ deploying should not have to look it up.
 
 ---
 
+## D-048 — Answering a scanner made the finding count go up
+
+**Status:** Decided, implemented
+**Spec:** [04 §8](../specs/04-scanner-workflows.md), [05 §7](../specs/05-datalake.md)
+
+The `iac` lane (D-046) found two highs saying TheHub's containers never drop
+root. Both are true about the Dockerfile and false about the container, which
+`exec gosu appuser` in `entrypoint.sh`. The standard answer is the scanner's
+own pragma — `# checkov:skip=CKV_DOCKER_3: <reason>` — so that was written,
+with the justification, in both files.
+
+The scan then reported 184 passed, 0 failed, 2 skipped. Mykronos recorded
+**five** open findings where there had been three.
+
+Checkov emits a skipped check as an ordinary SARIF result carrying
+`suppressions: [{"kind": "inSource", "justification": ...}]` at
+`level: warning`. `sarif_to_findings` never looked at that key, so the
+suppressed result was ingested as a new open finding — at `medium`, because
+the level differs — while the original `high` stayed open. Worse, adding the
+comment shifted every line below it, and a finding without a code snippet is
+identified positionally (fingerprint v1-line, spec 05 §5), so the same finding
+under a new identity could not be reconciled against the old one either.
+
+The net behaviour: documenting an answer to a finding produced two findings.
+Every SARIF-based capability had this — `# nosemgrep` and `.trivyignore` are
+the same mechanism — so it was not specific to the lane that exposed it.
+
+**Decision: a suppressed result is not ingested, and the suppression is
+reported.** `_is_suppressed` follows SARIF §3.27.23: a non-empty `suppressions`
+array means suppressed unless a `status` of `rejected` says the silencing was
+refused. Absent status means accepted, per the spec.
+
+**Rejected: ingest them with `status = suppressed`.** This was the first
+instinct and it contradicts the lake. Suppression is a decision, and
+compaction already treats decisions as things a rescan must not overwrite
+(spec 05 §7). A pragma in someone's repository rewriting that status on every
+scan would turn the decision back into an observation, and would also mean a
+contributor can mark a finding accepted in this platform by editing a comment
+in their own repo. `FindingSubmission` has no status field, and it should not
+gain one for this.
+
+**Rejected: drop them silently.** Then a check that was answered looks exactly
+like a check that never ran, which is the failure D-046 was written to avoid
+one entry earlier. The adapter warns with the count and the rule IDs, so the
+scan record shows what was silenced.
+
+**What this does not do: judge the justification.** `# checkov:skip=` with a
+made-up reason silences a real finding, and nothing here notices. That is the
+same trust boundary as the capability config the repo already carries, but it
+is worth stating rather than discovering. A reviewer reads the pragma; the
+platform counts it.
+
+---
+
 ---
 
 ## D-007 — Deferred to a later phase

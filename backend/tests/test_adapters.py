@@ -130,6 +130,69 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
+class TestSuppressions:
+    """A pragma in the scanned repo is the author answering the finding.
+
+    Before this, `# checkov:skip=` / `# nosemgrep` results were ingested as
+    ordinary open findings. That is not merely a miscount: adding the pragma
+    shifts the lines below it, and a finding without a snippet is identified
+    positionally, so documenting a skip created a SECOND open finding for the
+    same thing. The observed case was TheHub's Dockerfiles going from 2 open
+    findings to 4 as a direct result of answering them.
+    """
+
+    def test_suppressed_result_is_not_a_finding(self) -> None:
+        result = sarif_to_findings(
+            sarif(extra_result={"suppressions": [{"kind": "inSource"}]}), context()
+        )
+        assert result.findings == []
+
+    def test_suppression_is_reported_not_silent(self) -> None:
+        """Dropping it quietly would make an answered check indistinguishable
+        from one that never ran."""
+        result = sarif_to_findings(
+            sarif(rule_id="CKV_DOCKER_3", extra_result={"suppressions": [{"kind": "inSource"}]}),
+            context(),
+        )
+        assert any("CKV_DOCKER_3" in w for w in result.warnings)
+        assert any("suppressed" in w for w in result.warnings)
+
+    def test_rejected_suppression_still_counts(self) -> None:
+        """SARIF §3.35.2: `rejected` means the silencing was refused, so the
+        result stands. Treating every `suppressions` entry as a silence would
+        let a rejected one mute the finding."""
+        result = sarif_to_findings(
+            sarif(extra_result={"suppressions": [{"kind": "inSource", "status": "rejected"}]}),
+            context(),
+        )
+        assert len(result.findings) == 1
+
+    def test_absent_status_means_accepted(self) -> None:
+        """The status field is optional and defaults to accepted."""
+        result = sarif_to_findings(
+            sarif(extra_result={"suppressions": [{"kind": "external"}]}), context()
+        )
+        assert result.findings == []
+
+    def test_under_review_suppresses(self) -> None:
+        result = sarif_to_findings(
+            sarif(extra_result={"suppressions": [{"status": "underReview"}]}), context()
+        )
+        assert result.findings == []
+
+    def test_empty_suppressions_list_is_not_a_suppression(self) -> None:
+        """Some tools emit the key unconditionally."""
+        result = sarif_to_findings(sarif(extra_result={"suppressions": []}), context())
+        assert len(result.findings) == 1
+
+    def test_suppression_is_not_a_scan_failure(self) -> None:
+        """It is a normal, successful scan. Only parse failures degrade status."""
+        result = sarif_to_findings(
+            sarif(extra_result={"suppressions": [{"kind": "inSource"}]}), context()
+        )
+        assert result.scan_status == ScanStatus.SUCCESS
+
+
 class TestSeverity:
     @pytest.mark.parametrize(
         ("score", "expected"),

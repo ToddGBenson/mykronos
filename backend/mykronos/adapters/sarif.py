@@ -185,6 +185,7 @@ def sarif_to_findings(
         return outcome
 
     snippet_sources: dict[str, int] = {}
+    suppressed_rules: list[str] = []
 
     for run in runs:
         if not isinstance(run, dict):
@@ -205,8 +206,30 @@ def sarif_to_findings(
             if finding is None:
                 outcome.skipped += 1
                 continue
+            # Suppressed at the source. Not an open finding, and not a
+            # platform decision either -- see the warning below.
+            if _is_suppressed(raw_result):
+                suppressed_rules.append(str(raw_result.get("ruleId") or "?"))
+                continue
             snippet_sources[source] = snippet_sources.get(source, 0) + 1
             outcome.findings.append(finding)
+
+    if suppressed_rules:
+        # Reported rather than ingested. A pragma in the scanned repository is
+        # the author saying "I have answered this", which is not the same act
+        # as the platform accepting the risk -- `suppressed` is a decision a
+        # rescan must not overwrite (spec 05 §7), and a scanner comment
+        # rewriting it on every run would make it an observation again.
+        #
+        # Ingesting them as open findings, which is what happened before this,
+        # is worse than either: documenting a skip made the finding count go
+        # UP, because the pragma shifts line numbers and positional identity
+        # then reads the same finding as a new one.
+        counted = ", ".join(sorted(set(suppressed_rules)))
+        outcome.warn(
+            f"{len(suppressed_rules)} result(s) suppressed in the scanned "
+            f"repository and not ingested: {counted}"
+        )
 
     degraded = snippet_sources.get("none", 0)
     if degraded:
@@ -221,6 +244,25 @@ def sarif_to_findings(
         outcome.scan_status = ScanStatus.PARTIAL_FAILURE
 
     return outcome
+
+
+def _is_suppressed(raw: dict[str, Any]) -> bool:
+    """True when the tool reports this result as suppressed in the scanned repo.
+
+    SARIF 2.1.0 §3.27.23. A result carries `suppressions` when the author
+    silenced it at the source -- `# checkov:skip=`, `# nosemgrep`, a Trivy
+    `.trivyignore` entry. Each suppression has an optional `status`, and only
+    `rejected` means the silencing was refused and the result still stands.
+    An absent status means accepted, per the spec.
+    """
+    suppressions = raw.get("suppressions")
+    if not isinstance(suppressions, list) or not suppressions:
+        return False
+    return any(
+        str((s or {}).get("status") or "accepted").strip() != "rejected"
+        for s in suppressions
+        if isinstance(s, dict)
+    )
 
 
 def _convert_result(
