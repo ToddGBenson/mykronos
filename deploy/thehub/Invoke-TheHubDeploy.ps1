@@ -67,7 +67,13 @@ param(
     [string]$Environment,
 
     [string]$Sha,
-    [int]$TimeoutMinutes = 5
+    [int]$TimeoutMinutes = 5,
+
+    # Destroy the volumes and reseed, so the environment is rebuilt from the
+    # compose file and seed_demo.py rather than inherited from the last run.
+    # Demo only, and refused for prod at the point of destruction rather than
+    # only here.
+    [switch]$Rebuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -162,6 +168,46 @@ function Assert-RunningImage {
            "THEHUB_IMAGE into that compose file before deploying again.")
 }
 
+# -- Immutability ------------------------------------------------------------
+#
+# `docker compose down -v` destroys the volumes, so the stack comes back with
+# an empty database that migrations and seed_demo.py then fill. That is what
+# makes the environment immutable in the sense that matters here: every run
+# starts from the same known dataset, so a functional test that passes today
+# and fails tomorrow has changed because the code changed, not because eight
+# earlier test runs left rows behind. DAST gets the same guarantee - findings
+# stop depending on what a previous scan happened to create.
+#
+# Guarded to demo. Running this against prod would delete production data, and
+# a flag that can do that by typo should not exist. The caller cannot pass it
+# for prod either (see the parameter block), but the check is repeated at the
+# point of destruction because that is where being wrong is unrecoverable.
+function Invoke-Wipe {
+    if ($Environment -ne "demo") {
+        throw "Refusing to wipe volumes for '$Environment'. This is demo-only."
+    }
+
+    Write-Host "  wiping $project (down -v): volumes are destroyed" -ForegroundColor Yellow
+    docker compose --project-name $project --file $composeFile down -v --remove-orphans
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker compose down -v failed for $project; refusing to seed on top of an unknown state."
+    }
+}
+
+# Migrations then seed, both inside the container that was just deployed, so
+# the schema and the data come from the same commit as the code under test.
+function Invoke-Seed {
+    Write-Host "Seeding $Environment with the demo dataset..." -ForegroundColor Cyan
+
+    docker compose --project-name $project --file $composeFile exec -T demo-backend python run_migrations.py
+    if ($LASTEXITCODE -ne 0) { throw "run_migrations.py failed in $project." }
+
+    docker compose --project-name $project --file $composeFile exec -T demo-backend python scripts/seed_demo.py
+    if ($LASTEXITCODE -ne 0) { throw "seed_demo.py failed in $project." }
+
+    Write-Host "  seeded" -ForegroundColor DarkGray
+}
+
 function Invoke-ComposeUp {
     param([string]$ImageRef)
 
@@ -210,6 +256,8 @@ function Test-Healthy {
     }
 }
 
+if ($Rebuild) { Invoke-Wipe }
+
 Invoke-ComposeUp -ImageRef $image
 
 Write-Host "Waiting for $Environment to become healthy..." -ForegroundColor Cyan
@@ -221,6 +269,25 @@ do {
 } while (-not $healthy -and (Get-Date) -lt $deadline)
 
 if ($healthy) {
+    # Seeded only after the stack is healthy, because both steps run through
+    # `compose exec` into a container that has to be up to receive them.
+    #
+    # And before the state file is written: a rebuilt environment that is
+    # running but empty is not a deploy anyone asked for. Reporting it as one
+    # would send functional tests and DAST at a database with no rows, where
+    # every test fails for the same uninteresting reason and the scan finds
+    # nothing because there is nothing to find.
+    if ($Rebuild) {
+        try {
+            Invoke-Seed
+        } catch {
+            Write-Host "SEED FAILED: $_" -ForegroundColor Red
+            Write-Host "$Environment is up and running $Sha but has no data." -ForegroundColor Red
+            Write-Host "Not acknowledged - testing an empty environment proves nothing." -ForegroundColor Red
+            exit 1
+        }
+    }
+
     Set-Content -Path $stateFile -Value $Sha -Encoding ASCII
     Write-Host "$Environment is serving $Sha" -ForegroundColor Green
     exit 0
@@ -238,6 +305,15 @@ if (-not $previous) {
     Write-Host "No previous deployment recorded, so there is nothing to roll back to." -ForegroundColor Yellow
     Write-Host "The stack is left up for inspection: docker compose -p $project logs" -ForegroundColor Yellow
     exit 1
+}
+
+# Rolling back a rebuild does not restore the data. `down -v` already deleted
+# the volumes, so the previous image comes back onto an empty database. Said
+# plainly rather than discovered: the rollback restores the *service*, and the
+# dataset has to be reseeded.
+if ($Rebuild) {
+    Write-Host "This was a rebuild, so the old data is already gone." -ForegroundColor Yellow
+    Write-Host "Rolling back restores the previous image on an empty database." -ForegroundColor Yellow
 }
 
 Write-Host "Rolling back to $previous..." -ForegroundColor Yellow

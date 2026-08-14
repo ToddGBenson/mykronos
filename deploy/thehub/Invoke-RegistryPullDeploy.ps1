@@ -167,9 +167,23 @@ function Invoke-Cycle {
         # /health - so the default failed a deploy that was working, and left
         # a .failed marker that would have stopped it being retried. 12 keeps
         # room under the pipeline's own 15-minute wait for the acknowledgement.
+        #
+        # Demo is rebuilt from scratch on every deploy: volumes destroyed,
+        # stack recreated from the compose file, migrations and seed_demo.py
+        # run. That is what lets the functional suite and DAST downstream mean
+        # something - both run against the same dataset every time, so a test
+        # that changes verdict did so because the code changed and not because
+        # the last eight runs left rows behind.
+        #
+        # Prod is never rebuilt. The switch is passed only for demo here, and
+        # Invoke-TheHubDeploy refuses it for any other environment at the point
+        # where the volumes would actually be deleted.
+        $rebuild = @{}
+        if ($environment -eq "demo") { $rebuild["Rebuild"] = $true }
+
         $deployError = $null
         try {
-            & $deployScript -Environment $environment -Sha $requested -TimeoutMinutes 12
+            & $deployScript -Environment $environment -Sha $requested -TimeoutMinutes 12 @rebuild
             $deployExit = $LASTEXITCODE
         } catch {
             $deployError = $_.Exception.Message
