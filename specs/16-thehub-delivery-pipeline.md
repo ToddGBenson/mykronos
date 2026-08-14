@@ -87,7 +87,7 @@ production environment with weaker controls and a different name.
    git ──▶ unit ──▶ build ──▶ containers ─┐
    git ──▶ secrets ───────────────────────┤
    git ──▶ sast (semgrep) ────────────────┤
-   git ──▶ dependencies (osv) ────────────┤
+   git ──▶ dependencies (osv + SBOM) ─────┤
    git ──▶ prompt-evals ──────────────────┤
    git ──▶ iac (checkov) ─────────────────┘
                                           │

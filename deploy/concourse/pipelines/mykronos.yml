@@ -435,7 +435,7 @@ jobs:
                 # built from are not derivable from the SARIF. Tolerant of a
                 # failure here: it costs the evidence step, not the findings.
                 osv-scanner scan source --recursive --no-resolve \
-                  --format json --output-file /tmp/osv.json . || true
+                  --format json --all-packages --output-file /tmp/osv.json . || true
                 test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
                 cp /tmp/osv.json ../evidence/osv.json
 

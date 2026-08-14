@@ -100,6 +100,19 @@ resources:
     icon: file-cog-outline
     source: { repository: bridgecrew/checkov, tag: "3.2.334" }
 
+  # An SBOM outlives the build that made it. Concourse prunes build logs, and
+  # the question an SBOM answers -- "did we ship that library" -- is asked
+  # long after the build that could have answered it is gone (spec 07 SS7).
+  - name: sbom
+    type: s3
+    icon: file-document-outline
+    source:
+      endpoint: ((minio-endpoint))
+      bucket: thehub-sboms
+      regexp: sbom-(.*).cdx.json
+      access_key_id: ((minio-access-key))
+      secret_access_key: ((minio-secret-key))
+
   - name: trivy
     type: registry-image
     icon: shield-search
@@ -958,6 +971,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: evidence }]
           run:
             path: bash
             args:
@@ -986,6 +1000,15 @@ jobs:
                 osv-scanner scan source --recursive --no-resolve \
                   --format sarif --output-file /tmp/results/osv.sarif . 2>&1 | tee /tmp/osv.log
                 rc=${PIPESTATUS[0]}
+
+                # The same scan again as JSON. SARIF describes findings;
+                # it does not describe what was resolved, and the trust
+                # score is about the second thing. `|| true` because a
+                # failure here costs the evidence, not the findings.
+                osv-scanner scan source --recursive --no-resolve \
+                  --format json --all-packages --output-file /tmp/osv.json . || true
+                test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
+                cp /tmp/osv.json ../evidence/osv.json
 
                 # L0001. Exit 128 with that message is the third state: nothing
                 # to scan. Announced loudly and reported as an empty scan,
@@ -1027,6 +1050,114 @@ jobs:
   # because Trivy's image has no python and the uploader lives in the mykronos
   # package - which is the seam that lets a Concourse task report findings the
   # dashboard cannot distinguish from an Actions run.
+
+      # Supply-chain evidence. TheHub's Concourse pipeline produced none: no
+      # SBOM, no provenance, no ecosystem counts -- so the dashboard's SSCS
+      # panel was empty for every commit this pipeline built, and Oracle
+      # scored the repo with no Atlas evidence to read.
+      #
+      # It was not always missing. `.github/workflows/ci.yml` builds a
+      # CycloneDX SBOM and says so in its header, listing it among the things
+      # only GHA can do. Retiring those workflows for Concourse would have
+      # taken the SBOM with them and left nothing in its place, which is the
+      # kind of loss a migration does not announce.
+      #
+      # In `dependencies` rather than `build` on purpose: Oracle reads Atlas
+      # evidence, and evidence produced after the gate is evidence the gate
+      # could not use.
+      - task: sbom-and-evidence
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: evidence }]
+          outputs: [{ name: sbom-out }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                SHA=$(git -C source rev-parse HEAD)
+                SHORT=$(git -C source rev-parse --short HEAD)
+
+                # Syft, pinned, scanning the checkout. `cyclonedx-py
+                # environment` would document the interpreter this task runs
+                # in rather than the repository -- a plausible SBOM of
+                # entirely the wrong software (D-034).
+                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+                  | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
+                syft scan dir:source \
+                  --exclude './**/node_modules' --exclude './**/.venv' \
+                  --exclude './**/venv' --exclude './**/vendor' \
+                  --output cyclonedx-json > "sbom-out/sbom-${SHORT}.cdx.json"
+
+                COMPONENTS=$(jq '((.components // []) | length)' "sbom-out/sbom-${SHORT}.cdx.json")
+                echo "SBOM lists $COMPONENTS component(s)"
+                if [ "$COMPONENTS" -eq 0 ]; then
+                  # Archiving an empty one is worse than recording none: the
+                  # dashboard would show an SBOM present for a file that
+                  # describes no software.
+                  echo "::error::SBOM has no components; refusing to publish an empty one."
+                  exit 1
+                fi
+
+                SBOM_REF=$(curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/raw?scan_run_id=${SHA}&capability=atlas&filename=sbom.json" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary "@sbom-out/sbom-${SHORT}.cdx.json" | jq -r '.raw_output_ref')
+
+                # Counts, not a score. The trust formula lives in the platform
+                # so it cannot drift between CI systems (spec 07 §5, §7).
+                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json)
+
+                PROVENANCE=$(jq -nc \
+                  --arg builder "concourse" \
+                  --arg repo "ToddGBenson/TheHub" \
+                  --arg commit "$SHA" \
+                  --arg run_id "${BUILD_ID:-unknown}" \
+                  --arg runner "linux-amd64" \
+                  --arg workflow "${BUILD_PIPELINE_NAME:-thehub}/${BUILD_JOB_NAME:-dependencies}" \
+                  '{builder_id: $builder, source_repo: $repo, source_commit: $commit,
+                    build_run_id: $run_id, runner: $runner, workflow: $workflow}')
+
+                BODY=$(jq -nc \
+                  --arg commit "$SHA" \
+                  --arg sbom "$SBOM_REF" \
+                  --argjson ecosystems "$ECOSYSTEMS" \
+                  --argjson provenance "$PROVENANCE" \
+                  '{commit_sha: $commit, ecosystems: $ecosystems, provenance: $provenance}
+                   + (if $sbom == "" or $sbom == "null" then {} else {sbom_ref: $sbom} end)')
+
+                curl --fail --silent --show-error --max-time 60 \
+                  -X POST "$MYKRONOS_URL/api/ingest/atlas" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > out.json
+
+                TRUST=$(jq -r '.trust_score' out.json)
+                DEPS=$(jq -r '.dependency_count' out.json)
+                VULN=$(jq -r '.vulnerable_dependency_count' out.json)
+
+                # Null rather than a number means the scan resolved nothing
+                # (spec 07 §5a). Printing `null/100` would undo the whole
+                # point of that distinction.
+                if [ "$TRUST" = "null" ]; then
+                  echo "Supply-chain trust: NOT ASSESSED - no dependencies were resolved."
+                else
+                  echo "Supply-chain trust: $TRUST/100 ($VULN vulnerable of $DEPS dependencies)"
+                  if [ "$(jq -r '.below_minimum' out.json)" = "true" ]; then
+                    echo "::warning::Trust score $TRUST is below this repository's floor of $(jq -r '.min_trust_score' out.json)."
+                  fi
+                fi
+
+      - put: sbom
+        params: { file: sbom-out/sbom-*.cdx.json }
+
   - name: containers
     public: true
     on_failure: *slack_alert

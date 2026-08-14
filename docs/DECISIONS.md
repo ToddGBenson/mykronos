@@ -1538,6 +1538,59 @@ platform counts it.
 
 ---
 
+## D-049 — TheHub's delivery pipeline shipped without supply-chain evidence
+
+**Status:** Decided, implemented
+**Spec:** [07 §4, §5a, §7](../specs/07-atlas-integration.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
+
+Mykronos's pipeline produces an SBOM, provenance and ecosystem counts, and
+posts them to `/api/ingest/atlas`. TheHub's did not. Its `dependencies` job
+ran osv-scanner, uploaded findings, and stopped — so the SSCS panel was empty
+for every commit this pipeline built, and Oracle scored the repository with no
+Atlas evidence to read.
+
+It was not that the evidence was never wanted. `.github/workflows/ci.yml`
+builds a CycloneDX SBOM and its header lists that among the things only GHA
+can do. Retiring those workflows for Concourse — which is the stated plan —
+would have taken the SBOM with it and put nothing in its place. A migration
+loses things quietly when the replacement is judged by whether it goes green.
+
+The task mirrors Mykronos's, including its placement in `dependencies` rather
+than `build`: Oracle reads Atlas evidence, and evidence produced after the
+gate is evidence the gate could not use. TheHub now reports 100/100 across 67
+resolved dependencies, and archives the SBOM to `thehub-sboms`.
+
+---
+
+## D-050 — A clean dependency tree was indistinguishable from an unscanned one
+
+**Status:** Decided, implemented
+**Spec:** [07 §4, §5a](../specs/07-atlas-integration.md)
+
+The first run of the above said `Supply-chain trust: NOT ASSESSED - no
+dependencies were resolved` in the same output where osv-scanner had just
+logged "found 63 packages", "found 4 packages", and the SBOM listed 67
+components.
+
+`atlas_counts` reads packages from osv-scanner's JSON `results` array, and
+that array contains only packages that have vulnerabilities. A repository
+whose tree resolves completely and cleanly produces an empty `results`, zero
+ecosystem counts, and therefore the exact output spec 07 §5a introduced to mean
+something entirely different: *the scan resolved nothing*.
+
+That distinction is the whole point of §5a — a scan that resolved nothing is
+not a clean scan — and this bug collapsed it in the other direction, reporting
+the cleanest possible result as an unknown one. `--all-packages` makes the
+JSON list everything resolved rather than only the vulnerable subset.
+
+Mykronos carried the identical line and the identical bug. It never showed
+because that repository has vulnerable dependencies, which populate `results`
+and make the counts look correct. Fixed in both, and worth noting as a class:
+a defect that only appears once the thing being measured is healthy will be
+found by the healthiest repository, not the sickest.
+
+---
+
 ---
 
 ## D-007 — Deferred to a later phase
