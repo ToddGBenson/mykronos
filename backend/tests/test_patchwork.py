@@ -168,13 +168,49 @@ class TestSecretFixer:
 
 
 class TestCorrelation:
-    def _finding(self, finding_id, rule_id, path="src/api.py", title=""):
+    def _finding(
+        self, finding_id, rule_id, path="src/api.py", title="", capability="sast"
+    ):
+        # `capability` is not optional in real data and these fixtures used to
+        # omit it, which is how the secrets rule reached production able to
+        # match container CVE titles.
         return {
             "finding_id": finding_id,
             "rule_id": rule_id,
             "title": title or rule_id,
             "file_path": path,
+            "capability": capability,
+            "severity": "high",
         }
+
+    def test_a_container_cve_is_not_a_committed_credential(self) -> None:
+        """Found in production, twice. Grouped by `file_path` - which for a
+        container finding is the image name - libcurl's "failure to clear
+        proxy authentication credentials" matched `credential` and libssh2's
+        "publickey attribute allocation" matched `public`, so two unrelated
+        CVEs in one image were reported as a committed credential on a public
+        surface. Nothing about the words was wrong; the rule simply never said
+        which scanner it meant."""
+        findings = [
+            self._finding(
+                "c1",
+                "CVE-2026-9079",
+                path="library/mykronos-scan",
+                title="libcurl: Information disclosure due to failure to clear "
+                "proxy authentication credentials",
+                capability="containers",
+            ),
+            self._finding(
+                "c2",
+                "CVE-2026-58050",
+                path="library/mykronos-scan",
+                title="libssh2: Heap buffer overflow via integer overflow in "
+                "publickey attribute allocation",
+                capability="containers",
+            ),
+        ]
+
+        assert correlate.detect(findings) == []
 
     def test_it_detects_an_unauthenticated_injectable_endpoint(self) -> None:
         findings = [

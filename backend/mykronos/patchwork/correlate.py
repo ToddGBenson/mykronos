@@ -84,8 +84,8 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
         rule_id="unauth-injectable",
         name="Unauthenticated injectable endpoint",
         requires=(
-            Requirement(r"CWE-89|sql.?inj"),
-            Requirement(r"CWE-306|CWE-287|missing.?auth|unauth"),
+            Requirement(r"CWE-89|sql.?inj", capability="sast"),
+            Requirement(r"CWE-306|CWE-287|missing.?auth|unauth", capability="sast"),
         ),
         scope="file",
         explanation=(
@@ -98,9 +98,16 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
     CombinationRule(
         rule_id="secret-and-public-surface",
         name="Committed credential on a public surface",
+        # Both halves are pinned to a capability because this rule fired in
+        # production without it, twice, on a container image. Grouped by
+        # `file_path` - which for a container finding is the image name -
+        # libcurl's "failure to clear proxy authentication credentials"
+        # matched `credential`, libssh2's "publickey attribute allocation"
+        # matched `public`, and two unrelated CVEs in one image were reported
+        # to an operator as a committed credential on a public surface.
         requires=(
-            Requirement(r"generic-api-key|aws-|secret|credential"),
-            Requirement(r"CWE-306|unauth|public"),
+            Requirement(r"generic-api-key|aws-|secret|credential", capability="secrets"),
+            Requirement(r"CWE-306|unauth|public", capability="sast"),
         ),
         scope="file",
         explanation=(
