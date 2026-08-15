@@ -13,6 +13,7 @@ and a `ScanRun` row is written whatever happens, so the lake can always tell
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
@@ -97,10 +98,8 @@ class IngestionClient:
         a signal.
         """
         deadline = None
-        try:
+        with contextlib.suppress(ValueError):
             deadline = datetime.fromisoformat(header)
-        except ValueError:
-            pass
 
         fix = (
             "Update the CI credential now - on Concourse re-run the "
