@@ -59,9 +59,7 @@ class TestPortfolio:
     def test_summary_cards_aggregate_the_portfolio(
         self, client: TestClient, admin_auth: dict[str, str], seeded
     ) -> None:
-        summary = client.get("/api/dashboard/portfolio", headers=admin_auth).json()[
-            "summary"
-        ]
+        summary = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["summary"]
         assert summary["open_critical"] == 1
         assert summary["open_high"] == 1
 
@@ -86,6 +84,34 @@ class TestPortfolio:
         # sast is pending until its PR merges, so enabled_capabilities is still
         # empty and there is nothing to report per capability yet.
         assert row["pending_capabilities"] == ["sast"]
+        assert row["enabled_capabilities"] == []
+
+    def test_a_concourse_repo_is_enabled_by_its_grants(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """`enabled_capabilities` is the Actions installer's ledger, and a
+        Concourse-scanned repo never merges an install PR - the landing page
+        showed three capabilities per repo while eleven were reporting
+        (2026-08-15). The grants are what enabled means for those repos."""
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
+        # The auth fixture grants sast when it issues the token.
+        assert "sast" in row["enabled_capabilities"]
+        assert any(s["capability"] == "sast" for s in row["capability_states"]), (
+            "granted capabilities get a per-capability state row"
+        )
+
+    def test_an_actions_repo_still_reads_from_the_installer_ledger(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """For Actions repos the install PR is real, and a grant without a
+        merged workflow is genuinely not-yet-enabled."""
+        onboard(client, admin_auth, scanned_by="github_actions")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
         assert row["enabled_capabilities"] == []
 
     def test_risk_score_is_null_not_zero(
@@ -124,9 +150,7 @@ class TestFindings:
         self, client: TestClient, admin_auth: dict[str, str], seeded
     ) -> None:
         """The top of the list should be what to work on."""
-        body = client.get(
-            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth).json()
 
         assert body["total"] == 3
         assert [f["severity"] for f in body["findings"]] == ["critical", "high", "low"]
@@ -155,17 +179,12 @@ class TestFindings:
     ) -> None:
         """`owner/repo` has a slash in it, so it cannot be one path segment.
         The endpoint takes the onboarding id and says so."""
-        response = client.get(
-            f"/api/dashboard/repos/{REPO}/findings", headers=admin_auth
-        )
+        response = client.get(f"/api/dashboard/repos/{REPO}/findings", headers=admin_auth)
         assert response.status_code == 404
 
-    def test_an_unknown_repo_is_404(
-        self, client: TestClient, admin_auth: dict[str, str]
-    ) -> None:
+    def test_an_unknown_repo_is_404(self, client: TestClient, admin_auth: dict[str, str]) -> None:
         assert (
-            client.get("/api/dashboard/repos/nope/findings", headers=admin_auth).status_code
-            == 404
+            client.get("/api/dashboard/repos/nope/findings", headers=admin_auth).status_code == 404
         )
 
 
@@ -175,20 +194,14 @@ class TestRawOutputIsAdminOnly:
     def test_admins_receive_raw_output(
         self, client: TestClient, admin_auth: dict[str, str], seeded
     ) -> None:
-        body = client.get(
-            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth).json()
         assert body["raw_output_included"] is True
         assert body["findings"][0]["raw_finding_json"] is not None
 
-    def test_viewers_do_not(
-        self, client: TestClient, viewer_auth: dict[str, str], seeded
-    ) -> None:
+    def test_viewers_do_not(self, client: TestClient, viewer_auth: dict[str, str], seeded) -> None:
         """Withheld at the query layer, not hidden in the UI — "not rendered"
         is not "not sent"."""
-        body = client.get(
-            f"/api/dashboard/repos/{seeded}/findings", headers=viewer_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{seeded}/findings", headers=viewer_auth).json()
 
         assert body["raw_output_included"] is False
         # Null, not absent: the value is what must not be transmitted, and a
@@ -199,9 +212,7 @@ class TestRawOutputIsAdminOnly:
     def test_viewers_can_still_see_the_findings_themselves(
         self, client: TestClient, viewer_auth: dict[str, str], seeded
     ) -> None:
-        body = client.get(
-            f"/api/dashboard/repos/{seeded}/findings", headers=viewer_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{seeded}/findings", headers=viewer_auth).json()
         assert body["total"] == 3
         assert body["findings"][0]["severity"] == "critical"
 
@@ -291,9 +302,7 @@ class TestStatusWriteBack:
 
         with client.app.state.db.session() as session:
             entry = (
-                session.query(AuditLogEntry)
-                .filter(AuditLogEntry.action == "finding.status")
-                .one()
+                session.query(AuditLogEntry).filter(AuditLogEntry.action == "finding.status").one()
             )
         assert entry.detail["reason"] == "staging only"
         assert entry.detail["new_status"] == "accepted_risk"
@@ -334,9 +343,7 @@ class TestScanHealth:
         post_scan(client, auth, scan_run_id="run-2", scan_status="failure")
         run_compaction()
 
-        body = client.get(
-            f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth).json()
 
         sast = next(c for c in body["capabilities"] if c["capability"] == "sast")
         assert sast["runs"] == 2
@@ -347,9 +354,7 @@ class TestScanHealth:
         self, client: TestClient, admin_auth: dict[str, str]
     ) -> None:
         repo_id = onboard(client, admin_auth).json()["id"]
-        body = client.get(
-            f"/api/dashboard/repos/{repo_id}/scan-health", headers=admin_auth
-        ).json()
+        body = client.get(f"/api/dashboard/repos/{repo_id}/scan-health", headers=admin_auth).json()
         assert body["capabilities"] == []
 
 
@@ -433,16 +438,14 @@ class TestPortfolioCarriesOracleScores:
 
 
 class TestTriageQueue:
-    """"What do I do next", across every repo at once (spec 10 §2.1)."""
+    """ "What do I do next", across every repo at once (spec 10 §2.1)."""
 
     def _activate(self, client, repo: str, capabilities: list[str]) -> str:
         from tests.test_portfolio_job import register
 
         return register(client, repo, capabilities=capabilities)
 
-    def test_ranks_worst_first_across_repos(
-        self, client, admin_auth, run_compaction
-    ) -> None:
+    def test_ranks_worst_first_across_repos(self, client, admin_auth, run_compaction) -> None:
         from tests.test_portfolio_job import seed_findings
 
         self._activate(client, REPO, ["sast"])
@@ -502,9 +505,7 @@ class TestTriageQueue:
 
         assert item["repo_recommendation"] == "no_go"
 
-    def test_offboarded_repos_are_not_work(
-        self, client, admin_auth, run_compaction
-    ) -> None:
+    def test_offboarded_repos_are_not_work(self, client, admin_auth, run_compaction) -> None:
         """Their findings are still in the lake and still on their own page.
         A queue is a list of work, and a repo nobody scans is not work."""
         from tests.test_portfolio_job import register, seed_findings
@@ -526,16 +527,17 @@ class TestTriageQueue:
         run_compaction()
 
         assert (
-            client.get(
-                "/api/dashboard/triage?severity=high", headers=admin_auth
-            ).json()["items"]
+            client.get("/api/dashboard/triage?severity=high", headers=admin_auth).json()["items"]
             == []
         )
-        assert len(
-            client.get(
-                "/api/dashboard/triage?severity=critical", headers=admin_auth
-            ).json()["items"]
-        ) == 2
+        assert (
+            len(
+                client.get("/api/dashboard/triage?severity=critical", headers=admin_auth).json()[
+                    "items"
+                ]
+            )
+            == 2
+        )
 
     def test_truncation_is_declared(self, client, admin_auth, run_compaction) -> None:
         """A queue that silently stops at the limit reads as 'that is all'."""
@@ -556,9 +558,7 @@ class TestTriageQueue:
 
         assert body == {
             "items": [],
-            "open_by_severity": dict.fromkeys(
-                ["critical", "high", "medium", "low", "info"], 0
-            ),
+            "open_by_severity": dict.fromkeys(["critical", "high", "medium", "low", "info"], 0),
             "total_open": 0,
             "truncated": False,
         }

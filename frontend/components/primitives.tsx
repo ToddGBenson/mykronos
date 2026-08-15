@@ -111,30 +111,46 @@ export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }
 }
 
 /**
- * Ten slots, one per capability, so coverage gaps read down the column.
+ * Fifteen slots, one per capability, so coverage gaps read down the column.
  *
  * A repo missing Secrets is visible without reading a single word — which is
- * the thing a portfolio table is actually for.
+ * the thing a portfolio table is actually for. Same order as the pipeline's
+ * stage list (ALL_STAGES in backend/mykronos/ci.py), so this column and the
+ * repo's CI page read the same way.
  */
 export const ALL_CAPABILITIES = [
+  "unit",
+  "qa",
   "sast",
-  "dast",
   "secrets",
+  "atlas",
   "containers",
   "iac",
+  "functional",
+  "dast",
   "cloud",
+  "network",
+  "ai",
   "aegis",
-  "atlas",
-  "patchwork",
   "oracle",
+  "patchwork",
 ] as const;
 
 export function CapabilityDots({
   enabled,
   pending = [],
+  live = [],
 }: {
   enabled: string[];
   pending?: string[];
+  /**
+   * Capabilities that have actually reported a scan. Implemented-but-silent
+   * and implemented-and-reporting are different facts: the first is a hollow
+   * dot, the second is solid. Without the distinction, "enabled" quietly
+   * claims coverage that may not exist — the unit lane was enabled and had
+   * never reported once.
+   */
+  live?: string[];
 }) {
   return (
     <span
@@ -146,15 +162,24 @@ export function CapabilityDots({
     >
       {ALL_CAPABILITIES.map((capability) => {
         const isOn = enabled.includes(capability);
+        const isLive = isOn && live.includes(capability);
         const isPending = !isOn && pending.includes(capability);
         return (
           <span
             key={capability}
-            title={`${capability}${isOn ? "" : isPending ? " (pending merge)" : " (off)"}`}
+            title={`${capability}${
+              isLive
+                ? " (live)"
+                : isOn
+                  ? " (enabled, not yet reporting)"
+                  : isPending
+                    ? " (pending merge)"
+                    : " (off)"
+            }`}
             className={`block h-[7px] w-[7px] border ${
-              isOn
+              isLive
                 ? "border-accent bg-accent"
-                : isPending
+                : isOn || isPending
                   ? "border-accent bg-transparent"
                   : "border-rule bg-transparent"
             }`}

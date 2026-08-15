@@ -33,7 +33,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos.db.models import RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.lake.catalog import Catalog
 from mykronos.schemas import Severity
 
@@ -130,11 +130,26 @@ class DashboardQueries:
         scans_by_repo = self._capability_scan_state()
         decisions_by_repo = self._latest_portfolio_decisions()
 
+        # `enabled_capabilities` is the Actions installer's ledger; a
+        # Concourse-scanned repo never merges an install PR, so for those the
+        # grants are what "enabled" means. Same reasoning as the /ci stages
+        # view, applied at the portfolio - the landing page showed three
+        # capabilities per repo while eleven were reporting (2026-08-15).
+        grants_by_repo: dict[str, set[str]] = {}
+        for repo_name, capability in session.execute(
+            select(CapabilityGrant.repo_full_name, CapabilityGrant.capability)
+        ):
+            grants_by_repo.setdefault(repo_name, set()).add(capability)
+
         rows: list[PortfolioRow] = []
         for onboarding in onboardings:
             repo = onboarding.github_repo_full_name
             counts = severity_by_repo.get(repo, {})
             scan_state = scans_by_repo.get(repo, {})
+
+            enabled = set(onboarding.enabled_capabilities or [])
+            if onboarding.scanned_by != "github_actions":
+                enabled |= grants_by_repo.get(repo, set())
 
             capability_states = [
                 CapabilityState(
@@ -144,13 +159,11 @@ class DashboardQueries:
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
                 )
-                for capability in sorted(onboarding.enabled_capabilities or [])
+                for capability in sorted(enabled)
             ]
 
             last_scan_values = [
-                state["last_scan_at"]
-                for state in scan_state.values()
-                if state.get("last_scan_at")
+                state["last_scan_at"] for state in scan_state.values() if state.get("last_scan_at")
             ]
 
             rows.append(
@@ -158,7 +171,7 @@ class DashboardQueries:
                     repo_full_name=repo,
                     repo_id=onboarding.id,
                     status=onboarding.status,
-                    enabled_capabilities=sorted(onboarding.enabled_capabilities or []),
+                    enabled_capabilities=sorted(enabled),
                     pending_capabilities=(
                         sorted(onboarding.pending_capabilities)
                         if onboarding.pending_capabilities
@@ -300,9 +313,7 @@ class DashboardQueries:
                 params.append(value)
         clause = " AND ".join(where)
 
-        total_rows = self.catalog.query(
-            f"SELECT count(*) FROM findings WHERE {clause}", params
-        )
+        total_rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
         total = int(total_rows[0][0]) if total_rows else 0
 
         columns = [
@@ -486,9 +497,7 @@ class DashboardQueries:
             signals.append(record)
         return signals
 
-    def sscs_evidence(
-        self, repo_full_name: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    def sscs_evidence(self, repo_full_name: str, limit: int = 50) -> list[dict[str, Any]]:
         """Supply-chain evidence per commit, newest first (spec 10 §9)."""
         columns = [
             "evidence_id",
@@ -556,9 +565,7 @@ class DashboardQueries:
         )
         return {str(severity): int(count) for severity, count in rows}
 
-    def vulnerability_management(
-        self, repo_full_name: str | None = None
-    ) -> dict[str, Any]:
+    def vulnerability_management(self, repo_full_name: str | None = None) -> dict[str, Any]:
         """What is outstanding, how old, and what was accepted (PIP-9).
 
         The platform could always answer "what is open" and never "how long
@@ -680,8 +687,7 @@ class DashboardQueries:
         # nothing, which is both wrong and the kind of permanent false alarm
         # that trains people to ignore the panel.
         aegis = self.catalog.query(
-            "SELECT max(evaluated_at) FROM insider_risk_signals "
-            "WHERE repo_full_name = ?",
+            "SELECT max(evaluated_at) FROM insider_risk_signals WHERE repo_full_name = ?",
             [repo_full_name],
         )
         if aegis and aegis[0][0] is not None:

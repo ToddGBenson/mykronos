@@ -10,7 +10,6 @@ import {
   Pill,
   RelativeTime,
   ScoreMeter,
-  SeverityBar,
   StatTile,
   Verdict,
 } from "@/components/primitives";
@@ -95,26 +94,18 @@ export default async function PortfolioPage({
           <table className="w-full min-w-[860px] border-collapse bg-paper-2 font-mono text-[11px]">
             <thead>
               <tr className="border-b-2 border-ink-2 text-left">
-                {[
-                  "Repository",
-                  "Capabilities",
-                  "Risk",
-                  "Oracle",
-                  "Severity mix",
-                  "C",
-                  "H",
-                  "M",
-                  "Last scan",
-                ].map((heading, index) => (
-                  <th
-                    key={heading}
-                    className={`whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3 ${
-                      index >= 5 && index <= 7 ? "text-right" : ""
-                    }`}
-                  >
-                    {heading}
-                  </th>
-                ))}
+                {["Repository", "Capabilities", "Risk", "Oracle", "Open", "Last scan"].map(
+                  (heading) => (
+                    <th
+                      key={heading}
+                      className={`whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3 ${
+                        heading === "Open" ? "text-right" : ""
+                      }`}
+                    >
+                      {heading}
+                    </th>
+                  ),
+                )}
               </tr>
             </thead>
             <tbody>
@@ -143,6 +134,9 @@ export default async function PortfolioPage({
                     <CapabilityDots
                       enabled={repo.enabled_capabilities}
                       pending={repo.pending_capabilities ?? []}
+                      live={repo.capability_states
+                        .filter((state) => state.has_scanned)
+                        .map((state) => state.capability)}
                     />
                   </td>
 
@@ -162,21 +156,22 @@ export default async function PortfolioPage({
                     />
                   </td>
 
-                  <td className="px-2 py-2">
+                  {/* One number, as asked. The severity mix lives on the
+                      repo page and the triage queue; here the question is
+                      only "how much is open". */}
+                  <td className="tabular px-2 py-2 text-right">
                     {repo.awaiting_first_scan ? (
                       <Pill tone="muted">awaiting 1st scan</Pill>
                     ) : (
-                      <SeverityBar counts={repo.severity_counts} />
+                      <span
+                        className={
+                          repo.total_open > 0 ? "font-semibold text-ink" : "text-ink-3"
+                        }
+                      >
+                        {repo.total_open}
+                      </span>
                     )}
                   </td>
-
-                  {(["critical", "high", "medium"] as const).map((severity) => (
-                    <td key={severity} className="tabular px-2 py-2 text-right">
-                      {repo.awaiting_first_scan
-                        ? "—"
-                        : (repo.severity_counts[severity] ?? 0)}
-                    </td>
-                  ))}
 
                   <td
                     className={`whitespace-nowrap px-2 py-2 ${
@@ -195,16 +190,17 @@ export default async function PortfolioPage({
       <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
         <Label>Reading this table</Label>
         <br />
-        Ten capability slots per repo, so coverage gaps read down the column. A
-        hollow dot outlined in the accent is enabled but pending its install PR
-        — not yet running. Risk is Oracle&rsquo;s standing score, refreshed
-        daily, with ticks on the track at the review and no-go thresholds. A
-        repo showing <span className="font-mono">not assessed</span> has not
-        enabled <span className="font-mono">oracle</span> — that is a choice, not
-        a gap, and it reads as <span className="font-mono">—</span> rather than{" "}
-        <span className="font-mono">0</span>, which would mean &ldquo;assessed,
-        no risk&rdquo;. For what to work on next rather than which repo is
-        worst, use the <Crumb href="/triage">triage queue</Crumb>.
+        Fifteen capability slots per repo, in pipeline-stage order, so coverage
+        gaps read down the column. A solid dot is live — implemented and
+        actually reporting scans. A hollow dot outlined in the accent is
+        implemented but not yet reporting (or pending its install PR), which is
+        a claim of coverage without evidence yet. Open is the count of open
+        findings; the severity breakdown lives on each repo&rsquo;s page. Risk
+        is Oracle&rsquo;s standing score, refreshed daily. A repo showing{" "}
+        <span className="font-mono">not assessed</span> has not enabled{" "}
+        <span className="font-mono">oracle</span> — that is a choice, not a gap.
+        For what to work on next rather than which repo is worst, use the{" "}
+        <Crumb href="/triage">triage queue</Crumb>.
       </p>
     </div>
   );
