@@ -108,7 +108,10 @@ try {
         # Reporting. Same host address as the MinIO endpoint above and for the
         # same reason: a garden task container has never heard of `mykronos`.
         "mykronos-url: http://192.168.0.14:8100",
-        "mykronos-ref: v1",
+        # v2 cut deliberately at the D-052 schema-upgrade fix (D-051 option 1:
+        # a chosen commit, not a floating tag). When the platform changes in a
+        # way CI needs, cut v3 on purpose rather than moving this one.
+        "mykronos-ref: v2",
         # personal-soc is granted exactly one capability - secrets - so the
         # secrets job is the only lane with anywhere to report. Empty is
         # allowed: the scan still runs and still gates, and says loudly in the

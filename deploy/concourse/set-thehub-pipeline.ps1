@@ -215,7 +215,10 @@ $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-vars-$(Get-Rando
 try {
     $vars = @(
         "mykronos-url: http://192.168.0.14:8100",
-        "mykronos-ref: v1",
+        # v2 cut deliberately at the D-052 schema-upgrade fix (D-051 option 1:
+        # a chosen commit, not a floating tag). When the platform changes in a
+        # way CI needs, cut v3 on purpose rather than moving this one.
+        "mykronos-ref: v2",
         "thehub-branch: $Branch",
         "github-token: $ghToken",
         "thehub-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN')",

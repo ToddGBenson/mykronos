@@ -949,6 +949,7 @@ jobs:
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
                   --results-path /tmp/results \
@@ -1024,6 +1025,7 @@ jobs:
                 fi
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability sast --tool semgrep \
                   --results-path /tmp/results \
@@ -1114,6 +1116,7 @@ jobs:
                 fi
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
                   --results-path /tmp/results \
@@ -1158,6 +1161,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
 
                 SHA=$(git -C source rev-parse HEAD)
                 SHORT=$(git -C source rev-parse --short HEAD)
@@ -1334,6 +1338,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability containers --tool trivy \
                   --results-path results \
@@ -1453,6 +1458,7 @@ jobs:
                 git fetch --quiet origin "$BASE" || true
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
 
                 python -m mykronos.aegis_signals \
                   --pr-number "$PR" \
@@ -1807,6 +1813,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability iac --tool checkov \
                   --results-path results \
@@ -2261,6 +2268,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
                 python -m mykronos.upload \
                   --capability dast --tool zap \
                   --results-path results \
@@ -2504,6 +2512,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
 
                 # Cloud findings attach to a resource in a subscription, not to
                 # a file in this checkout. The commit is recorded because every

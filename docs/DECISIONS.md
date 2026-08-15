@@ -1593,7 +1593,12 @@ found by the healthiest repository, not the sickest.
 
 ## D-051 — The pipelines install a version of the platform that is 53 commits old
 
-**Status:** Open — needs an operator decision, not a code change
+**Status:** Resolved — option 1, 2026-08-14. `v2` was cut at the D-052
+schema-upgrade fix: a commit chosen on purpose, at a moment when the stale pin
+had become an outage (`mykronos-upload` at `v1` rejects `--capability ai` and
+`qa`, so both lanes fail on upload). Both set-pipeline scripts now pin `v2`,
+every install site prints the commit it resolved, and the next jump is a
+deliberate `v3`, not a moved tag.
 **Spec:** [15 §4](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
 
 Every scanning task installs the uploader with
@@ -1614,10 +1619,10 @@ the tag was cut is inert in CI while being green in the unit tests. The tests
 and the pipeline are testing two different versions of the same package, and
 nothing reports the gap — the install line prints no version.
 
-**Not resolved here, deliberately.** Moving `v1` would land 53 commits of
+**Not resolved at first, deliberately.** Moving `v1` would land 53 commits of
 platform change across both pipelines at once, including work in flight from
 others, and that is a release decision rather than a pipeline repair. The
-options, in the order they seem preferable:
+options, in the order they seemed preferable (option 1 is what happened):
 
 1. Cut `v2` from a commit chosen on purpose and point `mykronos-ref` at it.
    Pinning stays meaningful and the jump is deliberate.

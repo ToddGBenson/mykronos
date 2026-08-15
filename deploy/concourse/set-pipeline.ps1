@@ -62,7 +62,10 @@ try {
         # the public servers set in compose and have never heard of
         # `host.docker.internal` or `minio`. An IP needs no resolver.
         "mykronos-url: http://192.168.0.14:8100",
-        "mykronos-ref: v1",
+        # v2 cut deliberately at the D-052 schema-upgrade fix (D-051 option 1:
+        # a chosen commit, not a floating tag). When the platform changes in a
+        # way CI needs, cut v3 on purpose rather than moving this one.
+        "mykronos-ref: v2",
         "mykronos-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_CONCOURSE_TOKEN')",
         "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')",
         # MinIO is on the compose network, so the task container reaches it by
