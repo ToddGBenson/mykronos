@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,7 @@ class TestRetries:
             def __init__(self, **_: Any) -> None: ...
             def __enter__(self) -> Client:
                 return self
+
             def __exit__(self, *_: Any) -> None: ...
             def post(self, *_: Any, **__: Any) -> StubResponse:
                 attempts["n"] += 1
@@ -138,15 +140,15 @@ class TestRetries:
         assert IngestionClient("https://x", "t").post("/api/ingest/findings") is not None
         assert attempts["n"] == 3
 
-    def test_gives_up_loudly_rather_than_silently(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_gives_up_loudly_rather_than_silently(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A scan that could not record its findings must fail the step, not
         pass with nothing stored."""
+
         class Client:
             def __init__(self, **_: Any) -> None: ...
             def __enter__(self) -> Client:
                 return self
+
             def __exit__(self, *_: Any) -> None: ...
             def post(self, *_: Any, **__: Any) -> StubResponse:
                 return StubResponse(503)
@@ -169,6 +171,7 @@ class TestRetries:
             def __init__(self, **_: Any) -> None: ...
             def __enter__(self) -> Client:
                 return self
+
             def __exit__(self, *_: Any) -> None: ...
             def post(self, *_: Any, **__: Any) -> StubResponse:
                 attempts["n"] += 1
@@ -188,6 +191,7 @@ class TestRetries:
             def __init__(self, **_: Any) -> None: ...
             def __enter__(self) -> Client:
                 return self
+
             def __exit__(self, *_: Any) -> None: ...
             def post(self, *_: Any, **__: Any) -> StubResponse:
                 response = StubResponse(429 if not slept else 200)
@@ -201,10 +205,67 @@ class TestRetries:
         assert slept == [7.0]
 
 
+class TestRotationWarning:
+    """The rotated-token header must be impossible to miss (2026-08-15).
+
+    The old warning had no deadline and GitHub-only advice, sat in green build
+    logs for the whole 24-hour overlap window, and then every lane 401ed at
+    once. The header now carries the deadline and the last hours are an error.
+    """
+
+    def _post_with_header(self, monkeypatch, value: str) -> None:
+        class Client:
+            def __init__(self, **_: Any) -> None: ...
+            def __enter__(self) -> Client:
+                return self
+
+            def __exit__(self, *_: Any) -> None: ...
+            def post(self, *_: Any, **__: Any) -> StubResponse:
+                response = StubResponse(200)
+                response.headers["X-Mykronos-Token-Rotated"] = value
+                return response
+
+        monkeypatch.setattr("mykronos.upload.httpx2.Client", Client)
+        IngestionClient("https://x", "t").post("/api/ingest/findings")
+
+    def test_a_distant_deadline_is_a_warning_with_the_time(self, monkeypatch, caplog) -> None:
+        from datetime import datetime, timedelta
+
+        deadline = datetime.now(UTC) + timedelta(hours=20)
+        with caplog.at_level("WARNING", logger="mykronos.upload"):
+            self._post_with_header(monkeypatch, deadline.isoformat())
+
+        assert any(deadline.isoformat() in r.getMessage() for r in caplog.records)
+        assert all(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_the_last_hours_are_an_error(self, monkeypatch, caplog, capsys) -> None:
+        """A warning that looks like every other log line is not a signal."""
+        from datetime import datetime, timedelta
+
+        deadline = datetime.now(UTC) + timedelta(hours=2)
+        with caplog.at_level("WARNING", logger="mykronos.upload"):
+            self._post_with_header(monkeypatch, deadline.isoformat())
+
+        assert any(r.levelname == "ERROR" for r in caplog.records)
+        assert "::error::" in capsys.readouterr().out
+
+    def test_an_old_server_sending_true_still_warns(self, monkeypatch, caplog) -> None:
+        with caplog.at_level("WARNING", logger="mykronos.upload"):
+            self._post_with_header(monkeypatch, "true")
+
+        assert any("rotated" in (r.getMessage()) for r in caplog.records)
+
+    def test_the_advice_covers_concourse(self, monkeypatch, caplog) -> None:
+        """The outage's warning said 'workflow installer' to pipelines that
+        have no workflows. Wrong advice reads as not-for-me."""
+        with caplog.at_level("WARNING", logger="mykronos.upload"):
+            self._post_with_header(monkeypatch, "true")
+
+        assert any("Concourse" in (r.getMessage()) for r in caplog.records)
+
+
 class TestOrchestration:
-    def test_registers_the_run_before_and_after(
-        self, results: Path, workspace: Path
-    ) -> None:
+    def test_registers_the_run_before_and_after(self, results: Path, workspace: Path) -> None:
         """spec 04 §7: exactly one ScanRun per run, upserted on the same id."""
         client = RecordingClient()
         upload(make_args(results, workspace), client=client)
@@ -265,9 +326,7 @@ class TestOrchestration:
         upload(make_args(results, workspace, pr_number=0), client=client)
         assert client.bodies_for("/api/ingest/scan-run")[0]["pr_number"] is None
 
-    def test_a_failed_scan_is_still_registered(
-        self, tmp_path: Path, workspace: Path
-    ) -> None:
+    def test_a_failed_scan_is_still_registered(self, tmp_path: Path, workspace: Path) -> None:
         """The worst outcome would be a gap: the lake must show the run
         happened and failed (spec 04 §7)."""
         client = RecordingClient()
@@ -280,7 +339,7 @@ class TestOrchestration:
     def test_an_empty_scan_still_posts_a_findings_call(
         self, tmp_path: Path, workspace: Path
     ) -> None:
-        """"Scanned and found nothing" has to be distinguishable from "never
+        """ "Scanned and found nothing" has to be distinguishable from "never
         ran" (spec 04 §6), which means saying so explicitly."""
         results = tmp_path / "empty-results"
         results.mkdir()
@@ -303,9 +362,7 @@ class TestBlocking:
         ]
 
     def test_counts_at_or_above_the_threshold(self) -> None:
-        findings = self._findings(
-            Severity.INFO, Severity.LOW, Severity.HIGH, Severity.CRITICAL
-        )
+        findings = self._findings(Severity.INFO, Severity.LOW, Severity.HIGH, Severity.CRITICAL)
         assert count_blocking(findings, Severity.HIGH) == 2
         assert count_blocking(findings, Severity.LOW) == 3
         assert count_blocking(findings, Severity.CRITICAL) == 1
@@ -323,9 +380,7 @@ class TestBlocking:
 
 
 class TestStepSummary:
-    def test_writes_a_severity_table(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_writes_a_severity_table(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """spec 04 §2. For most developers this is the only Mykronos surface
         they will ever see."""
         summary = tmp_path / "summary.md"
@@ -354,24 +409,18 @@ class TestStepSummary:
         write_step_summary(UploadOutcome(scan_run_id="r"), AdapterResult(), "sast", "codeql")
         assert "_none_" in summary.read_text(encoding="utf-8")
 
-    def test_absent_outside_actions_is_not_an_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_absent_outside_actions_is_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
         write_step_summary(UploadOutcome(scan_run_id="r"), AdapterResult(), "sast", "codeql")
 
 
 class TestAdapterDispatch:
-    def test_unknown_pairing_is_refused_clearly(
-        self, results: Path, workspace: Path
-    ) -> None:
+    def test_unknown_pairing_is_refused_clearly(self, results: Path, workspace: Path) -> None:
         client = RecordingClient()
         with pytest.raises(UploadError, match="No adapter"):
             upload(make_args(results, workspace, tool="not-a-real-tool"), client=client)
 
-    def test_the_error_names_what_is_supported(
-        self, results: Path, workspace: Path
-    ) -> None:
+    def test_the_error_names_what_is_supported(self, results: Path, workspace: Path) -> None:
         """An operator who typo'd a tool name should be told the options,
         not just that they were wrong."""
         client = RecordingClient()
@@ -382,9 +431,7 @@ class TestAdapterDispatch:
         assert "codeqll" in message
         assert "codeql" in message and "semgrep" in message
 
-    def test_a_registered_alternative_tool_works(
-        self, results: Path, workspace: Path
-    ) -> None:
+    def test_a_registered_alternative_tool_works(self, results: Path, workspace: Path) -> None:
         """Semgrep is SARIF-native, so spec 04 §3's secondary SAST tool needs
         no adapter code of its own."""
         client = RecordingClient()

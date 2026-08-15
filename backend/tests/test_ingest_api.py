@@ -37,6 +37,22 @@ class TestAuth:
 
         assert post_scan(client, auth).status_code == 401
 
+    def test_a_superseded_token_gets_its_deadline_in_the_header(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        """Not just "true". A rotation warning without a time attached reads
+        as optional - the 2026-08-15 outage was 24 hours of exactly that."""
+        from datetime import datetime
+
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            TokenRegistry(session).rotate(REPO)
+
+        response = post_scan(client, auth)
+
+        assert response.status_code == 200
+        deadline = datetime.fromisoformat(response.headers["X-Mykronos-Token-Rotated"])
+        assert deadline > datetime.now(deadline.tzinfo)
+
     def test_token_cannot_write_another_repo(
         self, client: TestClient, auth: dict[str, str]
     ) -> None:
@@ -55,9 +71,7 @@ class TestAuth:
         assert response.status_code == 403
         assert "not enabled" in response.json()["detail"]
 
-    def test_revoking_one_grant_leaves_the_others_working(
-        self, client: TestClient
-    ) -> None:
+    def test_revoking_one_grant_leaves_the_others_working(self, client: TestClient) -> None:
         """The property that makes a shared per-repo token acceptable: grants
         are revocable independently, immediately, and locally."""
         token = issue_token(client, REPO, "sast", "secrets")
@@ -171,9 +185,7 @@ class TestIngestion:
         assert response.status_code == 501
         assert "not implemented yet" in response.json()["detail"]
 
-    def test_the_catch_all_does_not_shadow_a_real_handler(
-        self, client: TestClient
-    ) -> None:
+    def test_the_catch_all_does_not_shadow_a_real_handler(self, client: TestClient) -> None:
         """`/{capability}` matches "aegis" too. Route order is what keeps the
         real handler reachable, and route order is easy to break by moving a
         function, so it is pinned here."""
@@ -224,9 +236,7 @@ class TestRawArchive:
     def test_a_traversal_scan_run_id_is_neutralised(
         self, client: TestClient, auth: dict[str, str]
     ) -> None:
-        ref = self._post(client, auth, b"x", scan_run_id="../../etc").json()[
-            "raw_output_ref"
-        ]
+        ref = self._post(client, auth, b"x", scan_run_id="../../etc").json()["raw_output_ref"]
         assert ".." not in ref
 
     def test_an_ungranted_capability_is_refused(
@@ -234,9 +244,7 @@ class TestRawArchive:
     ) -> None:
         assert self._post(client, auth, b"x", capability="iac").status_code == 403
 
-    def test_oversized_output_is_rejected_without_touching_findings(
-        self, settings
-    ) -> None:
+    def test_oversized_output_is_rejected_without_touching_findings(self, settings) -> None:
         """Rejecting the archive copy must not imply the findings failed."""
         settings.max_raw_output_bytes = 16
         from mykronos.main import create_app
@@ -259,9 +267,7 @@ class TestRawArchive:
 
 
 class TestRateLimiting:
-    def test_exceeding_the_limit_returns_429_with_retry_after(
-        self, settings, monkeypatch
-    ) -> None:
+    def test_exceeding_the_limit_returns_429_with_retry_after(self, settings, monkeypatch) -> None:
         """spec 05 §6. The client contract is back off and retry — never drop
         findings — so the response must say when to come back."""
         settings.rate_limit_requests_per_minute = 3
@@ -283,9 +289,7 @@ class TestRateLimiting:
 
         with TestClient(create_app(settings)) as client:
             first = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
-            second = {
-                "Authorization": f"Bearer {issue_token(client, 'example-org/other', 'sast')}"
-            }
+            second = {"Authorization": f"Bearer {issue_token(client, 'example-org/other', 'sast')}"}
 
             for _ in range(2):
                 assert post_findings(client, first, []).status_code == 200

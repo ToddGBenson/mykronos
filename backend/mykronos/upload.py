@@ -19,6 +19,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,56 @@ class IngestionClient:
             "Accept": "application/json",
         }
 
+    def _warn_rotated(self, header: str) -> None:
+        """Say when this token dies, as loudly as how soon it is.
+
+        The header carries the overlap deadline (older servers send "true").
+        This warning spent 24 hours in green build logs before the 2026-08-15
+        401 outage, phrased as advice with no deadline and no urgency - so now
+        it names the moment, and the last six hours are an ERROR with ::error::
+        markup, because a warning that looks like every other log line is not
+        a signal.
+        """
+        deadline = None
+        try:
+            deadline = datetime.fromisoformat(header)
+        except ValueError:
+            pass
+
+        fix = (
+            "Update the CI credential now - on Concourse re-run the "
+            "set-pipeline script after refreshing the token in backend/.env; "
+            "on GitHub Actions re-run the workflow installer."
+        )
+        if deadline is None:
+            logger.warning(
+                "This repo's ingestion token has been rotated and is inside its overlap window. %s",
+                fix,
+            )
+            return
+
+        remaining = deadline - datetime.now(deadline.tzinfo or UTC)
+        hours = remaining.total_seconds() / 3600
+        if hours <= 6:
+            print(
+                f"::error::Ingestion token expires at {deadline.isoformat()} "
+                f"({hours:.1f}h from now). Every upload will 401 after that. {fix}"
+            )
+            logger.error(
+                "Ingestion token expires at %s (%.1fh). %s",
+                deadline.isoformat(),
+                hours,
+                fix,
+            )
+        else:
+            logger.warning(
+                "This repo's ingestion token has been rotated; the old value "
+                "stops working at %s (%.1fh from now). %s",
+                deadline.isoformat(),
+                hours,
+                fix,
+            )
+
     def post(
         self,
         path: str,
@@ -116,12 +167,9 @@ class IngestionClient:
                 continue
 
             if response.status_code < 400:
-                if response.headers.get("X-Mykronos-Token-Rotated") == "true":
-                    logger.warning(
-                        "This repo's ingestion token has been rotated and is inside its "
-                        "overlap window. Re-run the workflow installer to pick up the "
-                        "new secret before the window closes."
-                    )
+                rotated = response.headers.get("X-Mykronos-Token-Rotated")
+                if rotated:
+                    self._warn_rotated(rotated)
                 return dict(response.json()) if response.content else {}
 
             last_detail = f"HTTP {response.status_code}: {response.text[:400]}"
@@ -274,9 +322,7 @@ def write_step_summary(
         logger.warning("Could not write step summary: %s", exc)
 
 
-def upload(
-    args: argparse.Namespace, client: IngestionClient | None = None
-) -> UploadOutcome:
+def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> UploadOutcome:
     client = client or IngestionClient(args.ingestion_url, args.token)
     results_path = Path(args.results_path)
     workspace = Path(args.workspace).resolve() if args.workspace else None
@@ -383,15 +429,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--workflow-run-id", default="")
-    parser.add_argument(
-        "--triggered-by", default="push", choices=[t.value for t in TriggeredBy]
-    )
+    parser.add_argument("--triggered-by", default="push", choices=[t.value for t in TriggeredBy])
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--scan-run-id", default="")
-    parser.add_argument(
-        "--severity-threshold", default="low", choices=[s.value for s in Severity]
-    )
+    parser.add_argument("--severity-threshold", default="low", choices=[s.value for s in Severity])
     parser.add_argument(
         "--blocking",
         default="false",

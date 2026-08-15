@@ -52,6 +52,12 @@ class Resolution:
     #: overlap window. Surfaced as a response header so a repo that never
     #: picked up the new secret is diagnosable before it starts failing.
     superseded: bool
+    #: When a superseded token stops being accepted. Carried in the same
+    #: response header, because "your token has been rotated" without a
+    #: deadline is a warning that reads as optional - the 2026-08-15 outage
+    #: was 24 hours of that warning sitting unread in green build logs, and
+    #: every pipeline lane failing at once when the window closed.
+    superseded_expires_at: datetime | None = None
 
     def permits(self, capability: str) -> bool:
         return capability in self.granted_capabilities
@@ -89,9 +95,7 @@ class TokenRegistry:
         )
         return plaintext
 
-    def rotate(
-        self, repo_full_name: str, label: str = "", *, immediate: bool = False
-    ) -> str:
+    def rotate(self, repo_full_name: str, label: str = "", *, immediate: bool = False) -> str:
         """Issue a replacement, keeping the old token valid for the overlap.
 
         Order matters: the new token is created and the old one marked
@@ -212,6 +216,7 @@ class TokenRegistry:
             granted_capabilities=frozenset(grants),
             token_sha256=digest,
             superseded=token.status == "superseded",
+            superseded_expires_at=(token.expires_at if token.status == "superseded" else None),
         )
 
     # -- grants ---------------------------------------------------------
@@ -220,9 +225,7 @@ class TokenRegistry:
         """Allow a capability to write. Idempotent; True if it changed anything."""
         if self.is_granted(repo_full_name, capability):
             return False
-        self.session.add(
-            CapabilityGrant(repo_full_name=repo_full_name, capability=capability)
-        )
+        self.session.add(CapabilityGrant(repo_full_name=repo_full_name, capability=capability))
         self.session.flush()
         return True
 
@@ -262,9 +265,7 @@ class TokenRegistry:
             ).scalars()
         )
 
-    def sync_grants(
-        self, repo_full_name: str, capabilities: set[str]
-    ) -> tuple[set[str], set[str]]:
+    def sync_grants(self, repo_full_name: str, capabilities: set[str]) -> tuple[set[str], set[str]]:
         """Make the grant set exactly `capabilities`. Returns (added, removed)."""
         current = self.granted_capabilities(repo_full_name)
         added = capabilities - current

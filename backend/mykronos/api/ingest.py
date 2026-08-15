@@ -126,7 +126,14 @@ async def require_token(
         )
 
     if resolution.superseded:
-        response.headers[ROTATED_HEADER] = "true"
+        # The deadline, not just the fact. A rotation warning without a time
+        # attached reads as optional; this one names the moment every request
+        # from this token starts returning 401.
+        response.headers[ROTATED_HEADER] = (
+            resolution.superseded_expires_at.isoformat()
+            if resolution.superseded_expires_at
+            else "true"
+        )
 
     return resolution
 
@@ -151,8 +158,7 @@ def _require_repo(token: Resolution, repo_full_name: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"This token is scoped to {token.repo_full_name} and cannot "
-                f"write {repo_full_name}."
+                f"This token is scoped to {token.repo_full_name} and cannot write {repo_full_name}."
             ),
         )
 
@@ -397,8 +403,11 @@ async def ingest_raw_output(
     # flattening, so the archive mirrors the repo namespace.
     owner, _, name = token.repo_full_name.partition("/")
     destination = (
-        settings.raw_dir / _safe_segment(owner) / _safe_segment(name)
-        / _safe_segment(scan_run_id) / safe_name
+        settings.raw_dir
+        / _safe_segment(owner)
+        / _safe_segment(name)
+        / _safe_segment(scan_run_id)
+        / safe_name
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(body)
@@ -537,9 +546,7 @@ async def ingest_atlas(
         # An unassessed scan is not below the floor: there is no score to
         # compare, and reporting it as below would block a release for a
         # measurement that never happened (spec 07 §5a).
-        below_minimum=(
-            assessment.trust_score is not None and assessment.trust_score < minimum
-        ),
+        below_minimum=(assessment.trust_score is not None and assessment.trust_score < minimum),
     )
 
 
@@ -567,13 +574,13 @@ async def ingest_capability_payload(
 
 def _installation_client(request: Request, repo_full_name: str) -> Any:
     with request.app.state.db.session() as session:
-        onboarding = session.execute(
-            select(RepoOnboarding).where(
-                RepoOnboarding.github_repo_full_name == repo_full_name
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == repo_full_name)
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
     if onboarding is None:
         return None
-    return request.app.state.github_factory.for_installation(
-        onboarding.github_installation_id
-    )
+    return request.app.state.github_factory.for_installation(onboarding.github_installation_id)
