@@ -47,7 +47,7 @@
       THEHUB_DEMO_PROJECT=thehub-demo
       THEHUB_DEMO_URL=http://localhost:8200
       THEHUB_PROD_COMPOSE=C:\path\to\TheHub\docker-compose.yml
-      THEHUB_PROD_PROJECT=thehub-prod
+      THEHUB_PROD_PROJECT=thehub-main
       THEHUB_PROD_URL=http://localhost:8000
 
     TheHub's compose files must take their image from ${THEHUB_IMAGE}. That is
