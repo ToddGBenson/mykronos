@@ -1994,7 +1994,14 @@ jobs:
       - get: playwright
       - task: functional-and-scan
         image: playwright
-        timeout: 90m
+        # 120m, not 90m: build #7 ran the whole chain -- ZAP up, 60 URLs
+        # seeded, spec imported, spider, active scan -- and Concourse killed
+        # it at 90m mid-active-scan. The proxied functional suite alone is
+        # ~50m (every request pays ZAP's interception latency), the active
+        # scan is capped at 30m, and ZAP startup plus the spider need room on
+        # top. 80m of work in a 90m box has no margin; 120m does. The active
+        # scan's own 30m cap still bounds the part that pressures production.
+        timeout: 120m
         params:
           TARGET_URL: ((thehub-demo-url))
           # No HUB_API_TOKEN: the demo compose sets it empty, which disables
