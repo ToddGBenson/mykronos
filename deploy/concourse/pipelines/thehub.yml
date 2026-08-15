@@ -2045,11 +2045,25 @@ jobs:
                 # Daemon mode so it sits in front of the browser and records
                 # what the tests do. The scan comes later, against the tree
                 # this traffic builds.
+                # -silent, and the two marketplace switches, because the
+                # first run proved they matter: ZAP tried to auto-install
+                # add-ons from its marketplace at startup, recursed through
+                # checkAndInstallAddOnsNotInstalled, and never answered the
+                # readiness poll inside five minutes -- so the whole DAST lane
+                # timed out on "ZAP did not start" with the scan never begun.
+                #
+                # A CI ZAP must not reach the internet to become usable. The
+                # add-ons it needs (spider, ascan, openapi) ship inside the
+                # release tarball already; the marketplace call is pure
+                # startup tax on a box that may not even have the route.
                 "${ZAP_DIR}/zap.sh" -daemon -host 127.0.0.1 -port "${ZAP_PORT}" \
+                  -silent \
                   -config api.key="${ZAP_KEY}" \
                   -config api.addrs.addr.name=.* \
                   -config api.addrs.addr.regex=true \
                   -config database.recoverylog=false \
+                  -config start.checkForUpdates=false \
+                  -config autoupdate.installAddonsOnStart=false \
                   > /tmp/zap.log 2>&1 &
 
                 ready=0
