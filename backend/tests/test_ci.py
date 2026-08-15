@@ -190,6 +190,36 @@ class TestReporting:
 
         assert row.state == "reporting"
 
+    def test_a_job_that_uploads_two_capabilities_is_checked_for_both(self) -> None:
+        """demo-and-dast proxies the functional suite through ZAP and then
+        scans: one build, two uploads. Crediting it to only `functional` left
+        `dast` reading no_job forever - enabled, produced by a real lane, and
+        reported as a permanent gap."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 8, 13, 11, 58, tzinfo=UTC)
+
+        rows = reconcile(
+            [self._job("demo-and-dast", finished=built)],
+            {"functional": scanned, "dast": scanned},
+        )
+
+        assert {r.capability for r in rows} == {"functional", "dast"}
+        assert all(r.state == "reporting" for r in rows)
+
+    def test_one_capability_reporting_does_not_vouch_for_the_other(self) -> None:
+        """The functional upload can land while the DAST upload fails - they
+        are separate requests. Each capability answers for itself."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+        rows = reconcile(
+            [self._job("demo-and-dast", finished=built)],
+            {"functional": datetime(2026, 8, 13, 11, 58, tzinfo=UTC)},
+        )
+        by_capability = {r.capability: r.state for r in rows}
+
+        assert by_capability["functional"] == "reporting"
+        assert by_capability["dast"] == "never_reported"
+
     def test_a_job_that_ran_after_the_newest_scan_is_silent(self) -> None:
         """The scan run predates the build, so this build's findings never
         arrived. Green pipeline, stale data, and nothing else says so."""

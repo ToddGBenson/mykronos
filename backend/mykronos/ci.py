@@ -64,7 +64,7 @@ def pipeline_name_for(repo_full_name: str) -> str:
 #: exactly the case Aegis exists to notice. Cross-checking it reported every
 #: green insider job as a silent failure, which was this check being wrong
 #: about what the job is for.
-CAPABILITY_BY_JOB: dict[str, str] = {
+CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "sast": "sast",
     "secrets": "secrets",
     "containers": "containers",
@@ -83,7 +83,7 @@ CAPABILITY_BY_JOB: dict[str, str] = {
     "ai": "ai",
     "ai-checks": "ai",
     "functional": "functional",
-    "demo-and-dast": "functional",
+    "demo-and-dast": ("functional", "dast"),
 }
 
 #: How far a successful build may lead its capability's newest scan run before
@@ -359,23 +359,32 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
 
-    Only jobs in `CAPABILITY_BY_JOB` are checked. `unit`, `build` and
+    Only jobs in `CAPABILITY_BY_JOB` are checked. `build` and
     `publish-backend` produce no findings and their absence from the lake is
     not a fault.
+
+    A job may produce several capabilities: demo-and-dast runs the functional
+    suite through ZAP's proxy and then scans, so one build uploads both
+    `functional` and `dast`. Crediting it to only one left the other reading
+    "no_job" forever - enabled, produced by a real lane, and reported as a
+    permanent gap.
     """
     seen: set[str] = set()
     out: list[Reporting] = []
     for job in jobs:
-        capability = CAPABILITY_BY_JOB.get(job.name)
-        if capability is None or job.name in seen:
+        capabilities = CAPABILITY_BY_JOB.get(job.name)
+        if capabilities is None or job.name in seen:
             continue
         seen.add(job.name)
-        out.append(
-            Reporting(
-                job=job.name,
-                capability=capability,
-                built_at=job.finished_at if job.status == "succeeded" else None,
-                scanned_at=last_scan_at.get(capability),
+        if isinstance(capabilities, str):
+            capabilities = (capabilities,)
+        for capability in capabilities:
+            out.append(
+                Reporting(
+                    job=job.name,
+                    capability=capability,
+                    built_at=job.finished_at if job.status == "succeeded" else None,
+                    scanned_at=last_scan_at.get(capability),
+                )
             )
-        )
     return out
