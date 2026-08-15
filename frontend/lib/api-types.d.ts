@@ -948,7 +948,7 @@ export interface components {
          * Capability
          * @enum {string}
          */
-        Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle" | "network" | "unit" | "functional" | "qa";
+        Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle" | "network" | "unit" | "functional" | "qa" | "ai";
         /** CapabilityStateOut */
         CapabilityStateOut: {
             /** Capability */
