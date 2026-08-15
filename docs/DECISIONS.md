@@ -1726,6 +1726,52 @@ tool for ever.
 
 ---
 
+## D-048 — The Oracle gate is advisory, and that is a problem to solve
+
+**Status:** Compromise, deliberately temporary. **Unresolved.**
+**Spec:** [09 §6](../specs/09-oracle-risk-decision-engine.md), [15 §3](../specs/15-concourse-pipeline.md)
+
+`oracle-gate` no longer fails the build on `no_go`. It reports, loudly, and
+the pipeline continues.
+
+**Why it had to change.** Oracle scores the repository's *entire open
+backlog*, not the change in front of it. This repository now carries 156 DAST
+findings from a single demo scan and 243 accepted container risks, so the
+score describes an estate rather than a commit. A one-line fix to something
+unrelated is refused by the accumulated weight of everything already known,
+and every subsequent commit is refused identically.
+
+A gate that refuses everything is not a gate. It gets switched off or routed
+around, and then it protects nothing — which is strictly worse than an
+advisory one that still says so on every build.
+
+**What this costs, stated plainly so nobody discovers it later.** A green
+pipeline no longer means Oracle approved the commit. The promote job still
+runs, so `:latest` moves on a refused commit, and the only remaining barrier
+between a refused commit and production is that a person runs `deploy.ps1`.
+That is a real reduction in safety and it is the reason this entry exists
+rather than a quiet edit.
+
+**What has to be built before this becomes a gate again.** The gate needs to
+judge the change, not the estate. Three candidates, none yet chosen:
+
+1. **Score the delta.** Findings first seen at this commit, against a
+   threshold. Answers "did this change make things worse", which is the
+   question a gate on a commit should ask. Needs care: a finding whose
+   identity churns for unrelated reasons would read as new work.
+2. **Gate on severity floors rather than a composite.** "No new criticals,
+   no new highs" is unambiguous and hard to argue with, and does not move as
+   the backlog grows.
+3. **Age the backlog out of the score.** Findings older than the current
+   change are context, not verdict — closer to what the maturity model
+   already does.
+
+Until one of those exists, the honest position is that Mykronos *reports*
+risk on every commit and *gates* nothing automatically. The demo should say
+that rather than imply otherwise.
+
+---
+
 ## D-007 — Deferred to a later phase
 
 Recorded so they are not mistaken for oversights.
