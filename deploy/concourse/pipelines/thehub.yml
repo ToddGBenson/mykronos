@@ -2015,8 +2015,18 @@ jobs:
                 # a scan of a host that is not answering produces a report with
                 # no alerts, which on the dashboard is indistinguishable from a
                 # clean scan (L0001).
-                if ! curl --fail --silent --max-time 30 -o /dev/null "$TARGET_URL"; then
-                  echo "::error::$TARGET_URL is not answering. Refusing to report an empty scan as a clean one."
+                #
+                # Retried, not one-shot. A single curl on a heavily contended
+                # worker failed here while the demo backend was up and serving
+                # 200 from every other vantage -- the worker's load reported as
+                # the target's outage. The deploy job's own health check
+                # already retries five times for exactly this; this now matches
+                # it. --retry-all-errors so a connection refused during a
+                # restart is retried, not just HTTP codes.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after 5 retries. Refusing to report an empty scan as a clean one."
                   exit 1
                 fi
 
