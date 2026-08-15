@@ -124,4 +124,11 @@ if ($Pause) {
     Write-Host "`nPipeline applied and unpaused." -ForegroundColor Green
 }
 
+# demo-and-dast is paused until the scan has a resource budget it can live
+# within (D-053). Enforced here rather than by a fly pause an operator has to
+# remember: a re-apply on 2026-08-15 quietly rescheduled a queued DAST build
+# in TheHub's pipeline the same way. Remove this block when D-053 is closed.
+& $fly --target $Target pause-job --job "$Pipeline/demo-and-dast" | Out-Null
+Write-Host "demo-and-dast paused: D-053, no resource budget for the scan yet." -ForegroundColor Yellow
+
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

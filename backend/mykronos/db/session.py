@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -81,17 +82,27 @@ class Database:
                     if column.name in present:
                         continue
 
+                    # DDL cannot bind parameters, so these statements are
+                    # built by interpolation - which is safe only because
+                    # every interpolated name comes from this application's
+                    # own model metadata, never from a request. _identifier
+                    # makes that a checked property instead of an argument:
+                    # anything that is not a plain SQL identifier refuses to
+                    # deploy, so a hostile name in the metadata cannot ride
+                    # the upgrade path even if one ever got there.
                     connection.execute(text(self._add_column_sql(table.name, column)))
                     applied.append(f"{table.name}.{column.name}")
 
                     # A column carrying index=True gets its index with the table
                     # on a fresh database. Added later, it would silently not.
                     for index in table.indexes:
+                        if index.name is None:
+                            continue  # Unnamed: nothing stable to create it as.
                         if {c.name for c in index.columns} == {column.name}:
                             connection.execute(
                                 text(
-                                    f"CREATE INDEX IF NOT EXISTS {index.name} "
-                                    f"ON {table.name} ({column.name})"
+                                    f"CREATE INDEX IF NOT EXISTS {_identifier(index.name)} "
+                                    f"ON {_identifier(table.name)} ({_identifier(column.name)})"
                                 )
                             )
 
@@ -108,7 +119,10 @@ class Database:
         what the application would have written had the column existed.
         """
         type_sql = column.type.compile(self.engine.dialect)
-        clause = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {type_sql}"
+        clause = (
+            f"ALTER TABLE {_identifier(table_name)} "
+            f"ADD COLUMN {_identifier(column.name)} {type_sql}"
+        )
 
         default = self._default_literal(column)
         if default is not None:
@@ -210,6 +224,23 @@ class Database:
 
 def _quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _identifier(name: str) -> str:
+    """A name that is provably just a name, or a refusal.
+
+    The schema-upgrade DDL interpolates table, column and index names because
+    DDL cannot bind parameters. Every caller passes names from this
+    application's own model metadata - but "trust the caller" is an argument,
+    and this is a check: anything that would need quoting to be a SQL
+    identifier does not get into a statement at all.
+    """
+    if not _IDENTIFIER.match(name):
+        raise ValueError(f"{name!r} is not a plain SQL identifier")
+    return name
 
 
 def _enable_sqlite_pragmas(engine: Engine) -> None:

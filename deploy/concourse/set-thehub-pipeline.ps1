@@ -319,6 +319,16 @@ if ($azureClientId -and $azureSubscriptionId) {
     Write-Host "cloud-posture paused: no Azure principal, so it has nothing to scan." -ForegroundColor Yellow
 }
 
+# functional-dast is paused until the scan has a resource budget it can live
+# within (D-053). ZAP's active scan was measured at 548% CPU / 7 GiB on the
+# host that also runs production; while it scanned, production timed out.
+# Enforced here, not just by hand: a fly pause is state, and state that only
+# an operator remembers gets undone by the next re-apply - which is exactly
+# what happened on 2026-08-15, when a re-apply for a token rotation quietly
+# rescheduled a queued DAST build. Remove this block when D-053 is closed.
+& $fly --target $Target pause-job --job "$Pipeline/functional-dast" | Out-Null
+Write-Host "functional-dast paused: D-053, no resource budget for the scan yet." -ForegroundColor Yellow
+
 Write-Host "`nDelivering branch '$Branch'." -ForegroundColor Green
 Write-Host "  demo: $DemoUrl (automatic, once Oracle clears it)"
 Write-Host "  prod: $ProdUrl (waits for you to trigger deploy-prod)"

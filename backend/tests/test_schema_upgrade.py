@@ -245,6 +245,21 @@ class TestDriftGuard:
         with pytest.raises(RuntimeError, match="no default"):
             db._add_column_sql("repo_onboardings", orphan)
 
+    def test_a_hostile_name_cannot_ride_the_upgrade_path(self, open_db) -> None:
+        """DDL cannot bind parameters, so the upgrade interpolates names. The
+        names come from this application's own models - but that is an
+        argument, and this is the check that replaces it. Flagged by SAST as
+        avoid-sqlalchemy-text on 2026-08-15; the disposition rests on this
+        test."""
+        from sqlalchemy import Column, String
+
+        db = open_db()
+        db.create_all()
+        hostile = Column("x; DROP TABLE repo_onboardings; --", String(8), nullable=True)
+
+        with pytest.raises(ValueError, match="not a plain SQL identifier"):
+            db._add_column_sql("repo_onboardings", hostile)
+
     def test_a_nullable_column_with_no_default_is_fine(self, open_db) -> None:
         """There is a correct value for the existing rows: unknown."""
         from sqlalchemy import Column, String
