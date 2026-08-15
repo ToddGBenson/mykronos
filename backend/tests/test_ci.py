@@ -98,9 +98,7 @@ class TestStatus:
             "http://localhost:8080/teams/main/pipelines/mykronos/jobs/unit/builds/8"
         )
 
-    def test_the_link_uses_the_browser_url_not_the_internal_one(
-        self, concourse
-    ) -> None:
+    def test_the_link_uses_the_browser_url_not_the_internal_one(self, concourse) -> None:
         """These genuinely differ: this process reaches Concourse by container
         name on a shared network, and a person reaches it on localhost. A link
         to http://concourse:8080 resolves nowhere from a laptop."""
@@ -129,9 +127,7 @@ class TestStatus:
         assert deploy.status is None
         assert deploy.build_url is None
 
-    def test_a_repo_with_no_pipeline_says_which_ci_does_scan_it(
-        self, concourse
-    ) -> None:
+    def test_a_repo_with_no_pipeline_says_which_ci_does_scan_it(self, concourse) -> None:
         """keel is in exactly this state: onboarded, scanned by Actions, and
         absent from Concourse. An empty panel would read as a coverage gap."""
         client, routes = concourse
@@ -342,6 +338,18 @@ class TestStageCoverage:
         assert dast.state == "no_job"
         assert dast.problem is True
 
+    def test_an_event_driven_capability_is_not_a_gap(self) -> None:
+        """Aegis is fed by webhooks, Oracle writes decisions, Patchwork opens
+        pull requests. None of them has a pipeline lane or a ScanRun, so the
+        job-versus-scan cross-check has nothing to compare - "no_job" was
+        reporting three working capabilities as permanent problems."""
+        rows = coverage({"aegis", "oracle", "patchwork"}, [])
+
+        for stage in ("aegis", "oracle", "patchwork"):
+            row = next(r for r in rows if r.stage == stage)
+            assert row.state == "event_driven"
+            assert row.problem is False
+
     def test_enabled_and_silent_is_a_problem(self) -> None:
         rows = coverage({"sast"}, self._reporting(sast="silent"))
 
@@ -399,9 +407,7 @@ class TestAegisIsLookedUpWhereItActuallyWrites:
 
         assert "aegis" in latest
 
-    def test_no_signals_means_no_entry(
-        self, client, admin_auth, catalog
-    ) -> None:
+    def test_no_signals_means_no_entry(self, client, admin_auth, catalog) -> None:
         from mykronos.dashboard import DashboardQueries
         from tests.conftest import REPO
         from tests.test_onboarding import onboard
@@ -420,11 +426,43 @@ class TestTheEndpoint:
         onboard(client, admin_auth)
         repo = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
 
-        page = client.get(
-            f"/api/dashboard/repos/{repo['repo_id']}/ci", headers=admin_auth
-        ).json()
+        page = client.get(f"/api/dashboard/repos/{repo['repo_id']}/ci", headers=admin_auth).json()
 
         assert page["github_url"] == f"https://github.com/{page['repo_full_name']}"
         assert page["github_actions_url"].endswith("/actions")
         assert page["pipeline"] is None
         assert page["unavailable"]
+
+    def test_a_concourse_repo_is_enabled_by_its_grants(self, client, admin_auth, auth) -> None:
+        """`enabled_capabilities` is the Actions installer's ledger, and a
+        Concourse-scanned repo never merges an install PR - so the stages
+        view showed every lane as not_enabled while eleven were reporting
+        (2026-08-15). What may write is what is enabled: the grants."""
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth, scanned_by="concourse")
+        repo = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
+        page = client.get(f"/api/dashboard/repos/{repo['repo_id']}/ci", headers=admin_auth).json()
+        stages = {s["stage"]: s for s in page["stages"]}
+
+        # The conftest fixture grants `sast` when it issues the token.
+        assert stages["sast"]["enabled"] is True
+        assert stages["network"]["enabled"] is False, "never granted"
+
+    def test_event_driven_capabilities_do_not_read_as_gaps(self, client, admin_auth, auth) -> None:
+        from mykronos.auth import TokenRegistry
+        from tests.conftest import REPO
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth, scanned_by="concourse")
+        with client.app.state.db.session() as session:
+            TokenRegistry(session).grant(REPO, "aegis")
+
+        repo = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        page = client.get(f"/api/dashboard/repos/{repo['repo_id']}/ci", headers=admin_auth).json()
+        aegis = next(s for s in page["stages"] if s["stage"] == "aegis")
+
+        assert aegis["enabled"] is True
+        assert aegis["state"] == "event_driven"
+        assert aegis["problem"] is False

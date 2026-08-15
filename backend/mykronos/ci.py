@@ -320,9 +320,15 @@ class StageCoverage:
         return self.state in {"silent", "never_reported", "no_job"}
 
 
-def coverage(
-    enabled_capabilities: set[str], reporting: list[Reporting]
-) -> list[StageCoverage]:
+#: Capabilities that never produce a ScanRun from a pipeline lane: Aegis is
+#: fed by webhooks as reviews happen, Oracle writes decisions, Patchwork opens
+#: fix pull requests. The coverage cross-check compares pipeline jobs against
+#: scan runs, and these have neither side of that comparison - reporting them
+#: as "no_job" flagged working capabilities as permanent gaps.
+NON_SCANNING: frozenset[str] = frozenset({"aegis", "oracle", "patchwork"})
+
+
+def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list[StageCoverage]:
     """Every stage against what this repository actually has (PIP-6)."""
     by_capability = {row.capability: row for row in reporting}
 
@@ -330,6 +336,10 @@ def coverage(
     for stage in ALL_STAGES:
         if stage not in enabled_capabilities:
             out.append(StageCoverage(stage, enabled=False, state="not_enabled"))
+            continue
+
+        if stage in NON_SCANNING:
+            out.append(StageCoverage(stage, enabled=True, state="event_driven"))
             continue
 
         row = by_capability.get(stage)
@@ -345,9 +355,7 @@ def coverage(
     return out
 
 
-def reconcile(
-    jobs: list[JobStatus], last_scan_at: dict[str, datetime]
-) -> list[Reporting]:
+def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
 

@@ -19,7 +19,7 @@ from sqlalchemy import select
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
-from mykronos.db.models import RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
@@ -324,9 +324,7 @@ async def portfolio(
 ) -> PortfolioOut:
     """The landing page (spec 10 §2.1)."""
     with request.app.state.db.session() as session:
-        rows, summary = _queries(request).portfolio(
-            session, include_removed=include_removed
-        )
+        rows, summary = _queries(request).portfolio(session, include_removed=include_removed)
 
     return PortfolioOut(
         summary=summary,
@@ -387,9 +385,7 @@ async def pull_requests(request: Request, principal: PrincipalDep) -> PullReques
                 capabilities=row.capabilities,
                 finding_id=row.finding_id,
                 human_edited=row.human_edited,
-                checks=(
-                    ChecksOut(**vars(row.checks)) if row.checks is not None else None
-                ),
+                checks=(ChecksOut(**vars(row.checks)) if row.checks is not None else None),
             )
             for row in result.pull_requests
         ],
@@ -500,15 +496,11 @@ async def maturity(
                 ).scalars()
             )
 
-    assessments = [
-        maturity_assess(catalog, repo, model, store=store) for repo in targets
-    ]
+    assessments = [maturity_assess(catalog, repo, model, store=store) for repo in targets]
 
     return {
         "model_version": model.version,
-        "tiers": [
-            {"id": t.id, "name": t.name, "summary": t.summary} for t in model.tiers
-        ],
+        "tiers": [{"id": t.id, "name": t.name, "summary": t.summary} for t in model.tiers],
         "repos": [
             {
                 "repo_full_name": a.repo_full_name,
@@ -530,8 +522,13 @@ async def maturity(
                     for c in a.criteria
                 ],
                 "blocking": [
-                    {"key": c.key, "label": c.label, "measured": c.measured,
-                     "threshold": c.threshold, "why": c.why}
+                    {
+                        "key": c.key,
+                        "label": c.label,
+                        "measured": c.measured,
+                        "threshold": c.threshold,
+                        "why": c.why,
+                    }
                     for c in a.blocking
                 ],
             }
@@ -698,17 +695,29 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         external_url=settings.concourse_external_url,
     ).status_for(repo_full_name)
 
-    reported = reconcile(
-        status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
-    )
+    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
 
     with request.app.state.db.session() as session:
         row = session.execute(
-            select(RepoOnboarding).where(
-                RepoOnboarding.github_repo_full_name == repo_full_name
-            )
+            select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == repo_full_name)
         ).scalar_one_or_none()
         enabled = set(row.enabled_capabilities or []) if row else set()
+
+        if row and row.scanned_by != "github_actions":
+            # `enabled_capabilities` is the installer's ledger: capabilities
+            # whose workflow-install PR merged. A Concourse-scanned repo never
+            # merges one, so that ledger stays empty forever while scans
+            # arrive anyway - this page showed every lane as not_enabled
+            # while eleven were reporting (2026-08-15). For anything not
+            # scanned by Actions, what may write IS what is enabled: the
+            # capability grants.
+            enabled |= set(
+                session.execute(
+                    select(CapabilityGrant.capability).where(
+                        CapabilityGrant.repo_full_name == repo_full_name
+                    )
+                ).scalars()
+            )
 
     return CiPage(
         repo_full_name=repo_full_name,
@@ -728,9 +737,7 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         ],
         failing=status.failing,
         stages=[
-            StageCoverageOut(
-                stage=c.stage, enabled=c.enabled, state=c.state, problem=c.problem
-            )
+            StageCoverageOut(stage=c.stage, enabled=c.enabled, state=c.state, problem=c.problem)
             for c in coverage(enabled, reported)
         ],
         reporting=[
@@ -797,9 +804,7 @@ async def repo_findings(
 
 
 @router.get("/repos/{repo_id}/scan-health")
-async def scan_health(
-    request: Request, repo_id: str, principal: PrincipalDep
-) -> dict[str, Any]:
+async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -> dict[str, Any]:
     """Per-capability run history and freshness (spec 10 §2.2).
 
     Auditable from the lake alone, which is the point of writing a ScanRun for
