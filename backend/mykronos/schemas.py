@@ -41,6 +41,11 @@ class Capability(StrEnum):
     FUNCTIONAL = "functional"
     QA = "qa"
 
+    #: Spec 04 §3, D-047. Prompt-injection surface, model provenance and
+    #: evaluation coverage. Whether a *pull request* discloses AI authorship
+    #: stays in Aegis: that is a question about a person.
+    AI = "ai"
+
 
 class Severity(StrEnum):
     INFO = "info"

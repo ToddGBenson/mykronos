@@ -94,6 +94,10 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
             "functional", "junit", tests_junit.normalize, "*.xml", "JUnit XML"
         ),
         AdapterSpec("qa", "junit", tests_junit.normalize, "*.xml", "JUnit XML"),
+        # SARIF, so any tool can feed this capability (D-047). A capability
+        # that only reads its own tool's output is a capability with one tool
+        # for ever.
+        AdapterSpec("ai", "mykronos-ai-checks", _sarif, "*.sarif", "Mykronos AI checks"),
     ]
     return {(spec.capability, spec.tool): spec for spec in specs}
 
@@ -126,6 +130,7 @@ DEFAULT_TOOLS: dict[str, str] = {
     "unit": "junit",
     "functional": "junit",
     "qa": "junit",
+    "ai": "mykronos-ai-checks",
 }
 
 

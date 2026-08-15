@@ -556,6 +556,33 @@ class QaConfig(BaseCapabilityConfig):
     )
 
 
+class AiConfig(BaseCapabilityConfig):
+    """AI supply-chain and prompt-safety checks (D-047).
+
+    Unlike unit, functional and QA this produces findings. A prompt injection
+    that succeeds is a vulnerability, and an unpinned model is a supply-chain
+    fact of the same kind as an unpinned dependency - both have a location, a
+    severity meaning what it means everywhere else, and something to fix.
+    """
+
+    require_pinned_models: bool = Field(
+        default=True,
+        description=(
+            "Report a model identifier with no version or date. The vendor "
+            "moves these aliases, so the model a repository was evaluated "
+            "against is not necessarily the one it ships."
+        ),
+    )
+    require_evaluation_suite: bool = Field(
+        default=True,
+        description=(
+            "Report a repository that calls a model and has no evaluation "
+            "suite. A regression in an AI feature is silent by default, "
+            "because it still returns something."
+        ),
+    )
+
+
 CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.SAST.value: SastConfig,
     Capability.SECRETS.value: SecretsConfig,
@@ -571,6 +598,7 @@ CONFIG_MODELS: dict[str, type[BaseCapabilityConfig]] = {
     Capability.UNIT.value: UnitConfig,
     Capability.FUNCTIONAL.value: FunctionalConfig,
     Capability.QA.value: QaConfig,
+    Capability.AI.value: AiConfig,
 }
 
 

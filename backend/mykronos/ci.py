@@ -80,6 +80,8 @@ CAPABILITY_BY_JOB: dict[str, str] = {
     "unit": "unit",
     "qa": "qa",
     "qa-spec-links": "qa",
+    "ai": "ai",
+    "ai-checks": "ai",
     "functional": "functional",
     "demo-and-dast": "functional",
 }
@@ -293,6 +295,7 @@ ALL_STAGES: tuple[str, ...] = (
     "dast",
     "cloud",
     "network",
+    "ai",
     "aegis",
     "oracle",
     "patchwork",

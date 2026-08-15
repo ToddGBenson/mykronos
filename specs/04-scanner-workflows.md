@@ -44,6 +44,7 @@ as it evolves.
 | **Containers** | Trivy (image + Dockerfile scan) | `pull_request` touching Dockerfile/image build paths, `push`, scheduled re-scan of latest published image | SARIF (Trivy supports native SARIF output) |
 | **IaC** | Checkov | `pull_request` touching IaC paths (`*.tf`, `cloudformation/**`, `k8s/**`, etc.), `push` | SARIF (Checkov supports native SARIF output) |
 | **Cloud** | Cloud-provider posture scan (e.g., a Prowler/ScoutSuite-style scan against the account(s) tied to the repo's declared environment) | scheduled (daily) | Tool-native JSON |
+| **AI** | `scripts/check_ai.py` (prompt-injection surface, model provenance, evaluation coverage) — any SARIF-emitting tool | `pull_request`, `push` | SARIF. Produces findings, unlike the other quality stages (D-047) |
 | **QA** | The repository's own quality checks — link integrity here, contract or schema checks elsewhere | `pull_request`, `push` | None — a `ScanRun` with `finding_count = 0` (D-046) |
 | **Unit** | The repository's own test runner | `pull_request`, `push` | None — a `ScanRun` with `finding_count = 0` (D-046) |
 | **Functional** | The repository's own functional suite, run against a deployed lower environment | after deploy to the demo environment | None — a `ScanRun`, plus the proxied traffic DAST consumes (spec 16) |

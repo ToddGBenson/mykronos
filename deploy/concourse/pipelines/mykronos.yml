@@ -598,6 +598,47 @@ jobs:
   # which analyser produced each finding. Expect findings to appear and
   # disappear across the cutover: that is a tool change, not a change in this
   # code's security. Spec 16 §5.
+  # -- AI supply chain and prompt safety (D-047) --------------------------
+  #
+  # Three of the four concerns the decision names: prompt-injection surface,
+  # model provenance, and evaluation coverage. The fourth - whether a pull
+  # request discloses that a model wrote it - is Aegis's, because that is a
+  # question about a person and these are questions about a repository.
+  #
+  # It reports zero findings against this repository today, and says so: no
+  # model references, nothing to check. That is the honest output and it is
+  # not the same as a clean bill of health.
+  - name: ai
+    public: true
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit, lint-and-types, qa-spec-links, frontend]
+      - get: python
+      - task: ai-checks
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                cd source
+                mkdir -p ../results
+
+                python scripts/check_ai.py . --sarif=../results/ai.sarif
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false
+
   - name: sast
     public: true
     on_failure: *slack_alert
