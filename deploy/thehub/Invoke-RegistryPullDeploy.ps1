@@ -262,7 +262,24 @@ function Invoke-Cycle {
 
 try {
     if ($Once) {
-        Invoke-Cycle
+        # Under the Scheduled Task, stdout goes nowhere. The 2026-08-15 demo
+        # failure was diagnosed by re-running the deploy by hand because the
+        # task's two failed attempts left no record of *why* - this log makes
+        # the next one legible. All streams, so the deploy script's own output
+        # and native-command stderr land too. A quiet cycle appends nothing,
+        # and the size cap keeps an unattended task from growing it unbounded.
+        $log = Join-Path $here "registry-pull-deploy.log"
+        if ((Test-Path $log) -and (Get-Item $log).Length -gt 256KB) {
+            Remove-Item $log -Force -ErrorAction SilentlyContinue
+        }
+        $stamp = "==== cycle $(Get-Date -Format o) ===="
+        $lines = & { Invoke-Cycle } *>&1 | ForEach-Object { "$_" }
+        if ($lines) {
+            Add-Content -Path $log -Value (@($stamp) + $lines) -Encoding UTF8
+            # Run by hand with -Once, the capture above would otherwise eat
+            # the output entirely.
+            $lines | ForEach-Object { Write-Host $_ }
+        }
         # Explicit, because `mc` leaves a non-zero $LASTEXITCODE behind on the
         # perfectly normal "no pointer published yet" path. Without this the
         # Scheduled Task records every quiet run as a failure, and a task that
