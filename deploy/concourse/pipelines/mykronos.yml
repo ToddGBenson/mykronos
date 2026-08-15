@@ -983,34 +983,33 @@ jobs:
                 echo "Oracle: $RECOMMENDATION (score $SCORE)"
                 jq -r '.reasoning // empty' decision.json
 
-                # NOTIFY, DO NOT BLOCK - and this is a compromise, recorded
-                # as D-048 rather than quietly softened.
+                # Blocks on what this commit INTRODUCED, not on the backlog
+                # (D-048). The composite score describes the whole estate -
+                # 156 DAST findings from one demo scan, 243 accepted
+                # container risks - so gating on it refused every commit
+                # regardless of content, and a gate that refuses everything
+                # gets switched off or routed around.
                 #
-                # Oracle scores the repository's *whole* open backlog, not the
-                # change in front of it. This repository carries 156 DAST
-                # findings from one demo scan and 243 accepted container
-                # risks, so the score reflects an estate rather than a commit,
-                # and a fix for something unrelated is refused by the weight
-                # of everything already known.
-                #
-                # A gate that refuses every commit regardless of its content
-                # is not a gate. It gets switched off, or worked around, and
-                # then it protects nothing - which is worse than this, because
-                # this at least still says so loudly on every build.
-                #
-                # What must not happen while this stands: nobody should read a
-                # green pipeline as "Oracle approved". It did not. See D-048
-                # for what has to be built before this becomes a gate again.
+                # "No new criticals, no new highs" does not drift as the
+                # backlog grows, and it is hard to argue with in a review.
+                # The score is still reported, still recorded, and still
+                # drives the dashboard; it just no longer decides.
+                INTRODUCED_BLOCKING=$(jq -r '.introduced_blocking' decision.json)
+                NEW_CRITICAL=$(jq -r '.introduced.critical // 0' decision.json)
+                NEW_HIGH=$(jq -r '.introduced.high // 0' decision.json)
+
                 if [ "$RECOMMENDATION" = "no_go" ]; then
-                  echo "::warning::Oracle says no_go at ${SCORE}/100 - NOT blocking (D-048)."
-                  echo "The gate is advisory until Oracle can score the change"
-                  echo "rather than the backlog. A green build below this line"
-                  echo "does not mean Oracle approved this commit."
-                  # No Slack call here: Mykronos notifies on an Oracle refusal
-                  # itself (spec 16 §12), and it can do so whichever CI asked.
-                  # A second notifier would mean two messages per refusal, and
-                  # the pipeline's `on_failure` hook no longer fires because
-                  # this job now succeeds.
+                  echo "::warning::Oracle scores this repository no_go at ${SCORE}/100."
+                  echo "That is the standing backlog, not this change - see D-048."
+                fi
+
+                echo "Introduced by this commit: ${NEW_CRITICAL} critical, ${NEW_HIGH} high."
+
+                if [ "$INTRODUCED_BLOCKING" = "true" ]; then
+                  echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
+                  echo "The floor is no new criticals and no new highs. Fix them, or"
+                  echo "disposition them - an accepted risk with a reason does not block."
+                  exit 1
                 fi
 
   # -- Promotion: what makes the Oracle gate mean anything ----------------

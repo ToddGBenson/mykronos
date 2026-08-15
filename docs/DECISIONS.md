@@ -1728,7 +1728,7 @@ tool for ever.
 
 ## D-048 — The Oracle gate is advisory, and that is a problem to solve
 
-**Status:** Compromise, deliberately temporary. **Unresolved.**
+**Status:** Resolved — option 2 chosen and implemented.
 **Spec:** [09 §6](../specs/09-oracle-risk-decision-engine.md), [15 §3](../specs/15-concourse-pipeline.md)
 
 `oracle-gate` no longer fails the build on `no_go`. It reports, loudly, and
@@ -1766,9 +1766,37 @@ judge the change, not the estate. Three candidates, none yet chosen:
    change are context, not verdict — closer to what the maturity model
    already does.
 
-Until one of those exists, the honest position is that Mykronos *reports*
-risk on every commit and *gates* nothing automatically. The demo should say
-that rather than imply otherwise.
+### Resolution: option 2, the severity floor
+
+The gate blocks when a commit **introduces** an open critical or high
+finding. The composite score is still computed, still recorded, still drives
+the dashboard and the maturity model — it just no longer decides whether a
+build proceeds.
+
+Three details that make it a floor rather than another backlog gate:
+
+**"Introduced" means `first_seen_scan_run_id` belongs to a scan of this
+commit**, not `first_seen_at` near it in time. Time would sweep in whatever a
+concurrent scan of a different commit happened to report, and the whole point
+is attributing a finding to the change in front of you. A finding reported by
+two consecutive scans is introduced by the first — otherwise every unfixed
+finding is re-introduced on every commit, and the backlog gate returns by
+another route.
+
+**A dispositioned finding does not block the commit that introduced it.** An
+accepted risk with a written reason is a decision, not an obstacle. This is
+the release valve that stops the floor becoming something people route
+around.
+
+**The floor is a constant, not policy.** Critical and high, in code. A floor
+an operator can lower under deadline pressure is a floor that reaches zero,
+and the argument for lowering it is always available and always plausible.
+Mediums are recorded and triaged; they do not block.
+
+The advisory period lasted one commit. What was true during it — a green
+pipeline did not mean Oracle approved the commit — is no longer true: a green
+pipeline now means this commit introduced no new critical or high finding,
+which is a narrower claim than the original gate implied and a true one.
 
 ---
 

@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
+from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
 from mykronos.logsafe import scrub
@@ -63,6 +64,24 @@ class EvaluateResult(BaseModel):
     blocking: bool
     check_run_id: str | None = None
     check_run_error: str | None = None
+    introduced: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Open findings this commit introduced, by severity (D-048). The "
+            "question a gate on a commit should ask, as distinct from "
+            "`overall_risk_score`, which describes the whole backlog and "
+            "therefore refuses every commit once the backlog is large."
+        ),
+    )
+    introduced_blocking: bool = Field(
+        default=False,
+        description=(
+            "Whether this commit introduced an open finding at or above the "
+            "severity floor. Unambiguous, and it does not drift as the "
+            "backlog grows - which is why it replaces the composite score as "
+            "the thing CI blocks on."
+        ),
+    )
 
 
 class OverrideRequest(BaseModel):
@@ -189,6 +208,15 @@ async def evaluate(
             ),
         )
 
+    # The severity floor. Deliberately a constant rather than policy: a floor
+    # an operator can lower under pressure is a floor that reaches zero.
+    introduced = DashboardQueries(request.app.state.catalog).introduced_by(
+        token.repo_full_name, body.commit_sha
+    )
+    introduced_blocking = bool(
+        introduced.get("critical", 0) or introduced.get("high", 0)
+    )
+
     return EvaluateResult(
         decision_id=published.decision.decision_id,
         overall_risk_score=published.decision.overall_risk_score,
@@ -198,6 +226,8 @@ async def evaluate(
         blocking=published.blocking,
         check_run_id=published.check_run_id,
         check_run_error=published.check_run_error,
+        introduced=introduced,
+        introduced_blocking=introduced_blocking,
     )
 
 

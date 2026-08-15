@@ -521,6 +521,41 @@ class DashboardQueries:
 
     # -- scan health ----------------------------------------------------
 
+    def introduced_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
+        """Open findings this commit *introduced*, by severity (D-048).
+
+        The question a gate on a commit should ask. Oracle's score describes
+        the whole open backlog, which is the right answer to "how much risk
+        does this repository carry" and the wrong one to "should this change
+        ship" - a repository with 243 accepted container risks refuses every
+        commit regardless of content, and a gate that refuses everything gets
+        switched off.
+
+        "Introduced" is `first_seen_scan_run_id` belonging to a scan of this
+        commit, not `first_seen_at` near it in time. Time would sweep in
+        whatever a concurrent scan of a different commit happened to report,
+        and this has to be attributable to the change in front of it.
+
+        Only `open` counts. A finding introduced and already dispositioned -
+        a false positive, an accepted risk - is not a reason to refuse the
+        commit that introduced it.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT f.severity, count(*)
+            FROM findings f
+            WHERE f.asset_id = ?
+              AND f.status = 'open'
+              AND f.first_seen_scan_run_id IN (
+                    SELECT scan_run_id FROM scan_runs
+                    WHERE repo_full_name = ? AND commit_sha = ?
+              )
+            GROUP BY 1
+            """,
+            [repo_full_name, repo_full_name, commit_sha],
+        )
+        return {str(severity): int(count) for severity, count in rows}
+
     def vulnerability_management(
         self, repo_full_name: str | None = None
     ) -> dict[str, Any]:
