@@ -1445,6 +1445,11 @@ jobs:
   # functional suite already holds a session and walks multi-step flows;
   # proxying it hands ZAP that corpus, and the spider then explores from
   # inside the authenticated surface rather than from the front door.
+  #
+  # PAUSED (D-053): the active scan saturates the host and starves everything
+  # sharing it, production included. Trigger by hand when needed; unpause when
+  # the scan has a resource budget it can live within. Nothing downstream
+  # depends on this job, so pausing it blocks nothing.
   - name: demo-and-dast
     public: true
     # One at a time, and this is load-bearing rather than politeness. There is

@@ -1635,6 +1635,75 @@ the difference is one line of output.
 
 ---
 
+## D-052 — The operational store upgrades its own schema on startup
+
+**Status:** Decided and shipped
+**Trigger:** Production outage, 2026-08-14
+
+`scanned_by` was added to `RepoOnboarding`, shipped through a green build, and
+took the repository list down with `no such column` — while the container
+reported healthy and 1088 tests passed. The mechanism: `create_all` creates
+missing *tables* and deliberately leaves existing ones alone, so a column added
+to an existing model reaches every database created after the change (all test
+databases, which are built fresh) and none of the databases that already exist
+(production). The test suite structurally cannot catch this class of failure,
+because its databases are never old.
+
+**Decision:** `Database.create_all()` now also adds any column the models
+declare that the database lacks — the same lazy upgrade the lake has done for
+Parquet partitions since spec 05 §5a, applied to SQLite. Existing rows get the
+model's own default (it is what the application would have written had the
+column existed), indexed columns get their index, and the upgrade logs what it
+changed. A required column with no default is refused loudly at upgrade time —
+and refused earlier than that by a drift-guard test asserting every column in
+the models can be added to a table that already has rows. Identity columns that
+shipped with their tables are grandfathered in a frozen list; the list is
+asserted not to grow.
+
+**Alternative rejected:** Alembic. Right answer for a schema with forks in its
+history; this store has one deployment and additive changes only, and a
+migration tool nobody runs on deploy fails in exactly the way `create_all`
+just did.
+
+**Also fixed here:** the healthcheck said healthy the whole time, because it
+checks liveness, not whether the schema can serve the queries the UI makes.
+Left as a known limitation — a startup that upgrades the schema removes the
+disagreement at its source.
+
+---
+
+## D-053 — DAST is paused and out of the mandatory chain, temporarily
+
+**Status:** Decided — explicitly temporary, revisit owed
+**Trigger:** ZAP's active scan measured at 548% CPU / 7 GiB on the shared host
+
+Everything runs on one machine: production Mykronos, TheHub demo, Concourse,
+and ZAP. While an active scan runs, production requests time out at 30+
+seconds — from a browser, the platform is down. A security lane that takes the
+platform down while it runs costs more than the findings it produces are
+worth, *on this hardware, today*.
+
+**Decision:**
+- `mykronos/demo-and-dast`: paused. Nothing downstream depends on it, so
+  pausing blocks nothing. Trigger by hand when a DAST pass is wanted.
+- `thehub/functional-dast`: paused, and `oracle-gate` re-pointed from
+  `passed: [functional-dast]` to `passed: [deploy-demo]` so TheHub can still
+  reach prod. The job definition stays; a manual trigger still reports into
+  Mykronos.
+
+**What this costs while it lasts:** no continuous DAST coverage, and the
+platform's own coverage cross-check (spec 15 §4a) will rightly show `dast`
+enabled with no scans arriving. That is the correct signal — the gap is real
+and should show as one.
+
+**To restore it, the scan needs a resource budget it can live within.** The
+candidates, roughly in order of realism here: cap the ZAP container
+(`cpus`/`mem_limit` in the demo compose) and accept a slower scan; schedule
+the lane off-hours with a `time` resource instead of on every commit; or move
+DAST to hardware that production does not share. Capping is the cheapest and
+should be tried first — the scan has no deadline, and a scan that takes an
+hour at 2 CPUs starves nobody.
+
 ---
 
 ## D-046 — Test results are ScanRuns with no findings, not a new capability

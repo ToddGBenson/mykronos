@@ -1531,7 +1531,14 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [functional-dast]
+        # DAST is temporarily out of the mandatory chain (D-053): the active
+        # scan saturates the single worker host - ZAP alone was measured at
+        # 548% CPU / 7 GiB - and while it runs, everything sharing the machine
+        # (including production Mykronos) times out. `functional-dast` still
+        # exists and can be triggered by hand; when it runs, its results still
+        # reach Mykronos. It is paused, not deleted, and this edge goes back
+        # when the scan has a resource budget it can live within.
+        passed: [deploy-demo]
       - get: python
       - task: evaluate
         image: python
