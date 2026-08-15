@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Regenerate the frontend API types when a staged change touches the API.
+#
+# Four times in one day a schema change was committed without its regenerated
+# types, and each time the frontend lane caught it in CI -- twenty minutes and
+# a re-trigger after the fact. This moves the catch to commit time, where the
+# fix is free.
+#
+# Install: python scripts/install_hooks.py   (or: git config core.hooksPath scripts/hooks)
+#
+# Only fires when the staged set includes something that can change the schema:
+# a backend API module, the schemas, or the app wiring. A frontend-only or
+# docs-only commit pays nothing.
+
+set -euo pipefail
+
+staged=$(git diff --cached --name-only)
+
+if echo "$staged" | grep -qE '^backend/mykronos/(api/|schemas\.py|main\.py|capabilities\.py)'; then
+  echo "[pre-commit] API surface changed; checking frontend types..."
+  if ! python scripts/regen_api_types.py --check >/dev/null 2>&1; then
+    echo "[pre-commit] Types are stale. Regenerating and staging them."
+    python scripts/regen_api_types.py
+    git add frontend/lib/api-types.d.ts
+    echo "[pre-commit] frontend/lib/api-types.d.ts regenerated and staged."
+  fi
+fi
