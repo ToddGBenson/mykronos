@@ -1229,6 +1229,19 @@ export interface components {
             check_run_id?: string | null;
             /** Check Run Error */
             check_run_error?: string | null;
+            /**
+             * Introduced
+             * @description Open findings this commit introduced, by severity (D-048). The question a gate on a commit should ask, as distinct from `overall_risk_score`, which describes the whole backlog and therefore refuses every commit once the backlog is large.
+             */
+            introduced?: {
+                [key: string]: number;
+            };
+            /**
+             * Introduced Blocking
+             * @description Whether this commit introduced an open finding at or above the severity floor. Unambiguous, and it does not drift as the backlog grows - which is why it replaces the composite score as the thing CI blocks on.
+             * @default false
+             */
+            introduced_blocking: boolean;
         };
         /**
          * FindingBatch
