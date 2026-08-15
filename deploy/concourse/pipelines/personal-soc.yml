@@ -419,7 +419,7 @@ jobs:
                   echo "=================================================="
                 else
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                  python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   python -m mykronos.upload \
                     --capability secrets --tool gitleaks \
                     --results-path /tmp/results \

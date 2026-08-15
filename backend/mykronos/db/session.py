@@ -127,12 +127,17 @@ class Database:
 
     def _default_literal(self, column: Column[Any]) -> str | None:
         """The column's default rendered as a SQL literal, if it has one."""
-        if column.server_default is not None:
-            return str(column.server_default.arg)  # type: ignore[union-attr]
-        if column.default is None:
-            return None
+        # `server_default` may be a DefaultClause (has .arg) or a FetchedValue
+        # (computed by the database, nothing to render); `default` may likewise
+        # be a Sequence rather than a ColumnDefault. getattr narrows both
+        # without enumerating SQLAlchemy's hierarchy.
+        server_arg = getattr(column.server_default, "arg", None)
+        if server_arg is not None:
+            return str(server_arg)
 
-        value = column.default.arg  # type: ignore[union-attr]
+        value = getattr(column.default, "arg", None)
+        if value is None:
+            return None
         if callable(value):
             # SQLAlchemy wraps zero-argument callables to take a context.
             try:
@@ -146,8 +151,10 @@ class Database:
             return "1" if value else "0"
         if isinstance(value, (int, float)):
             return str(value)
-        if isinstance(value, (datetime, date)):
+        if isinstance(value, datetime):
             return _quote(value.isoformat(sep=" "))
+        if isinstance(value, date):
+            return _quote(value.isoformat())
         if isinstance(value, str):
             return _quote(value)
         return None

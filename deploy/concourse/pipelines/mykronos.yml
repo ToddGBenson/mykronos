@@ -230,7 +230,7 @@ jobs:
                 python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C ../.. rev-parse HEAD)"                   --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 exit "$rc"
@@ -298,7 +298,7 @@ jobs:
                 python scripts/check_links.py . --junit-xml=../results/qa.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 # The QA result decides the job, and it is reported either
@@ -412,7 +412,7 @@ jobs:
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
                   --results-path /tmp/results \
@@ -478,7 +478,7 @@ jobs:
                 cp /tmp/osv.json ../evidence/osv.json
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
                   --results-path /tmp/results \
@@ -511,7 +511,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 SHA=$(git -C source rev-parse HEAD)
                 SHORT=$(git -C source rev-parse --short HEAD)
@@ -640,7 +640,7 @@ jobs:
                 python scripts/check_ai.py . --sarif=../results/ai.sarif
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false
 
   - name: sast
@@ -700,7 +700,7 @@ jobs:
                 fi
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
                   --capability sast --tool semgrep \
                   --results-path /tmp/results \
@@ -797,7 +797,7 @@ jobs:
                 git fetch --quiet origin "$BASE" || true
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 python -m mykronos.aegis_signals \
                   --pr-number "$PR" \
@@ -915,7 +915,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
                   --capability iac --tool checkov \
                   --results-path results \
@@ -1340,7 +1340,7 @@ jobs:
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
                   --capability containers --tool trivy \
                   --results-path results \
@@ -1610,7 +1610,7 @@ jobs:
 
                 echo "== Uploading =="
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;u=json.loads(m.distribution('mykronos').read_text('direct_url.json'));print('mykronos uploader @', u['vcs_info']['commit_id'][:12])"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 python -m mykronos.upload \
                   --capability functional --tool junit \
