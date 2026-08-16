@@ -390,6 +390,10 @@ jobs:
 
   - name: secrets
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -431,6 +435,10 @@ jobs:
 
   - name: dependencies
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -620,6 +628,10 @@ jobs:
   # not the same as a clean bill of health.
   - name: ai
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -652,6 +664,10 @@ jobs:
 
   - name: sast
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -729,6 +745,10 @@ jobs:
   # the honest outcome and is announced rather than inferred.
   - name: insider
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -851,6 +871,10 @@ jobs:
   # always been empty.
   - name: iac
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial_groups: [scan-heavy-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -957,6 +981,10 @@ jobs:
 
   - name: oracle-gate
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1045,6 +1073,10 @@ jobs:
   # points at, which is the shape spec 16 section 3 already chose for TheHub.
   - name: promote
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1093,6 +1125,10 @@ jobs:
 
   - name: build
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1161,6 +1197,10 @@ jobs:
 
   - name: publish-backend
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1206,6 +1246,10 @@ jobs:
 
   - name: publish-frontend
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1260,6 +1304,10 @@ jobs:
   # the decision about them belongs.
   - name: containers
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1374,6 +1422,10 @@ jobs:
   # not make it merge something if it tried to.
   - name: remediate
     public: true
+    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
+    # single commit fanned out onto the one worker and left thehub with
+    # 11 builds pending and 0 started for hours.
+    serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
