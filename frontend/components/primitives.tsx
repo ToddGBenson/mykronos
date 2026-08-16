@@ -111,30 +111,33 @@ export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }
 }
 
 /**
- * Fifteen slots, one per capability, so coverage gaps read down the column.
- *
- * A repo missing Secrets is visible without reading a single word — which is
- * the thing a portfolio table is actually for. Same order as the pipeline's
- * stage list (ALL_STAGES in backend/mykronos/ci.py), so this column and the
- * repo's CI page read the same way.
+ * The standard set: fifteen checks every repository is measured against, in
+ * pipeline-stage order (ALL_STAGES in backend/mykronos/ci.py), so the
+ * portfolio column and the repo's CI page read the same way. One icon per
+ * capability, used identically everywhere — an icon that changes meaning
+ * between pages is worse than no icon.
  */
-export const ALL_CAPABILITIES = [
-  "unit",
-  "qa",
-  "sast",
-  "secrets",
-  "atlas",
-  "containers",
-  "iac",
-  "functional",
-  "dast",
-  "cloud",
-  "network",
-  "ai",
-  "aegis",
-  "oracle",
-  "patchwork",
-] as const;
+export const CAPABILITY_META = {
+  unit: { icon: "🧪", label: "Unit tests" },
+  qa: { icon: "📋", label: "QA / docs quality" },
+  sast: { icon: "🔍", label: "Static analysis (SAST)" },
+  secrets: { icon: "🔑", label: "Secret scanning" },
+  atlas: { icon: "📦", label: "Dependencies (SCA)" },
+  containers: { icon: "🐳", label: "Container scanning" },
+  iac: { icon: "🏗️", label: "Infrastructure as code" },
+  functional: { icon: "🧭", label: "Functional tests" },
+  dast: { icon: "🕷️", label: "Dynamic analysis (DAST)" },
+  cloud: { icon: "☁️", label: "Cloud posture" },
+  network: { icon: "🌐", label: "Network scanning" },
+  ai: { icon: "✨", label: "AI checks" },
+  aegis: { icon: "🛡️", label: "Insider risk (Aegis)" },
+  oracle: { icon: "⚖️", label: "Risk decisions (Oracle)" },
+  patchwork: { icon: "🩹", label: "Auto-remediation (Patchwork)" },
+} as const;
+
+export const ALL_CAPABILITIES = Object.keys(
+  CAPABILITY_META,
+) as (keyof typeof CAPABILITY_META)[];
 
 export function CapabilityDots({
   enabled,
@@ -145,8 +148,8 @@ export function CapabilityDots({
   pending?: string[];
   /**
    * Capabilities that have actually reported a scan. Implemented-but-silent
-   * and implemented-and-reporting are different facts: the first is a hollow
-   * dot, the second is solid. Without the distinction, "enabled" quietly
+   * and implemented-and-reporting are different facts: the first is dimmed,
+   * the second is full-strength. Without the distinction, "enabled" quietly
    * claims coverage that may not exist — the unit lane was enabled and had
    * never reported once.
    */
@@ -154,36 +157,39 @@ export function CapabilityDots({
 }) {
   return (
     <span
-      className="inline-flex gap-[2px]"
+      className="inline-flex items-center gap-[3px]"
       role="img"
       aria-label={
         enabled.length ? `Enabled: ${enabled.join(", ")}` : "No capabilities enabled"
       }
     >
       {ALL_CAPABILITIES.map((capability) => {
+        const meta = CAPABILITY_META[capability];
         const isOn = enabled.includes(capability);
         const isLive = isOn && live.includes(capability);
         const isPending = !isOn && pending.includes(capability);
         return (
           <span
             key={capability}
-            title={`${capability}${
+            title={`${meta.label}${
               isLive
-                ? " (live)"
+                ? " — live"
                 : isOn
-                  ? " (enabled, not yet reporting)"
+                  ? " — enabled, not yet reporting"
                   : isPending
-                    ? " (pending merge)"
-                    : " (off)"
+                    ? " — pending install PR"
+                    : " — not enabled"
             }`}
-            className={`block h-[7px] w-[7px] border ${
+            className={`text-[11px] leading-none ${
               isLive
-                ? "border-accent bg-accent"
+                ? ""
                 : isOn || isPending
-                  ? "border-accent bg-transparent"
-                  : "border-rule bg-transparent"
+                  ? "opacity-45 saturate-50"
+                  : "opacity-15 grayscale"
             }`}
-          />
+          >
+            {meta.icon}
+          </span>
         );
       })}
     </span>

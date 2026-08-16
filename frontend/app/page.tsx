@@ -128,6 +128,28 @@ export default async function PortfolioPage({
                         </Pill>
                       </span>
                     ) : null}
+                    <span className="ml-2 inline-flex gap-1.5 align-baseline">
+                      <a
+                        href={repo.github_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={`${repo.repo_full_name} on GitHub`}
+                        className="text-[9px] text-ink-3 underline decoration-dotted hover:text-accent"
+                      >
+                        github
+                      </a>
+                      {repo.pipeline_url ? (
+                        <a
+                          href={repo.pipeline_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Concourse pipeline"
+                          className="text-[9px] text-ink-3 underline decoration-dotted hover:text-accent"
+                        >
+                          pipeline
+                        </a>
+                      ) : null}
+                    </span>
                   </td>
 
                   <td className="px-2 py-2">

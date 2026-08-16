@@ -362,6 +362,7 @@ jobs:
         # is the honest cost of a changed dependency rather than a fixed tax on
         # every commit.
         params:
+          <<: *mykronos_env
           PIP_CACHE_DIR: /pipcache
         # A build that hangs must fail rather than occupy a worker. One ran for
         # 47 minutes and was still going when it was killed by hand; nothing in
@@ -818,7 +819,30 @@ jobs:
 
                 # `-p no:cacheprovider` because the checkout is thrown away
                 # after the build; writing .pytest_cache into it is pure IO.
-                python -m pytest tests/unit -q -p no:cacheprovider
+                #
+                # JUnit XML so the result reaches Mykronos as a ScanRun with no
+                # findings (D-046) - this lane ran for months without reporting,
+                # so the platform could not tell TheHub's tests passed from
+                # TheHub's tests never ran. The exit code is recovered after
+                # the upload: a failing suite must still report.
+                mkdir -p /tmp/results
+                rc=0
+                python -m pytest tests/unit -q -p no:cacheprovider \
+                  --junitxml=/tmp/results/unit.xml || rc=$?
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                python -m mykronos.upload \
+                  --capability unit --tool junit \
+                  --results-path /tmp/results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false || true
+
+                exit "$rc"
 
   # == Stage 2: build =======================================================
   #
@@ -2285,6 +2309,19 @@ jobs:
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                   --severity-threshold low --blocking false
 
+                # The one line the junit.xml was written in anticipation of:
+                # the functional run reaches Mykronos as a ScanRun with no
+                # findings (D-046), so "the suite passed" and "the suite never
+                # ran" stop looking identical from the platform's side.
+                python -m mykronos.upload \
+                  --capability functional --tool junit \
+                  --results-path functional \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false || true
+
       - <<: *hub_report
         params:
           HUB_URL: ((thehub-url))
@@ -2673,6 +2710,7 @@ jobs:
       - task: model-inventory
         image: python
         params:
+          <<: *mykronos_env
           ANTHROPIC_API_KEY: ((anthropic-api-key))
         config:
           platform: linux
@@ -2793,7 +2831,34 @@ jobs:
                 print("Every Claude model named at a call site is still served.")
                 PY
 
-                SERVED="$SERVED" python check.py
+                rc=0
+                SERVED="$SERVED" python check.py || rc=$?
+
+                # The standard AI checks (D-047), same three rules every repo
+                # gets: model pinning, prompt-injection surface, evaluation
+                # coverage. Fetched from the same pinned ref as the uploader
+                # so the checker and the platform agree on what "ai" means.
+                # The live-API inventory above stays - it validates against
+                # what Anthropic serves today, which a static check cannot.
+                apt-get install -y -qq git >/dev/null
+                curl -sSfL -o check_ai.py \
+                  "https://raw.githubusercontent.com/ToddGBenson/mykronos/${MYKRONOS_REF}/scripts/check_ai.py"
+                mkdir -p results
+                python check_ai.py source --sarif results/ai.sarif
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                python -m mykronos.upload \
+                  --capability ai --tool mykronos-ai-checks \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false || true
+
+                exit "$rc"
 
       - <<: *hub_report
         params:

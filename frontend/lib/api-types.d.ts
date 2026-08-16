@@ -1584,6 +1584,13 @@ export interface components {
             repo_full_name: string;
             /** Status */
             status: string;
+            /**
+             * Github Url
+             * @default
+             */
+            github_url: string;
+            /** Pipeline Url */
+            pipeline_url?: string | null;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -1756,6 +1763,11 @@ export interface components {
             github_repo_full_name: string;
             /** Status */
             status: string;
+            /**
+             * Scanned By
+             * @default concourse
+             */
+            scanned_by: string;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -1794,6 +1806,11 @@ export interface components {
             github_repo_full_name: string;
             /** Status */
             status: string;
+            /**
+             * Scanned By
+             * @default concourse
+             */
+            scanned_by: string;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */

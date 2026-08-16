@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { DispositionForm } from "@/components/disposition";
 import { InsiderRiskTab } from "@/components/insider-risk";
@@ -7,7 +8,6 @@ import { PipelinesPanel } from "@/components/pipelines";
 import { RemediationTab } from "@/components/remediation";
 import { SscsTab } from "@/components/sscs";
 import {
-  CapabilityDots,
   Crumb,
   EmptyState,
   ErrorPanel,
@@ -55,6 +55,24 @@ export default async function RepoPage({
     return <ErrorPanel title="Repository unavailable" detail={repo.error} />;
   }
 
+  // What "enabled" means depends on who scans this repo: the installer's
+  // ledger for Actions, the grants for everything else — same union the
+  // portfolio and stages views apply. `live` is which of those have actually
+  // reported a run, so the manager can say implemented-and-reporting versus
+  // implemented-and-silent.
+  const scanHealth = await getScanHealth(repoId);
+  const enabledSet = new Set(repo.data.enabled_capabilities);
+  if (repo.data.scanned_by !== "github_actions") {
+    for (const capability of repo.data.granted_capabilities ?? []) {
+      enabledSet.add(capability);
+    }
+  }
+  const live = scanHealth.ok
+    ? scanHealth.data.capabilities
+        .filter((entry) => entry.runs > 0)
+        .map((entry) => entry.capability)
+    : [];
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-3">
@@ -64,13 +82,14 @@ export default async function RepoPage({
         <Pill tone={repo.data.status === "active" ? "pass" : "warn"}>
           {repo.data.status.replace("_", " ")}
         </Pill>
-        <span className="ml-auto">
-          <CapabilityDots
-            enabled={repo.data.enabled_capabilities}
-            pending={repo.data.pending_capabilities ?? []}
-          />
-        </span>
       </div>
+
+      <CapabilityManager
+        repoId={repoId}
+        enabled={[...enabledSet].sort()}
+        pending={repo.data.pending_capabilities ?? []}
+        live={live}
+      />
 
       {repo.data.pending_capabilities?.length ? (
         <div className="border border-high bg-high-wash px-3 py-2 text-[11px] text-ink-2">

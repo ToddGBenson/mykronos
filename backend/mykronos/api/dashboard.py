@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
-from mykronos.ci import ConcourseClient, coverage, reconcile
+from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
 from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
@@ -57,6 +57,12 @@ class PortfolioRowOut(BaseModel):
     repo_id: str
     repo_full_name: str
     status: str
+    #: Where this repository lives and where it is built. On every row rather
+    #: than only the drill-down page: "which pipeline produced this" is a
+    #: question people ask from the portfolio, and answering it should not
+    #: cost a navigation.
+    github_url: str = ""
+    pipeline_url: str | None = None
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     severity_counts: dict[str, int]
@@ -326,6 +332,17 @@ async def portfolio(
     with request.app.state.db.session() as session:
         rows, summary = _queries(request).portfolio(session, include_removed=include_removed)
 
+    # The browser's Concourse, not this process's (see ConcourseClient): a
+    # link to http://concourse:8080 resolves nowhere from a laptop.
+    settings = request.app.state.settings
+    concourse = (settings.concourse_external_url or settings.concourse_url or "").rstrip("/")
+    team = settings.concourse_team
+
+    def pipeline_url(repo_full_name: str) -> str | None:
+        if not concourse:
+            return None
+        return f"{concourse}/teams/{team}/pipelines/{pipeline_name_for(repo_full_name)}"
+
     return PortfolioOut(
         summary=summary,
         repos=[
@@ -333,6 +350,8 @@ async def portfolio(
                 repo_id=row.repo_id,
                 repo_full_name=row.repo_full_name,
                 status=row.status,
+                github_url=f"https://github.com/{row.repo_full_name}",
+                pipeline_url=pipeline_url(row.repo_full_name),
                 enabled_capabilities=row.enabled_capabilities,
                 pending_capabilities=row.pending_capabilities,
                 severity_counts=row.severity_counts,

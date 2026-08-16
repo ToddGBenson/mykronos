@@ -96,6 +96,10 @@ class RepoSummary(BaseModel):
     id: str
     github_repo_full_name: str
     status: str
+    #: Which CI scans this repo (spec 03 3a). The UI needs it to know what
+    #: "enabled" means: the installer's ledger for Actions, the grants for
+    #: everything else.
+    scanned_by: str = "concourse"
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     pending_pr_number: int | None
@@ -132,10 +136,9 @@ def _summary(row: RepoOnboarding) -> RepoSummary:
         id=row.id,
         github_repo_full_name=row.github_repo_full_name,
         status=row.status,
+        scanned_by=row.scanned_by,
         enabled_capabilities=list(row.enabled_capabilities or []),
-        pending_capabilities=(
-            list(row.pending_capabilities) if row.pending_capabilities else None
-        ),
+        pending_capabilities=(list(row.pending_capabilities) if row.pending_capabilities else None),
         pending_pr_number=row.pending_pr_number,
         default_branch=row.default_branch,
         onboarded_at=row.onboarded_at,
@@ -165,16 +168,11 @@ async def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
     each schema comes from the adapter registry rather than being restated
     here, so the form can never offer a tool the platform cannot parse.
     """
-    return {
-        capability: config_schema(capability)
-        for capability in configurable_capabilities()
-    }
+    return {capability: config_schema(capability) for capability in configurable_capabilities()}
 
 
 @router.post("", response_model=RepoSummary, status_code=status.HTTP_201_CREATED)
-async def onboard_repo(
-    request: Request, body: OnboardRequest, actor: AdminDep
-) -> RepoSummary:
+async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) -> RepoSummary:
     """Idempotently register a repo (spec 02 §7).
 
     Usually the `installation` webhook gets here first; this exists for the
@@ -187,11 +185,15 @@ async def onboard_repo(
     with db.session() as session:
         org = get_or_create_organization(session, owner)
 
-        row = session.execute(
-            select(RepoOnboarding)
-            .where(RepoOnboarding.org_id == org.id)
-            .where(RepoOnboarding.github_repo_full_name == body.github_repo_full_name)
-        ).scalars().first()
+        row = (
+            session.execute(
+                select(RepoOnboarding)
+                .where(RepoOnboarding.org_id == org.id)
+                .where(RepoOnboarding.github_repo_full_name == body.github_repo_full_name)
+            )
+            .scalars()
+            .first()
+        )
 
         created = row is None
         if row is None:
@@ -231,8 +233,7 @@ async def list_repos(
     include_removed: bool = Query(
         default=False,
         description=(
-            "Offboarded repos are hidden by default but remain queryable for "
-            "audit (spec 10 §7)."
+            "Offboarded repos are hidden by default but remain queryable for audit (spec 10 §7)."
         ),
     ),
 ) -> list[RepoSummary]:
@@ -253,9 +254,7 @@ async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetai
             github_installation_id=row.github_installation_id,
             onboarded_by=row.onboarded_by,
             auto_merge_workflow_prs=row.auto_merge_workflow_prs,
-            granted_capabilities=sorted(
-                registry.granted_capabilities(row.github_repo_full_name)
-            ),
+            granted_capabilities=sorted(registry.granted_capabilities(row.github_repo_full_name)),
             capability_config=capability_configs(session, row),
         )
 
@@ -301,11 +300,15 @@ async def update_capabilities(
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
                 ) from exc
-            existing = session.execute(
-                select(CapabilityConfig)
-                .where(CapabilityConfig.repo_onboarding_id == row.id)
-                .where(CapabilityConfig.capability == capability)
-            ).scalars().first()
+            existing = (
+                session.execute(
+                    select(CapabilityConfig)
+                    .where(CapabilityConfig.repo_onboarding_id == row.id)
+                    .where(CapabilityConfig.capability == capability)
+                )
+                .scalars()
+                .first()
+            )
             if existing is None:
                 session.add(
                     CapabilityConfig(
@@ -381,17 +384,11 @@ async def update_capabilities(
         registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
 
         try:
-            plan = await installer.plan(
-                row, requested, configs=capability_configs(session, row)
-            )
-            result = await installer.apply(
-                session, row, plan, actor=actor, registry=registry
-            )
+            plan = await installer.plan(row, requested, configs=capability_configs(session, row))
+            result = await installer.apply(session, row, plan, actor=actor, registry=registry)
         except PathCollisionError as exc:
             # spec 03 §8 — a human wrote a file where we would generate one.
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except InstallerError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
@@ -439,9 +436,7 @@ async def update_capabilities(
             removed=[] if plan.is_noop else plan.removed,
             pull_request_url=result.pull_request.url if result.pull_request else None,
             pull_request_number=(
-                result.pull_request.number
-                if result.pull_request
-                else plan.pending_pr_number
+                result.pull_request.number if result.pull_request else plan.pending_pr_number
             ),
             secret_provisioned=result.secret_provisioned,
             detail=detail,
