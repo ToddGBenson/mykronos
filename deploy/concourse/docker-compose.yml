@@ -11,11 +11,84 @@
 #   - Postgres is not published at all. It is reachable only on the compose
 #     network, and TheHub already owns 5432 on this host.
 #
-# `quickstart` runs web and worker in one container. That is right for a
-# single-host deployment and wrong for anything with more than one worker; the
-# split is a compose change, not a redesign.
+# `quickstart` ran web and worker in one container. That was right until one
+# worker became the bottleneck - a scan pass off a single commit starved the
+# other pipeline for hours, checks included - so web and two workers are now
+# separate services. As predicted, it was a compose change and not a redesign.
 
 name: mykronos-concourse
+
+# ── workers ────────────────────────────────────────────────────────────
+# Two, because one was the bottleneck: builds queued behind each other and
+# so did the resource checks that decide whether a build can start at all.
+# They are defined from one anchor so they cannot drift apart; what differs
+# is the name, the key, and the state volume, and those must differ.
+#
+# This adds no CPU - it is the same host - so it is not a throughput fix.
+# What it buys is that the two pipelines stop queueing behind each other,
+# which is the failure actually observed.
+#
+# Capped at 6 CPUs of the 20 here. Production, demo, Postgres, Redis, MinIO
+# and the registry share this machine, and D-053 is the record of what it
+# costs when a scan is allowed to take all of it: at 548% CPU, production
+# served timeouts. Two capped workers can take 12 of 20 and leave the rest.
+#
+# The memory ceiling is deliberately generous rather than tight. A CPU cap
+# slows a build down; a memory cap kills it, and an OOM in the middle of a
+# scan looks like a tool bug for as long as it takes to find the limit.
+# 6g is a runaway backstop, not a budget.
+x-worker: &worker
+  image: concourse/concourse:7.14
+  restart: unless-stopped
+  command: worker
+  # A worker runs the container runtime. This is the privilege that
+  # quickstart forced onto the web node too, and no longer does.
+  privileged: true
+  depends_on:
+    concourse:
+      condition: service_healthy
+  cpus: 6
+  mem_limit: 6g
+  environment: &worker-env
+    CONCOURSE_TSA_HOST: concourse:2222
+    CONCOURSE_TSA_PUBLIC_KEY: /keys/tsa_host_key.pub
+    CONCOURSE_WORK_DIR: /worker-state
+    CONCOURSE_BAGGAGECLAIM_DRIVER: overlay
+
+    # There is no CONCOURSE_GARDEN_NETWORK here, though the quickstart config
+    # carried a `CONCOURSE_WORKER_GARDEN_NETWORK: host` for as long as it
+    # existed. The worker forwards every CONCOURSE_GARDEN_* variable to gdn as
+    # a flag, and gdn has no --network flag: setting it here killed both
+    # workers on boot with `unknown flag 'network'`. Under quickstart the name
+    # did not match the forwarding prefix, so it was never passed on and never
+    # did anything - dead configuration that only looked load-bearing.
+
+    # Garden gives each task container Docker's internal resolver at
+    # 127.0.0.11, which is not reachable from inside them, so every resource
+    # check failed with "Could not resolve host: github.com" — a DNS handoff
+    # that was never wired up, reading as a network outage.
+    #
+    # Public resolvers, and the consequence is accepted rather than worked
+    # around. `CONCOURSE_GARDEN_DNS_PROXY_ENABLE` looked like the tidy fix
+    # and did not bridge it: this container resolves through Docker's
+    # embedded server at 127.0.0.11, which a garden container cannot reach
+    # from its own network namespace either way.
+    #
+    # So Docker service names do not resolve inside tasks, and internal
+    # services are addressed by IP instead - see the pipeline vars. An IP
+    # needs no resolver, and the alternative was a DNS rabbit hole to save
+    # two lines of configuration.
+    CONCOURSE_GARDEN_DNS_SERVER: "1.1.1.1,8.8.8.8"
+
+    # Builds are pruned aggressively: this host runs several other stacks and
+    # Concourse will happily fill a disk with container volumes.
+    CONCOURSE_BAGGAGECLAIM_VOLUME_SWEEPER_MAX_IN_FLIGHT: "5"
+    CONCOURSE_LOG_LEVEL: info
+  networks: [concourse]
+  extra_hosts:
+    # How a pipeline task reaches the Mykronos backend on the host.
+    - "host.docker.internal:host-gateway"
+
 
 services:
   concourse-db:
@@ -134,14 +207,28 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
+  # ── web ────────────────────────────────────────────────────────────────
+  # No longer `quickstart`, which fuses web and worker into one container.
+  # One worker meant one queue: `serial_groups` on the heavy jobs plus a
+  # single container to run them in, so a Mykronos scan pass (17 jobs off one
+  # commit) starved TheHub for hours - 11 builds pending, 0 started, and
+  # resource *checks* stuck behind them, which reads as "the pipeline is
+  # broken" rather than "the pipeline is queued". The header always said this
+  # split was a compose change rather than a redesign; this is that change.
+  #
+  # Not privileged any more. Only a worker needs that, and this container no
+  # longer contains one - which is a §7 improvement rather than a side effect,
+  # since the web node is the half that faces the tunnel.
+  # Still called `concourse` rather than `concourse-web`, which would read
+  # better: renaming the service orphans the running container, and an orphan
+  # keeps both the `mykronos-concourse` name and port 8080, so the replacement
+  # cannot start. Keeping the name means compose recreates this one in place.
+  # `command: web` says what it is.
   concourse:
     image: concourse/concourse:7.14
     container_name: mykronos-concourse
     restart: unless-stopped
-    command: quickstart
-    # Required for the worker's container runtime, and the reason §7 cares
-    # about isolation: a task that can build an image can do most things.
-    privileged: true
+    command: web
     depends_on:
       concourse-db:
         condition: service_healthy
@@ -158,29 +245,7 @@ services:
       CONCOURSE_ADD_LOCAL_USER: ${CONCOURSE_LOCAL_USER:?set it in .env}:${CONCOURSE_LOCAL_PASSWORD:?set it in .env}
       CONCOURSE_MAIN_TEAM_LOCAL_USER: ${CONCOURSE_LOCAL_USER}
 
-      CONCOURSE_WORKER_BAGGAGECLAIM_DRIVER: overlay
-      CONCOURSE_WORKER_GARDEN_NETWORK: host
-
-      # Garden gives each task container Docker's internal resolver at
-      # 127.0.0.11, which is not reachable from inside them, so every resource
-      # check failed with "Could not resolve host: github.com" — a DNS handoff
-      # that was never wired up, reading as a network outage.
-      #
-      # Public resolvers, and the consequence is accepted rather than worked
-      # around. `CONCOURSE_GARDEN_DNS_PROXY_ENABLE` looked like the tidy fix
-      # and did not bridge it: this container resolves through Docker's
-      # embedded server at 127.0.0.11, which a garden container cannot reach
-      # from its own network namespace either way.
-      #
-      # So Docker service names do not resolve inside tasks, and internal
-      # services are addressed by IP instead - see the pipeline vars. An IP
-      # needs no resolver, and the alternative was a DNS rabbit hole to save
-      # two lines of configuration.
-      CONCOURSE_GARDEN_DNS_SERVER: "1.1.1.1,8.8.8.8"
-
-      # Builds are pruned aggressively: this host runs several other stacks and
-      # Concourse will happily fill a disk with container volumes.
-      CONCOURSE_BAGGAGECLAIM_VOLUME_SWEEPER_MAX_IN_FLIGHT: "5"
+      # Spreads builds across the workers below rather than filling one.
       CONCOURSE_CONTAINER_PLACEMENT_STRATEGY: fewest-build-containers
 
       # Persistent keys, generated once by setup.ps1 into ./keys.
@@ -191,24 +256,23 @@ services:
       # container invalidated every session and produced "invalid state
       # token" at the login screen. Five recreates while fixing DNS and the
       # healthcheck made that look like a broken login rather than a restart.
-      CONCOURSE_SESSION_SIGNING_KEY: /signing/session_signing_key
+      CONCOURSE_SESSION_SIGNING_KEY: /keys/session_signing_key
 
-      # Only the session signing key is pinned. Supplying the TSA host and
-      # worker keys as well left the embedded worker unable to connect --
-      # "remote host public key mismatch" on every attempt -- because
-      # quickstart manages that handshake itself and the two arrangements do
-      # not compose.
+      # All three keys are pinned now, where before only the signing key was.
+      # That earlier note said supplying the TSA and worker keys left the
+      # worker unable to connect ("remote host public key mismatch"), and it
+      # was right about quickstart: quickstart runs that handshake between two
+      # processes in one container and manages the keys itself, so a
+      # half-supplied set fought with a half-generated one.
       #
-      # Nothing is lost by leaving them ephemeral: they secure a loopback
-      # connection between two processes in one container, and a restart
-      # rebuilding them costs nothing. The signing key is the one that
-      # mattered, because it is what browser cookies are signed with.
-      #
-      # Mounted at /signing rather than /concourse-keys, which is Concourse's
-      # default key directory: putting one file there made the worker
-      # auto-discover a tsa_host_key.pub while the web half generated its own
-      # host key, and the two never agreed. Half a pair from each source is
-      # worse than none from either.
+      # The workers are separate containers now, so the handshake is a real
+      # one over the compose network and both ends have to agree on keys that
+      # outlive a restart. Ephemeral keys cannot do that: the web node would
+      # generate a new host key on every recreate and every worker would
+      # refuse it. setup.ps1 already generated the full consistent set into
+      # ./keys, which is gitignored.
+      CONCOURSE_TSA_HOST_KEY: /keys/tsa_host_key
+      CONCOURSE_TSA_AUTHORIZED_KEYS: /keys/authorized_worker_keys
 
       # ── Credential manager (Vault) ─────────────────────────────────────
       # Lookup order for ((foo)) is:
@@ -227,12 +291,10 @@ services:
 
       CONCOURSE_LOG_LEVEL: info
     volumes:
-      - concourse-worker-data:/worker-state
-      - ./keys/session_signing_key:/signing/session_signing_key:ro
+      # The whole directory now, read-only: the web node needs three keys from
+      # it rather than one file.
+      - ./keys:/keys:ro
     networks: [concourse]
-    extra_hosts:
-      # How a pipeline task reaches the Mykronos backend on the host.
-      - "host.docker.internal:host-gateway"
     healthcheck:
       # bash's /dev/tcp, because this image ships neither curl nor wget. The
       # first attempt used curl and reported the container unhealthy for
@@ -250,11 +312,39 @@ services:
       retries: 20
       start_period: 90s
 
+  concourse-worker-1:
+    <<: *worker
+    container_name: mykronos-concourse-worker-1
+    environment:
+      <<: *worker-env
+      CONCOURSE_NAME: worker-1
+      CONCOURSE_TSA_WORKER_PRIVATE_KEY: /keys/worker_key
+    volumes:
+      # Keeps the existing volume, so the image and resource caches this
+      # worker has already built up survive the split.
+      - concourse-worker-data:/worker-state
+      - ./keys:/keys:ro
+
+  concourse-worker-2:
+    <<: *worker
+    container_name: mykronos-concourse-worker-2
+    environment:
+      <<: *worker-env
+      CONCOURSE_NAME: worker-2
+      # Its own key rather than a copy of worker-1's. They share a host and a
+      # trust boundary, so this buys little today; it costs two lines and
+      # means one worker can be revoked without locking the other out.
+      CONCOURSE_TSA_WORKER_PRIVATE_KEY: /keys/worker2_key
+    volumes:
+      - concourse-worker-2-data:/worker-state
+      - ./keys:/keys:ro
+
 volumes:
   vault-data:
   registry-data:
   concourse-db-data:
   concourse-worker-data:
+  concourse-worker-2-data:
   minio-data:
 
 networks:

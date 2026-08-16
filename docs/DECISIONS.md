@@ -1958,3 +1958,53 @@ non-root tool image meeting root-owned Concourse volumes:
    which Mykronos rejected with a 422 that read like a schema bug. Fixed with
    `safe.directory`, plus an explicit check — a scan that cannot say what it
    scanned is not a result (L0001, as with the reachability check).
+
+## D-055 — Concourse runs two workers, and the web node stops being one
+
+**Status:** Decided and running
+**Trigger:** One worker meant one queue, and TheHub starved behind Mykronos
+
+`quickstart` runs web and worker in one container. That was right until the
+day a single Mykronos commit fanned 17 jobs onto the one worker and left
+TheHub with 11 builds pending and 0 started — resource *checks* included, so
+the pipeline looked broken rather than queued. The compose header had said
+since spec 15 that the split would be a compose change rather than a redesign.
+It was.
+
+**Decision:** `concourse` (`command: web`) plus `concourse-worker-1` and
+`concourse-worker-2`, defined from one anchor so they cannot drift.
+
+**This adds no CPU** — it is the same host — so it is not a throughput fix.
+What it buys is that the two pipelines stop queueing behind each other, which
+is the failure that was actually observed.
+
+**Two things it also bought, neither of them planned:**
+- The web node is no longer `privileged`. Only a worker needs the container
+  runtime; quickstart forced that privilege onto the web half, which is the
+  half that faces the tunnel.
+- `CONCOURSE_WORKER_GARDEN_NETWORK: host` turned out to be dead. The worker
+  forwards `CONCOURSE_GARDEN_*` to gdn as flags, gdn has no `--network`, and
+  both workers died on boot with `unknown flag 'network'`. Under quickstart
+  the name never matched the forwarding prefix, so it had never done anything.
+  Configuration that only looks load-bearing is worse than none.
+
+**The keys had to become permanent.** The old note said pinning the TSA and
+worker keys broke the handshake, and for quickstart it did — two processes in
+one container, keys managed internally. Between separate containers the
+handshake is real and both ends must agree across a restart, so ephemeral keys
+cannot work: the web node would mint a new host key on every recreate and
+every worker would refuse it. setup.ps1 had already generated the full set.
+
+**Capped at 6 CPUs and 6g each, and the asymmetry is deliberate.** The CPU cap
+is the point — D-053 is the record of a scan taking 548% CPU and making
+production serve timeouts, and two capped workers can take 12 of 20 cores and
+leave the rest. The memory ceiling is loose on purpose: a CPU cap slows a build
+down, a memory cap kills it, and an OOM mid-scan reads as a tool bug for as
+long as it takes to find the limit.
+
+**What this does not fix.** TheHub's own jobs still share `serial_groups:
+[worker]`, so they still run one at a time; a second worker only decouples the
+two pipelines from each other. And the host is a laptop running production,
+three databases and a CI farm — Docker sees 15.49 GiB of its 31.8 GB because
+of the WSL2 default, which is a likelier binding constraint than core count and
+is free to change.
