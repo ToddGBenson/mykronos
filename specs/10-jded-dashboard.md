@@ -16,10 +16,23 @@ check each tool's own separate UI.
 
 ### 2.1 Portfolio view (landing page)
 - Table/grid of all onboarded (`status=active`) repos, one row each, showing:
-  - Repo name, enabled capabilities (icon badges)
+  - Repo name, with direct links to the GitHub repository and its Concourse
+    pipeline — "which pipeline produced this" should not cost a navigation
+    (amended 2026-08-15)
+  - The standard set of fifteen capabilities as icon badges, one consistent
+    icon per capability everywhere in the UI: solid = implemented and
+    reporting, dimmed = enabled but silent, greyed = not enabled. What is
+    missing reads straight off the row.
+  - **What "enabled" means depends on who scans the repo (amended
+    2026-08-15):** the installer's ledger for Actions-scanned repositories,
+    unioned with the capability *grants* for everything else. A
+    Concourse-scanned repo never merges an install PR, and reading only the
+    ledger showed three capabilities per repo while eleven were reporting.
   - Latest `overall_risk_score` (from Oracle's most recent `portfolio`
     decision, spec 09 §2)
-  - Open finding counts by severity
+  - **One open-findings count** (amended 2026-08-15). The severity breakdown
+    lives on the repo page and the triage queue; the landing page answers
+    "how much is open", once, per repo.
   - Latest Oracle recommendation (`go` / `review_recommended` / `no_go`)
   - Last scan freshness (most recent `ScanRun.completed_at` across all its
     capabilities)
@@ -28,6 +41,12 @@ check each tool's own separate UI.
   with a stale scan (no run in > 7 days), count of `no_go` repos.
 
 ### 2.2 Per-repo drill-down
+- **CapabilityManager** (added 2026-08-15): the standard fifteen checks as
+  one-click toggles above the tabs. Enabling syncs ingestion grants
+  immediately for pipeline-scanned repos and opens the workflow-install PR
+  for Actions-scanned ones — the same `PATCH /api/repos/{id}/capabilities`
+  either way (spec 03 §3a). The admin token stays server-side behind a route
+  handler; the browser never holds it.
 - Tabs: **Findings** (filterable table by capability/severity/status),
   **Risk Decisions** (Oracle history for this repo with expandable
   `inputs_snapshot`/`reasoning`), **Remediation** (Patchwork
@@ -151,7 +170,10 @@ specific thing standing between the repo and it.
 ## 6. Acceptance criteria
 
 - Portfolio view loads in under 2 seconds for a portfolio of 200 onboarded
-  repos, using pre-aggregated materialized views (§3).
+  repos. (Originally "using pre-aggregated materialized views" — the live
+  aggregate was measured comfortably inside the budget and the cache was
+  deliberately not built; the measurement is an enforced test. See D-016 and
+  §3.)
 - Every number shown in the UI is traceable to its underlying data lake
   rows (no dashboard-only derived numbers that can't be reproduced by a
   direct data lake query — required for audit trust).
@@ -163,7 +185,11 @@ specific thing standing between the repo and it.
 
 - Repo has capabilities enabled but zero scans have completed yet
   (freshly onboarded) — dashboard shows an explicit "awaiting first scan"
-  state per capability, not a blank/misleading "0 findings."
+  state per capability, not a blank/misleading "0 findings." The stages
+  cross-check (spec 15 §4a.1, added 2026-08-15) generalises this:
+  enabled-versus-reporting is rendered per stage, with `event_driven` for
+  capabilities that never produce a ScanRun, and enabled-plus-never-reported
+  flagged as the problem it is.
 - A repo is `removed` (offboarded) — excluded from the live portfolio view
   by default, but remains queryable via an "include removed repos"
   toggle for audit purposes (historical data is retained per spec 02 §6).

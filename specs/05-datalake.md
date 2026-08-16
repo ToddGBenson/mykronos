@@ -52,7 +52,7 @@ results siloed in its own tool's UI only.
 |---|---|---|
 | `scan_run_id` | UUID | PK |
 | `repo_full_name` | string | |
-| `capability` | enum | `sast, dast, secrets, containers, iac, cloud, aegis, atlas, patchwork, oracle` |
+| `capability` | enum | `unit, qa, sast, secrets, atlas, containers, iac, functional, dast, cloud, network, ai, aegis, oracle, patchwork` — the standard set of fifteen; the quality stages report ScanRuns with no findings (D-046), `ai` accepts SARIF from any tool (D-047) |
 | `tool_name` | string | e.g. `codeql`, `trivy` |
 | `tool_version` | string | |
 | `commit_sha` | string | |
@@ -181,9 +181,13 @@ Therefore rotation is dual-validity:
 
 A rotation that fails at step 2 leaves the old token valid and is retried;
 nothing is stranded. Ingestion responses carry an advisory
-`X-Mykronos-Token-Rotated: true` header while a superseded token is still
-being accepted, so a repo still presenting an old token after the window is
-diagnosable from logs rather than only from its eventual `401`.
+`X-Mykronos-Token-Rotated` header while a superseded token is still being
+accepted — **carrying the overlap deadline as an ISO timestamp** (amended
+2026-08-15), not a bare flag. A rotation warning without a time attached
+reads as optional: the original `true` sat unread in green build logs for a
+full 24-hour window and then every lane 401ed at once. The uploader names the
+deadline in its warning and escalates to error level with `::error::` markup
+inside the final six hours. Older servers sending `true` still warn.
 
 #### Attribution
 

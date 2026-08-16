@@ -117,9 +117,10 @@ anything can be seen end to end.
 ## 5. Definition of done (overall v1)
 
 The v1 build is complete when:
-- All 10 capabilities (SAST, DAST, Secrets, Containers, IaC, Cloud, Aegis,
-  Atlas, Patchwork, Oracle) can be enabled per-repo through the onboarding
-  UI and produce data lake records within one workflow run.
+- All capabilities in the standard set (fifteen as of 2026-08-15: the
+  original ten plus Unit, QA, Functional, AI and Network) can be enabled
+  per-repo through the dashboard — one click per capability — and produce
+  data lake records within one run of whichever CI scans the repo.
 - The dashboard shows a live portfolio view across at least 3 real
   onboarded repos with real (not seeded/synthetic) findings.
 - Oracle produces explainable PR-gate decisions incorporating findings,

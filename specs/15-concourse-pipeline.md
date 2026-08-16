@@ -113,7 +113,10 @@ the action (D-012):
       args:
         - -ec
         - |
-          pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@v1#subdirectory=backend"
+          pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@v2#subdirectory=backend"
+          # Print the commit the pin resolved to (D-051): a pinned ref is a
+          # good practice and a silently stale one is not, and the difference
+          # is one line of output.
           # ...run the scanner...
           python -m mykronos.upload \
             --capability sast --tool codeql \
@@ -130,9 +133,13 @@ and must not care — the same seam spec 14 §4 relies on.
 adapter is told where the checkout is; a Concourse task's working directory is
 not the runner path an absolute SARIF URI would name.
 
-**Pin `@v1`, and pass `mykronos-ref` where the composite action is used.** The
-package and the action are versioned together, and three separate outages in
-Phase 7 came from those two drifting apart.
+**Pin a versioned tag (`v2` today), pass it as `mykronos-ref`, and cut the
+next version deliberately.** The package and the action are versioned
+together, and three separate outages in Phase 7 came from those two drifting
+apart. The tag does not float: `v1` sat 53 commits stale while CI silently
+installed a platform that rejected four capabilities (D-051), which is why
+every install site now prints the commit its pin resolved to. Moving forward
+is cutting `v3` on purpose, never moving `v2`.
 
 ## 4a. The return path: Mykronos reads Concourse
 
@@ -186,6 +193,42 @@ Two things this deliberately does *not* do:
 a page about findings: the panel says the pipeline state is unavailable and
 every other part of the repository view renders. A dashboard that 500s because
 a CI server is restarting is worse than one that admits it does not know.
+
+### 4a.1 The coverage cross-check (added 2026-08-15)
+
+Reading Concourse back enables the check this section is cited for elsewhere:
+lining each scanning job up against the newest scan run it should have
+produced, and rendering the disagreement. Its first day of existence found a
+lane that had been green on every build and had never reported once (L0003).
+
+Per repository, every capability in the standard set resolves to one state:
+
+| State | Meaning |
+|---|---|
+| `not_enabled` | Nobody asked for it. An absence, not a problem. |
+| `reporting` | The job succeeded and its results reached the lake within the grace window. |
+| `silent` | The job succeeded and nothing arrived — green pipeline, stale data, and this row is the only thing that says those two facts disagree. |
+| `never_reported` | Enabled, the job runs, and no scan run has ever landed. |
+| `no_job` | Enabled and nothing in the pipeline produces it — the repository believes it is covered and no job disagrees, because no job exists. |
+| `not_run` | The job exists and has never run (a paused lane reads this way). |
+| `event_driven` | Aegis, Oracle and Patchwork never produce a ScanRun from a pipeline lane — webhooks, decisions and fix PRs respectively — so the job-versus-scan comparison has no sides. Not a gap. |
+
+Two rules the first implementation got wrong, kept here so they stay right:
+
+- **What "enabled" means depends on who scans the repo.** For Actions-scanned
+  repositories it is the installer's ledger — an unmerged install PR genuinely
+  means not-yet-enabled. For everything else the ledger never moves, so the
+  capability *grants* are the truth: what may write is what is enabled.
+- **A job may produce several capabilities.** `demo-and-dast` runs the
+  functional suite through ZAP's proxy and then scans — one build, two
+  uploads. Each capability answers for itself: the functional upload landing
+  does not vouch for a DAST upload that failed.
+
+**One caveat on acceptance criterion 8.** Re-applying the pipeline reproduces
+the pipeline *definition*; it also deliberately re-asserts operational pause
+state (D-053) from the set-pipeline scripts, because a `fly pause` is state
+only an operator remembers and a re-apply for an unrelated change once
+resurrected a paused DAST scan on a host it had already starved.
 
 ## 5. Storage
 

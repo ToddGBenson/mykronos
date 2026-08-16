@@ -46,7 +46,7 @@ asks Oracle whether it may ship, delivers it to a demo environment, probes that
 running environment with DAST, and then waits — indefinitely, for a person —
 before anything reaches production.
 
-It also absorbs the eight capability lanes that used to be split across two CI
+It also absorbs the capability lanes (eleven reporting as of 2026-08-15: the original eight plus unit, functional and ai) that used to be split across two CI
 systems. Spec 15 §2 argued that a second CI system duplicating the first is a
 liability; §10 asked whether both should run for one repository. §4 of this
 spec settles it in the direction that removes the duplication rather than
@@ -60,7 +60,7 @@ name and published port range:
 | Environment | Project | Reached at | Gets a commit when |
 |---|---|---|---|
 | demo | `thehub-demo` | `((thehub-demo-url))` | The static security lanes and the image scan are green (§3) |
-| prod | `thehub-prod` | `((thehub-prod-url))` | A person clicks a button in Concourse |
+| prod | `thehub-main` (the compose project that owns the containers and the `postgres_data` volume — deploying under any other name builds a parallel stack on an empty database; amended 2026-08-15) | `((thehub-prod-url))` | A person clicks a button in Concourse |
 
 Both run the *same image*, identified by the commit SHA, pulled from the
 registry the pipeline already publishes to (spec 15 §5). Promotion is
@@ -121,6 +121,18 @@ directive — true, and false about the running container, which drops to
 reason recorded in the Dockerfile itself, which is the outcome worth having:
 the claim "we already handle that" is now written where a scanner will keep
 re-asking it.
+
+> **Amended 2026-08-15 (D-053).** DAST is paused platform-wide until the scan
+> has a resource budget it can live within: ZAP's active scan was measured at
+> 548% CPU / 7 GiB on the host that also runs production, and while it scanned,
+> production timed out. `oracle-gate` takes `passed: [deploy-demo]` for the
+> duration, so the chain reaches prod without the DAST hop; the
+> `functional-dast` job stays defined, pauses are re-asserted by
+> `set-thehub-pipeline.ps1` on every apply, and a manual trigger still runs and
+> still reports. Every "now sees DAST" claim below describes the design and the
+> intended end state, not today's chain. The way back is a `cpus`/`mem_limit`
+> cap on the ZAP container — the scan has no deadline, so a slower scan starves
+> nobody.
 
 **Oracle runs after DAST, and insider after Oracle.** This is a change from the
 first version of this spec, and it trades one thing for another rather than
@@ -309,6 +321,22 @@ time, whereas a stalled poller looks like a slow deploy. The deploy job
 therefore fails on a timeout that names the Scheduled Task, so the message
 points at the thing to restart rather than at the pipeline.
 
+**Three operational facts the first prod deploy taught (2026-08-15):**
+
+- **The Scheduled Task runs `pwsh` 7, not `powershell.exe`.** Under Windows
+  PowerShell 5.1, captured native stderr becomes error records, and with
+  `$ErrorActionPreference = "Stop"` a harmless compose *warning* terminated
+  the deploy thirteen seconds in. The scripts are exercised under 7; the task
+  now runs what is tested.
+- **Prod deploys under compose project `thehub-main`** — the project that
+  already owns the containers and, critically, the `postgres_data` volume.
+  Deploying under any other project name creates a parallel stack: name
+  conflicts on the fixed `container_name`s, and a fresh empty database
+  presented as production. `deploy/thehub/.env.example` states the constraint.
+- **The poller writes a capped per-cycle log** (`registry-pull-deploy.log`).
+  Its two failed attempts before the log existed left no record of *why*, and
+  diagnosis meant re-running the deploy by hand. A quiet cycle writes nothing.
+
 **Rollback.** The host script records the SHA each environment is on before it
 starts. If the stack does not become healthy within the timeout it restores the
 previous SHA and reports the failure through `<env>.deployed`, which fails the
@@ -365,8 +393,7 @@ Everything spec 15 §6 requires, plus what this pipeline adds:
 |---|---|---|
 | TheHub ingestion token | Credential store | One repository, 90-day rotation (spec 12 §2) |
 | GitHub App installation token | Minted at set-pipeline time | One hour. Also used by the insider lane to resolve the PR |
-| Demo deploy key | Credential store | Forced command, demo only |
-| Prod deploy key | Credential store | Forced command, prod only |
+| MinIO release-bucket credentials | Credential store | Write `<env>.requested`, read `<env>.deployed` — the deploy keys of the reworked §7 (D-042); the forced-command SSH keys of the first draft no longer exist |
 | Azure service principal | Credential store | `Reader` + `Security Reader`, one subscription |
 | Registry credentials | None — the registry is on the host | Reachable only from the LAN |
 
@@ -477,10 +504,11 @@ from TheHub's own `.env`, so **nothing in TheHub changes to receive this.**
 
 | Concourse job | Reports as | Env |
 |---|---|---|
-| `unit` | `integration_tests` | prod |
+| `unit` | `integration_tests` — and, since 2026-08-15, also uploads its JUnit result to Mykronos as capability `unit` (D-046) | prod |
 | `containers` | `trivy` | prod |
 | `deploy-demo` | `deploy_staging` | staging |
-| `dast` | `dast_headers` | prod |
+| `functional-dast` | `dast_headers` — also uploads the Playwright `junit.xml` to Mykronos as `functional` and the ZAP report as `dast`. Paused under D-053; reports when triggered by hand | prod |
+| `ai-models` | `model_inventory` — also runs the standard `check_ai.py` and uploads its SARIF to Mykronos as `ai` (D-047) | prod |
 | `oracle-gate` | `oracle_gate` | prod |
 | `insider` | `insider_risk` | prod |
 | `deploy-prod` | `finish` | prod |
@@ -513,6 +541,16 @@ announced once where somebody is looking.
 
 "Add AI testing to the pipelines" was scoped by asking which pipeline actually
 has AI in it. The answer was one of them.
+
+> **Amended 2026-08-15 (D-047).** The `ai` capability now has a lane in this
+> pipeline as well as in mykronos's: `ai-models` runs the standard
+> `scripts/check_ai.py` from the pinned mykronos ref — model pinning,
+> prompt-injection surface, evaluation coverage, the same three rules every
+> repo gets — and uploads the SARIF as capability `ai`. Its original
+> live-inventory check stays alongside it, because validating call sites
+> against the models Anthropic serves *today* is something a static check
+> cannot do. The prompt-eval gate below is unchanged and remains
+> TheHub-internal.
 
 **Mykronos needs nothing new.** Its two AI surfaces — Aegis's
 `ai_classifier_url` (spec 06 §5) and Patchwork's `fix_generator_url` (spec 08
@@ -599,20 +637,33 @@ mykronos grant ToddGBenson/TheHub sast
 mykronos grant ToddGBenson/TheHub dast
 mykronos grant ToddGBenson/TheHub cloud
 mykronos grant ToddGBenson/TheHub aegis
+mykronos grant ToddGBenson/TheHub unit        # 2026-08-15: the quality lanes
+mykronos grant ToddGBenson/TheHub functional  # report as ScanRuns (D-046),
+mykronos grant ToddGBenson/TheHub ai          # and check_ai.py as SARIF (D-047)
 ```
+
+One caution the first grant taught: **granting reissues the repo's token**, and
+the old value stays valid only for the 24-hour overlap window (spec 05 §4).
+Update the pipeline vars in the same sitting, or every lane 401s at once a day
+later — which is exactly what happened.
 
 A missing grant fails the upload step at the very end of a lane that otherwise
 ran perfectly — the scan works, the findings exist, and nothing records them.
 
-**2. The repo's enabled capability set drives the dashboard, and is separate.**
-A capability that reports findings without being enabled on the repo produces
-data the portfolio's coverage column does not show. Enable `sast`, `dast`,
-`cloud` and `aegis` for TheHub through `PATCH /api/repos/{id}/capabilities`.
+**2. The repo's enabled capability set derives from the grants (amended
+2026-08-15).** For any repo not scanned by GitHub Actions, the dashboard's
+"enabled" is the union of the installer's ledger and the capability grants —
+so step 1 *is* the enablement, and the coverage column reflects it without a
+second call. `PATCH /api/repos/{id}/capabilities` remains the one-click
+enable/disable path from the dashboard's CapabilityManager; on a
+Concourse-scanned repo it syncs grants and installs nothing (spec 03 §3a).
 
-**3. The deploy keys must be installed before the pipeline is applied.**
-`Install-DeployKey.ps1` generates them and prints the `authorized_keys` lines;
-`set-thehub-pipeline.ps1` refuses to apply a pipeline whose keys are absent,
-because the alternative is three jobs that cannot ever pass.
+**3. The MinIO release bucket and the host-side poller must exist before the
+pipeline is applied** (the deploy keys of the first draft were replaced by the
+registry-pull rework, §7 / D-042). The Scheduled Task "TheHub Registry Pull
+Deploy" runs `deploy/thehub/Invoke-RegistryPullDeploy.ps1` under pwsh 7 every
+minute; without it, `deploy-demo` and `deploy-prod` publish pointers nothing
+consumes and time out naming the task.
 
 **4. TheHub's compose files must read `${THEHUB_IMAGE}`.** This is the one
 change the deploy model asks of TheHub itself, and it is what makes "deploy"
@@ -620,26 +671,22 @@ mean "run exactly this commit" rather than "rebuild and hope".
 
 ## 16. Open questions
 
-0. **"Enabled capability" and "installed Actions workflow" are the same field,
-   and for a Concourse-scanned repo they should not be.** TheHub's token is now
-   granted `dast`, `cloud` and `oracle` and the pipeline reports all three — but
-   the portfolio's coverage column still shows five capabilities, because that
-   column reads the repo's *enabled* set, and the only way to change it is
-   `PATCH /api/repos/{id}/capabilities`, which opens a workflow-install pull
-   request against the repository (spec 03). For TheHub that would commit the
-   GitHub Actions workflows this whole spec removes.
+0. **Resolved 2026-08-15.** "Enabled capability" and "installed Actions
+   workflow" were the same field, and for a Concourse-scanned repo they are
+   not any more: the dashboard derives enablement from the capability grants
+   for any repo not scanned by Actions (union with the installer's ledger),
+   and `PATCH /api/repos/{id}/capabilities` syncs grants without opening an
+   install PR (spec 03 §3a, `install_workflows`). The coverage column showed
+   five capabilities while eleven were reporting on the day this was fixed —
+   the "wrong in the safe direction" consolation below turned out to mean
+   "wrong in the direction nobody investigates".
 
-   So the dashboard currently understates TheHub's coverage, and the fix is not
-   a configuration change: onboarding needs to distinguish *this capability is
-   enabled* from *install its workflow*. Until then a Concourse-scanned repo's
-   coverage column is wrong in the safe direction — it shows less than is
-   actually running, rather than more.
-
-1. **TheHub's test suite is invoked on faith.** This pipeline runs `pytest`
-   where a `tests/` directory exists and announces that it found none where it
-   does not. Whether that is TheHub's real test command, and whether its tests
-   need any of its twelve services running, is not knowable from this
-   repository and needs confirming against TheHub itself.
+1. **TheHub's test suite is invoked on faith — partially resolved 2026-08-15.**
+   The unit lane now runs against a real Postgres with the schema replayed, and
+   uploads its JUnit result to Mykronos as capability `unit` (D-046), so "the
+   tests passed" and "the tests never ran" are distinguishable from the
+   platform. Whether `tests/unit` is the whole of TheHub's real suite still
+   needs confirming against TheHub itself.
 2. **The demo environment has no data-seeding step.** An empty stack is
    healthy and mostly untestable by DAST, which will spider a login page and
    little else. Authenticated DAST needs a seeded account and a ZAP context

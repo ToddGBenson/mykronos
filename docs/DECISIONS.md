@@ -1599,7 +1599,7 @@ had become an outage (`mykronos-upload` at `v1` rejects `--capability ai` and
 `qa`, so both lanes fail on upload). Both set-pipeline scripts now pin `v2`,
 every install site prints the commit it resolved, and the next jump is a
 deliberate `v3`, not a moved tag.
-**Spec:** [15 §4](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
+**Spec:** [15 §4](../specs/15-concourse-pipeline.md), [16 §15](../specs/16-thehub-delivery-pipeline.md)
 
 Every scanning task installs the uploader with
 

@@ -1,11 +1,16 @@
 # Mykronos backend
 
-Phase 0 of [`specs/13-build-roadmap.md`](../specs/13-build-roadmap.md): the
-data lake and the single write path into it.
+One FastAPI service (spec 01 §2 specifies one backend, not a fleet) carrying
+every phase of [`specs/13-build-roadmap.md`](../specs/13-build-roadmap.md):
+the data lake and its single write path, onboarding and the GitHub App, the
+workflow installer, Aegis, Atlas, Oracle, Patchwork, the Knowledge Store, and
+the dashboard query service. The quick start below still describes the Phase 0
+core, which remains the spine everything else mounts onto.
 
-Onboarding, the GitHub App, the workflow installer, Oracle and the dashboard
-query service mount onto this same FastAPI app in later phases — spec 01 §2
-specifies one backend service, not a fleet.
+The operational store upgrades its own schema on startup (D-052): a column
+added to a model reaches databases that already exist, with the model's own
+default backfilled. A required column with no default fails the test suite
+before it can fail a deploy.
 
 ## Quick start
 

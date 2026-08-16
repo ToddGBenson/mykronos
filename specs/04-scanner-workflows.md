@@ -39,7 +39,7 @@ as it evolves.
 | Capability | Default tool(s) | Trigger | Native output format |
 |---|---|---|---|
 | **SAST** | CodeQL (primary), Semgrep (secondary/optional) | `pull_request`, `push` to default branch, weekly schedule | SARIF |
-| **DAST** | OWASP ZAP baseline scan | scheduled (nightly/weekly) against a designated staging/test URL; optional `workflow_dispatch` | ZAP JSON report (converted to SARIF-like internal shape) |
+| **DAST** | OWASP ZAP baseline scan | scheduled (nightly/weekly) against a designated staging/test URL; optional `workflow_dispatch`. **Paused platform-wide until the scan has a resource budget (D-053, 2026-08-15)** — manual trigger still runs and still reports | ZAP JSON report (converted to SARIF-like internal shape) |
 | **Secrets** | Gitleaks (primary), TruffleHog (optional) | `pull_request`, `push`, full-history scan on onboarding | Gitleaks JSON |
 | **Containers** | Trivy (image + Dockerfile scan) | `pull_request` touching Dockerfile/image build paths, `push`, scheduled re-scan of latest published image | SARIF (Trivy supports native SARIF output) |
 | **IaC** | Checkov | `pull_request` touching IaC paths (`*.tf`, `cloudformation/**`, `k8s/**`, etc.), `push` | SARIF (Checkov supports native SARIF output) |
@@ -47,7 +47,7 @@ as it evolves.
 | **AI** | `scripts/check_ai.py` (prompt-injection surface, model provenance, evaluation coverage) — any SARIF-emitting tool | `pull_request`, `push` | SARIF. Produces findings, unlike the other quality stages (D-047) |
 | **QA** | The repository's own quality checks — link integrity here, contract or schema checks elsewhere | `pull_request`, `push` | None — a `ScanRun` with `finding_count = 0` (D-046) |
 | **Unit** | The repository's own test runner | `pull_request`, `push` | None — a `ScanRun` with `finding_count = 0` (D-046) |
-| **Functional** | The repository's own functional suite, run against a deployed lower environment | after deploy to the demo environment | None — a `ScanRun`, plus the proxied traffic DAST consumes (spec 16) |
+| **Functional** | The repository's own functional suite, run against a deployed lower environment | after deploy to the demo environment | JUnit XML, uploaded as capability `functional` (amended 2026-08-15) — plus the proxied traffic DAST consumes when the DAST lane runs (spec 16) |
 | **Network** | Active scan of operator-owned network ranges — see **[spec 14](14-network-scanning.md)**. Listed here for completeness only: it is *not* a workflow template, because a GitHub-hosted runner cannot reach a private network. It is orchestrated by the backend | scheduled (weekly) | nmap XML / nuclei JSON |
 
 **Unit, functional and QA produce no findings**, and that is the whole of D-046.

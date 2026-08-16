@@ -2,11 +2,12 @@
 
 **Unified AppSec onboarding, scanning, risk-decision, and dashboard platform.**
 
-Mykronos lets a security team register ("onboard") any GitHub repository, automatically
-install and configure a standard set of security-scanning GitHub Actions on it, collect
-every scan's results into a local data lake, run those results through a risk-decision
-engine, and view everything — across every onboarded repo — in one unified dashboard.
-A learning/RAG layer captures retro feedback over time so the whole system gets smarter
+Mykronos lets a security team register ("onboard") any GitHub repository, run a standard
+set of fifteen security and quality checks against it — through GitHub Actions workflows
+it installs, or through a Concourse pipeline the repository already has — collect every
+scan's results into a local data lake, run those results through a risk-decision engine,
+and view everything, across every onboarded repo, in one unified dashboard. A
+learning/RAG layer captures retro feedback over time so the whole system gets smarter
 about false positives, recurring issues, and process changes.
 
 Build order and milestones are in [`specs/13-build-roadmap.md`](specs/13-build-roadmap.md).
@@ -15,24 +16,26 @@ projects referenced below.
 
 ## Status
 
-| Phase | Scope | State |
-|---|---|---|
-| 0 | Data lake + Ingestion API | **Done** — see [`backend/`](backend/README.md) |
-| 1 | Onboarding, GitHub App, workflow installer, SAST | Not started |
-| 2 | Remaining five scanners + first dashboard views | Not started |
-| 3 | Oracle v1 (deterministic policy) | Not started |
-| 4 | Aegis + Atlas | Not started |
-| 5 | Knowledge Store + RAG | Not started |
-| 6 | Patchwork | Not started |
-| 7 | Trend/retro reporting, maturity view, hardening | Not started |
+All seven roadmap phases are built and in production, serving four onboarded
+repositories through three Concourse pipelines plus GitHub Actions. Work since the
+roadmap closed is tracked as decisions and retros rather than phases:
 
-Implementation decisions the specs do not settle — and the ones that should
-become spec changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).
-Five open questions carried from the spec review are listed there too; items
-1–3 block Phase 1.
+| Area | State |
+|---|---|
+| Phases 0–7 (lake → dashboard → Oracle → Aegis/Atlas → Knowledge → Patchwork → trends) | **Done** — every dashboard tab renders from real data |
+| The standard set: 15 checks per repo, icons, one-click enable/disable, coverage cross-check | **Done** — spec 10 §2.1, spec 15 §4a |
+| Concourse as the primary execution environment (spec 15/16); Actions retained for Actions-scanned repos | **Done** — uploader pinned at `v2` (D-051) |
+| Quality lanes as ScanRuns: unit, functional, QA docs (D-046); AI checks (D-047) | **Done** |
+| Network scanning (spec 14) | Built; awaiting an authorized CIDR to scan |
+| DAST | Paused platform-wide until the scan has a resource budget (D-053) |
 
-Spec changes land as their own commits before the code that depends on them.
-`specs/05-datalake.md` §3/§5/§9 have been amended once so far (D-001).
+Implementation decisions the specs do not settle — and the ones that became spec
+changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
+lessons worth carrying between projects are promoted to [`docs/lessons/`](docs/lessons/),
+and incident-scale days get a retro in [`docs/retros/`](docs/retros/).
+
+Spec changes land as their own commits before the code that depends on them. Where an
+outage forced code first, the spec sync is called out in the retro that covers it.
 
 ## Start here
 

@@ -41,7 +41,8 @@ storing a long-lived Personal Access Token.
 | `github_repo_full_name` | string | `owner/repo` |
 | `github_installation_id` | integer | GitHub App installation id covering this repo |
 | `status` | enum | `pending_install`, `active`, `suspended`, `removed` |
-| `enabled_capabilities` | JSON array of enums | subset of `sast, dast, secrets, containers, iac, cloud, aegis, atlas, patchwork, oracle` |
+| `enabled_capabilities` | JSON array of enums | subset of `unit, qa, sast, secrets, atlas, containers, iac, functional, dast, cloud, network, ai, aegis, oracle, patchwork`. The installer's ledger: for Actions-scanned repos this moves when an install PR merges; for everything else the dashboard derives enablement from this set unioned with the capability grants (amended 2026-08-15) |
+| `scanned_by` | enum | `concourse` (default), `github_actions`, `none` — which CI scans this repo (spec 03 §3a). Records intent, not coverage; the cross-check in spec 15 §4a.1 answers whether scans actually arrive. Added to the model 2026-08-14, and the column's absence from deployed databases is what D-052's self-upgrading schema now prevents |
 | `default_branch` | string | cached from GitHub, used by the workflow installer |
 | `onboarded_by` | string | admin's identity (email or GitHub login) |
 | `onboarded_at` | datetime | |

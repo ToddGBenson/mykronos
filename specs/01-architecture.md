@@ -74,7 +74,7 @@
 | Frontend | Next.js (React, TypeScript) | Matches existing internal platform conventions; SSR for dashboard pages |
 | Backend | FastAPI (Python 3.11+) | Matches existing internal platform conventions; async I/O for GitHub API calls |
 | Data lake | DuckDB (embedded OLAP engine) over Parquet files on local disk | Zero-infrastructure, local-first (no cloud egress requirement), excellent for portfolio-wide analytical queries (aggregation, trend lines), can be upgraded to a networked Postgres later without changing the ingestion contract |
-| Operational store | SQLite via SQLAlchemy | Deliberately **not** the data lake. Onboarding records, capability config, ingestion tokens and the audit log are small, transactional, frequently-updated rows with foreign keys and uniqueness constraints. DuckDB is single-writer and columnar, and row-level updates there would land in the path of the compaction job. Same local-first argument and the same upgrade path as the lake: everything goes through SQLAlchemy, so Postgres is a URL change |
+| Operational store | SQLite via SQLAlchemy | Deliberately **not** the data lake. Onboarding records, capability config, ingestion tokens and the audit log are small, transactional, frequently-updated rows with foreign keys and uniqueness constraints. DuckDB is single-writer and columnar, and row-level updates there would land in the path of the compaction job. Same local-first argument and the same upgrade path as the lake: everything goes through SQLAlchemy, so Postgres is a URL change. **The store upgrades its own schema on startup** (D-052, added 2026-08-15): `create_all` creates missing tables and also adds missing columns with the model's own default backfilled, because a column added to a model otherwise reaches every fresh test database and no deployed one — the arrangement that took production down |
 | Knowledge store | JSON Lines file + local vector index (e.g., FAISS) | Simple, auditable, portable; matches proven internal pattern |
 | Auth to GitHub | GitHub App (JWT → installation access tokens) | Least-privilege, short-lived tokens, no long-lived PAT storage (see spec 12) |
 | Secrets at rest | OS keychain / cloud KMS-backed secret manager (deployment-specific) for the GitHub App private key | Only long-lived secret in the system |
@@ -98,12 +98,15 @@ boundary, not a third-party SaaS.
 
 1. Admin registers a repo in the frontend → backend calls GitHub App install
    flow (spec 02).
-2. Admin selects capabilities to enable for that repo (checkbox grid).
-3. Workflow Installer renders the relevant workflow YAML files from
-   `workflow-templates/` (spec 03) and opens a PR titled
-   `Mykronos: enable <capabilities>` on the target repo. A human approves
-   and merges it (or the admin can pre-authorize auto-merge for this PR
-   specifically — configurable, off by default).
+2. Admin toggles capabilities from the standard set of fifteen (one-click
+   per capability from the repo page's CapabilityManager, added 2026-08-15).
+3. What a click does depends on `scanned_by` (spec 03 §3a). For an
+   Actions-scanned repo, the Workflow Installer renders the relevant workflow
+   YAML files from `workflow-templates/` (spec 03) and opens a PR titled
+   `Mykronos: enable <capabilities>`; a human approves and merges it (or the
+   admin can pre-authorize auto-merge for this PR specifically —
+   configurable, off by default). For everything else the click syncs the
+   ingestion grants immediately and installs nothing.
 4. On every subsequent push/PR/schedule trigger, the installed workflows run
    the actual scanners (spec 04) and Aegis/Atlas/Patchwork (specs 06–08).
 5. Each workflow's final step calls the **Ingestion API** (spec 05) with its

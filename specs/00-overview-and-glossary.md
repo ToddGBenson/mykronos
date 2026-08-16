@@ -65,7 +65,7 @@ posture:
 | **Onboarded repo** | A GitHub repository that has installed the Mykronos GitHub App and has one or more capabilities enabled. |
 | **Asset** | The subject a finding belongs to. A repository is an asset; so is a network segment (spec 14). Introduced because network scanning examines running infrastructure rather than a codebase. |
 | **Network scanning** | Active scanning of operator-owned networks: host discovery, exposed services, TLS posture, templated vulnerability checks. The only capability that cannot run on a GitHub-hosted runner. See spec 14. |
-| **Capability** | One security function that can be enabled per asset: SAST, DAST, Secrets, Containers, IaC, Cloud, Network, Insider Risk (Aegis), SSCS/SCA (Atlas), Auto-Remediation (Patchwork), Risk Decisions (Oracle). |
+| **Capability** | One check from the standard set of fifteen a repo can enable: Unit tests, QA/docs quality, SAST, Secrets, SSCS/SCA (Atlas), Containers, IaC, Functional tests, DAST, Cloud, Network, AI checks, Insider Risk (Aegis), Risk Decisions (Oracle), Auto-Remediation (Patchwork). The quality stages report ScanRuns with no findings (D-046). |
 | **Finding** | A single normalized security issue detected by any capability (e.g., one SAST vulnerability, one exposed secret, one risky dependency). |
 | **Signal** | Any normalized data point ingested into the data lake — broader than "Finding"; includes decisions, remediation outcomes, insider-risk scores, retro entries. |
 | **Data lake** | The local, central store of all raw and normalized capability output. See spec 05. |

@@ -90,6 +90,14 @@ documented as "capabilities whose workflow-install PR has actually merged" —
 for a Concourse-scanned repository no such PR exists or ever will, and the
 capability is enabled all the same.
 
+**Two answers, and it took both (the second added 2026-08-15).** `scanned_by`
+below records who scans; and for any repo not scanned by Actions, the
+dashboard derives enablement from the capability *grants*, unioned with the
+installer's ledger. What may write is what is enabled. Before the union, the
+portfolio showed three capabilities per repo while eleven were reporting —
+the ledger was never going to move, and every view that read it alone was
+wrong the same way.
+
 **A repository declares what scans it: `scanned_by`.**
 
 | Value | Meaning |
@@ -105,10 +113,13 @@ whose Actions were deliberately removed is a default that undoes a decision.
 **What this does *not* do is decide whether a capability is covered.**
 `scanned_by` records intent — which system is supposed to scan. Whether it
 actually does is a different question with a different answer, and spec 15
-§4a already answers it by comparing the pipeline's jobs against what reached
+§4a.1 already answers it by comparing the pipeline's jobs against what reached
 the lake. A repository can declare `concourse`, enable `dast`, and have no
 DAST job; that is exactly the `no_job` state, and it stays visible rather
-than being papered over by a field that says the intent was good.
+than being papered over by a field that says the intent was good. (Aegis,
+Oracle and Patchwork are the exception: they never produce a ScanRun from a
+pipeline lane, so they read `event_driven` rather than `no_job` — a working
+capability is not a coverage gap.)
 
 The two are worth keeping apart. Intent is what an operator asked for; the
 cross-check is what happened. A model that only records the first reports
@@ -131,7 +142,11 @@ catch.
 
 ## 5. Disabling a capability
 
-Same PR mechanism as enabling (§3), but the diff removes the workflow file.
+Same PR mechanism as enabling (§3), but the diff removes the workflow file —
+for an Actions-scanned repository. For everything else, disabling is the same
+one-click grant sync as enabling (§3a): the dashboard's CapabilityManager
+PATCHes the capability set and no PR is involved, because there is no
+workflow file to remove.
 
 Revocation is decoupled from the PR and happens **immediately**, not on merge:
 the capability's grant is removed from the token registry as soon as the admin
