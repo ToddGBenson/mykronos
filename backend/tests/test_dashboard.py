@@ -9,6 +9,7 @@ from mykronos.schemas import Severity
 from tests.conftest import (
     CAPABILITY,
     REPO,
+    dependency_finding,
     finding_payload,
     issue_token,
     post_findings,
@@ -332,6 +333,246 @@ class TestStatusWriteBack:
         row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
         assert row["severity_counts"]["critical"] == 0
         assert row["total_open"] == 2
+
+
+@pytest.fixture
+def outstanding(client: TestClient, admin_auth: dict[str, str], run_compaction):
+    """A repo carrying each thing the open-findings view exists to handle.
+
+    One rule firing in three files, one CVE reported by two different
+    scanners, and a pair of findings that are only dangerous together.
+    """
+    repo_id = onboard(client, admin_auth).json()["id"]
+    client.patch(
+        f"/api/repos/{repo_id}/capabilities",
+        json={"capabilities": ["sast", "atlas", "containers"]},
+        headers=admin_auth,
+    )
+    token = issue_token(client, REPO, "sast", "atlas", "containers")
+    auth = {"Authorization": f"Bearer {token}"}
+
+    post_scan(client, auth, scan_run_id="run-sast")
+    post_findings(
+        client,
+        auth,
+        [
+            finding_payload(
+                rule_id="CWE-79",
+                title="Reflected cross-site scripting",
+                severity="high",
+                file_path=f"web/{name}.py",
+                symbol=name,
+            )
+            for name in ("a", "b", "c")
+        ]
+        + [
+            finding_payload(rule_id="CWE-89", severity="critical"),
+            finding_payload(
+                rule_id="CWE-306",
+                title="Missing authentication check",
+                severity="medium",
+                symbol="handler",
+            ),
+        ],
+        scan_run_id="run-sast",
+    )
+
+    for capability, severity in (("atlas", "high"), ("containers", "critical")):
+        post_scan(client, auth, scan_run_id=f"run-{capability}", capability=capability)
+        post_findings(
+            client,
+            auth,
+            [dependency_finding(severity=severity)],
+            scan_run_id=f"run-{capability}",
+            capability=capability,
+        )
+
+    run_compaction()
+    return repo_id
+
+
+class TestOpenFindings:
+    """The outstanding-work view: open only, deduplicated, triaged, correlated."""
+
+    def _page(self, client: TestClient, auth: dict[str, str], repo_id: str, **params):
+        return client.get(
+            f"/api/dashboard/repos/{repo_id}/open-findings", params=params, headers=auth
+        ).json()
+
+    def _group(self, page, rule_id: str):
+        return next(g for g in page["groups"] if g["rule_id"] == rule_id)
+
+    def test_one_rule_in_three_files_is_one_row(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """One decision, three places to change it. The flat list makes that
+        look like three problems and inflates every count taken off it."""
+        page = self._page(client, admin_auth, outstanding)
+
+        xss = self._group(page, "CWE-79")
+        assert xss["occurrences"] == 3
+        assert sorted(loc["file_path"] for loc in xss["locations"]) == [
+            "web/a.py",
+            "web/b.py",
+            "web/c.py",
+        ]
+        # Nothing is hidden: every occurrence keeps its own finding_id, because
+        # a disposition is recorded against a finding and not against a group.
+        assert len({loc["finding_id"] for loc in xss["locations"]}) == 3
+
+    def test_the_same_cve_from_two_scanners_is_one_row(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """The dependency scan and the container scan both see urllib3. That
+        is one vulnerability reported twice, not two vulnerabilities."""
+        cve = self._group(self._page(client, admin_auth, outstanding), "CVE-2024-4812")
+
+        assert cve["occurrences"] == 2
+        assert sorted(cve["capabilities"]) == ["atlas", "containers"]
+        # The worst member's severity. Scanners disagree about one CVE all the
+        # time, and the lower number is never the safe one to display.
+        assert cve["severity"] == "critical"
+
+    def test_it_says_how_much_it_collapsed(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Silent deduplication is indistinguishable from losing rows."""
+        page = self._page(client, admin_auth, outstanding)
+
+        assert page["total"] == 7
+        assert len(page["groups"]) == 4
+        assert page["deduplicated"] == 3
+
+    def test_only_open_findings_are_shown(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        page = self._page(client, admin_auth, outstanding)
+        accepted = self._group(page, "CWE-79")["locations"][0]["finding_id"]
+
+        client.patch(
+            f"/api/dashboard/findings/{accepted}/status",
+            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            headers=admin_auth,
+        )
+
+        after = self._page(client, admin_auth, outstanding)
+        assert after["total"] == 6
+        assert self._group(after, "CWE-79")["occurrences"] == 2
+
+    def test_a_dispositioned_finding_is_still_reachable_by_name(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Open-only is the default, not a wall. An accepted risk is a decision
+        somebody has to be able to revisit — spec 10's own reason for keeping
+        the reason with it."""
+        page = self._page(client, admin_auth, outstanding)
+        accepted = self._group(page, "CWE-79")["locations"][0]["finding_id"]
+        client.patch(
+            f"/api/dashboard/findings/{accepted}/status",
+            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            headers=admin_auth,
+        )
+
+        body = self._page(
+            client, admin_auth, outstanding, finding_status="accepted_risk"
+        )
+        assert body["finding_status"] == "accepted_risk"
+        assert body["total"] == 1
+
+    def test_a_toxic_combination_is_named(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Detected from the findings themselves, not read out of
+        `remediation_events` — those only exist where Patchwork has run, and a
+        repo that never enabled auto-remediation is exactly the one nobody has
+        told about its unauthenticated database."""
+        page = self._page(client, admin_auth, outstanding)
+
+        assert len(page["toxic_combinations"]) == 1
+        combination = page["toxic_combinations"][0]
+        assert combination["name"] == "Unauthenticated injectable endpoint"
+        assert sorted(m["rule_id"] for m in combination["members"]) == [
+            "CWE-306",
+            "CWE-89",
+        ]
+
+    def test_a_member_is_not_triaged_on_its_own(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Each half being individually unremarkable is what a toxic
+        combination *is*. Triaging the halves is how one gets waved through
+        twice — the medium especially, which alone is 'needs human judgment'."""
+        page = self._page(client, admin_auth, outstanding)
+
+        missing_auth = self._group(page, "CWE-306")
+        assert missing_auth["triage"] == "toxic_combination"
+        assert missing_auth["toxic_combination_ids"] == [
+            page["toxic_combinations"][0]["combination_id"]
+        ]
+
+    def test_a_filtered_view_still_reports_the_combination(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Half a combination is routinely a medium from another scanner. A
+        view filtered to `critical` that reported no combinations would be
+        silent at exactly the moment somebody is looking at the worst row."""
+        page = self._page(client, admin_auth, outstanding, severity="critical")
+
+        assert [g["rule_id"] for g in page["groups"]] == ["CWE-89", "CVE-2024-4812"]
+        assert len(page["toxic_combinations"]) == 1
+
+    def test_an_unfixable_rule_is_labelled_as_needing_a_person(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """The same vocabulary Patchwork triages with, so the platform cannot
+        call a rule one thing here and another on the remediation tab."""
+        page = self._page(client, admin_auth, outstanding)
+
+        assert self._group(page, "CWE-79")["triage"] == "true_positive"
+        assert "no prior dismissal" in self._group(page, "CWE-79")["triage_rationale"]
+
+    def test_a_dismissed_rule_reads_as_a_likely_false_positive(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """The Knowledge Store's whole purpose is that the platform does not
+        ask twice. Dismissing one occurrence with a written reason has to
+        colour the ones still open, and with the same words Patchwork uses —
+        otherwise the platform calls a rule a false positive on one page while
+        generating a fix for it on another."""
+        page = self._page(client, admin_auth, outstanding)
+        dismissed = self._group(page, "CWE-79")["locations"][0]["finding_id"]
+
+        client.patch(
+            f"/api/dashboard/findings/{dismissed}/status",
+            json={"status": "false_positive", "reason": "the template escapes on render"},
+            headers=admin_auth,
+        )
+
+        after = self._group(self._page(client, admin_auth, outstanding), "CWE-79")
+        assert after["occurrences"] == 2
+        assert after["triage"] == "likely_false_positive"
+        assert "the template escapes on render" in after["triage_rationale"]
+
+    def test_raw_output_is_never_served_here(
+        self, client: TestClient, viewer_auth: dict[str, str], outstanding
+    ) -> None:
+        """A group is a decision to make; the bytes of a secrets finding belong
+        on the detail pane, behind the admin check that always guarded them."""
+        response = client.get(
+            f"/api/dashboard/repos/{outstanding}/open-findings", headers=viewer_auth
+        )
+
+        assert response.status_code == 200
+        assert "code_snippet" not in response.text
+        assert response.json()["total"] == 7
+
+    def test_an_unknown_repo_is_404(self, client: TestClient, admin_auth: dict[str, str]) -> None:
+        assert (
+            client.get(
+                "/api/dashboard/repos/nope/open-findings", headers=admin_auth
+            ).status_code
+            == 404
+        )
 
 
 class TestScanHealth:

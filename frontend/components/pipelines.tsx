@@ -6,143 +6,132 @@
  * disagree with. What this adds is knowing *which* pipeline, from a page
  * already about this repository — which until now meant knowing by heart.
  *
- * The panel distinguishes "no pipeline covers this repo" from "Concourse did
- * not answer". They look identical if you only render an absence, and a
+ * Both rows are indicator lights with the state written next to them. The
+ * distinction they exist to keep visible: a stage nobody enabled and a stage
+ * that is enabled and not answering render as the same absence everywhere
+ * else, and only one of them is a problem.
+ *
+ * The panel also distinguishes "no pipeline covers this repo" from "Concourse
+ * did not answer". Those look identical if you only render an absence, and a
  * coverage gap and an outage need entirely different responses.
  */
 
-import { Label, Pill, RelativeTime } from "@/components/primitives";
+import {
+  IndicatorLegend,
+  IndicatorLight,
+  Label,
+  Pill,
+  RelativeTime,
+  Section,
+  type IndicatorTone,
+} from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
 
 /** Concourse's vocabulary, mapped to the palette the rest of the app uses. */
-function jobTone(status: string | null | undefined): "critical" | "warn" | "pass" | "muted" {
-  if (status === "succeeded") return "pass";
-  if (status === "failed" || status === "errored") return "critical";
+function jobTone(status: string | null | undefined): IndicatorTone {
+  if (status === "succeeded") return "ok";
+  if (status === "failed" || status === "errored") return "bad";
   if (status === "aborted") return "warn";
   // Null is a job that has never finished a build. Not a failure — nothing
   // has happened yet, and colouring it red would invent an incident.
-  return "muted";
+  return "idle";
 }
 
-export function PipelinesPanel({ ci }: { ci: CiPage }) {
-  const jobs = ci.jobs ?? [];
+export function PipelineLinks({ ci }: { ci: CiPage }) {
   const failing = ci.failing ?? [];
-
   return (
-    <section className="border border-rule bg-paper-2">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-rule-soft px-3 py-2">
-        <Label>Built and scanned by</Label>
+    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border border-rule bg-paper-2 px-3 py-2">
+      <Label>Built and scanned by</Label>
+      <a
+        className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+        href={ci.github_url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        github.com/{ci.repo_full_name}
+      </a>
+      <a
+        className="font-mono text-[11px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
+        href={ci.github_actions_url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Actions
+      </a>
+      {ci.pipeline_url ? (
         <a
           className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
-          href={ci.github_url}
+          href={ci.pipeline_url}
           target="_blank"
           rel="noreferrer"
         >
-          github.com/{ci.repo_full_name}
+          Concourse: {ci.pipeline}
         </a>
-        <a
-          className="font-mono text-[11px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
-          href={ci.github_actions_url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Actions
-        </a>
-        {ci.pipeline_url ? (
-          <a
-            className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
-            href={ci.pipeline_url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Concourse: {ci.pipeline}
-          </a>
-        ) : null}
-        {failing.length > 0 ? (
-          <span className="ml-auto">
-            <Pill tone="critical">
-              {failing.length} failing: {failing.join(", ")}
-            </Pill>
-          </span>
-        ) : null}
-      </div>
-
-      <StageCoverage stages={ci.stages ?? []} />
-
-      <ReportingRow reporting={ci.reporting ?? []} />
-
-      {ci.unavailable ? (
-        <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-3">
-          {ci.unavailable}
-        </p>
-      ) : jobs.length === 0 ? (
-        <p className="px-3 py-2 text-[11px] text-ink-3">
-          This pipeline has no jobs.
-        </p>
-      ) : (
-        <ul className="flex flex-wrap gap-x-4 gap-y-1.5 px-3 py-2">
-          {jobs.map((job) => (
-            <JobChip key={job.name} job={job} />
-          ))}
-        </ul>
-      )}
-    </section>
+      ) : null}
+      {failing.length > 0 ? (
+        <span className="ml-auto">
+          <Pill tone="critical">
+            {failing.length} failing: {failing.join(", ")}
+          </Pill>
+        </span>
+      ) : null}
+    </div>
   );
 }
 
 /**
  * Every stage the platform covers, against what this repository has (PIP-6).
  *
- * The distinction worth the space: a stage nobody enabled and a stage that is
- * enabled and not answering both render as an absence everywhere else, and
- * only one of them is a problem. `no_job` is the one that is hardest to see
- * otherwise — the repository believes it is covered and no job disagrees,
+ * `no_job` is the loudest state here because nothing else in the platform will
+ * ever mention it: the repository believes it is covered and no job disagrees,
  * because no job exists.
  */
-function StageCoverage({ stages }: { stages: CiStage[] }) {
-  if (stages.length === 0) return null;
-
-  const covered = stages.filter((s) => s.state === "reporting");
-  const problems = stages.filter((s) => s.problem);
+export function StageLights({ stages }: { stages: CiStage[] }) {
+  if (stages.length === 0) {
+    return (
+      <p className="px-3 py-2 text-[11px] text-ink-3">
+        No stage coverage has been worked out for this repository yet.
+      </p>
+    );
+  }
 
   return (
-    <div className="border-t border-rule-soft px-3 py-2">
-      <div className="flex items-baseline gap-3">
-        <Label>Stage coverage</Label>
-        <span className="font-mono text-[10px] text-ink-3">
-          {covered.length} of {stages.length} reporting
-          {problems.length > 0 ? ` · ${problems.length} need attention` : null}
-        </span>
-      </div>
-      <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+    <div className="flex flex-col gap-2 px-3 py-2">
+      <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
         {stages.map((stage) => (
-          <li key={stage.stage} className="flex items-baseline gap-1">
-            <Pill tone={stageTone(stage)}>{stageLabel(stage)}</Pill>
-            <span
-              className={`font-mono text-[10px] ${
-                stage.enabled ? "text-ink-2" : "text-ink-3"
-              }`}
-            >
-              {stage.stage}
-            </span>
-          </li>
+          <IndicatorLight
+            key={stage.stage}
+            tone={stageTone(stage)}
+            label={stage.stage}
+            state={stageState(stage)}
+            title={stage.problem ? `${stage.stage} — ${stage.problem}` : undefined}
+          />
         ))}
       </ul>
+      <IndicatorLegend
+        entries={[
+          { tone: "ok", meaning: "reporting" },
+          { tone: "bad", meaning: "enabled, no job or never reported" },
+          { tone: "warn", meaning: "enabled, gone quiet" },
+          { tone: "idle", meaning: "enabled, not run yet" },
+          { tone: "off", meaning: "not enabled" },
+        ]}
+      />
     </div>
   );
 }
 
-function stageTone(stage: CiStage): "critical" | "warn" | "pass" | "muted" {
-  if (stage.state === "reporting") return "pass";
-  // Enabled and not answering. `no_job` is the loudest of these because
-  // nothing else in the platform will ever mention it.
-  if (stage.state === "no_job" || stage.state === "never_reported") return "critical";
+function stageTone(stage: CiStage): IndicatorTone {
+  if (stage.state === "reporting") return "ok";
+  // Enabled and not answering.
+  if (stage.state === "no_job" || stage.state === "never_reported") return "bad";
   if (stage.state === "silent") return "warn";
-  // Not enabled, or enabled with no successful build yet. Neither is a fault.
-  return "muted";
+  if (stage.state === "not_run") return "idle";
+  // Not enabled, which is not a fault.
+  return "off";
 }
 
-function stageLabel(stage: CiStage): string {
+function stageState(stage: CiStage): string {
   switch (stage.state) {
     case "reporting":
       return "ok";
@@ -159,15 +148,59 @@ function stageLabel(stage: CiStage): string {
   }
 }
 
+/** The jobs the pipeline actually runs, each linking to its own build. */
+export function JobLights({ ci }: { ci: CiPage }) {
+  const jobs = ci.jobs ?? [];
+
+  if (ci.unavailable) {
+    return (
+      <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-3">{ci.unavailable}</p>
+    );
+  }
+  if (jobs.length === 0) {
+    return <p className="px-3 py-2 text-[11px] text-ink-3">This pipeline has no jobs.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2">
+      <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {jobs.map((job) => (
+          <JobLight key={job.name} job={job} />
+        ))}
+      </ul>
+      <IndicatorLegend
+        entries={[
+          { tone: "ok", meaning: "last build succeeded" },
+          { tone: "bad", meaning: "failed or errored" },
+          { tone: "warn", meaning: "aborted" },
+          { tone: "idle", meaning: "never finished a build" },
+        ]}
+      />
+    </div>
+  );
+}
+
+function JobLight({ job }: { job: CiJob }) {
+  return (
+    <IndicatorLight
+      tone={jobTone(job.status)}
+      label={job.name}
+      state={`${job.status ?? "not run"}${job.build_name ? ` #${job.build_name}` : ""}`}
+      href={job.build_url ?? undefined}
+      title={job.finished_at ? `${job.name} — finished ${job.finished_at}` : undefined}
+    />
+  );
+}
+
 /**
  * Whether each scanning job's results actually reached the lake.
  *
  * The failure this makes visible: a pipeline is green, the dashboard shows an
- * old scan, and until now nothing anywhere pointed out that those two facts
- * contradict each other. Only the problems are listed — a row per healthy
- * capability would bury the one that matters.
+ * old scan, and nothing anywhere points out that those two facts contradict
+ * each other. Only the problems are listed — a row per healthy capability
+ * would bury the one that matters.
  */
-function ReportingRow({ reporting }: { reporting: CiReporting[] }) {
+export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
   const problems = reporting.filter(
     (row) => row.state === "silent" || row.state === "never_reported",
   );
@@ -203,36 +236,24 @@ function ReportingRow({ reporting }: { reporting: CiReporting[] }) {
   );
 }
 
-function JobChip({ job }: { job: CiJob }) {
-  const label = (
-    <span className="flex items-baseline gap-1.5">
-      <Pill tone={jobTone(job.status)}>{job.status ?? "not run"}</Pill>
-      <span className="font-mono text-[11px]">{job.name}</span>
-      {job.build_name ? (
-        <span className="font-mono text-[9px] text-ink-3">#{job.build_name}</span>
-      ) : null}
-      {job.finished_at ? (
-        <span className="font-mono text-[9px] text-ink-3">
-          <RelativeTime value={job.finished_at} />
-        </span>
-      ) : null}
-    </span>
-  );
-
+/**
+ * The links and both light rows, as the dashboard lays them out.
+ *
+ * One definition rather than one per page: two copies of "which sections, in
+ * which order, under which headings" is two things to keep in step, and the
+ * one that drifts is always the one nobody is looking at.
+ */
+export function PipelinesPanel({ ci }: { ci: CiPage }) {
   return (
-    <li>
-      {job.build_url ? (
-        <a
-          href={job.build_url}
-          target="_blank"
-          rel="noreferrer"
-          className="underline-offset-2 hover:underline"
-        >
-          {label}
-        </a>
-      ) : (
-        label
-      )}
-    </li>
+    <>
+      <PipelineLinks ci={ci} />
+      <Section title="Pipeline stages" detail="coverage of the standard set of checks">
+        <StageLights stages={ci.stages ?? []} />
+        <ReportingGaps reporting={ci.reporting ?? []} />
+      </Section>
+      <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
+        <JobLights ci={ci} />
+      </Section>
+    </>
   );
 }

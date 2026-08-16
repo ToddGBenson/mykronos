@@ -196,6 +196,127 @@ export function CapabilityDots({
   );
 }
 
+/**
+ * A labelled indicator light.
+ *
+ * Colour is never the only carrier: every light is followed by the state in
+ * words, because "which of these dots is amber" is not a question a dashboard
+ * should ask of anybody, and half the failure states here differ by one shade.
+ *
+ * `idle` and `off` are deliberately separate. Not enabled and enabled-but-
+ * silent look identical if you only render an absence, and only one of them is
+ * a problem.
+ */
+export type IndicatorTone = "ok" | "bad" | "warn" | "idle" | "off";
+
+const INDICATOR: Record<IndicatorTone, { lamp: string; word: string }> = {
+  ok: { lamp: "bg-pass border-pass", word: "text-pass" },
+  bad: { lamp: "bg-critical border-critical", word: "text-critical" },
+  warn: { lamp: "bg-high border-high", word: "text-high" },
+  idle: { lamp: "bg-paper border-ink-3", word: "text-ink-3" },
+  off: { lamp: "bg-paper border-rule", word: "text-ink-3" },
+};
+
+export function IndicatorLight({
+  tone,
+  label,
+  state,
+  title,
+  href,
+}: {
+  tone: IndicatorTone;
+  label: string;
+  /** The state in words. Rendered, not just announced. */
+  state: string;
+  title?: string;
+  href?: string;
+}) {
+  const body = (
+    <span className="flex items-baseline gap-1.5">
+      <span
+        aria-hidden
+        className={`relative top-px inline-block h-2.5 w-2.5 shrink-0 border ${INDICATOR[tone].lamp}`}
+      />
+      <span className="font-mono text-[10px] text-ink-2">{label}</span>
+      <span
+        className={`font-mono text-[9px] uppercase tracking-[0.08em] ${INDICATOR[tone].word}`}
+      >
+        {state}
+      </span>
+    </span>
+  );
+
+  return (
+    <li
+      className="flex items-baseline"
+      title={title ?? `${label} — ${state}`}
+      aria-label={`${label}: ${state}`}
+    >
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="underline-offset-2 hover:underline"
+        >
+          {body}
+        </a>
+      ) : (
+        body
+      )}
+    </li>
+  );
+}
+
+/** What the colours mean, next to the lights that use them. */
+export function IndicatorLegend({
+  entries,
+}: {
+  entries: { tone: IndicatorTone; meaning: string }[];
+}) {
+  return (
+    <ul className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      {entries.map((entry) => (
+        <li key={entry.meaning} className="flex items-baseline gap-1.5">
+          <span
+            aria-hidden
+            className={`relative top-px inline-block h-2 w-2 shrink-0 border ${INDICATOR[entry.tone].lamp}`}
+          />
+          <span className="font-mono text-[9px] text-ink-3">{entry.meaning}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A titled block of the one dashboard, so every panel is labelled the same way. */
+export function Section({
+  title,
+  detail,
+  aside,
+  children,
+}: {
+  title: string;
+  detail?: ReactNode;
+  aside?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
+        <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink">
+          {title}
+        </h2>
+        {detail ? (
+          <span className="font-mono text-[10px] text-ink-3">{detail}</span>
+        ) : null}
+        {aside ? <span className="ml-auto">{aside}</span> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function StatTile({
   label,
   value,

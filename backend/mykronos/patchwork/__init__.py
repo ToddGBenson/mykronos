@@ -7,13 +7,13 @@ merge operation, which is the whole of the guarantee in spec 08 §3.
 from mykronos.patchwork.correlate import BUILT_IN_RULES, Combination, detect
 from mykronos.patchwork.fixers import ProposedFix, generate
 from mykronos.patchwork.pipeline import (
-    CLASSIFICATIONS,
     STAGES,
     PatchworkPipeline,
     PipelineResult,
     StageOutcome,
     event_id,
 )
+from mykronos.patchwork.triage import CLASSIFICATIONS, classify
 
 __all__ = [
     "BUILT_IN_RULES",
@@ -24,6 +24,7 @@ __all__ = [
     "PipelineResult",
     "ProposedFix",
     "StageOutcome",
+    "classify",
     "detect",
     "event_id",
     "generate",

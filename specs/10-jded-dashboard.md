@@ -47,17 +47,57 @@ check each tool's own separate UI.
   for Actions-scanned ones — the same `PATCH /api/repos/{id}/capabilities`
   either way (spec 03 §3a). The admin token stays server-side behind a route
   handler; the browser never holds it.
-- Tabs: **Findings** (filterable table by capability/severity/status),
-  **Risk Decisions** (Oracle history for this repo with expandable
-  `inputs_snapshot`/`reasoning`), **Remediation** (Patchwork
-  `RemediationEvent` history + links to draft PRs), **SSCS Evidence**
-  (Atlas trust score trend + SBOM download links), **Insider Risk**
-  (Aegis signal history per PR), **Scan health** (per-capability
-  `ScanRun` history/freshness/failure rate).
+- **One dashboard** (revised 2026-08-16), then the views that are about
+  something else. Findings, scan health, pipeline stages and pipeline jobs
+  were four separate places, which meant the four questions people ask
+  together — what is outstanding, is anything still scanning, is the pipeline
+  green, is every stage covered — could not be answered without navigating.
+  They are one labelled page. **Risk Decisions** (Oracle history with
+  expandable `inputs_snapshot`/`reasoning`), **Supply chain** (Atlas trust
+  score trend + SBOM links), **Insider Risk** (Aegis signal history per PR)
+  and **Remediation** (Patchwork `RemediationEvent` history + draft PR links)
+  stay behind tabs: each is a different subject with its own vocabulary, not
+  another view of the same findings.
+- **Open findings**, and three things that separate the view from the record
+  the API also serves. All three pull the same way — towards a list of
+  decisions rather than a list of reports:
+  - *Open only.* A list mixing outstanding findings with ones somebody already
+    accepted cannot be counted, and a count nobody trusts is ignored. The
+    other statuses are one labelled click away, never hidden.
+  - *Deduplicated.* Rows group on `(rule_id, package)`, so one rule firing in
+    forty files is one row and one decision, and one CVE reported by both the
+    dependency scan and the container scan is one vulnerability rather than
+    two. Every occurrence is carried in the row and keeps its own
+    `finding_id`: a disposition applies to the occurrence, because accepting
+    the risk in one file is not accepting it in forty.
+  - *Correlated.* Toxic combinations (spec 08 §5) are detected over the open
+    findings themselves rather than read out of `remediation_events`, which
+    only exist where Patchwork has run — and a repository that never enabled
+    auto-remediation is exactly the one nobody has told about its
+    unauthenticated database. They are drawn above the table and colour the
+    rows that belong to them, because a combination whose halves are
+    individually unremarkable sorts below a lone high on every
+    severity-ordered list ever built.
+  - Each row carries the same triage classification Patchwork uses
+    (`patchwork/triage.py`), so the platform cannot call a rule a likely false
+    positive on one page while generating a fix for it on another.
 - A finding detail panel: full `raw_finding_json`, first/last seen,
   status, and a "mark as false positive" / "accept risk" action that
   writes back to `Finding.status` (spec 05 §3) **and** logs a retro signal
-  (spec 11 §4).
+  (spec 11 §4). Fetched by id rather than found in a page of the flat list —
+  once occurrences are grouped, the one somebody clicked is routinely not in
+  the first hundred rows of anything.
+- **Scan health** is one box per check rather than a table: the fraction of
+  that capability's runs that succeeded, with the counts under it so the
+  percentage can be checked rather than believed. A box is drawn for every
+  *enabled* capability, not only for those with run history — a lane switched
+  on that has never run is the gap nothing else shows, because no failing run
+  disagrees with it.
+- **Pipeline stages and enabled jobs** are rows of labelled indicator lights.
+  Colour is never the only carrier: each light is followed by its state in
+  words, and a legend sits under each row. "Not enabled" and "enabled and
+  silent" stay visibly different states — they render as the same absence
+  everywhere else, and only one of them is a problem.
 - **Where this repository is built and scanned.** A link to the repository
   on GitHub, and — where Concourse has a pipeline for it (spec 15 §4a) —
   that pipeline with each job's last build and a link to it. A repository
@@ -146,7 +186,9 @@ specific thing standing between the repo and it.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/dashboard/portfolio` | Portfolio view data (§2.1) |
-| `GET` | `/api/dashboard/repos/{id}/findings` | Filterable finding list for one repo |
+| `GET` | `/api/dashboard/repos/{id}/findings` | Filterable finding list for one repo — the record, every status, one row per report |
+| `GET` | `/api/dashboard/repos/{id}/open-findings` | The view: open findings only, grouped one row per problem, triaged, with toxic combinations named (§2.2) |
+| `GET` | `/api/dashboard/findings/{finding_id}` | One finding, for the detail panel. Raw output admin-only (§5) |
 | `GET` | `/api/dashboard/repos/{id}/decisions` | Oracle decision history for one repo |
 | `GET` | `/api/dashboard/repos/{id}/remediation` | Patchwork event history for one repo |
 | `GET` | `/api/dashboard/repos/{id}/sscs` | Atlas evidence/trust-score history |

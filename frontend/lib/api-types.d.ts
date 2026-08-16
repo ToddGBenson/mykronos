@@ -426,6 +426,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/open-findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Open Findings
+         * @description What is outstanding here, deduplicated, triaged and correlated.
+         *
+         *     `findings` is the record — every row, every status, in the order the lake
+         *     holds them. This is the view somebody works from, and it differs on three
+         *     counts that all pull the same way: it shows open findings only, it collapses
+         *     repeat reports of one problem into one row, and it names the toxic
+         *     combinations, which are the findings that are dangerous precisely because
+         *     each half looks unremarkable on its own.
+         *
+         *     Raw tool output is not served here for anybody. The group is a decision to
+         *     make; the bytes belong on the finding detail, behind the admin check that
+         *     has always guarded them (spec 12 §5).
+         */
+        get: operations["repo_open_findings_api_dashboard_repos__repo_id__open_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/scan-health": {
         parameters: {
             query?: never;
@@ -441,6 +472,34 @@ export interface paths {
          *     every run including the ones that found nothing (spec 04 §7).
          */
         get: operations["scan_health_api_dashboard_repos__repo_id__scan_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Finding Detail
+         * @description One finding, by id.
+         *
+         *     The dashboard groups repeat reports of a problem into one row, so the
+         *     occurrence somebody clicks is routinely not in the first page of the flat
+         *     list. Fetching it by id is the difference between a detail pane that always
+         *     works and one that works for the first hundred findings.
+         *
+         *     Raw output stays admin-only (spec 12 §5) — withheld at the query layer, so
+         *     "not rendered" is never confused with "not sent".
+         */
+        get: operations["finding_detail_api_dashboard_findings__finding_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1263,6 +1322,76 @@ export interface components {
             findings?: components["schemas"]["FindingSubmission"][];
         };
         /**
+         * FindingGroupOut
+         * @description One problem, however many times it was reported.
+         */
+        FindingGroupOut: {
+            /** Group Key */
+            group_key: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** @description The worst member's. Two scanners disagreeing about one CVE is common, and the lower number is never the safe one to show. */
+            severity: components["schemas"]["Severity"];
+            /** Package Name */
+            package_name?: string | null;
+            /** Cvss Score */
+            cvss_score?: number | null;
+            /**
+             * Capabilities
+             * @description Which scanners reported it. More than one is the cross-scanner duplicate this grouping exists to collapse.
+             */
+            capabilities: string[];
+            /** Occurrences */
+            occurrences: number;
+            /** Locations */
+            locations: components["schemas"]["FindingLocationOut"][];
+            /** First Seen At */
+            first_seen_at?: string | null;
+            /** Last Seen At */
+            last_seen_at?: string | null;
+            /** Age Days */
+            age_days?: number | null;
+            /**
+             * Triage
+             * @description Patchwork's own classification (`patchwork/triage.py`), plus `toxic_combination` for a group that cannot be judged alone.
+             */
+            triage: string;
+            /** Triage Rationale */
+            triage_rationale: string;
+            /**
+             * Toxic Combination Ids
+             * @default []
+             */
+            toxic_combination_ids: string[];
+        };
+        /**
+         * FindingLocationOut
+         * @description One occurrence of a grouped finding.
+         *
+         *     Every occurrence keeps its own `finding_id`, because a disposition is
+         *     recorded against a finding and not against a group — accepting the risk of
+         *     one instance of a rule is not accepting it everywhere it fires.
+         */
+        FindingLocationOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Capability */
+            capability: string;
+            severity: components["schemas"]["Severity"];
+            /** File Path */
+            file_path?: string | null;
+            /** Line Start */
+            line_start?: number | null;
+            /** Package Version */
+            package_version?: string | null;
+            /** First Seen At */
+            first_seen_at?: string | null;
+        };
+        /**
          * FindingOut
          * @description One finding as the dashboard serves it.
          *
@@ -1540,6 +1669,49 @@ export interface components {
              * @enum {string}
              */
             scanned_by: "concourse" | "github_actions" | "none";
+        };
+        /**
+         * OpenFindingsPage
+         * @description The outstanding-work view for one repository.
+         */
+        OpenFindingsPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Finding Status
+             * @description Which status this is a view of. `open` unless asked.
+             */
+            finding_status: string;
+            /**
+             * Total
+             * @description Findings of this status, before filters.
+             */
+            total: number;
+            /**
+             * Matching
+             * @description How many the severity/capability filters kept.
+             */
+            matching: number;
+            /**
+             * Shown
+             * @description Occurrences actually returned, after the limit.
+             */
+            shown: number;
+            /**
+             * Deduplicated
+             * @description How many rows the grouping removed — the size of the difference between the record and this view.
+             */
+            deduplicated: number;
+            /** By Severity */
+            by_severity: {
+                [key: string]: number;
+            };
+            /** Groups */
+            groups: components["schemas"]["FindingGroupOut"][];
+            /** Toxic Combinations */
+            toxic_combinations: components["schemas"]["ToxicCombinationOut"][];
+            /** Truncated */
+            truncated: boolean;
         };
         /** OverrideRequest */
         OverrideRequest: {
@@ -2059,6 +2231,37 @@ export interface components {
              * @description Plain-language statement of what was observed and why it scored.
              */
             rationale: string;
+        };
+        /** ToxicCombinationMemberOut */
+        ToxicCombinationMemberOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Capability */
+            capability: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            severity: components["schemas"]["Severity"];
+            /** File Path */
+            file_path?: string | null;
+        };
+        /**
+         * ToxicCombinationOut
+         * @description A set of findings that together mean more than they do apart.
+         */
+        ToxicCombinationOut: {
+            /** Combination Id */
+            combination_id: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Name */
+            name: string;
+            severity: components["schemas"]["Severity"];
+            /** Rationale */
+            rationale: string;
+            /** Members */
+            members: components["schemas"]["ToxicCombinationMemberOut"][];
         };
         /**
          * TriageItem
@@ -2679,6 +2882,42 @@ export interface operations {
             };
         };
     };
+    repo_open_findings_api_dashboard_repos__repo_id__open_findings_get: {
+        parameters: {
+            query?: {
+                capability?: components["schemas"]["Capability"] | null;
+                severity?: components["schemas"]["Severity"] | null;
+                finding_status?: components["schemas"]["FindingStatus"];
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenFindingsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     scan_health_api_dashboard_repos__repo_id__scan_health_get: {
         parameters: {
             query?: never;
@@ -2699,6 +2938,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_detail_api_dashboard_findings__finding_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingOut"];
                 };
             };
             /** @description Validation Error */

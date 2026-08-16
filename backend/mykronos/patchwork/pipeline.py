@@ -26,6 +26,7 @@ from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate, fixers
 from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
+from mykronos.patchwork.triage import classify
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,6 @@ STAGES = (
     "queued",
     "superseded",
 )
-
-CLASSIFICATIONS = ("true_positive", "likely_false_positive", "needs_human_judgment")
 
 #: What Patchwork may write a patch for. Narrow by construction: each of
 #: these points at a line in a file a deterministic fixer can change.
@@ -191,42 +190,12 @@ class PatchworkPipeline:
     def _triage(self, finding: dict[str, Any], repo_full_name: str) -> tuple[str, str]:
         """Classify a finding, consulting the Knowledge Store (spec 08 §2).
 
-        The store is what stops the pipeline repeating a mistake somebody has
-        already corrected: a rule this repository keeps dismissing should not
-        get an auto-fix generated for it, however confident the fixer is.
+        The rules live in `patchwork/triage.py` because the dashboard's
+        open-findings view triages the same findings, and a platform that
+        called a rule "likely false positive" on one page while generating a
+        fix for it on another would be arguing with itself in public.
         """
-        rule_id = str(finding.get("rule_id") or "")
-
-        if self.store is not None:
-            for entry, confidence in self.store.active_entries():
-                if (
-                    entry.source_type == "finding_dismissal"
-                    and entry.subject == rule_id
-                    and entry.repo_full_name in (None, repo_full_name)
-                    and entry.has_reason
-                ):
-                    return (
-                        "likely_false_positive",
-                        f"This repository has dismissed {rule_id} "
-                        f"{entry.observations} time(s) with a written reason "
-                        f"(confidence {confidence:.2f}): \"{entry.reasons[0]}\". "
-                        "Patchwork does not generate fixes for findings the "
-                        "team has already judged.",
-                    )
-
-        severity = str(finding.get("severity") or "")
-        if severity in ("critical", "high"):
-            return (
-                "true_positive",
-                f"A {severity} {finding.get('capability')} finding with no "
-                "prior dismissal recorded for this rule.",
-            )
-        return (
-            "needs_human_judgment",
-            f"A {severity} finding. Patchwork only generates fixes for high "
-            "and critical findings unprompted — a draft pull request for a low "
-            "finding costs more review attention than the finding is worth.",
-        )
+        return classify(finding, repo_full_name, self.store)
 
     # -- the run ---------------------------------------------------------
 

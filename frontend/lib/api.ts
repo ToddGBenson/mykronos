@@ -38,6 +38,15 @@ export type PortfolioRow = Portfolio["repos"][number];
 export type PortfolioSummary = Portfolio["summary"];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];
+/**
+ * The outstanding-work view: open findings only, one row per problem rather
+ * than per report, with the toxic combinations named.
+ */
+export type OpenFindingsPage =
+  paths["/api/dashboard/repos/{repo_id}/open-findings"]["get"]["responses"]["200"]["content"]["application/json"];
+export type FindingGroup = OpenFindingsPage["groups"][number];
+export type FindingLocation = FindingGroup["locations"][number];
+export type ToxicCombination = OpenFindingsPage["toxic_combinations"][number];
 export type RepoList =
   paths["/api/repos"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RepoDetail =

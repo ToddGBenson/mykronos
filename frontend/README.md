@@ -9,6 +9,14 @@ browser: client components that write (finding dispositions, capability toggles)
 to route handlers under `app/api/`, which attach the credential server-side —
 see the note at the top of [`lib/api.ts`](lib/api.ts).
 
+The per-repo page is one dashboard (spec 10 §2.2): scan health as a box per check
+showing what fraction of its runs succeeded, pipeline stages and pipeline jobs as
+rows of labelled indicator lights, and the open findings — grouped one row per
+problem, triaged with Patchwork's own vocabulary, and with the toxic combinations
+named above the table. Risk decisions, supply chain, insider risk and remediation
+stay behind tabs, because each is a different subject rather than another view of
+the same findings.
+
 The standard set of fifteen checks is defined once in
 [`components/primitives.tsx`](components/primitives.tsx) (`CAPABILITY_META`): one icon
 per capability, used identically on every page. Solid means implemented and reporting;

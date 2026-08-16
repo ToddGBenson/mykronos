@@ -14,9 +14,11 @@ import {
   BackendUnavailable,
   backendClient,
   type CiPage,
+  type Finding,
   type FindingsPage,
   type InsiderRiskPage,
   type MaturityReport,
+  type OpenFindingsPage,
   type Portfolio,
   type PullRequestsPage,
   type RemediationPage,
@@ -86,6 +88,14 @@ export async function getRepo(repoId: string): Promise<Result<RepoDetail>> {
   }
 }
 
+/**
+ * The flat record: every row, one per report, any status.
+ *
+ * No page renders this — the dashboard reads `getOpenFindings`, which groups
+ * and triages. Kept because the record and the view are different things and
+ * the endpoint is the documented one (spec 10 §4); a caller that wants the
+ * rows exactly as the lake holds them should not have to rebuild this.
+ */
 export async function getFindings(
   repoId: string,
   query: { capability?: string; severity?: string; finding_status?: string; offset?: number },
@@ -109,6 +119,59 @@ export async function getFindings(
     );
     if (!data) return { ok: false, error: describe(response, "Could not load findings") };
     return { ok: true, data: data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The findings view the dashboard actually renders: open only, deduplicated,
+ * triaged, and with toxic combinations named. `getFindings` remains the flat
+ * record, and the detail pane still reads from it — a disposition is recorded
+ * against one finding, not against a group.
+ */
+export async function getOpenFindings(
+  repoId: string,
+  query: { capability?: string; severity?: string; finding_status?: string },
+): Promise<Result<OpenFindingsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/open-findings",
+      {
+        params: {
+          path: { repo_id: repoId },
+          query: {
+            capability: query.capability as never,
+            severity: query.severity as never,
+            finding_status: (query.finding_status ?? "open") as never,
+          },
+        },
+        cache: "no-store",
+      },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load open findings") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * One finding, by id.
+ *
+ * The dashboard groups occurrences, so the one somebody clicked is routinely
+ * not in the first page of the flat list — fetching it by id is the difference
+ * between a detail pane that always works and one that works for the first
+ * hundred findings.
+ */
+export async function getFinding(findingId: string): Promise<Result<Finding>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/findings/{finding_id}",
+      { params: { path: { finding_id: findingId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the finding") };
+    return { ok: true, data: data as Finding };
   } catch (error) {
     return failure(error);
   }

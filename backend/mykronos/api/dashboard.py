@@ -179,6 +179,95 @@ class FindingsPage(BaseModel):
     )
 
 
+class FindingLocationOut(BaseModel):
+    """One occurrence of a grouped finding.
+
+    Every occurrence keeps its own `finding_id`, because a disposition is
+    recorded against a finding and not against a group — accepting the risk of
+    one instance of a rule is not accepting it everywhere it fires.
+    """
+
+    finding_id: str
+    capability: str
+    severity: Severity
+    file_path: str | None = None
+    line_start: int | None = None
+    package_version: str | None = None
+    first_seen_at: datetime | None = None
+
+
+class FindingGroupOut(BaseModel):
+    """One problem, however many times it was reported."""
+
+    group_key: str
+    rule_id: str
+    title: str
+    description: str | None = None
+    severity: Severity = Field(
+        description="The worst member's. Two scanners disagreeing about one "
+        "CVE is common, and the lower number is never the safe one to show."
+    )
+    package_name: str | None = None
+    cvss_score: float | None = None
+    capabilities: list[str] = Field(
+        description="Which scanners reported it. More than one is the "
+        "cross-scanner duplicate this grouping exists to collapse."
+    )
+    occurrences: int
+    locations: list[FindingLocationOut]
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    age_days: int | None = None
+    triage: str = Field(
+        description=(
+            "Patchwork's own classification (`patchwork/triage.py`), plus "
+            "`toxic_combination` for a group that cannot be judged alone."
+        )
+    )
+    triage_rationale: str
+    toxic_combination_ids: list[str] = []
+
+
+class ToxicCombinationMemberOut(BaseModel):
+    finding_id: str
+    capability: str
+    rule_id: str
+    title: str
+    severity: Severity
+    file_path: str | None = None
+
+
+class ToxicCombinationOut(BaseModel):
+    """A set of findings that together mean more than they do apart."""
+
+    combination_id: str
+    rule_id: str
+    name: str
+    severity: Severity
+    rationale: str
+    members: list[ToxicCombinationMemberOut]
+
+
+class OpenFindingsPage(BaseModel):
+    """The outstanding-work view for one repository."""
+
+    repo_full_name: str
+    finding_status: str = Field(
+        description="Which status this is a view of. `open` unless asked."
+    )
+    total: int = Field(description="Findings of this status, before filters.")
+    matching: int = Field(description="How many the severity/capability filters kept.")
+    shown: int = Field(description="Occurrences actually returned, after the limit.")
+    deduplicated: int = Field(
+        description="How many rows the grouping removed — the size of the "
+        "difference between the record and this view."
+    )
+    by_severity: dict[str, int]
+    groups: list[FindingGroupOut]
+    toxic_combinations: list[ToxicCombinationOut]
+    truncated: bool
+
+
 class InsiderRiskOut(BaseModel):
     """One insider-risk assessment (spec 06 §3).
 
@@ -822,6 +911,41 @@ async def repo_findings(
     )
 
 
+@router.get("/repos/{repo_id}/open-findings", response_model=OpenFindingsPage)
+async def repo_open_findings(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    capability: Annotated[Capability | None, Query()] = None,
+    severity: Annotated[Severity | None, Query()] = None,
+    finding_status: Annotated[FindingStatus, Query()] = FindingStatus.OPEN,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 400,
+) -> OpenFindingsPage:
+    """What is outstanding here, deduplicated, triaged and correlated.
+
+    `findings` is the record — every row, every status, in the order the lake
+    holds them. This is the view somebody works from, and it differs on three
+    counts that all pull the same way: it shows open findings only, it collapses
+    repeat reports of one problem into one row, and it names the toxic
+    combinations, which are the findings that are dangerous precisely because
+    each half looks unremarkable on its own.
+
+    Raw tool output is not served here for anybody. The group is a decision to
+    make; the bytes belong on the finding detail, behind the admin check that
+    has always guarded them (spec 12 §5).
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    page = _queries(request).open_findings(
+        repo_full_name,
+        store=request.app.state.knowledge,
+        capability=capability.value if capability else None,
+        severity=severity.value if severity else None,
+        finding_status=finding_status.value,
+        limit=limit,
+    )
+    return OpenFindingsPage.model_validate(page)
+
+
 @router.get("/repos/{repo_id}/scan-health")
 async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -> dict[str, Any]:
     """Per-capability run history and freshness (spec 10 §2.2).
@@ -834,6 +958,30 @@ async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -
         "repo_full_name": repo_full_name,
         "capabilities": _queries(request).scan_health(repo_full_name),
     }
+
+
+@router.get("/findings/{finding_id}", response_model=FindingOut)
+async def finding_detail(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> FindingOut:
+    """One finding, by id.
+
+    The dashboard groups repeat reports of a problem into one row, so the
+    occurrence somebody clicks is routinely not in the first page of the flat
+    list. Fetching it by id is the difference between a detail pane that always
+    works and one that works for the first hundred findings.
+
+    Raw output stays admin-only (spec 12 §5) — withheld at the query layer, so
+    "not rendered" is never confused with "not sent".
+    """
+    record = DashboardQueries(request.app.state.catalog).finding(
+        finding_id, include_raw=principal.may_see_raw_output
+    )
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+    return FindingOut.model_validate(record)
 
 
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)

@@ -2008,3 +2008,68 @@ two pipelines from each other. And the host is a laptop running production,
 three databases and a CI farm — Docker sees 15.49 GiB of its 31.8 GB because
 of the WSL2 default, which is a likelier binding constraint than core count and
 is free to change.
+
+---
+
+## D-056 — The repo page is one dashboard, and its findings list is a list of decisions
+
+**Status:** Decided and running
+**Spec:** [10 §2.2](../specs/10-jded-dashboard.md)
+**Trigger:** Four tabs for four questions nobody asks separately
+
+The per-repo page had Findings and Scan health as separate tabs and the CI
+panel above both. Answering "what is outstanding here, and is anything still
+scanning" therefore took two navigations, and "is the pipeline green" a third
+— which is why nobody checked the third. They are one page now. The other four
+tabs stayed: a risk decision, an SBOM, an insider-risk signal and a draft pull
+request are different subjects, not other views of the same findings.
+
+**Open findings only, by default.** A list that mixes outstanding findings
+with ones somebody already accepted cannot be counted, and a count nobody
+trusts gets ignored. Every other status is one labelled click away, because an
+accepted risk is a decision with an owner and a reason (PIP-9) and hiding it
+would be worse than mixing it in.
+
+**Rows group on `(rule_id, package)`.** Not on the file: one rule firing in
+forty files is one decision and forty places to change it, and the same CVE
+reported by both the dependency scan and the container scan is one
+vulnerability reported twice. The version is deliberately outside the key, so
+a CVE on two pinned versions of one library does not read as two problems.
+Every occurrence is still carried and keeps its own `finding_id` — a
+disposition applies to the occurrence, because accepting the risk in one file
+is not accepting it in forty — and the group's severity is its worst member's,
+because scanners disagree about a CVE constantly and the lower number is never
+the safe one to display.
+
+**Toxic combinations are detected from the findings, not read from
+`remediation_events`.** Those rows only exist where Patchwork has run, and a
+repository that never enabled auto-remediation is exactly the one nobody has
+told about its unauthenticated database. The dashboard calls the same
+`patchwork/correlate.detect()` over the same capability set the pipeline uses,
+so the two cannot report different combinations for the same lake. Detection
+runs over every open finding rather than the filtered subset: half a
+combination is routinely a medium from another scanner, and a view filtered to
+`critical` that reported no combinations would go quiet at exactly the moment
+somebody is looking at the worst row.
+
+**A combination overrides the per-finding verdict, including a dismissal.**
+Each half being individually unremarkable is what a toxic combination *is*, so
+triaging the halves is how one gets waved through twice.
+
+**Triage moved out of the pipeline into `patchwork/triage.py`** so both
+callers share it. Two implementations would have let the platform call a rule
+a likely false positive on one page while generating a fix for it on another,
+and the Knowledge Store's whole purpose — not repeating a judgement somebody
+already made — would have held in only one of the two places.
+
+**Indicator lights say their state in words.** Five stage states differ by one
+shade otherwise, and "which of these dots is amber" is not a question a
+dashboard should ask of anybody. The distinction the colours exist to keep is
+"not enabled" versus "enabled and silent": they render as the same absence
+everywhere else, and only one of them is a problem.
+
+**Raw tool output is not served by the grouped endpoint at all**, for any
+role. A group is a decision to make; the bytes of a secrets finding belong on
+the detail pane, behind the admin check that always guarded them (spec 12 §5).
+The detail pane fetches one finding by id — once occurrences are grouped, the
+one somebody clicked is routinely not in the first hundred rows of anything.

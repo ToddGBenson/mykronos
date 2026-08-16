@@ -27,23 +27,68 @@ import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import CapabilityGrant, RepoOnboarding
+from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
-from mykronos.schemas import Severity
+from mykronos.patchwork import correlate
+from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
+from mykronos.patchwork.triage import classify
+from mykronos.schemas import Severity, utcnow
 
 logger = logging.getLogger(__name__)
 
 SEVERITIES = [s.value for s in Severity]
 
+#: `Severity` is declared ascending (info … critical), so "worse than" is an
+#: index comparison.
+_SEVERITY_RANK = {level: index for index, level in enumerate(SEVERITIES)}
+
+#: Which capabilities may take part in a correlation. Borrowed from Patchwork
+#: rather than redefined: the dashboard and the pipeline detecting *different*
+#: combinations over the same findings would be worse than either doing it
+#: alone, because there would be no way to tell which page was right.
+CORRELATION_CAPABILITIES = frozenset(DEFAULT_CORRELATION_CAPABILITIES)
+
+#: How many findings the open-findings view will hold at once. Correlation
+#: needs the whole set in memory to pair a DAST finding with a SAST one, and
+#: spec 10 §6 gives the page a two-second budget; this is where the two meet.
+#: Rows are taken worst-first, so what falls off the end is the least severe.
+CORRELATION_CEILING = 5000
+
 #: Beyond this, a repo's most recent scan is old enough to be worth flagging
 #: (spec 10 §2.1).
 STALE_AFTER_DAYS = 7
+
+
+def _worse(candidate: str, current: str) -> bool:
+    """Whether `candidate` is a more severe level than `current`."""
+    return _SEVERITY_RANK.get(candidate, -1) > _SEVERITY_RANK.get(current, -1)
+
+
+def _age_days(first_seen_at: Any) -> int | None:
+    """How long this has been outstanding.
+
+    From `first_seen_at`, which survives a rescan because finding identity is
+    anchored to content rather than line numbers (D-001) — without that, every
+    refactor would reset the clock and nothing would ever look old.
+    """
+    if not isinstance(first_seen_at, datetime):
+        return None
+    # Lake timestamps are naive UTC (spec 01 §6), and `utcnow()` matches them.
+    # An aware value can only have come from elsewhere, so it is converted
+    # rather than assumed.
+    seen = (
+        first_seen_at.astimezone(UTC).replace(tzinfo=None)
+        if first_seen_at.tzinfo
+        else first_seen_at
+    )
+    return max(0, (utcnow() - seen).days)
 
 
 @dataclass
@@ -91,8 +136,6 @@ class PortfolioRow:
     def is_stale(self) -> bool:
         if self.last_scan_at is None:
             return False  # "never scanned" is its own state, not staleness.
-        from mykronos.schemas import utcnow
-
         return (utcnow() - self.last_scan_at).days > STALE_AFTER_DAYS
 
 
@@ -359,6 +402,342 @@ class DashboardQueries:
                     record["raw_finding_json"] = json.loads(record["raw_finding_json"])
             findings.append(record)
         return findings, total
+
+    # -- open findings, triaged and deduplicated ------------------------
+
+    def open_findings(
+        self,
+        repo_full_name: str,
+        *,
+        store: KnowledgeStore | None = None,
+        capability: str | None = None,
+        severity: str | None = None,
+        finding_status: str = "open",
+        limit: int = 400,
+    ) -> dict[str, Any]:
+        """One repo's outstanding work: deduplicated, triaged, correlated.
+
+        The flat list `findings()` returns is the record. This is the view a
+        person is supposed to act on, and the three differences are the point:
+
+        **Open only, by default.** A list mixing open findings with ones
+        somebody already accepted or dismissed cannot be counted. Dispositioned
+        findings are still reachable by asking for their status by name; they
+        are simply not what "what is outstanding" means.
+
+        **Deduplicated.** One rule firing in forty files is one decision and
+        forty rows, and the same CVE reported by both the dependency scan and
+        the container scan is one vulnerability reported twice. Rows are
+        grouped on `(rule_id, package)` so the count on screen is a count of
+        decisions; every occurrence is still carried, so nothing is hidden and
+        each one keeps its own disposition.
+
+        **Correlated.** Toxic combinations are detected here rather than read
+        from `remediation_events`, because those only exist where Patchwork has
+        run — and a repository that never enabled auto-remediation is exactly
+        the one nobody has told about its unauthenticated database.
+        """
+        columns = [
+            "finding_id",
+            "capability",
+            "rule_id",
+            "title",
+            "description",
+            "severity",
+            "cvss_score",
+            "file_path",
+            "line_start",
+            "package_name",
+            "package_version",
+            "status",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+
+        counts = self._severity_counts(repo_full_name, finding_status)
+        total = sum(counts.values())
+
+        # The correlation pool is fetched separately from the rows on screen,
+        # for the reason Patchwork's pipeline does the same (spec 08 §5a): a
+        # single severity-ordered query lets 400 SAST findings crowd out the
+        # one DAST finding that makes a combination. It also ignores the
+        # caller's filters — half a combination is routinely a medium from
+        # another scanner, so a view filtered to `critical` would report no
+        # combinations at exactly the moment somebody is looking at the worst
+        # row.
+        pool = self._finding_rows(
+            repo_full_name, columns, finding_status, capabilities=CORRELATION_CAPABILITIES
+        )
+        combinations = correlate.detect(pool)
+        by_id = {str(f["finding_id"]): f for f in pool}
+        combination_of: dict[str, str] = {}
+        for combo in combinations:
+            for member in combo.finding_ids:
+                combination_of[member] = combo.combination_id
+
+        rows = self._finding_rows(
+            repo_full_name,
+            columns,
+            finding_status,
+            capability=capability,
+            severity=severity,
+            limit=limit + 1,
+        )
+        truncated = len(rows) > limit
+        rows = rows[:limit]
+
+        groups = self._group_findings(
+            rows, repo_full_name, store=store, combination_of=combination_of
+        )
+
+        return {
+            "repo_full_name": repo_full_name,
+            "finding_status": finding_status,
+            "total": total,
+            "matching": (
+                total
+                if capability is None and severity is None
+                else self._finding_count(
+                    repo_full_name, finding_status, capability=capability, severity=severity
+                )
+            ),
+            "shown": sum(g["occurrences"] for g in groups),
+            "deduplicated": max(0, len(rows) - len(groups)),
+            "by_severity": counts,
+            "groups": groups,
+            "toxic_combinations": [
+                self._describe_combination(combo, by_id) for combo in combinations
+            ],
+            "truncated": truncated,
+        }
+
+    def _status_clause(
+        self,
+        repo_full_name: str,
+        finding_status: str,
+        *,
+        capability: str | None = None,
+        severity: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        # asset_id, not repo_full_name (spec 14 §5): for a repository asset the
+        # two hold the same string, so this is a rename rather than a change.
+        where = ["asset_id = ?", "status = ?"]
+        params: list[Any] = [repo_full_name, finding_status]
+        for column, value in (("capability", capability), ("severity", severity)):
+            if value:
+                where.append(f"{column} = ?")
+                params.append(value)
+        return " AND ".join(where), params
+
+    def _finding_count(
+        self,
+        repo_full_name: str,
+        finding_status: str,
+        *,
+        capability: str | None = None,
+        severity: str | None = None,
+    ) -> int:
+        clause, params = self._status_clause(
+            repo_full_name, finding_status, capability=capability, severity=severity
+        )
+        rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
+        return int(rows[0][0]) if rows else 0
+
+    def _severity_counts(self, repo_full_name: str, finding_status: str) -> dict[str, int]:
+        """How much of each severity is outstanding, before any filter.
+
+        Before the filter deliberately: these numbers sit on the filter
+        buttons, and a count that changed when you pressed the button next to
+        it would be describing the answer rather than the choice.
+        """
+        clause, params = self._status_clause(repo_full_name, finding_status)
+        counts = dict.fromkeys(SEVERITIES, 0)
+        for level, count in self.catalog.query(
+            f"SELECT severity, count(*) FROM findings WHERE {clause} GROUP BY 1", params
+        ):
+            if str(level) in counts:
+                counts[str(level)] = int(count)
+        return counts
+
+    def _finding_rows(
+        self,
+        repo_full_name: str,
+        columns: list[str],
+        finding_status: str,
+        *,
+        capability: str | None = None,
+        severity: str | None = None,
+        capabilities: frozenset[str] | None = None,
+        limit: int = CORRELATION_CEILING,
+    ) -> list[dict[str, Any]]:
+        """Findings of one status for one repo, worst first.
+
+        Always bounded: correlation holds its whole pool in memory, and spec 10
+        §6 gives the page a two-second budget. Worst-first ordering is what
+        makes a ceiling survivable — what falls off the end is the least severe
+        and the newest — and the caller reports the truncation rather than
+        letting a shorter list read as a shorter backlog.
+
+        Raw output is never selected here whatever the caller's role. This view
+        is a list of decisions; the bytes of a secrets finding belong on the
+        detail pane behind the same admin check they always were (spec 12 §5).
+        """
+        clause, params = self._status_clause(
+            repo_full_name, finding_status, capability=capability, severity=severity
+        )
+        if capabilities is not None:
+            placeholders = ", ".join("?" for _ in capabilities)
+            clause += f" AND capability IN ({placeholders})"
+            params += sorted(capabilities)
+
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
+            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+            "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, first_seen_at "
+            "LIMIT ?",
+            [*params, min(limit, CORRELATION_CEILING)],
+        )
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
+    def _group_findings(
+        self,
+        findings: list[dict[str, Any]],
+        repo_full_name: str,
+        *,
+        store: KnowledgeStore | None,
+        combination_of: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Collapse repeat occurrences of the same problem into one row.
+
+        The key is the rule and the package it is about — not the file. A rule
+        that fires in forty files is one thing to decide and forty places to
+        change it, and the version is deliberately excluded so the same CVE on
+        two pinned versions of one library does not read as two problems.
+        """
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        order: list[tuple[str, str]] = []
+
+        for finding in findings:
+            key = (str(finding["rule_id"]), str(finding.get("package_name") or ""))
+            group = grouped.get(key)
+            if group is None:
+                grouped[key] = group = {
+                    # Readable, and safe in a query string — the UI round-trips
+                    # this to say which row is open. A separator a rule id
+                    # could contain would at worst merge two rows on screen;
+                    # the grouping itself keys on the tuple, not this string.
+                    "group_key": "::".join(key),
+                    "rule_id": str(finding["rule_id"]),
+                    "title": str(finding["title"]),
+                    "description": finding.get("description"),
+                    "severity": str(finding["severity"]),
+                    "package_name": finding.get("package_name"),
+                    "capabilities": [],
+                    "occurrences": 0,
+                    "locations": [],
+                    "first_seen_at": finding.get("first_seen_at"),
+                    "last_seen_at": finding.get("last_seen_at"),
+                    "cvss_score": finding.get("cvss_score"),
+                    "toxic_combination_ids": [],
+                }
+                order.append(key)
+
+            group["occurrences"] += 1
+            capability = str(finding["capability"])
+            if capability not in group["capabilities"]:
+                group["capabilities"].append(capability)
+            group["locations"].append(
+                {
+                    "finding_id": str(finding["finding_id"]),
+                    "capability": capability,
+                    "severity": str(finding["severity"]),
+                    "file_path": finding.get("file_path"),
+                    "line_start": finding.get("line_start"),
+                    "package_version": finding.get("package_version"),
+                    "first_seen_at": finding.get("first_seen_at"),
+                }
+            )
+
+            # The group's severity is its worst member's. Two scanners
+            # disagreeing about one CVE is common, and the low one is never the
+            # safe number to display.
+            if _worse(str(finding["severity"]), str(group["severity"])):
+                group["severity"] = str(finding["severity"])
+            for field_name, better in (("first_seen_at", min), ("last_seen_at", max)):
+                current, incoming = group.get(field_name), finding.get(field_name)
+                if incoming is not None:
+                    group[field_name] = (
+                        incoming if current is None else better(current, incoming)
+                    )
+
+            combination_id = combination_of.get(str(finding["finding_id"]))
+            if combination_id and combination_id not in group["toxic_combination_ids"]:
+                group["toxic_combination_ids"].append(combination_id)
+
+        # Read once, not once per row: `active_entries()` parses the whole
+        # knowledge file, and this loop runs for every group on the page.
+        learned = [] if store is None else store.active_entries()
+
+        result = []
+        for key in order:
+            group = grouped[key]
+            classification, rationale = classify(
+                {
+                    "rule_id": group["rule_id"],
+                    "severity": group["severity"],
+                    "capability": group["capabilities"][0],
+                },
+                repo_full_name,
+                entries=learned,
+            )
+            if group["toxic_combination_ids"]:
+                # A combination overrides the per-finding verdict, including a
+                # dismissal. Each half being individually unremarkable is what
+                # a toxic combination *is*, so triaging on the halves is how
+                # one gets waved through twice.
+                classification, rationale = (
+                    "toxic_combination",
+                    "Part of a toxic combination: this cannot be judged on its "
+                    "own, and fixing it in isolation would close the finding "
+                    "without closing the risk.",
+                )
+            group["triage"] = classification
+            group["triage_rationale"] = rationale
+            group["age_days"] = _age_days(group["first_seen_at"])
+            result.append(group)
+        return result
+
+    @staticmethod
+    def _describe_combination(
+        combination: correlate.Combination, by_id: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        members = [by_id[fid] for fid in sorted(combination.finding_ids) if fid in by_id]
+        rule = next(
+            (r for r in correlate.BUILT_IN_RULES if r.rule_id == combination.rule_id),
+            None,
+        )
+        severity = "info"
+        for member in members:
+            if _worse(str(member["severity"]), severity):
+                severity = str(member["severity"])
+        return {
+            "combination_id": combination.combination_id,
+            "rule_id": combination.rule_id,
+            "name": rule.name if rule else combination.rule_id,
+            "severity": severity,
+            "rationale": combination.rationale,
+            "members": [
+                {
+                    "finding_id": str(member["finding_id"]),
+                    "capability": str(member["capability"]),
+                    "rule_id": str(member["rule_id"]),
+                    "title": str(member["title"]),
+                    "severity": str(member["severity"]),
+                    "file_path": member.get("file_path"),
+                }
+                for member in members
+            ],
+        }
 
     # -- triage queue ---------------------------------------------------
 
@@ -738,6 +1117,11 @@ class DashboardQueries:
         # into a KnowledgeEntry keyed on it (spec 11 §3). Omitting it produced
         # entries with an empty subject that could never match a rule, so
         # dampening silently never fired.
+        #
+        # The rest is what a detail pane needs. Fetched by id rather than found
+        # in a page of the flat list, because the dashboard groups occurrences
+        # and the one somebody clicked is routinely not in the first hundred
+        # rows of anything.
         columns = [
             "finding_id",
             "repo_full_name",
@@ -746,6 +1130,18 @@ class DashboardQueries:
             "status",
             "severity",
             "title",
+            "description",
+            "cvss_score",
+            "file_path",
+            "line_start",
+            "line_end",
+            "symbol",
+            "package_name",
+            "package_version",
+            "fingerprint_version",
+            "first_seen_at",
+            "last_seen_at",
+            "resolved_at",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
@@ -754,4 +1150,11 @@ class DashboardQueries:
         )
         if not rows:
             return None
-        return dict(zip(columns, rows[0], strict=True))
+        record = dict(zip(columns, rows[0], strict=True))
+        if include_raw and record.get("raw_finding_json"):
+            # Parsed here as well as in `findings()`, so one finding served two
+            # ways is the same shape both times. Unparseable output is returned
+            # as the tool wrote it: a dispute is exactly when you want the bytes.
+            with suppress(TypeError, json.JSONDecodeError):
+                record["raw_finding_json"] = json.loads(record["raw_finding_json"])
+        return record
