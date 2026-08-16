@@ -490,14 +490,40 @@ class RestGitHubClient:
         if cached is not None:
             return cached
 
-        async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
-            response = await http.post(
-                f"/app/installations/{self.installation_id}/access_tokens",
-                headers={
-                    "Authorization": f"Bearer {self.credentials.app_jwt()}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
+        # Retried, and only here. Minting a token is safe to repeat -- an
+        # unused installation token costs nothing -- where the calls in
+        # `_request` include PRs and commits, and a POST replayed after a
+        # dropped connection can open the same pull request twice.
+        #
+        # A transport failure is the retryable kind by construction:
+        # PermissionDeniedError exists precisely because a misregistered App is
+        # the failure no amount of retrying helps, which leaves the dropped
+        # connection as the failure it does.
+        response: httpx2.Response | None = None
+        for attempt in range(3):
+            try:
+                async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
+                    response = await http.post(
+                        f"/app/installations/{self.installation_id}/access_tokens",
+                        headers={
+                            "Authorization": f"Bearer {self.credentials.app_jwt()}",
+                            "Accept": "application/vnd.github+json",
+                        },
+                    )
+                break
+            except httpx2.HTTPError as exc:
+                if attempt == 2:
+                    # Raised as GitHubError rather than allowed to escape as an
+                    # httpx exception. Callers already handle GitHubError and
+                    # degrade one finding to `no_fix_available`; a raw transport
+                    # error is not that type, so it sailed past every handler
+                    # and failed the whole Patchwork run with a bare 500 that
+                    # said only "Internal Server Error".
+                    raise GitHubError(
+                        f"Could not reach GitHub to mint an installation token: {exc}"
+                    ) from exc
+        if response is None:  # unreachable: the last attempt raises
+            raise GitHubError("Could not reach GitHub to mint an installation token.")
         if response.status_code >= 400:
             raise GitHubError(
                 f"Could not mint an installation token: {response.text}",
@@ -516,17 +542,24 @@ class RestGitHubClient:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx2.Response:
         token = await self._token()
-        async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
-            response = await http.request(
-                method,
-                path,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                **kwargs,
-            )
+        try:
+            async with httpx2.AsyncClient(base_url=self.base_url, timeout=30.0) as http:
+                response = await http.request(
+                    method,
+                    path,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    **kwargs,
+                )
+        except httpx2.HTTPError as exc:
+            # Translated, not retried: this carries POSTs that open pull
+            # requests and PATCHes that move refs, and a replay after a dropped
+            # connection is a duplicate PR rather than a recovery. Callers know
+            # how to handle GitHubError; they cannot be expected to know httpx.
+            raise GitHubError(f"{method} {path} failed to reach GitHub: {exc}") from exc
         if response.status_code == 401:
             # The cached token was revoked or rotated early; drop it so the
             # next attempt mints a fresh one rather than looping on a dead one.
