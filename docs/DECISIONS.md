@@ -1913,3 +1913,48 @@ All five are now answered. Questions 4 and 5 were Oracle's and were held until
 Phase 2 had produced real findings to answer them against, which is what made
 D-018's saturation curve and D-021's shadow-mode metric arguable from data
 rather than from taste.
+
+## D-054 — Unauthenticated baseline DAST replaces the functional/active lane
+
+**Status:** Decided and running green on demo and prod
+**Trigger:** D-053 left DAST paused with a resource budget owed; this pays it
+
+D-053 paused DAST because ZAP's *active* scan measured 548% CPU / 7 GiB and
+took production down. The budget it asked for turned out to be available a
+cheaper way than capping or new hardware: stop running an active scan at all.
+
+`zap-baseline.py` spiders the target and applies **passive** rules only — it
+analyses responses it was already going to receive and never sends an attack
+payload. Measured here, prod stayed at `health=healthy`, `restarts=0` and
+served 200s throughout its own scan.
+
+**Decision:**
+- `thehub/dast-demo` and `thehub/dast-prod`: unauthenticated baseline scans,
+  triggered by `passed: [deploy-demo]` / `[deploy-prod]`, capped with `-m 5`.
+- `thehub/functional-dast`: stays paused and stays in the file. Restoring it
+  still needs D-053's resource budget; this decision does not grant one.
+
+**Why unauthenticated, and why both environments.** This is the view an
+anonymous attacker gets. Demo runs with the gate off, so the scan sees the
+whole application (19 URLs, 41 findings). Prod runs with the gate on, so the
+scan sees the perimeter refusing anonymous callers (3 URLs, 12 findings). The
+small prod number is the result, not a failed scan — the shapes differing in
+exactly that direction is evidence the gate works.
+
+**Four defects had to be fixed to get there, all in the same seam** — a
+non-root tool image meeting root-owned Concourse volumes:
+1. `zap-baseline` refuses a `-J` report unless `/zap/wrk` exists. Its warning
+   says "is not mounted", but the check is `os.path.exists`, so `mkdir` is the
+   whole fix. The wording cost more time than the bug.
+2. The report could not be copied into a task output: outputs are root-owned
+   0755 and this image runs as `zap` (uid 1000) with no sudo. Pre-chmodding
+   from a root task does not help — a task's output is a fresh volume, not the
+   same-named input. Fixed by scanning and uploading in one task, so the
+   report never crosses a volume boundary.
+3. PEP 668 blocks `pip` on this Debian base; `--user --break-system-packages`
+   installs to `~/.local` and touches nothing system-wide.
+4. `git` refused the root-owned source checkout ("dubious ownership"), so
+   `rev-parse` printed nothing and the upload posted an empty `commit_sha`,
+   which Mykronos rejected with a 422 that read like a schema bug. Fixed with
+   `safe.directory`, plus an explicit check — a scan that cannot say what it
+   scanned is not a result (L0001, as with the reachability check).

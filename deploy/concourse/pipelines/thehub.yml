@@ -2018,14 +2018,24 @@ jobs:
         passed: [deploy-demo]
       - get: python
       - get: zap
+      # Scan and upload in ONE task, which is not the obvious shape but is the
+      # only one that works here. Concourse creates output volumes owned by
+      # root:root 0755 and this image runs as the unprivileged `zap` user with
+      # no sudo, so the scan succeeds and then cannot hand its report to a
+      # separate upload task ("cp: cannot create regular file
+      # 'results/zap.json': Permission denied"). Pre-chmodding the volume from
+      # a root task does not help either -- a task's output is a fresh volume,
+      # not the same-named input it was given. The ZAP image already carries
+      # git, python3 and pip, so the report never has to cross a volume
+      # boundary at all.
       - task: zap-baseline
         image: zap
         timeout: 20m
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
           params:
+            <<: *mykronos_env
             TARGET_URL: ((thehub-demo-url))
           run:
             path: bash
@@ -2045,13 +2055,15 @@ jobs:
                   exit 1
                 fi
 
-                # This image runs as the `zap` user; a report written straight
-                # into a Concourse output volume depends on that volume's
-                # ownership, which is a thing to discover in a failed build
-                # rather than rely on. Write in ZAP's own dir, copy out after.
-                WORK=/zap/wrk
-                [ -w "$WORK" ] || WORK=$(mktemp -d)
-                cd "$WORK"
+                # zap-baseline hardcodes its report directory to /zap/wrk when
+                # it runs inside a container, and refuses a file-based report
+                # (-J) unless that directory exists. The warning wording says
+                # "not mounted", but the actual check is os.path.exists -- so
+                # no bind mount is required (a Concourse task cannot provide one
+                # anyway); the directory merely has to be there. The image
+                # ships without it, so create it and let ZAP write there. /zap
+                # is owned by the zap user this image runs as, so mkdir works.
+                mkdir -p /zap/wrk
 
                 # -I: informational warnings do not fail the run (the severity
                 # decision is Mykronos's, not the scanner's). -m 5: cap the
@@ -2066,41 +2078,65 @@ jobs:
                   exit "$rc"
                 fi
 
-                test -s "$WORK/zap.json" || {
+                # The report lands in /zap/wrk (base_dir), regardless of cwd.
+                test -s /zap/wrk/zap.json || {
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
-                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
-                  echo "::error::Could not write the report into the task output."
+
+                # --user because this runs unprivileged; python adds the user
+                # site directory to sys.path, so `python3 -m` finds it.
+                #
+                # --break-system-packages is named alarmingly and does nothing
+                # of the sort here: this image is Debian-based, so PEP 668 marks
+                # the interpreter externally-managed and pip refuses outright
+                # ("This environment is externally managed"). Combined with
+                # --user the install goes to ~/.local and touches no system
+                # package; the alternative, a venv, needs python3-venv, which
+                # would mean apt-get, which needs the root this task does not
+                # have. The container is discarded when the scan ends either way.
+                #
+                # These are checked explicitly rather than relying on `set -e`,
+                # which is deliberately off above so a ZAP exit code can be
+                # inspected rather than kill the task.
+                pip install --quiet --user --break-system-packages \
+                  --no-warn-script-location \
+                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
+                  echo "::error::Could not install the Mykronos uploader."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries against demo"
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                # Concourse creates the source volume as root and this task runs
+                # as `zap`, so git refuses to read it ("detected dubious
+                # ownership"). Left alone, rev-parse prints nothing, the upload
+                # posts an empty commit_sha, and Mykronos rejects the run with a
+                # 422 that reads like a schema bug rather than a permissions
+                # one. Marking it safe is correct here: the repository was
+                # placed there by the git resource in this same build.
+                git config --global --add safe.directory "$PWD/source"
+                COMMIT_SHA=$(git -C source rev-parse HEAD)
+
+                # A scan that cannot say what it scanned is not a result (L0001,
+                # the same rule the reachability check above enforces).
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::Could not determine the commit under scan."
+                  exit 1
+                }
 
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
-                python -m mykronos.upload \
+                python3 -m mykronos.upload \
                   --capability dast --tool zap \
-                  --results-path results \
+                  --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --commit-sha "$COMMIT_SHA" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
+                  --severity-threshold low --blocking false || {
+                  echo "::error::Uploading the DAST findings to Mykronos failed."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against demo"
 
       - <<: *hub_report
         params:
@@ -2134,14 +2170,24 @@ jobs:
         passed: [deploy-prod]
       - get: python
       - get: zap
+      # Scan and upload in ONE task, which is not the obvious shape but is the
+      # only one that works here. Concourse creates output volumes owned by
+      # root:root 0755 and this image runs as the unprivileged `zap` user with
+      # no sudo, so the scan succeeds and then cannot hand its report to a
+      # separate upload task ("cp: cannot create regular file
+      # 'results/zap.json': Permission denied"). Pre-chmodding the volume from
+      # a root task does not help either -- a task's output is a fresh volume,
+      # not the same-named input it was given. The ZAP image already carries
+      # git, python3 and pip, so the report never has to cross a volume
+      # boundary at all.
       - task: zap-baseline
         image: zap
         timeout: 20m
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
           params:
+            <<: *mykronos_env
             TARGET_URL: ((thehub-prod-url))
           run:
             path: bash
@@ -2161,13 +2207,15 @@ jobs:
                   exit 1
                 fi
 
-                # This image runs as the `zap` user; a report written straight
-                # into a Concourse output volume depends on that volume's
-                # ownership, which is a thing to discover in a failed build
-                # rather than rely on. Write in ZAP's own dir, copy out after.
-                WORK=/zap/wrk
-                [ -w "$WORK" ] || WORK=$(mktemp -d)
-                cd "$WORK"
+                # zap-baseline hardcodes its report directory to /zap/wrk when
+                # it runs inside a container, and refuses a file-based report
+                # (-J) unless that directory exists. The warning wording says
+                # "not mounted", but the actual check is os.path.exists -- so
+                # no bind mount is required (a Concourse task cannot provide one
+                # anyway); the directory merely has to be there. The image
+                # ships without it, so create it and let ZAP write there. /zap
+                # is owned by the zap user this image runs as, so mkdir works.
+                mkdir -p /zap/wrk
 
                 # -I: informational warnings do not fail the run (the severity
                 # decision is Mykronos's, not the scanner's). -m 5: cap the
@@ -2182,41 +2230,65 @@ jobs:
                   exit "$rc"
                 fi
 
-                test -s "$WORK/zap.json" || {
+                # The report lands in /zap/wrk (base_dir), regardless of cwd.
+                test -s /zap/wrk/zap.json || {
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
-                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
-                  echo "::error::Could not write the report into the task output."
+
+                # --user because this runs unprivileged; python adds the user
+                # site directory to sys.path, so `python3 -m` finds it.
+                #
+                # --break-system-packages is named alarmingly and does nothing
+                # of the sort here: this image is Debian-based, so PEP 668 marks
+                # the interpreter externally-managed and pip refuses outright
+                # ("This environment is externally managed"). Combined with
+                # --user the install goes to ~/.local and touches no system
+                # package; the alternative, a venv, needs python3-venv, which
+                # would mean apt-get, which needs the root this task does not
+                # have. The container is discarded when the scan ends either way.
+                #
+                # These are checked explicitly rather than relying on `set -e`,
+                # which is deliberately off above so a ZAP exit code can be
+                # inspected rather than kill the task.
+                pip install --quiet --user --break-system-packages \
+                  --no-warn-script-location \
+                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
+                  echo "::error::Could not install the Mykronos uploader."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries against prod"
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                # Concourse creates the source volume as root and this task runs
+                # as `zap`, so git refuses to read it ("detected dubious
+                # ownership"). Left alone, rev-parse prints nothing, the upload
+                # posts an empty commit_sha, and Mykronos rejects the run with a
+                # 422 that reads like a schema bug rather than a permissions
+                # one. Marking it safe is correct here: the repository was
+                # placed there by the git resource in this same build.
+                git config --global --add safe.directory "$PWD/source"
+                COMMIT_SHA=$(git -C source rev-parse HEAD)
+
+                # A scan that cannot say what it scanned is not a result (L0001,
+                # the same rule the reachability check above enforces).
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::Could not determine the commit under scan."
+                  exit 1
+                }
 
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
-                python -m mykronos.upload \
+                python3 -m mykronos.upload \
                   --capability dast --tool zap \
-                  --results-path results \
+                  --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --commit-sha "$COMMIT_SHA" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
+                  --severity-threshold low --blocking false || {
+                  echo "::error::Uploading the DAST findings to Mykronos failed."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against prod"
 
       - <<: *hub_report
         params:
