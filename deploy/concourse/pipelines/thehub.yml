@@ -129,6 +129,11 @@ resources:
     icon: shield-search
     source: { repository: aquasec/trivy, tag: "0.58.1" }
 
+  - name: zap
+    type: registry-image
+    icon: spider
+    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.16.1" }
+
   - name: playwright
     type: registry-image
     icon: test-tube
@@ -1989,6 +1994,238 @@ jobs:
           STAGE: api_inventory
           STATUS: success
           TARGET_ENV: demo
+
+  # -- Unauthenticated baseline DAST: Demo ----------------------------------
+  #
+  # zap-baseline.py is spider + passive rules only. It crawls the target and
+  # analyses the responses; it does NOT send attack payloads. That is what
+  # makes it safe to point at demo -- unlike an active scan, which measured
+  # 548% CPU and took production down (D-053), a passive baseline adds ordinary
+  # crawl traffic and nothing more.
+  #
+  # Unauthenticated on purpose: this is the view an anonymous attacker gets.
+  # On demo the gate is off, so that is the whole app; on prod the gate is on,
+  # so it is the perimeter -- and a scan that confirms the perimeter refuses
+  # anonymous callers is a real result, not an empty one.
+  - name: dast-demo
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [deploy-demo]
+      - get: python
+      - get: zap
+      - task: zap-baseline
+        image: zap
+        timeout: 20m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          params:
+            TARGET_URL: ((thehub-demo-url))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # Reachability first. A scan of a host that is not answering
+                # produces a report with no alerts, which on the dashboard is
+                # indistinguishable from a clean scan (L0001). Retried, because
+                # a single curl on a loaded worker fails while the target is up.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                  exit 1
+                fi
+
+                # This image runs as the `zap` user; a report written straight
+                # into a Concourse output volume depends on that volume's
+                # ownership, which is a thing to discover in a failed build
+                # rather than rely on. Write in ZAP's own dir, copy out after.
+                WORK=/zap/wrk
+                [ -w "$WORK" ] || WORK=$(mktemp -d)
+                cd "$WORK"
+
+                # -I: informational warnings do not fail the run (the severity
+                # decision is Mykronos's, not the scanner's). -m 5: cap the
+                # spider at 5 minutes so the crawl is bounded on any target.
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                # 0 = nothing to report, 1 = a FAIL, 2 = warnings. All results.
+                # Anything higher is ZAP itself breaking.
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                test -s "$WORK/zap.json" || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
+                  echo "::error::Could not write the report into the task output."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries against demo"
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                # DAST findings have no file and no line -- the request is the
+                # location -- so --workspace buys nothing beyond consistency.
+                python -m mykronos.upload \
+                  --capability dast --tool zap \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: dast_headers
+          STATUS: success
+          TARGET_ENV: demo
+
+  # -- Unauthenticated baseline DAST: Prod ----------------------------------
+  #
+  # zap-baseline.py is spider + passive rules only. It crawls the target and
+  # analyses the responses; it does NOT send attack payloads. That is what
+  # makes it safe to point at prod -- unlike an active scan, which measured
+  # 548% CPU and took production down (D-053), a passive baseline adds ordinary
+  # crawl traffic and nothing more.
+  #
+  # Unauthenticated on purpose: this is the view an anonymous attacker gets.
+  # On demo the gate is off, so that is the whole app; on prod the gate is on,
+  # so it is the perimeter -- and a scan that confirms the perimeter refuses
+  # anonymous callers is a real result, not an empty one.
+  - name: dast-prod
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [deploy-prod]
+      - get: python
+      - get: zap
+      - task: zap-baseline
+        image: zap
+        timeout: 20m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          params:
+            TARGET_URL: ((thehub-prod-url))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # Reachability first. A scan of a host that is not answering
+                # produces a report with no alerts, which on the dashboard is
+                # indistinguishable from a clean scan (L0001). Retried, because
+                # a single curl on a loaded worker fails while the target is up.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                  exit 1
+                fi
+
+                # This image runs as the `zap` user; a report written straight
+                # into a Concourse output volume depends on that volume's
+                # ownership, which is a thing to discover in a failed build
+                # rather than rely on. Write in ZAP's own dir, copy out after.
+                WORK=/zap/wrk
+                [ -w "$WORK" ] || WORK=$(mktemp -d)
+                cd "$WORK"
+
+                # -I: informational warnings do not fail the run (the severity
+                # decision is Mykronos's, not the scanner's). -m 5: cap the
+                # spider at 5 minutes so the crawl is bounded on any target.
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                # 0 = nothing to report, 1 = a FAIL, 2 = warnings. All results.
+                # Anything higher is ZAP itself breaking.
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                test -s "$WORK/zap.json" || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+                cp "$WORK/zap.json" "$OLDPWD/results/zap.json" || {
+                  echo "::error::Could not write the report into the task output."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' "$WORK/zap.json" | wc -l) alert entries against prod"
+
+      - task: upload
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                # DAST findings have no file and no line -- the request is the
+                # location -- so --workspace buys nothing beyond consistency.
+                python -m mykronos.upload \
+                  --capability dast --tool zap \
+                  --results-path results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git -C source rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: dast_headers
+          STATUS: success
+          TARGET_ENV: prod
 
   # -- Functional tests, then DAST seeded by their traffic -----------------
   #
