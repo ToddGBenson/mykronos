@@ -209,7 +209,10 @@ export function CapabilityDots({
  */
 export type IndicatorTone = "ok" | "bad" | "warn" | "idle" | "off";
 
-const INDICATOR: Record<IndicatorTone, { lamp: string; word: string }> = {
+/** Exported so widgets shaped differently from a lamp+word (e.g. a button)
+ *  still draw the same five colours rather than inventing a second palette
+ *  for the same five facts. */
+export const INDICATOR: Record<IndicatorTone, { lamp: string; word: string }> = {
   ok: { lamp: "bg-pass border-pass", word: "text-pass" },
   bad: { lamp: "bg-critical border-critical", word: "text-critical" },
   warn: { lamp: "bg-high border-high", word: "text-high" },

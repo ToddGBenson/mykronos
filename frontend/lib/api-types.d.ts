@@ -415,7 +415,7 @@ export interface paths {
         };
         /**
          * Repo Findings
-         * @description Filterable finding list for one repo (spec 10 §2.2).
+         * @description Filterable finding list for one repo (spec 10 §2.2, spec 17 §3).
          */
         get: operations["repo_findings_api_dashboard_repos__repo_id__findings_get"];
         put?: never;
@@ -529,6 +529,33 @@ export interface paths {
          *     view. Viewers can read every finding and change none of them.
          */
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
+        trace?: never;
+    };
+    "/api/dashboard/threat-intel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Threat Intel
+         * @description Every CVE currently matched to an open finding somewhere in the
+         *     portfolio, KEV first then EPSS descending (spec 17 §4.4).
+         *
+         *     A CVE with no `ThreatIntelMatch` row yet (the refresh job has not run, or
+         *     ran before this finding existed) is still returned — `in_kev: false`,
+         *     both scores null — rather than omitted. "Not yet fetched" and "fetched,
+         *     not exploited" must not look the same, and omitting the row is exactly
+         *     how they would.
+         */
+        get: operations["threat_intel_api_dashboard_threat_intel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/knowledge/entries": {
@@ -1438,6 +1465,8 @@ export interface components {
             status: string;
             /** Fingerprint Version */
             fingerprint_version?: string | null;
+            /** Superseded By */
+            superseded_by?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
             /** Last Seen At */
@@ -1796,10 +1825,7 @@ export interface components {
             /** Risk Assessed At */
             risk_assessed_at?: string | null;
         };
-        /**
-         * PortfolioSummary
-         * @description The cards above the table (spec 10 §2.1).
-         */
+        /** PortfolioSummary */
         PortfolioSummary: {
             /**
              * Active Repos
@@ -2232,6 +2258,31 @@ export interface components {
              */
             rationale: string;
         };
+        /**
+         * ThreatIntelEntryOut
+         * @description One CVE, matched against every open finding that names it (spec 17 §4.4).
+         */
+        ThreatIntelEntryOut: {
+            /** Cve Id */
+            cve_id: string;
+            /** In Kev */
+            in_kev: boolean;
+            /** Kev Added At */
+            kev_added_at?: string | null;
+            /** Kev Due Date */
+            kev_due_date?: string | null;
+            /** Epss Score */
+            epss_score?: number | null;
+            /** Epss Percentile */
+            epss_percentile?: number | null;
+            /** Fetched At */
+            fetched_at?: string | null;
+            worst_severity: components["schemas"]["Severity"];
+            /** Repo Full Names */
+            repo_full_names: string[];
+            /** Finding Count */
+            finding_count: number;
+        };
         /** ToxicCombinationMemberOut */
         ToxicCombinationMemberOut: {
             /** Finding Id */
@@ -2619,6 +2670,7 @@ export interface operations {
             query?: {
                 severity?: components["schemas"]["Severity"] | null;
                 capability?: components["schemas"]["Capability"] | null;
+                rule_id?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -2851,6 +2903,9 @@ export interface operations {
                 capability?: components["schemas"]["Capability"] | null;
                 severity?: components["schemas"]["Severity"] | null;
                 finding_status?: components["schemas"]["FindingStatus"] | null;
+                rule_id?: string | null;
+                first_seen_after?: string | null;
+                first_seen_before?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -2888,6 +2943,7 @@ export interface operations {
                 capability?: components["schemas"]["Capability"] | null;
                 severity?: components["schemas"]["Severity"] | null;
                 finding_status?: components["schemas"]["FindingStatus"];
+                rule_id?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -3013,6 +3069,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    threat_intel_api_dashboard_threat_intel_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatIntelEntryOut"][];
                 };
             };
         };

@@ -33,13 +33,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos.db.models import CapabilityGrant, RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
 from mykronos.schemas import Severity, utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -331,11 +332,14 @@ class DashboardQueries:
         capability: str | None = None,
         severity: str | None = None,
         finding_status: str | None = None,
+        rule_id: str | None = None,
+        first_seen_after: datetime | None = None,
+        first_seen_before: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
         include_raw: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Filterable finding list for one repo (spec 10 §2.2).
+        """Filterable finding list for one repo (spec 10 §2.2, spec 17 §3).
 
         `include_raw` is admin-only (spec 12 §5): a Secrets finding's raw
         record necessarily quotes context around the secret, so it is withheld
@@ -354,6 +358,18 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if rule_id:
+            # Same free-text match as open_findings() (spec 17 §3) — matched
+            # against rule_id and title, not a category filter with a count.
+            where.append("(rule_id ILIKE ? OR title ILIKE ?)")
+            needle = f"%{rule_id}%"
+            params += [needle, needle]
+        if first_seen_after is not None:
+            where.append("first_seen_at >= ?")
+            params.append(first_seen_after)
+        if first_seen_before is not None:
+            where.append("first_seen_at <= ?")
+            params.append(first_seen_before)
         clause = " AND ".join(where)
 
         total_rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
@@ -375,6 +391,10 @@ class DashboardQueries:
             "package_version",
             "status",
             "fingerprint_version",
+            # A `superseded` finding names its replacement (spec 05 §5a); this
+            # was previously not selected here, so there was no way to follow
+            # a re-fingerprinted finding to what replaced it (spec 17 §5.1).
+            "superseded_by",
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
@@ -412,6 +432,7 @@ class DashboardQueries:
         store: KnowledgeStore | None = None,
         capability: str | None = None,
         severity: str | None = None,
+        rule_id: str | None = None,
         finding_status: str = "open",
         limit: int = 400,
     ) -> dict[str, Any]:
@@ -481,6 +502,7 @@ class DashboardQueries:
             finding_status,
             capability=capability,
             severity=severity,
+            rule_id=rule_id,
             limit=limit + 1,
         )
         truncated = len(rows) > limit
@@ -496,9 +518,13 @@ class DashboardQueries:
             "total": total,
             "matching": (
                 total
-                if capability is None and severity is None
+                if capability is None and severity is None and rule_id is None
                 else self._finding_count(
-                    repo_full_name, finding_status, capability=capability, severity=severity
+                    repo_full_name,
+                    finding_status,
+                    capability=capability,
+                    severity=severity,
+                    rule_id=rule_id,
                 )
             ),
             "shown": sum(g["occurrences"] for g in groups),
@@ -518,6 +544,7 @@ class DashboardQueries:
         *,
         capability: str | None = None,
         severity: str | None = None,
+        rule_id: str | None = None,
     ) -> tuple[str, list[Any]]:
         # asset_id, not repo_full_name (spec 14 §5): for a repository asset the
         # two hold the same string, so this is a rename rather than a change.
@@ -527,6 +554,14 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if rule_id:
+            # Free-text, not a category filter with a count on a button
+            # (spec 17 §3) — matched against rule_id and title, since Trivy's
+            # rule_id *is* the CVE while an OSV-derived title carries it
+            # instead. ILIKE: DuckDB's case-insensitive substring match.
+            where.append("(rule_id ILIKE ? OR title ILIKE ?)")
+            needle = f"%{rule_id}%"
+            params += [needle, needle]
         return " AND ".join(where), params
 
     def _finding_count(
@@ -536,9 +571,14 @@ class DashboardQueries:
         *,
         capability: str | None = None,
         severity: str | None = None,
+        rule_id: str | None = None,
     ) -> int:
         clause, params = self._status_clause(
-            repo_full_name, finding_status, capability=capability, severity=severity
+            repo_full_name,
+            finding_status,
+            capability=capability,
+            severity=severity,
+            rule_id=rule_id,
         )
         rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
         return int(rows[0][0]) if rows else 0
@@ -567,6 +607,7 @@ class DashboardQueries:
         *,
         capability: str | None = None,
         severity: str | None = None,
+        rule_id: str | None = None,
         capabilities: frozenset[str] | None = None,
         limit: int = CORRELATION_CEILING,
     ) -> list[dict[str, Any]]:
@@ -583,7 +624,11 @@ class DashboardQueries:
         detail pane behind the same admin check they always were (spec 12 §5).
         """
         clause, params = self._status_clause(
-            repo_full_name, finding_status, capability=capability, severity=severity
+            repo_full_name,
+            finding_status,
+            capability=capability,
+            severity=severity,
+            rule_id=rule_id,
         )
         if capabilities is not None:
             placeholders = ", ".join("?" for _ in capabilities)
@@ -747,6 +792,7 @@ class DashboardQueries:
         *,
         severity: str | None = None,
         capability: str | None = None,
+        rule_id: str | None = None,
         limit: int = 100,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
@@ -780,6 +826,10 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if rule_id:
+            where.append("(rule_id ILIKE ? OR title ILIKE ?)")
+            needle = f"%{rule_id}%"
+            params += [needle, needle]
         clause = " AND ".join(where)
 
         counts_rows = self.catalog.query(
@@ -1158,3 +1208,75 @@ class DashboardQueries:
             with suppress(TypeError, json.JSONDecodeError):
                 record["raw_finding_json"] = json.loads(record["raw_finding_json"])
         return record
+
+    # -- threat intelligence ---------------------------------------------
+
+    def threat_intel(self, session: Session) -> list[dict[str, Any]]:
+        """Every CVE currently matched to an open finding somewhere in the
+        portfolio, KEV first then EPSS descending (spec 17 §4.4).
+
+        A different ordering from the triage queue's severity-then-age on
+        purpose: EPSS moves day to day in a way severity doesn't, and this
+        answers "what does the outside world think matters right now"
+        rather than "what is worst by our own static rating".
+
+        Joined in Python against the operational database — same rule as
+        `portfolio()` (module docstring): the row count on either side is a
+        few hundred at most, and an extension dependency to join across
+        stores would buy nothing a Python dict doesn't already do.
+        """
+        rows = self.catalog.query(
+            "SELECT repo_full_name, finding_id, rule_id, title, severity "
+            "FROM findings WHERE status = 'open'"
+        )
+
+        by_cve: dict[str, dict[str, Any]] = {}
+        for repo, finding_id, rule_id, title, severity in rows:
+            cve_id = extract_cve(str(rule_id), str(title))
+            if cve_id is None:
+                continue
+            entry = by_cve.setdefault(
+                cve_id,
+                {
+                    "cve_id": cve_id,
+                    "repos": set(),
+                    "finding_ids": set(),
+                    "worst_severity": str(severity),
+                },
+            )
+            entry["repos"].add(str(repo))
+            entry["finding_ids"].add(str(finding_id))
+            if _worse(str(severity), str(entry["worst_severity"])):
+                entry["worst_severity"] = str(severity)
+
+        if not by_cve:
+            return []
+
+        matches = {
+            row.cve_id: row
+            for row in session.execute(
+                select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(by_cve))
+            ).scalars()
+        }
+
+        results = []
+        for cve_id, entry in by_cve.items():
+            match = matches.get(cve_id)
+            results.append(
+                {
+                    "cve_id": cve_id,
+                    "in_kev": match.in_kev if match else False,
+                    "kev_added_at": match.kev_added_at if match else None,
+                    "kev_due_date": match.kev_due_date if match else None,
+                    "epss_score": match.epss_score if match else None,
+                    "epss_percentile": match.epss_percentile if match else None,
+                    "fetched_at": match.fetched_at if match else None,
+                    "worst_severity": entry["worst_severity"],
+                    "repo_full_names": sorted(entry["repos"]),
+                    "finding_count": len(entry["finding_ids"]),
+                }
+            )
+
+        # KEV first, then EPSS descending (nulls last) — spec 17 §4.4.
+        results.sort(key=lambda r: (not r["in_kev"], -(r["epss_score"] or 0.0)))
+        return results

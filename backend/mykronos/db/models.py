@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -236,6 +238,33 @@ class WorkflowInstallEvent(Base):
     detail: Mapped[str] = mapped_column(String(2000), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     merged_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+class ThreatIntelMatch(Base):
+    """Public exploitation data for one CVE (spec 17 §4.2).
+
+    Operational, not lake: this is a *current-value* table — one row per CVE,
+    overwritten on every refresh — not an append-only record of scan results.
+    A revised EPSS score is a correction to a fact this row states, not an
+    event to append, which is why it lives alongside `CapabilityGrant` rather
+    than as a `findings`-style Parquet table (spec 05 §5a's append-only rule
+    is about *scan* history; this isn't one).
+
+    Written only for CVEs an open finding in the portfolio actually names
+    (`threat_intel.py::refresh`) — not the full public catalogs, which are
+    orders of magnitude larger than anything this platform's findings
+    reference.
+    """
+
+    __tablename__ = "threat_intel_matches"
+
+    cve_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    in_kev: Mapped[bool] = mapped_column(Boolean, default=False)
+    kev_added_at: Mapped[date | None] = mapped_column(Date, default=None)
+    kev_due_date: Mapped[date | None] = mapped_column(Date, default=None)
+    epss_score: Mapped[float | None] = mapped_column(Float, default=None)
+    epss_percentile: Mapped[float | None] = mapped_column(Float, default=None)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AuditLogEntry(Base):

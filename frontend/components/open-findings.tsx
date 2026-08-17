@@ -40,12 +40,21 @@ import type {
   ToxicCombination,
 } from "@/lib/api";
 
-/** The statuses a person can ask for. `open` is the default and the point. */
+/**
+ * The statuses a person can ask for. `open` is the default and the point.
+ *
+ * `suppressed` and `superseded` (spec 05 §5a, spec 17 §5.1) used to be real
+ * `Finding.status` values the backend already accepted with no UI way to ask
+ * for them — a superseded finding's replacement (`superseded_by`, shown in
+ * its detail pane) was unreachable by name, the same gap §5.1 closes.
+ */
 const STATUSES = [
   { id: "open", label: "open" },
   { id: "accepted_risk", label: "accepted risk" },
   { id: "false_positive", label: "false positive" },
   { id: "fixed", label: "fixed" },
+  { id: "suppressed", label: "suppressed" },
+  { id: "superseded", label: "superseded" },
 ] as const;
 
 const TRIAGE: Record<string, { tone: "critical" | "warn" | "accent" | "muted"; label: string }> = {
@@ -77,6 +86,8 @@ export type FindingsQuery = {
   severity?: string;
   capability?: string;
   status?: string;
+  /** Free-text, matched against rule_id and title (spec 17 §3). */
+  rule_id?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
@@ -97,11 +108,15 @@ export function OpenFindings({
 }) {
   const href = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
+    // Always explicit, never stripped (spec 17 §2.4): this component now
+    // renders behind its own "Findings" tab rather than at the default
+    // route, so a filter link that dropped `tab` would silently bounce the
+    // reader back to the Harness tab on every click.
+    next.set("tab", "findings");
     for (const [key, value] of Object.entries({ ...query, ...patch })) {
       if (value && key !== "tab") next.set(key, value);
     }
-    const suffix = next.toString();
-    return `/repos/${repoId}${suffix ? `?${suffix}` : ""}`;
+    return `/repos/${repoId}?${next.toString()}`;
   };
 
   const selected = query.group
@@ -110,7 +125,7 @@ export function OpenFindings({
 
   return (
     <div className="flex flex-col gap-3">
-      <Filters page={page} query={query} href={href} />
+      <Filters repoId={repoId} page={page} query={query} href={href} />
 
       {page.toxic_combinations.length > 0 ? (
         <ToxicCombinations combinations={page.toxic_combinations} />
@@ -119,12 +134,12 @@ export function OpenFindings({
       {page.groups.length === 0 ? (
         <EmptyState
           title={
-            query.severity || query.capability
+            query.severity || query.capability || query.rule_id
               ? "Nothing matches these filters"
               : `No ${(query.status ?? "open").replace("_", " ")} findings`
           }
           detail={
-            query.severity || query.capability
+            query.severity || query.capability || query.rule_id
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -159,10 +174,12 @@ export function OpenFindings({
 }
 
 function Filters({
+  repoId,
   page,
   query,
   href,
 }: {
+  repoId: string;
   page: OpenFindingsPage;
   query: FindingsQuery;
   href: (patch: Record<string, string | undefined>) => string;
@@ -227,6 +244,36 @@ function Filters({
           </Link>
         ) : null}
       </div>
+
+      {/* A plain GET form rather than a client component with `useState` and
+          a debounced fetch — the query already lives in the URL for every
+          other filter here, and a search box that broke that pattern would
+          be the one filter that didn't survive a page refresh or a shared
+          link (spec 17 §3). */}
+      <form method="get" action={`/repos/${repoId}`} className="flex items-center gap-1.5">
+        <input type="hidden" name="tab" value="findings" />
+        {query.status ? <input type="hidden" name="status" value={query.status} /> : null}
+        {query.severity ? <input type="hidden" name="severity" value={query.severity} /> : null}
+        {query.capability ? (
+          <input type="hidden" name="capability" value={query.capability} />
+        ) : null}
+        <Label>Rule / CVE</Label>
+        <input
+          type="search"
+          name="rule_id"
+          defaultValue={query.rule_id ?? ""}
+          placeholder="e.g. CWE-89 or CVE-2024-…"
+          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[9px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+        />
+        {query.rule_id ? (
+          <Link
+            href={href({ rule_id: undefined, ...CLEAR_SELECTION })}
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[9px] text-accent"
+          >
+            {query.rule_id} ✕
+          </Link>
+        ) : null}
+      </form>
     </div>
   );
 }

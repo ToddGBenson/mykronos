@@ -35,7 +35,7 @@ const CAPABILITIES = ["sast", "dast", "secrets", "containers", "iac", "cloud", "
 export default async function TriagePage({
   searchParams,
 }: {
-  searchParams: Promise<{ severity?: string; capability?: string }>;
+  searchParams: Promise<{ severity?: string; capability?: string; rule_id?: string }>;
 }) {
   const query = await searchParams;
   const result = await getTriage(query);
@@ -120,15 +120,40 @@ export default async function TriagePage({
         ))}
       </div>
 
+      {/* Same GET-form pattern as the per-repo Findings tab (spec 17 §3) —
+          the query lives in the URL for every other filter here too. */}
+      <form method="get" action="/triage" className="flex items-center gap-1.5">
+        {query.severity ? <input type="hidden" name="severity" value={query.severity} /> : null}
+        {query.capability ? (
+          <input type="hidden" name="capability" value={query.capability} />
+        ) : null}
+        <Label>Rule / CVE</Label>
+        <input
+          type="search"
+          name="rule_id"
+          defaultValue={query.rule_id ?? ""}
+          placeholder="e.g. CWE-89 or CVE-2024-…"
+          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[9px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+        />
+        {query.rule_id ? (
+          <Link
+            href={filterHref({ rule_id: undefined })}
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[9px] text-accent"
+          >
+            {query.rule_id} ✕
+          </Link>
+        ) : null}
+      </form>
+
       {items.length === 0 ? (
         <EmptyState
           title={
-            query.severity || query.capability
+            query.severity || query.capability || query.rule_id
               ? "Nothing matches these filters"
               : "Nothing open"
           }
           detail={
-            query.severity || query.capability ? (
+            query.severity || query.capability || query.rule_id ? (
               "Clear the filters to see the whole queue."
             ) : (
               <>
