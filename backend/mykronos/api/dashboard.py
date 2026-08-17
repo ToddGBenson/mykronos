@@ -9,7 +9,7 @@ policy — which is why it demands a reason.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -162,6 +162,10 @@ class FindingOut(BaseModel):
     package_version: str | None = None
     status: str
     fingerprint_version: str | None = None
+    #: Set only when `status == "superseded"` (spec 05 §5a) — the finding_id
+    #: that replaced this record. Previously not selected at all, so a
+    #: superseded row had no way to point at what replaced it (spec 17 §5.1).
+    superseded_by: str | None = None
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
     resolved_at: datetime | None = None
@@ -510,6 +514,7 @@ async def triage(
     principal: PrincipalDep,
     severity: Annotated[Severity | None, Query()] = None,
     capability: Annotated[Capability | None, Query()] = None,
+    rule_id: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -523,6 +528,7 @@ async def triage(
             session,
             severity=severity.value if severity else None,
             capability=capability.value if capability else None,
+            rule_id=rule_id,
             limit=limit,
         )
 
@@ -887,10 +893,13 @@ async def repo_findings(
     capability: Annotated[Capability | None, Query()] = None,
     severity: Annotated[Severity | None, Query()] = None,
     finding_status: Annotated[FindingStatus | None, Query()] = None,
+    rule_id: Annotated[str | None, Query(max_length=200)] = None,
+    first_seen_after: Annotated[datetime | None, Query()] = None,
+    first_seen_before: Annotated[datetime | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FindingsPage:
-    """Filterable finding list for one repo (spec 10 §2.2)."""
+    """Filterable finding list for one repo (spec 10 §2.2, spec 17 §3)."""
     repo_full_name = _resolve_repo(request, repo_id)
 
     findings, total = _queries(request).findings(
@@ -898,6 +907,9 @@ async def repo_findings(
         capability=capability.value if capability else None,
         severity=severity.value if severity else None,
         finding_status=finding_status.value if finding_status else None,
+        rule_id=rule_id,
+        first_seen_after=first_seen_after,
+        first_seen_before=first_seen_before,
         limit=limit,
         offset=offset,
         include_raw=principal.may_see_raw_output,
@@ -919,6 +931,7 @@ async def repo_open_findings(
     capability: Annotated[Capability | None, Query()] = None,
     severity: Annotated[Severity | None, Query()] = None,
     finding_status: Annotated[FindingStatus, Query()] = FindingStatus.OPEN,
+    rule_id: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -940,6 +953,7 @@ async def repo_open_findings(
         store=request.app.state.knowledge,
         capability=capability.value if capability else None,
         severity=severity.value if severity else None,
+        rule_id=rule_id,
         finding_status=finding_status.value,
         limit=limit,
     )
@@ -1098,6 +1112,36 @@ async def set_finding_status(
         reason_supplied=bool(body.reason.strip()),
         retro_signal=signal,
     )
+
+
+class ThreatIntelEntryOut(BaseModel):
+    """One CVE, matched against every open finding that names it (spec 17 §4.4)."""
+
+    cve_id: str
+    in_kev: bool
+    kev_added_at: date | None = None
+    kev_due_date: date | None = None
+    epss_score: float | None = None
+    epss_percentile: float | None = None
+    fetched_at: datetime | None = None
+    worst_severity: Severity
+    repo_full_names: list[str]
+    finding_count: int
+
+
+@router.get("/threat-intel", response_model=list[ThreatIntelEntryOut])
+async def threat_intel(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
+    """Every CVE currently matched to an open finding somewhere in the
+    portfolio, KEV first then EPSS descending (spec 17 §4.4).
+
+    A CVE with no `ThreatIntelMatch` row yet (the refresh job has not run, or
+    ran before this finding existed) is still returned — `in_kev: false`,
+    both scores null — rather than omitted. "Not yet fetched" and "fetched,
+    not exploited" must not look the same, and omitting the row is exactly
+    how they would.
+    """
+    with request.app.state.db.session() as session:
+        return _queries(request).threat_intel(session)
 
 
 def _resolve_repo(request: Request, repo_id: str) -> str:

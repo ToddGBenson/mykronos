@@ -3,7 +3,7 @@ import Link from "next/link";
 import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
-import { PipelinesPanel } from "@/components/pipelines";
+import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
 import {
   OccurrenceDisposition,
   OpenFindings,
@@ -19,7 +19,7 @@ import {
   Pill,
   Section,
 } from "@/components/primitives";
-import type { ScanHealth } from "@/lib/api";
+import type { CiPage, ScanHealth } from "@/lib/api";
 import {
   getCi,
   getDecisions,
@@ -35,18 +35,25 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * One dashboard, and then the views that are genuinely about something else.
+ * Harness and Findings, split back apart (spec 17 §2).
  *
- * Findings, scan health, jobs and stages used to be three tabs and a panel,
- * which meant the four questions people actually ask together — what is
- * outstanding, is anything still scanning, is the pipeline green, and is every
- * stage covered — could not be answered without navigating. They are one
- * labelled page now. Risk decisions, supply chain, insider risk and
- * remediation stay behind tabs: each is a different subject with its own
- * vocabulary, not another view of the same findings.
+ * A prior version of this page folded findings, scan health, jobs and stages
+ * into one "Dashboard" tab, on the reasoning that the four questions people
+ * ask together — what is outstanding, is anything still scanning, is the
+ * pipeline green, is every stage covered — couldn't be answered without
+ * navigating. That reasoning was sound and the page it produced was still two
+ * different jobs wearing one label: "is the harness healthy" and "what did it
+ * find" are asked by different people, at different times, for different
+ * reasons, and a single long scroll made neither quick to reach. **Harness**
+ * is capability enable/disable plus scan health plus pipeline coverage — is
+ * this running, and is it healthy. **Findings** is what it found. Risk
+ * decisions, supply chain, insider risk and remediation stay behind their own
+ * tabs, unchanged: each is a different subject with its own vocabulary, not
+ * another view of the same findings.
  */
 const TABS = [
-  { id: "dashboard", label: "Dashboard" },
+  { id: "harness", label: "Harness" },
+  { id: "findings", label: "Findings" },
   { id: "decisions", label: "Risk decisions" },
   { id: "sscs", label: "Supply chain" },
   { id: "insider", label: "Insider risk" },
@@ -62,19 +69,23 @@ export default async function RepoPage({
 }) {
   const { repoId } = await params;
   const query = await searchParams;
-  const tab = query.tab ?? "dashboard";
+  const tab = query.tab ?? "harness";
 
   const repo = await getRepo(repoId);
   if (!repo.ok) {
     return <ErrorPanel title="Repository unavailable" detail={repo.error} />;
   }
 
+  // Fetched once per page load regardless of which tab is open: the
+  // Built/Scanned-by links (spec 17 §2.3) render at the top of every tab, and
+  // the Harness tab's capability buttons (spec 17 §2.2) need the same
+  // `CiPage` to colour themselves consistently with the panel below them.
+  const [scanHealth, ci] = await Promise.all([getScanHealth(repoId), getCi(repoId)]);
   // What "enabled" means depends on who scans this repo: the installer's
   // ledger for Actions, the grants for everything else — same union the
   // portfolio and stages views apply. `live` is which of those have actually
   // reported a run, so the manager can say implemented-and-reporting versus
   // implemented-and-silent.
-  const scanHealth = await getScanHealth(repoId);
   const enabledSet = new Set(repo.data.enabled_capabilities);
   if (repo.data.scanned_by !== "github_actions") {
     for (const capability of repo.data.granted_capabilities ?? []) {
@@ -98,12 +109,13 @@ export default async function RepoPage({
         </Pill>
       </div>
 
-      <CapabilityManager
-        repoId={repoId}
-        enabled={[...enabledSet].sort()}
-        pending={repo.data.pending_capabilities ?? []}
-        live={live}
-      />
+      {ci.ok ? (
+        <PipelineLinks ci={ci.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+          {ci.error}
+        </p>
+      )}
 
       {repo.data.pending_capabilities?.length ? (
         <div className="border border-high bg-high-wash px-3 py-2 text-[11px] text-ink-2">
@@ -121,7 +133,7 @@ export default async function RepoPage({
           <Link
             key={entry.id}
             href={
-              entry.id === "dashboard"
+              entry.id === "harness"
                 ? `/repos/${repoId}`
                 : `/repos/${repoId}?tab=${entry.id}`
             }
@@ -144,42 +156,44 @@ export default async function RepoPage({
         <AegisTab repoId={repoId} />
       ) : tab === "remediation" ? (
         <PatchworkTab repoId={repoId} />
+      ) : tab === "findings" ? (
+        <FindingsTab repoId={repoId} query={query} />
       ) : (
-        <Dashboard
+        <HarnessTab
           repoId={repoId}
-          query={query}
           enabled={[...enabledSet].sort()}
+          pending={repo.data.pending_capabilities ?? []}
+          live={live}
           scanHealth={scanHealth.ok ? scanHealth.data : null}
           scanHealthError={scanHealth.ok ? null : scanHealth.error}
+          ci={ci.ok ? ci.data : null}
         />
       )}
     </div>
   );
 }
 
-/** Findings, scan health, jobs and stages — the four questions, one page. */
-async function Dashboard({
+/**
+ * Is the harness running, and is it healthy — enable/disable, scan health,
+ * pipeline coverage. Not what it found; that's the Findings tab (spec 17 §2).
+ */
+function HarnessTab({
   repoId,
-  query,
   enabled,
+  pending,
+  live,
   scanHealth,
   scanHealthError,
+  ci,
 }: {
   repoId: string;
-  query: FindingsQuery;
   enabled: string[];
+  pending: string[];
+  live: string[];
   scanHealth: ScanHealth | null;
   scanHealthError: string | null;
+  ci: CiPage | null;
 }) {
-  const [findings, ci] = await Promise.all([
-    getOpenFindings(repoId, {
-      severity: query.severity,
-      capability: query.capability,
-      finding_status: query.status,
-    }),
-    getCi(repoId),
-  ]);
-
   // A box per enabled check, plus anything that has reported without being
   // enabled — which is worth seeing rather than hiding, because it means the
   // ledger and the pipeline disagree.
@@ -193,6 +207,8 @@ async function Dashboard({
 
   return (
     <div className="flex flex-col gap-4">
+      <CapabilityManager repoId={repoId} enabled={enabled} pending={pending} live={live} ci={ci} />
+
       <Section
         title="Scan health"
         detail="how many of each check's runs succeeded"
@@ -211,39 +227,50 @@ async function Dashboard({
         )}
       </Section>
 
-      {ci.ok ? (
-        <PipelinesPanel ci={ci.data} />
+      {ci ? (
+        <PipelineCoverage ci={ci} />
       ) : (
-        // Said rather than dropped. These are two labelled sections of the
-        // dashboard now, and a section that quietly disappears when its fetch
-        // fails reads as a repository with no pipeline.
+        // Said rather than dropped. A section that quietly disappears when
+        // its fetch fails reads as a repository with no pipeline.
         <Section title="Pipeline stages and jobs" detail="unavailable">
-          <p className="px-3 py-2 text-[11px] text-critical">{ci.error}</p>
+          <p className="px-3 py-2 text-[11px] text-critical">
+            Pipeline state could not be read.
+          </p>
         </Section>
       )}
-
-      <Section
-        title="Open findings"
-        detail="triaged, deduplicated, and correlated into toxic combinations"
-      >
-        <div className="px-3 py-3">
-          {findings.ok ? (
-            <OpenFindings
-              repoId={repoId}
-              page={findings.data}
-              query={query}
-              detail={
-                query.finding ? (
-                  <FindingDisposition findingId={query.finding} />
-                ) : undefined
-              }
-            />
-          ) : (
-            <ErrorPanel title="Findings unavailable" detail={findings.error} />
-          )}
-        </div>
-      </Section>
     </div>
+  );
+}
+
+/** What the harness found. Grouped, deduplicated, and correlated into toxic
+ *  combinations — see `open-findings.tsx` for the query/grouping logic. */
+async function FindingsTab({
+  repoId,
+  query,
+}: {
+  repoId: string;
+  query: FindingsQuery;
+}) {
+  const findings = await getOpenFindings(repoId, {
+    severity: query.severity,
+    capability: query.capability,
+    finding_status: query.status,
+    rule_id: query.rule_id,
+  });
+
+  if (!findings.ok) {
+    return <ErrorPanel title="Findings unavailable" detail={findings.error} />;
+  }
+
+  return (
+    <OpenFindings
+      repoId={repoId}
+      page={findings.data}
+      query={query}
+      detail={
+        query.finding ? <FindingDisposition findingId={query.finding} /> : undefined
+      }
+    />
   );
 }
 

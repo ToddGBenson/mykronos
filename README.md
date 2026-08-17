@@ -28,6 +28,7 @@ roadmap closed is tracked as decisions and retros rather than phases:
 | Quality lanes as ScanRuns: unit, functional, QA docs (D-046); AI checks (D-047) | **Done** |
 | Network scanning (spec 14) | Built; awaiting an authorized CIDR to scan |
 | DAST | Paused platform-wide until the scan has a resource budget (D-053) |
+| Harness/Findings as real tabs, threat intelligence (KEV/EPSS) (spec 17) | **Done** — the reachability/exploitability wiring, on-demand scan, `ai` capability's default tool, and the i2i grooming process are speced but not yet built (D-057) |
 
 Implementation decisions the specs do not settle — and the ones that became spec
 changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
@@ -60,6 +61,7 @@ Read the specs in this order:
 | 14 | [Network Scanning](specs/14-network-scanning.md) | Active scanning of operator-owned networks; the Asset model |
 | 15 | [Concourse Pipeline](specs/15-concourse-pipeline.md) | The self-hosted second execution environment: quality, security, gate, build, deploy |
 | 16 | [TheHub Delivery Pipeline](specs/16-thehub-delivery-pipeline.md) | Delivery to demo, DAST, a manual gate before prod, and the retirement of this repo's GitHub Actions |
+| 17 | [Harness Promotion, Threat Intel, i2i](specs/17-harness-threat-intel-and-i2i.md) | Harness/Findings as real tabs, KEV/EPSS threat intelligence, and the (not-yet-built) issue-to-implementation grooming process |
 
 ## Provenance
 

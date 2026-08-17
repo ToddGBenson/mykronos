@@ -110,7 +110,7 @@ export function StageLights({ stages }: { stages: CiStage[] }) {
       </ul>
       <IndicatorLegend
         entries={[
-          { tone: "ok", meaning: "reporting" },
+          { tone: "ok", meaning: "reporting, or event-driven and enabled" },
           { tone: "bad", meaning: "enabled, no job or never reported" },
           { tone: "warn", meaning: "enabled, gone quiet" },
           { tone: "idle", meaning: "enabled, not run yet" },
@@ -121,17 +121,29 @@ export function StageLights({ stages }: { stages: CiStage[] }) {
   );
 }
 
-function stageTone(stage: CiStage): IndicatorTone {
+/**
+ * Exported so anything else asking "is this capability healthy" — the
+ * enable/disable buttons in `capability-manager.tsx` among them — reads the
+ * same five colours off the same states, rather than a second copy of this
+ * mapping drifting from this one.
+ */
+export function stageTone(stage: CiStage): IndicatorTone {
   if (stage.state === "reporting") return "ok";
   // Enabled and not answering.
   if (stage.state === "no_job" || stage.state === "never_reported") return "bad";
   if (stage.state === "silent") return "warn";
   if (stage.state === "not_run") return "idle";
+  // Aegis/Oracle/Patchwork (spec 10 §9, ci.py NON_SCANNING): enabled, and
+  // correctly producing no ScanRun at all. This used to fall through to the
+  // same "off" tone as "not enabled", which told an operator a working
+  // event-driven capability was switched off. It is switched on and doing
+  // exactly what it should.
+  if (stage.state === "event_driven") return "ok";
   // Not enabled, which is not a fault.
   return "off";
 }
 
-function stageState(stage: CiStage): string {
+export function stageState(stage: CiStage): string {
   switch (stage.state) {
     case "reporting":
       return "ok";
@@ -143,6 +155,8 @@ function stageState(stage: CiStage): string {
       return "silent";
     case "not_run":
       return "not run";
+    case "event_driven":
+      return "event-driven";
     default:
       return "off";
   }
@@ -237,6 +251,28 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
 }
 
 /**
+ * Stage coverage and job status, without the links row.
+ *
+ * Split out so the Harness tab (spec 17 §2.2) can render this below a
+ * `PipelineLinks` that's already rendered once, at the top of the repo page
+ * (spec 17 §2.3) — rendering `PipelineLinks` a second time inside the tab
+ * would say the same two links twice on one page load.
+ */
+export function PipelineCoverage({ ci }: { ci: CiPage }) {
+  return (
+    <>
+      <Section title="Pipeline stages" detail="coverage of the standard set of checks">
+        <StageLights stages={ci.stages ?? []} />
+        <ReportingGaps reporting={ci.reporting ?? []} />
+      </Section>
+      <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
+        <JobLights ci={ci} />
+      </Section>
+    </>
+  );
+}
+
+/**
  * The links and both light rows, as the dashboard lays them out.
  *
  * One definition rather than one per page: two copies of "which sections, in
@@ -247,13 +283,7 @@ export function PipelinesPanel({ ci }: { ci: CiPage }) {
   return (
     <>
       <PipelineLinks ci={ci} />
-      <Section title="Pipeline stages" detail="coverage of the standard set of checks">
-        <StageLights stages={ci.stages ?? []} />
-        <ReportingGaps reporting={ci.reporting ?? []} />
-      </Section>
-      <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
-        <JobLights ci={ci} />
-      </Section>
+      <PipelineCoverage ci={ci} />
     </>
   );
 }

@@ -64,6 +64,8 @@ export type CiPage =
 export type CiJob = NonNullable<CiPage["jobs"]>[number];
 export type CiReporting = NonNullable<CiPage["reporting"]>[number];
 export type CiStage = NonNullable<CiPage["stages"]>[number];
+export type ThreatIntelEntry =
+  paths["/api/dashboard/threat-intel"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
 /** The shape `signal_breakdown` carries when an admin is allowed to see it. */
 export type SignalBreakdown = {

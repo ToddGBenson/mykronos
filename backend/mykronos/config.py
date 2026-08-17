@@ -107,6 +107,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    threat_intel_refresh_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "CISA KEV / FIRST EPSS refresh (spec 17 §4.3). Daily, matching "
+            "both feeds' own publication cadence — a shorter interval would "
+            "poll a source that has not changed."
+        ),
+    )
+
     insider_risk_default_retention_days: int = Field(
         default=90,
         ge=1,

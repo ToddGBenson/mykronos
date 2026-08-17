@@ -188,6 +188,65 @@ class TestFindings:
             client.get("/api/dashboard/repos/nope/findings", headers=admin_auth).status_code == 404
         )
 
+    def test_filters_by_rule_id_substring(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """Spec 17 §3 — free-text, case-insensitive, matched against rule_id
+        or title, not a category filter with a count on a button."""
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"rule_id": "cwe-89"},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 1
+        assert body["findings"][0]["rule_id"] == "CWE-89"
+
+    def test_an_unmatched_rule_id_is_zero_not_an_error(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"rule_id": "nothing-matches-this"},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 0
+        assert body["findings"] == []
+
+    def test_a_future_first_seen_after_excludes_everything(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """Spec 17 §3 date-range filter — a bound nothing can satisfy yet."""
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"first_seen_after": "2099-01-01T00:00:00Z"},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 0
+
+    def test_a_far_past_first_seen_before_excludes_everything(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"first_seen_before": "2000-01-01T00:00:00Z"},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 0
+
+    def test_a_superseded_finding_names_its_replacement(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """Spec 17 §5.1 — `superseded_by` is selected now, so a re-fingerprinted
+        finding's prior identity can be followed to what replaced it. Nothing
+        in `seeded` is actually superseded, so this only pins the shape: the
+        field is present, and null rather than absent, for an ordinary open
+        finding."""
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            headers=admin_auth,
+        ).json()
+        assert all(f["superseded_by"] is None for f in body["findings"])
+
 
 class TestRawOutputIsAdminOnly:
     """spec 12 §5 — a Secrets finding's raw record quotes the secret."""
@@ -574,6 +633,82 @@ class TestOpenFindings:
             == 404
         )
 
+    def test_filters_by_rule_id_without_touching_the_correlation_pool(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """Spec 17 §3. `rule_id` narrows what's on screen the same way severity
+        and capability already do — and, like them, must not narrow the
+        correlation pool, or a filtered view could stop reporting a toxic
+        combination it still contains half of."""
+        page = self._page(client, admin_auth, outstanding, rule_id="cwe-79")
+        assert {g["rule_id"] for g in page["groups"]} == {"CWE-79"}
+        assert page["matching"] == 3  # the three CWE-79 occurrences, not 7
+
+
+class TestThreatIntel:
+    """Spec 17 §4.4 — public exploitation data matched against open findings."""
+
+    def test_a_cve_naming_finding_appears_with_no_match_row_yet(
+        self, client: TestClient, admin_auth: dict[str, str], seeded, run_compaction
+    ) -> None:
+        """'Not yet fetched' and 'fetched, not exploited' must not look the
+        same — a CVE-naming finding is returned even before the refresh job
+        has ever run, with an honest `in_kev: false` rather than omitted."""
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-cve")
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id="CVE-2024-0001", severity="high", symbol="cve-a")],
+            scan_run_id="run-cve",
+        )
+        run_compaction()
+
+        body = client.get("/api/dashboard/threat-intel", headers=admin_auth).json()
+        entry = next(e for e in body if e["cve_id"] == "CVE-2024-0001")
+        assert entry["in_kev"] is False
+        assert entry["epss_score"] is None
+        assert entry["worst_severity"] == "high"
+        assert REPO in entry["repo_full_names"]
+
+    def test_kev_sorts_before_a_higher_epss(
+        self, client: TestClient, admin_auth: dict[str, str], seeded, run_compaction
+    ) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-cve-2")
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(rule_id="CVE-2024-0001", severity="high", symbol="a"),
+                finding_payload(rule_id="CVE-2024-0002", severity="high", symbol="b"),
+            ],
+            scan_run_id="run-cve-2",
+        )
+        run_compaction()
+
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-0001", in_kev=False, epss_score=0.95))
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-0002", in_kev=True, epss_score=0.1))
+
+        body = client.get("/api/dashboard/threat-intel", headers=admin_auth).json()
+        ordered = [e["cve_id"] for e in body if e["cve_id"] in {"CVE-2024-0001", "CVE-2024-0002"}]
+        assert ordered == ["CVE-2024-0002", "CVE-2024-0001"]  # KEV first, regardless of EPSS
+
+    def test_a_finding_with_no_cve_contributes_nothing(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """`seeded` is all CWE rule_ids — no CVE anywhere in it."""
+        body = client.get("/api/dashboard/threat-intel", headers=admin_auth).json()
+        assert body == []
+
+    def test_it_needs_authentication(self, client: TestClient) -> None:
+        assert client.get("/api/dashboard/threat-intel").status_code == 401
+
 
 class TestScanHealth:
     def test_reports_runs_and_failure_rate(
@@ -779,6 +914,18 @@ class TestTriageQueue:
             )
             == 2
         )
+
+    def test_filters_by_rule_id(self, client, admin_auth, run_compaction) -> None:
+        """Spec 17 §3 — the same free-text `rule_id` filter as the per-repo
+        views, on the portfolio-wide queue."""
+        from tests.test_portfolio_job import seed_findings
+
+        self._activate(client, REPO, ["sast"])
+        seed_findings(client, REPO, 2, "critical")
+        run_compaction()
+
+        body = client.get("/api/dashboard/triage?rule_id=R0", headers=admin_auth).json()
+        assert [item["rule_id"] for item in body["items"]] == ["R0"]
 
     def test_truncation_is_declared(self, client, admin_auth, run_compaction) -> None:
         """A queue that silently stops at the limit reads as 'that is all'."""

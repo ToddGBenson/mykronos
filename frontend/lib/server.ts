@@ -28,6 +28,7 @@ import {
   type ScanHealth,
   type ShadowModeReport,
   type SscsPage,
+  type ThreatIntelEntry,
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
@@ -132,7 +133,12 @@ export async function getFindings(
  */
 export async function getOpenFindings(
   repoId: string,
-  query: { capability?: string; severity?: string; finding_status?: string },
+  query: {
+    capability?: string;
+    severity?: string;
+    finding_status?: string;
+    rule_id?: string;
+  },
 ): Promise<Result<OpenFindingsPage>> {
   try {
     const { data, response } = await backendClient().GET(
@@ -144,6 +150,7 @@ export async function getOpenFindings(
             capability: query.capability as never,
             severity: query.severity as never,
             finding_status: (query.finding_status ?? "open") as never,
+            rule_id: query.rule_id as never,
           },
         },
         cache: "no-store",
@@ -180,6 +187,7 @@ export async function getFinding(findingId: string): Promise<Result<Finding>> {
 export async function getTriage(query: {
   severity?: string;
   capability?: string;
+  rule_id?: string;
 }): Promise<Result<TriageQueue>> {
   try {
     const { data, response } = await backendClient().GET("/api/dashboard/triage", {
@@ -187,6 +195,7 @@ export async function getTriage(query: {
         query: {
           severity: query.severity as never,
           capability: query.capability as never,
+          rule_id: query.rule_id as never,
           limit: 100,
         },
       },
@@ -376,6 +385,21 @@ export async function getCi(repoId: string): Promise<Result<CiPage>> {
       { params: { path: { repo_id: repoId } }, cache: "no-store" },
     );
     if (!data) return { ok: false, error: describe(response, "Could not load pipeline links") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Every CVE currently matched to an open finding, KEV first (spec 17 §4.4). */
+export async function getThreatIntel(): Promise<Result<ThreatIntelEntry[]>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/threat-intel", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load threat intelligence") };
+    }
     return { ok: true, data };
   } catch (error) {
     return failure(error);

@@ -2073,3 +2073,62 @@ role. A group is a decision to make; the bytes of a secrets finding belong on
 the detail pane, behind the admin check that always guarded them (spec 12 §5).
 The detail pane fetches one finding by id — once occurrences are grouped, the
 one somebody clicked is routinely not in the first hundred rows of anything.
+
+---
+
+## D-057 — Harness and Findings split back out of the one dashboard, on request
+
+**Status:** Decided and running — amends D-056, does not reverse it
+**Spec:** [17](../specs/17-harness-threat-intel-and-i2i.md)
+**Trigger:** An operator asking for a harness tab and a findings tab by name
+
+D-056 folded Findings, Scan health, jobs and stages into one "Dashboard" tab
+because the four questions people ask together weren't reachable without
+navigating, and that reasoning still holds — nothing about *how* those four
+things are computed changed here. What changed is that the merged page turned
+out to still be two different jobs wearing one label: "is the harness healthy"
+and "what did it find" are asked by different people at different times, and a
+single long scroll made neither quick to reach on its own. **Harness**
+(capability enable/disable, scan health, pipeline coverage) and **Findings**
+are tabs again. The other four — decisions, supply chain, insider risk,
+remediation — were never part of the question this reopens and are unchanged.
+
+**The capability buttons gained the same colour vocabulary the panel below
+them already had**, rather than a second one. `CapabilityManager` used to
+render its own `border-accent`/muted palette for on/off/pending; it now asks
+`pipelines.tsx`'s `stageTone()` — the same function `StageLights` uses — so a
+button and the coverage row explaining it can never disagree about what green
+or red means. Fixed one real gap in `stageTone()` along the way: an enabled,
+correctly-silent capability (Aegis/Oracle/Patchwork, which write no `ScanRun`
+by design) fell through to the same tone as "not enabled" — a working
+capability read as switched off. It now reads `ok`, worded `event-driven`.
+
+**Colour is run health, not a finding-severity indicator.** A repo with forty
+open criticals and a passing pipeline is still green on the Harness tab; its
+risk is Oracle's question, answered elsewhere on the same page. Conflating the
+two would hide a broken scanner behind a clean-looking finding count — the
+exact thing `partial_failure` (spec 04 §8) exists to keep visible.
+
+**Findings/triage filtering gained `rule_id` (free-text, matched against
+`rule_id` and `title`) and two status values that were already real and had no
+button: `suppressed` and `superseded`.** The second was the more interesting
+gap — `Finding.superseded_by` (spec 05 §5a) was never even selected by the
+dashboard's queries, so a re-fingerprinted finding's replacement was
+unreachable by name from the API, not just from the UI.
+
+**Threat intelligence (CISA KEV, FIRST EPSS) is new, not a reorganisation.**
+Nothing in the platform read either feed before this. It lives in the
+operational database (`ThreatIntelMatch`, alongside `CapabilityGrant`), not
+the lake — it's a current-value table, upserted daily, and treating a revised
+EPSS score as an event to append rather than a correction to overwrite would
+have been the wrong data model for what it actually is. Only CVEs an open
+finding actually names are fetched and stored; the full catalogs are orders of
+magnitude larger than anything a portfolio this size references.
+
+**What spec 17 describes and this change does not build**, so it is a
+follow-up rather than a silent gap: reachability scoring, exploitability as an
+Oracle input, on-demand scan dispatch, a default tool for the `ai` capability,
+and the i2i grooming process (finding → dev-ready GitHub issue). Each needs
+either a new `GitHubClient` method, a language-aware analysis this change
+correctly declined to fabricate a shortcut for, or both — tracked as issues
+against spec 17 rather than left as a paragraph nobody re-reads.

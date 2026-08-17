@@ -47,6 +47,7 @@ from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ratelimit import SlidingWindowLimiter
+from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
+        async def _threat_intel() -> None:
+            # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
+            # which would otherwise stall the event loop for every other
+            # request while a public feed is slow to answer.
+            result = await asyncio.to_thread(
+                refresh_threat_intel, app.state.db, app.state.catalog
+            )
+            if not result.ok:
+                logger.warning(
+                    "Threat-intel refresh degraded: kev_error=%s epss_error=%s",
+                    result.kev_error,
+                    result.epss_error,
+                )
+
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
@@ -243,6 +258,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
+            ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
         ):
             tasks.append(
                 asyncio.create_task(
