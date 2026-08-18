@@ -28,7 +28,7 @@ roadmap closed is tracked as decisions and retros rather than phases:
 | Quality lanes as ScanRuns: unit, functional, QA docs (D-046); AI checks (D-047) | **Done** |
 | Network scanning (spec 14) | Built; awaiting an authorized CIDR to scan |
 | DAST | Paused platform-wide until the scan has a resource budget (D-053) |
-| Harness/Findings as real tabs, threat intelligence (KEV/EPSS) (spec 17) | **Done** — the reachability/exploitability wiring, on-demand scan, `ai` capability's default tool, and the i2i grooming process are speced but not yet built (D-057) |
+| Harness/Findings tabs, threat intel (KEV/EPSS), exploitability in Oracle, scan-now dispatch, `ai` capability's first tool (spec 17) | **Done** — the i2i grooming process, Triage-queue KEV badges, and `min_epss`/`kev_only` filters are speced but not yet built (D-057, #19, #20, #15) |
 
 Implementation decisions the specs do not settle — and the ones that became spec
 changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
