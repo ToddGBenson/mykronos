@@ -454,6 +454,7 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
   }
   return (
     <SscsTab
+      repoId={repoId}
       evidence={result.data.evidence}
       latest={result.data.latest ?? null}
     />

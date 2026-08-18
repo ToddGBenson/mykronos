@@ -2352,3 +2352,40 @@ migration D-052's drift guard exists near.** Portfolio aggregates
 `migrate_assets.py` existed specifically to backfill the column this bug shows
 the consequence of not universally depending on. Fixed by making the portfolio
 queries match everything else, not by adding a third convention.
+
+## D-062 — Spec 18 closed out in five PRs, in dependency order
+
+**Status:** Decided and running
+**Spec:** [18](../specs/18-repo-page-rework-threat-model-and-remediation.md)
+**Trigger:** "keep going" (four times, across #26-#30)
+
+D-061's scope landed as five independent PRs rather than one — the same
+reasoning D-057/D-058 already established for spec 17: each is reviewable and
+deployable on its own, and a failure in one does not block the others from
+reaching prod. Order followed what each piece needed already built: the tab
+restructure before anything that lives inside a tab, findings filters before
+nothing (independent), remediation and the SBOM download last because neither
+gated on the other three.
+
+**The `run_one` per-finding path reuses `_attempt_fix` rather than
+duplicating it.** The alternative — a second, lighter fix-generation function
+for the on-demand case — was rejected for the same reason spec 08's own
+triage logic lives in one place two callers share: a fix a person could get
+on demand that the batch sweep would have refused is a platform arguing with
+itself. `preview_only` is one new parameter on the existing method, not a
+parallel implementation of it.
+
+**A preview writes nothing, deliberately, including no `RemediationEvent`.**
+The alternative — recording every preview the same way a real attempt is
+recorded — would have made "how many fixes has Patchwork attempted" ambiguous
+between "generated a draft" and "a person looked and closed the tab." Spec 08
+§7's own standard (every *routed* finding produces exactly one event) is
+preserved by `run_one` only routing a finding through `_record`'s
+`buffer.append` when the call was not a preview.
+
+**What's still open.** Reachability (#15, spec 17) remains the only
+deliberately unbuilt item across specs 17 and 18. Threat Model's CWE-aware
+refinement (spec 18 §6.3) and an actual LLM-backed narrative layer (§6.6) are
+both named, scoped, and left undone on purpose — the first needs adapters to
+carry a taxonomy field they do not have today, the second needs a deployment
+decision (a new dependency, a key, a cost) nobody has been asked to make yet.

@@ -1179,6 +1179,21 @@ class DashboardQueries:
             evidence.append(record)
         return evidence
 
+    def sscs_evidence_row(self, repo_full_name: str, evidence_id: str) -> dict[str, Any] | None:
+        """One evidence row by id, for the SBOM download (spec 18 §8.2).
+
+        Scoped to `repo_full_name` as well as `evidence_id` — an evidence id
+        from a different repository should 404, not silently serve a file
+        that repository's admin never granted access to.
+        """
+        rows = self.catalog.query(
+            "SELECT sbom_ref FROM sscs_evidence WHERE repo_full_name = ? AND evidence_id = ?",
+            [repo_full_name, evidence_id],
+        )
+        if not rows:
+            return None
+        return {"sbom_ref": rows[0][0]}
+
     # -- scan health ----------------------------------------------------
 
     def introduced_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:

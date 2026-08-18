@@ -54,9 +54,11 @@ function trustTone(
 }
 
 export function SscsTab({
+  repoId,
   evidence,
   latest,
 }: {
+  repoId: string;
   evidence: SscsEvidence[];
   latest: SscsEvidence | null;
 }) {
@@ -213,7 +215,16 @@ export function SscsTab({
                         </Pill>
                       </td>
                       <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
-                        {row.sbom_ref}
+                        {/* The archived file itself, not just its path
+                            (spec 18 §8.2) — admin-only, the same gate every
+                            other raw tool output already sits behind. */}
+                        <a
+                          href={`/api/repos/${repoId}/sscs/sbom?evidence_id=${row.evidence_id}`}
+                          className="text-accent underline-offset-2 hover:underline"
+                          title={row.sbom_ref ?? undefined}
+                        >
+                          download
+                        </a>
                       </td>
                       <td className="px-2 py-2 text-ink-3">
                         {provenance.builder_id ?? "—"}
