@@ -1340,6 +1340,114 @@ class TestThreatModel:
         assert body["supply_chain"] is None
 
 
+class TestSbomDownload:
+    """spec 18 §8.2: the archived SBOM itself, not just its trust-score row."""
+
+    def _seed(self, client, admin_auth, run_compaction, sbom_ref="raw/example/sbom.json"):
+        from tests.conftest import issue_token
+        from tests.test_atlas import post
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        atlas_auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'atlas')}"}
+        post(client, atlas_auth, sbom_ref=sbom_ref)
+        run_compaction()
+
+        evidence_id = client.app.state.catalog.query(
+            "SELECT evidence_id FROM sscs_evidence"
+        )[0][0]
+        return repo_id, str(evidence_id)
+
+    def test_downloads_the_archived_file(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id, evidence_id = self._seed(client, admin_auth, run_compaction)
+        settings = client.app.state.settings
+        sbom_path = settings.datalake_dir / "raw" / "example" / "sbom.json"
+        sbom_path.parent.mkdir(parents=True, exist_ok=True)
+        sbom_path.write_text('{"bomFormat": "CycloneDX"}')
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": evidence_id},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"bomFormat": "CycloneDX"}
+
+    def test_a_viewer_is_refused(
+        self, client, admin_auth, viewer_auth, run_compaction
+    ) -> None:
+        repo_id, evidence_id = self._seed(client, admin_auth, run_compaction)
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": evidence_id},
+            headers=viewer_auth,
+        )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_evidence_id_is_404(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": "does-not-exist"},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 404
+
+    def test_a_row_naming_no_sbom_is_404_and_says_so(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id, evidence_id = self._seed(client, admin_auth, run_compaction, sbom_ref=None)
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": evidence_id},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 404
+        assert "never captured" in response.json()["detail"]
+
+    def test_a_pruned_file_is_404_and_distinguished_from_never_had_one(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """The row survives retention; the archived bytes do not (spec 05 §7).
+        Those are different facts and the message says which one is true."""
+        repo_id, evidence_id = self._seed(client, admin_auth, run_compaction)
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": evidence_id},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 404
+        assert "pruned" in response.json()["detail"]
+
+    def test_a_path_that_would_escape_the_lake_is_refused(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id, evidence_id = self._seed(
+            client, admin_auth, run_compaction, sbom_ref="../../etc/passwd"
+        )
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom",
+            params={"evidence_id": evidence_id},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 404
+        assert "invalid" in response.json()["detail"].lower()
+
+
 def test_severity_enum_covers_every_portfolio_bucket() -> None:
     """A new severity must not silently vanish from the summary."""
     from mykronos.dashboard import SEVERITIES

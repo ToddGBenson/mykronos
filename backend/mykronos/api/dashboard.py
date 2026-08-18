@@ -13,6 +13,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -946,6 +947,66 @@ async def repo_sscs(
         evidence=[SscsEvidenceOut(**row) for row in evidence],
         latest=SscsEvidenceOut(**evidence[0]) if evidence else None,
     )
+
+
+@router.get("/repos/{repo_id}/sscs/sbom")
+async def repo_sbom(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    evidence_id: Annotated[str, Query()],
+) -> FileResponse:
+    """The archived SBOM itself, not just its trust-score summary (spec 18 §8.2).
+
+    Admin-only — `may_see_raw_output`, the same gate every other archived
+    tool output already sits behind (spec 12 §5): an SBOM is raw output too,
+    just one atlas produced rather than a scanner.
+    """
+    if not principal.may_see_raw_output:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Downloading an SBOM requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+
+    repo_full_name = _resolve_repo(request, repo_id)
+    row = _queries(request).sscs_evidence_row(repo_full_name, evidence_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No supply-chain evidence {evidence_id} for this repository.",
+        )
+    sbom_ref = row.get("sbom_ref")
+    if not sbom_ref:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This evidence row names no SBOM — one was never captured for it.",
+        )
+
+    settings = request.app.state.settings
+    # Resolved and re-checked against the lake root before serving, even
+    # though `sbom_ref` is this backend's own write, not client input — the
+    # same belt-and-suspenders `_identifier`/`_safe_segment` apply elsewhere
+    # to paths this platform builds itself (spec 18 §8.2).
+    path = (settings.datalake_dir / str(sbom_ref)).resolve()
+    lake_root = settings.datalake_dir.resolve()
+    if lake_root not in path.parents:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="SBOM reference is invalid."
+        )
+    if not path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "This evidence row named an SBOM, but the file has since been "
+                "pruned by retention (spec 05 §7) — the row itself is not lost, "
+                "only the archived bytes."
+            ),
+        )
+
+    return FileResponse(path, filename=path.name, media_type="application/json")
 
 
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)

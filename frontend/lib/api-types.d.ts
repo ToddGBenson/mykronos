@@ -406,6 +406,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/sscs/sbom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Sbom
+         * @description The archived SBOM itself, not just its trust-score summary (spec 18 §8.2).
+         *
+         *     Admin-only — `may_see_raw_output`, the same gate every other archived
+         *     tool output already sits behind (spec 12 §5): an SBOM is raw output too,
+         *     just one atlas produced rather than a scanner.
+         */
+        get: operations["repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/threat-model": {
         parameters: {
             query?: never;
@@ -3207,6 +3231,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SscsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get: {
+        parameters: {
+            query: {
+                evidence_id: string;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
