@@ -2247,3 +2247,60 @@ established answer for that distinction is `GRANDFATHERED`, not a default that
 would be a lie (`groomed_stories.dev_ready` defaulting to `false` for rows that
 can't exist without a value) — the same reasoning already applied to
 `workflow_install_events.repo_onboarding_id`. All six columns joined it.
+
+## D-060 — Four days of merges never reached prod; an unpinned pydantic did it
+
+**Status:** Decided, fixed
+**Spec:** [15 §3](../specs/15-concourse-pipeline.md) (the `frontend` job), [17](../specs/17-harness-threat-intel-and-i2i.md)
+**Trigger:** "make sure all changes end up in prod. I'm not seeing it all"
+
+Every PR in this spec's implementation (#14, #21, #22, #23, #24) merged clean —
+green CI on GitHub, green local verification, each merge synced to `main`. None
+of it reached the running containers. The Concourse `frontend` job had been
+failing since 2026-08-16, on every commit since, silently: `unit`,
+`lint-and-types`, and `qa-spec-links` kept passing and re-triggering, but
+`build`/`publish-backend`/`publish-frontend`/`promote` all gate on
+`passed: [..., frontend]` (spec 15 §3), so nothing after that job built. The
+registry's newest image was still tagged `62ca9bf` — the commit before this
+spec's first PR.
+
+**The failure was a committed-artifact drift, not a code bug.** `frontend`'s
+`lint-types-build` task runs `python scripts/dump_openapi.py` then
+`openapi-typescript`, and fails the build if the result differs from
+`frontend/lib/api-types.d.ts` — the check D-0xx's OpenAPI-sync convention
+exists to enforce. It fired because `pydantic>=2.9` in `pyproject.toml` has no
+upper bound, and somewhere between whenever `api-types.d.ts` was last
+regenerated and 2026-08-16, PyPI shipped a pydantic minor version that started
+emitting a dataclass's docstring as its schema `description` where it
+previously did not — one field, `PortfolioSummary`. Every task in the pipeline
+runs `pip install --quiet -e .` fresh, so the moment that pydantic release
+existed, every build after it would resolve to it and disagree with a types
+file generated under the old one — including builds carrying no relevant
+change at all, which is exactly what four days of PRs were.
+
+**Diagnosed by reproducing the CI environment, not by reading the diff.** The
+committed file matched what this host's own `python -m pip show pydantic`
+would generate locally (2.12.5) — the discrepancy only exists against a fresh
+install (2.13.4 resolved during this fix), so a local regenerate looked like a
+no-op until it ran in an isolated venv rather than the host's shared
+site-packages. That shared install is depended on by other tools on this
+machine (`anthropic`, `openai`, `mcp`, `aegis-product-coach`,
+`triage-shared`); upgrading it in place to chase this down would have been a
+second, unrelated blast radius for a one-file fix.
+
+**Fixed by regenerating, not by pinning.** `pyproject.toml`'s loose bounds are
+what let this project's own supply chain stay current — the same posture a
+security platform auditing everyone else's dependencies should hold for its
+own — so the fix is the regenerated `api-types.d.ts`, not a ceiling on
+`pydantic`. The same class of break can recur on a future pydantic release;
+the guard that would catch it — `frontend` failing loud, `promote` never
+running — is the one that just did its job, four days late only because
+nobody was watching the pipeline itself rather than each PR's own checks.
+
+**What this changes going forward.** A merged PR's own CI (GitHub-side
+lint/type/test) says the code is correct. It says nothing about whether
+Concourse's build of that same commit got past its own gates — those are two
+different pipelines checking two different things, and only one of them
+publishes what `deploy.ps1` pulls. "Merged" is not "deployed"; confirming
+deploy means checking the Concourse job graph itself, the way this fix was
+found.
