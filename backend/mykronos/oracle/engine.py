@@ -27,16 +27,45 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
+
+from mykronos.db.models import ThreatIntelMatch
+from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
 from mykronos.logsafe import scrub
 from mykronos.oracle.policy import Policy
-from mykronos.schemas import utcnow
+from mykronos.schemas import Severity, utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
 DECISION_TYPES = ("pr_gate", "release_gate", "portfolio")
+
+#: Every category present in `inputs_snapshot` whether or not it has anything
+#: to say (spec 09 §9). Defined once so `render_reasoning` here and
+#: `render_check_run_summary` (oracle/service.py) cannot list a different set
+#: of "not yet consulted" categories from each other.
+MODIFIER_CATEGORIES = (
+    "insider_risk",
+    "sscs_trust",
+    "remediation_in_flight",
+    "false_positive_dampening",
+    "exploitability",
+    "reachability",
+)
+
+#: One band up (spec 17 §5.4). `critical` has nowhere further to go — a
+#: finding already at the ceiling is not made worse by also being exploited;
+#: the exploitation is already reflected in every band below it.
+_NEXT_SEVERITY_BAND = {
+    Severity.INFO.value: Severity.LOW.value,
+    Severity.LOW.value: Severity.MEDIUM.value,
+    Severity.MEDIUM.value: Severity.HIGH.value,
+    Severity.HIGH.value: Severity.CRITICAL.value,
+    Severity.CRITICAL.value: Severity.CRITICAL.value,
+}
 
 
 @dataclass
@@ -230,12 +259,84 @@ def _sscs_snapshot(sscs: dict[str, Any] | None, *, cap: float) -> dict[str, Any]
     }
 
 
+def _reachability_snapshot() -> dict[str, Any]:
+    """Present, honestly, as not yet computed (spec 17 §5.3).
+
+    v1 has no call-graph/import-tracing engine — see the deferred-work table
+    in specs/17 §0a. This category exists so a future engine has somewhere to
+    write, and so nothing downstream (a dashboard, a groomed issue) has to
+    special-case "the key isn't there yet" versus "the key says unknown".
+    Always unavailable in this version, on purpose — never silently dropped.
+    """
+    return {
+        "available": False,
+        "contribution": 0.0,
+        "reason": (
+            "No reachability analysis is configured for this deployment "
+            "(spec 17 §5.3) — this category exists so a future analysis has "
+            "somewhere to report, not because one runs today."
+        ),
+    }
+
+
+def _exploitability_snapshot(
+    matched: list[dict[str, Any]], *, db_configured: bool
+) -> dict[str, Any]:
+    """Public exploitation data for this decision's in-scope findings
+    (spec 17 §5.4), sourced from `ThreatIntelMatch` (spec 17 §4).
+
+    `matched` carries every scope-matching open finding that names a CVE,
+    whether or not that CVE turned out to be KEV-listed — so "we checked and
+    it isn't exploited" and "we never checked" are distinguishable even when
+    the finding count is identical.
+    """
+    if not db_configured:
+        return {
+            "available": False,
+            "contribution": 0.0,
+            "reason": "No operational database is configured for this evaluation.",
+        }
+    kev_listed = [m for m in matched if m["in_kev"]]
+    return {
+        "available": True,
+        "cve_matched_findings": len(matched),
+        "kev_listed_findings": [
+            {
+                "finding_id": m["finding_id"],
+                "cve_id": m["cve_id"],
+                "severity": m["severity"],
+                "boosted_to": m["boosted_to"],
+                "kev_added_at": m["kev_added_at"],
+            }
+            for m in kev_listed
+        ],
+        "contribution": round(sum(m["boost"] for m in kev_listed), 2),
+        "reason": (
+            f"{len(matched)} open finding(s) name a CVE; none is in CISA's "
+            "Known Exploited Vulnerabilities catalog."
+            if matched and not kev_listed
+            else (
+                "No open finding in scope names a CVE — most SAST/IaC "
+                "findings describe a code pattern, not a published "
+                "vulnerability, and have no exploitability data available."
+                if not matched
+                else (
+                    f"{len(kev_listed)} of {len(matched)} CVE-naming open "
+                    "finding(s) are in CISA's KEV catalog."
+                )
+            )
+        ),
+    }
+
+
 class OracleEngine:
     def __init__(
         self,
         catalog: Catalog,
         policy: Policy,
         store: KnowledgeStore | None = None,
+        *,
+        db: Database | None = None,
     ) -> None:
         self.catalog = catalog
         self.policy = policy
@@ -244,6 +345,12 @@ class OracleEngine:
         # whose store is unreadable, gets undampened scores rather than no
         # scores.
         self.store = store
+        # Optional on the same principle (spec 17 §5.4): exploitability reads
+        # `ThreatIntelMatch`, which lives in the operational database, not the
+        # lake `self.catalog` already holds. A caller that has not wired one
+        # up gets `exploitability: unavailable` rather than a crash — the
+        # same shape every other missing input already takes.
+        self.db = db
 
     # -- inputs ---------------------------------------------------------
 
@@ -455,6 +562,88 @@ class OracleEngine:
             as_of=self._as_of,
         )
 
+    def _exploitable_findings(
+        self, repo_full_name: str, *, for_gate: bool
+    ) -> list[dict[str, Any]]:
+        """Scope-matching open findings that name a CVE, with KEV status
+        (spec 17 §5.4). `[]` when `self.db` is not configured — the caller
+        renders that as `exploitability: unavailable`, not as zero findings.
+
+        Scope mirrors `_finding_counts`: the same statuses, severities and
+        gate-excluded capabilities, so a finding this method boosts is always
+        one the band contributions above already counted.
+        """
+        if self.db is None:
+            return []
+
+        statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
+        severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
+        excluded = ""
+        if for_gate and self.policy.capabilities_excluded_from_gates:
+            names = ", ".join(f"'{c}'" for c in self.policy.capabilities_excluded_from_gates)
+            excluded = f"AND capability NOT IN ({names})"
+
+        rows = self.catalog.query(
+            f"""
+            SELECT finding_id, rule_id, title, severity
+            FROM findings
+            WHERE asset_id = ?
+              AND status IN ({statuses})
+              AND severity IN ({severities})
+              {excluded}
+            """,
+            [repo_full_name],
+        )
+
+        by_cve: dict[str, list[dict[str, Any]]] = {}
+        for finding_id, rule_id, title, severity in rows:
+            cve_id = extract_cve(str(rule_id), str(title))
+            if cve_id is None:
+                continue
+            by_cve.setdefault(cve_id, []).append(
+                {"finding_id": str(finding_id), "severity": str(severity)}
+            )
+        if not by_cve:
+            return []
+
+        with self.db.session() as session:
+            matches = {
+                row.cve_id: row
+                for row in session.execute(
+                    select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(by_cve))
+                ).scalars()
+            }
+
+        weights = self.policy.severity_weights
+        matched: list[dict[str, Any]] = []
+        for cve_id, findings in sorted(by_cve.items()):
+            match = matches.get(cve_id)
+            in_kev = bool(match and match.in_kev)
+            for finding in findings:
+                severity = finding["severity"]
+                boosted_to = _NEXT_SEVERITY_BAND.get(severity, severity)
+                boost = (
+                    max(0.0, weights.get(boosted_to, 0.0) - weights.get(severity, 0.0))
+                    if in_kev
+                    else 0.0
+                )
+                matched.append(
+                    {
+                        "finding_id": finding["finding_id"],
+                        "cve_id": cve_id,
+                        "severity": severity,
+                        "in_kev": in_kev,
+                        "boosted_to": boosted_to if in_kev else None,
+                        "boost": boost,
+                        "kev_added_at": (
+                            match.kev_added_at.isoformat()
+                            if in_kev and match and match.kev_added_at
+                            else None
+                        ),
+                    }
+                )
+        return matched
+
     # -- scoring --------------------------------------------------------
 
     def evaluate(
@@ -609,6 +798,36 @@ class OracleEngine:
                 )
             )
 
+        # 5. Exploitability (spec 17 §5.4). A KEV-listed finding is boosted
+        #    one severity band's worth of points — an additive term, not a
+        #    move between bands, so the tested band-curve arithmetic above is
+        #    untouched by whether this category is even configured.
+        exploitable = self._exploitable_findings(repo_full_name, for_gate=for_gate)
+        for entry in exploitable:
+            if not entry["in_kev"] or entry["boost"] <= 0:
+                continue
+            terms.append(
+                Term(
+                    key=f"exploitability.{entry['finding_id']}",
+                    label=(
+                        f"{entry['cve_id']} ({entry['severity']}) is CISA "
+                        "KEV-listed"
+                    ),
+                    contribution=entry["boost"],
+                    detail=(
+                        f"{entry['severity']} boosted to {entry['boosted_to']}: "
+                        f"weight({entry['boosted_to']}) - weight({entry['severity']}) "
+                        f"= {entry['boost']:.1f}"
+                    ),
+                    inputs={
+                        "cve_id": entry["cve_id"],
+                        "severity": entry["severity"],
+                        "boosted_to": entry["boosted_to"],
+                        "kev_added_at": entry["kev_added_at"],
+                    },
+                )
+            )
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -623,6 +842,7 @@ class OracleEngine:
             sscs=sscs,
             dampened=dampened,
             covered=covered,
+            exploitable=exploitable,
         )
 
         decision = Decision(
@@ -660,6 +880,7 @@ class OracleEngine:
         sscs: dict[str, Any] | None = None,
         dampened: dict[str, Any] | None = None,
         covered: set[str] | None = None,
+        exploitable: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -703,6 +924,10 @@ class OracleEngine:
                 factor=self.policy.dampening.dampening_factor,
                 min_observations=self.policy.dampening.min_observations,
             ),
+            "exploitability": _exploitability_snapshot(
+                exploitable or [], db_configured=self.db is not None
+            ),
+            "reachability": _reachability_snapshot(),
             "terms": [
                 {
                     "key": term.key,
@@ -748,26 +973,28 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     else:
         opening = f"Go at {score}/100."
 
+    # Computed before the zero-terms branch, and used by both: a finding-free
+    # decision can still have Atlas or Aegis data to report, and the old
+    # unconditional "every other category is unavailable" was wrong exactly
+    # in that case — restated to say what is actually known, not guessed.
+    unavailable = [name for name in MODIFIER_CATEGORIES if not snapshot[name]["available"]]
+
     if not terms:
-        return (
-            f"{opening} Nothing scored: there are no open findings in scope for "
-            "this decision. Every other input category is unavailable — see "
-            "inputs_snapshot for which, and why."
+        sentence = (
+            f"{opening} Nothing scored: there are no open findings in scope "
+            "for this decision."
         )
+        if unavailable:
+            sentence += (
+                " Not yet consulted: " + ", ".join(unavailable) + " — see "
+                "inputs_snapshot for why."
+            )
+        else:
+            sentence += " Every other input category was consulted and had nothing to add."
+        return sentence
 
     parts = [f"{term['label']} (+{term['contribution']:.1f})" for term in terms]
     body = "; ".join(parts)
-
-    unavailable = [
-        name
-        for name in (
-            "insider_risk",
-            "sscs_trust",
-            "remediation_in_flight",
-            "false_positive_dampening",
-        )
-        if not snapshot[name]["available"]
-    ]
 
     sentence = f"{opening} {body}."
     if totals["clamped"]:

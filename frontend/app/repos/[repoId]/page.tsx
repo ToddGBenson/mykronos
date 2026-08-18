@@ -4,6 +4,7 @@ import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
 import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
+import { ScanNowButton } from "@/components/scan-now";
 import {
   OccurrenceDisposition,
   OpenFindings,
@@ -207,7 +208,16 @@ function HarnessTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <CapabilityManager repoId={repoId} enabled={enabled} pending={pending} live={live} ci={ci} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <CapabilityManager
+          repoId={repoId}
+          enabled={enabled}
+          pending={pending}
+          live={live}
+          ci={ci}
+        />
+        <ScanNowButton repoId={repoId} />
+      </div>
 
       <Section
         title="Scan health"

@@ -1,0 +1,52 @@
+{%- extends "_base.yml.j2" -%}
+{#-
+  AI capability — spec 17 §6, D-047.
+
+  D-047 split "AI" into prompt-injection surface, model/dependency
+  provenance, and evaluation regression, and gave all three a capability that
+  accepts SARIF from any tool (adapters/registry.py). This is the first
+  default tool for it, and only covers the provenance third: a deterministic
+  scan for AI SDKs pinned to a floating version rather than an exact one,
+  the same class of check Atlas already runs for ordinary dependencies.
+
+  Prompt-injection and eval-regression detection are not run here — see
+  mykronos/ai_pin_check.py's module docstring for why a script cannot
+  honestly claim either, and specs/17 §6 for what "flesh this out" means as
+  a result: one real check landed, not three faked ones.
+
+  Triggers mirror Atlas's (spec 07 §4): path-filtered to the manifests this
+  tool actually reads, since the set of AI SDKs pinned cannot change without
+  one of them changing.
+-#}
+
+{% block triggers %}
+  pull_request:
+    paths:
+      - "**/requirements*.txt"
+      - "**/package.json"
+  push:
+    branches: ["<< default_branch >>"]
+  workflow_dispatch:
+{% endblock %}
+
+{% block job_name %}AI checks{% endblock %}
+
+{% block scan_steps %}
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Mykronos
+        run: |
+          set -euo pipefail
+          pip install --quiet '<< mykronos_package_spec >>'
+
+      - name: Check AI SDK pins
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/mykronos-results"
+          python -m mykronos.ai_pin_check \
+            --repo-root . \
+            --output "${{ runner.temp }}/mykronos-results/ai-pin-check.sarif"
+{% endblock %}

@@ -18,7 +18,7 @@ from mykronos.github import (
     InstallationTokenCache,
     seal_secret,
 )
-from mykronos.github.client import PermissionDeniedError
+from mykronos.github.client import GitHubError, PermissionDeniedError
 from mykronos.schemas import utcnow
 
 REPO = "example-org/payments-api"
@@ -216,3 +216,35 @@ class TestFakeEnforcesRealPreconditions:
     async def test_unknown_repo_is_an_error(self, client: FakeGitHubClient) -> None:
         with pytest.raises(Exception, match="not found"):
             await client.get_repo("example-org/does-not-exist")
+
+
+class TestDispatchWorkflow:
+    """spec 17 §2.5 — on-demand scan dispatch."""
+
+    @pytest.fixture
+    def client(self) -> FakeGitHubClient:
+        github = FakeGitHubClient()
+        github.add_repo(REPO)
+        return github
+
+    async def test_records_the_dispatch(self, client: FakeGitHubClient) -> None:
+        await client.dispatch_workflow(REPO, "mykronos-sast.yml", "main")
+
+        assert client.repos[REPO].dispatched_workflows == [
+            {"workflow_file": "mykronos-sast.yml", "ref": "main", "inputs": {}}
+        ]
+
+    async def test_needs_actions_write(self) -> None:
+        github = FakeGitHubClient(
+            permissions={"contents": "write", "pull_requests": "write", "metadata": "read"}
+        )
+        github.add_repo(REPO)
+        with pytest.raises(PermissionDeniedError) as excinfo:
+            await github.dispatch_workflow(REPO, "mykronos-sast.yml", "main")
+        assert "actions: write" in str(excinfo.value)
+
+    async def test_unknown_repo_is_an_error(self, client: FakeGitHubClient) -> None:
+        with pytest.raises(GitHubError, match="not found"):
+            await client.dispatch_workflow(
+                "example-org/does-not-exist", "mykronos-sast.yml", "main"
+            )

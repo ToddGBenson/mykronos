@@ -302,6 +302,54 @@ def dependency_finding(**overrides):
     return finding_payload(**payload)
 
 
+class TestKevBoost:
+    """spec 17 §5.6 — a combination naming a KEV-listed CVE says so."""
+
+    def _finding(self, finding_id, rule_id, path="src/api.py", title="", capability="sast"):
+        return {
+            "finding_id": finding_id,
+            "rule_id": rule_id,
+            "title": title or rule_id,
+            "file_path": path,
+            "capability": capability,
+            "severity": "high",
+        }
+
+    def test_no_kev_ids_is_a_no_op(self) -> None:
+        findings = [self._finding("f1", "CWE-89"), self._finding("f2", "CWE-306")]
+        combos = correlate.detect(findings)
+        by_id = {f["finding_id"]: f for f in findings}
+
+        assert correlate.kev_boosted(combos, by_id, set()) == combos
+
+    def test_a_member_naming_a_kev_cve_gets_a_prefixed_rationale(self) -> None:
+        findings = [
+            self._finding("f1", "CWE-89"),
+            self._finding("f2", "CWE-306", title="CVE-2024-12345 missing auth check"),
+        ]
+        combos = correlate.detect(findings)
+        by_id = {f["finding_id"]: f for f in findings}
+        assert len(combos) == 1
+
+        boosted = correlate.kev_boosted(combos, by_id, {"CVE-2024-12345"})
+
+        assert len(boosted) == 1
+        assert boosted[0].finding_ids == combos[0].finding_ids
+        assert boosted[0].rationale.startswith("**Actively exploited.**")
+        assert "CVE-2024-12345" in boosted[0].rationale
+        # The original explanation still follows the prefix — the boost adds
+        # urgency, it doesn't replace the reason the rule fired.
+        assert combos[0].rationale in boosted[0].rationale
+
+    def test_a_combination_with_no_kev_member_is_unchanged(self) -> None:
+        findings = [self._finding("f1", "CWE-89"), self._finding("f2", "CWE-306")]
+        combos = correlate.detect(findings)
+        by_id = {f["finding_id"]: f for f in findings}
+
+        boosted = correlate.kev_boosted(combos, by_id, {"CVE-2024-99999"})
+        assert boosted == combos
+
+
 class TestPipeline:
     def _run(self, client, patchwork_auth, **body):
         return client.post("/api/patchwork/run", json=body, headers=patchwork_auth)

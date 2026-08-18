@@ -312,7 +312,7 @@ def _record_gate_outcome(
 
     try:
         return OracleService(
-            state.catalog, state.buffer, state.oracle_policy, state.knowledge
+            state.catalog, state.buffer, state.oracle_policy, state.knowledge, db=state.db
         ).record_gate_outcome(repo_full_name, pr_number, outcome)
     except Exception as exc:  # noqa: BLE001 — see docstring
         logger.warning(

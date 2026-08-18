@@ -230,6 +230,19 @@ class FindingGroupOut(BaseModel):
     )
     triage_rationale: str
     toxic_combination_ids: list[str] = []
+    cve_id: str | None = Field(
+        default=None,
+        description="Extracted from rule_id/title, if either names one (spec 17 §4.2). "
+        "Null means this group names no CVE at all — distinct from `in_kev: false`, "
+        "which means one was found and checked.",
+    )
+    in_kev: bool | None = Field(
+        default=None,
+        description="Null when cve_id is null. Otherwise whether that CVE is in "
+        "CISA's KEV catalog — false may mean 'checked, not listed' or 'not yet "
+        "fetched', which `fetched_at` on GET /api/dashboard/threat-intel disambiguates.",
+    )
+    epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
 
 
 class ToxicCombinationMemberOut(BaseModel):
@@ -948,15 +961,17 @@ async def repo_open_findings(
     has always guarded them (spec 12 §5).
     """
     repo_full_name = _resolve_repo(request, repo_id)
-    page = _queries(request).open_findings(
-        repo_full_name,
-        store=request.app.state.knowledge,
-        capability=capability.value if capability else None,
-        severity=severity.value if severity else None,
-        rule_id=rule_id,
-        finding_status=finding_status.value,
-        limit=limit,
-    )
+    with request.app.state.db.session() as session:
+        page = _queries(request).open_findings(
+            repo_full_name,
+            store=request.app.state.knowledge,
+            capability=capability.value if capability else None,
+            severity=severity.value if severity else None,
+            rule_id=rule_id,
+            finding_status=finding_status.value,
+            limit=limit,
+            session=session,
+        )
     return OpenFindingsPage.model_validate(page)
 
 

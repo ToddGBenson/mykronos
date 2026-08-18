@@ -211,6 +211,20 @@ class GitHubClient(Protocol):
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
+    async def dispatch_workflow(
+        self,
+        repo_full_name: str,
+        workflow_file: str,
+        ref: str,
+        *,
+        inputs: dict[str, str] | None = None,
+    ) -> None:
+        """Trigger an already-installed `workflow_dispatch`-enabled workflow
+        now, rather than waiting for its next scheduled or push-triggered run
+        (spec 17 §2.5). Fire-and-forget: GitHub's own dispatch API returns no
+        run id synchronously, so there is nothing to hand back — the new run
+        shows up wherever scan results already show up, once it completes."""
+
 
 # ---------------------------------------------------------------------------
 # Fake
@@ -226,6 +240,7 @@ class FakeRepo:
     secrets: dict[str, str] = field(default_factory=dict)
     pull_requests: list[PullRequest] = field(default_factory=list)
     check_runs: list[dict[str, Any]] = field(default_factory=list)
+    dispatched_workflows: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FakeGitHubClient:
@@ -456,6 +471,21 @@ class FakeGitHubClient:
             return self.installations[installation_id]
         except KeyError:
             raise GitHubError(f"Installation {installation_id} not found", status=404) from None
+
+    async def dispatch_workflow(
+        self,
+        repo_full_name: str,
+        workflow_file: str,
+        ref: str,
+        *,
+        inputs: dict[str, str] | None = None,
+    ) -> None:
+        self.calls.append(("dispatch_workflow", f"{repo_full_name}/{workflow_file}@{ref}"))
+        self._require("actions", "write", "Dispatching a workflow run")
+        repo = self._repo(repo_full_name)
+        repo.dispatched_workflows.append(
+            {"workflow_file": workflow_file, "ref": ref, "inputs": inputs or {}}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -853,3 +883,21 @@ class RestGitHubClient:
                 status=response.status_code,
             )
         return dict(response.json())
+
+    async def dispatch_workflow(
+        self,
+        repo_full_name: str,
+        workflow_file: str,
+        ref: str,
+        *,
+        inputs: dict[str, str] | None = None,
+    ) -> None:
+        """`workflow_file` is the filename GitHub already knows the workflow
+        by (`sast.yml`, not a numeric workflow id) — the same identifier the
+        Workflow Installer wrote it under (spec 03), so a caller never has to
+        look up an id first. GitHub returns 204 with no body on success."""
+        await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/dispatches",
+            json={"ref": ref, "inputs": inputs or {}},
+        )

@@ -249,6 +249,39 @@ class ConcourseClient:
             jobs=[self._job(raw, url) for raw in payload if isinstance(raw, dict)],
         )
 
+    def trigger_job(self, pipeline: str, job: str, *, token: str) -> bool:
+        """Start a new build of `job` now (spec 17 §2.5), rather than
+        waiting for the next commit the pipeline's own resource polls for.
+
+        Unlike every read above, this is a write against infrastructure
+        spec 15 §7 already flags as sensitive — a worker inside the LAN —
+        so it is not anonymous the way `status_for` is. `token` is the
+        caller's to obtain (`settings.concourse_api_token`, spec 15 §6's
+        credential manager); this method only spends it.
+
+        Returns whether Concourse accepted the request. Never raises: a
+        trigger that fails is reported the same way a status read that
+        fails is — a falsy result with the reason logged — so a dashboard
+        action can say "couldn't start it" rather than 500.
+        """
+        try:
+            response = httpx2.post(
+                f"{self.base_url}/api/v1/teams/{self.team}/pipelines/"
+                f"{pipeline}/jobs/{job}/builds",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=TIMEOUT,
+            )
+            response.raise_for_status()
+            return True
+        except Exception as exc:  # noqa: BLE001 - see the module docstring
+            logger.warning(
+                "Concourse trigger of %s/%s failed: %s",
+                scrub(pipeline),
+                scrub(job),
+                scrub(str(exc)),
+            )
+            return False
+
     @staticmethod
     def _job(raw: dict[str, object], pipeline_url: str) -> JobStatus:
         name = str(raw.get("name", ""))

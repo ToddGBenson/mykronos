@@ -435,6 +435,7 @@ class DashboardQueries:
         rule_id: str | None = None,
         finding_status: str = "open",
         limit: int = 400,
+        session: Session | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -456,7 +457,10 @@ class DashboardQueries:
         **Correlated.** Toxic combinations are detected here rather than read
         from `remediation_events`, because those only exist where Patchwork has
         run — and a repository that never enabled auto-remediation is exactly
-        the one nobody has told about its unauthenticated database.
+        the one nobody has told about its unauthenticated database. When
+        `session` is supplied, a combination naming a KEV-listed CVE has its
+        rationale prefixed to say so (spec 17 §5.6) — omitted (not an error)
+        when `session` is `None`, matching every other optional input here.
         """
         columns = [
             "finding_id",
@@ -491,6 +495,9 @@ class DashboardQueries:
         )
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
+        if session is not None and combinations:
+            kev_cves = self._kev_cve_ids(session, by_id.values())
+            combinations = correlate.kev_boosted(combinations, by_id, kev_cves)
         combination_of: dict[str, str] = {}
         for combo in combinations:
             for member in combo.finding_ids:
@@ -511,6 +518,8 @@ class DashboardQueries:
         groups = self._group_findings(
             rows, repo_full_name, store=store, combination_of=combination_of
         )
+        if session is not None:
+            self._attach_threat_intel(session, groups)
 
         return {
             "repo_full_name": repo_full_name,
@@ -1210,6 +1219,70 @@ class DashboardQueries:
         return record
 
     # -- threat intelligence ---------------------------------------------
+
+    @staticmethod
+    def _kev_cve_ids(session: Session, findings: Any) -> set[str]:
+        """Which CVEs named by `findings` are KEV-listed (spec 17 §5.6).
+
+        `findings` is any iterable of finding dicts with `rule_id`/`title` —
+        the correlation pool here, but nothing about this method is specific
+        to it. A pure lookup, not a fetch: this reads `ThreatIntelMatch` rows
+        already in the operational database and never calls a feed itself.
+        """
+        cves = {
+            extract_cve(str(f.get("rule_id") or ""), str(f.get("title") or ""))
+            for f in findings
+        }
+        cves.discard(None)
+        if not cves:
+            return set()
+        rows = session.execute(
+            select(ThreatIntelMatch.cve_id).where(
+                ThreatIntelMatch.cve_id.in_(cves), ThreatIntelMatch.in_kev.is_(True)
+            )
+        ).scalars()
+        return {str(row) for row in rows}
+
+    @staticmethod
+    def _attach_threat_intel(session: Session, groups: list[dict[str, Any]]) -> None:
+        """Stamp `cve_id`/`in_kev`/`epss_score` onto each group, in place
+        (spec 17 §4.4, spec 20 polish). `None` for a group naming no CVE —
+        distinct from `in_kev: False`, which means a CVE was found and
+        checked. Mutates rather than returns a new list: `groups` already
+        carries every other per-row field this way (`_group_findings`), and
+        a second return convention here would be the odd one out.
+        """
+        cve_by_key: dict[str, str] = {}
+        for group in groups:
+            cve_id = extract_cve(str(group.get("rule_id") or ""), str(group.get("title") or ""))
+            group["cve_id"] = cve_id
+            group["in_kev"] = None
+            group["epss_score"] = None
+            if cve_id:
+                cve_by_key[group["group_key"]] = cve_id
+
+        if not cve_by_key:
+            return
+
+        matches = {
+            row.cve_id: row
+            for row in session.execute(
+                select(ThreatIntelMatch).where(
+                    ThreatIntelMatch.cve_id.in_(set(cve_by_key.values()))
+                )
+            ).scalars()
+        }
+        for group in groups:
+            cve_id = cve_by_key.get(group["group_key"])
+            if cve_id is None:
+                continue
+            match = matches.get(cve_id)
+            # Three states, not two: `in_kev` stays `None` above when the
+            # group names no CVE at all; it becomes `False` here — "a CVE
+            # was checked, and it isn't KEV-listed (or hasn't been fetched
+            # yet)" — only once one was found to check.
+            group["in_kev"] = bool(match and match.in_kev)
+            group["epss_score"] = match.epss_score if match else None
 
     def threat_intel(self, session: Session) -> list[dict[str, Any]]:
         """Every CVE currently matched to an open finding somewhere in the

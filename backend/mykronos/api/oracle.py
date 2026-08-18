@@ -117,6 +117,7 @@ def _service(request: Request) -> OracleService:
         request.app.state.buffer,
         request.app.state.oracle_policy,
         request.app.state.knowledge,
+        db=request.app.state.db,
     )
 
 

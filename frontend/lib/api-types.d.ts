@@ -931,6 +931,33 @@ export interface paths {
         patch: operations["update_capabilities_api_repos__repo_id__capabilities_patch"];
         trace?: never;
     };
+    "/api/repos/{repo_id}/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan Now
+         * @description Dispatch every enabled scanning capability now (spec 17 §2.5), rather
+         *     than waiting for its next scheduled or push-triggered run.
+         *
+         *     Dispatch mechanism follows `scanned_by`, same as everywhere else it
+         *     matters (spec 15 §4a's coverage cross-check, this row's own read path):
+         *     a real GitHub Actions `workflow_dispatch` for an Actions-scanned repo, a
+         *     Concourse build trigger for a Concourse-scanned one. Neither call is
+         *     synchronous — both report only what was *attempted*.
+         */
+        post: operations["scan_now_api_repos__repo_id__scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -1394,6 +1421,21 @@ export interface components {
              * @default []
              */
             toxic_combination_ids: string[];
+            /**
+             * Cve Id
+             * @description Extracted from rule_id/title, if either names one (spec 17 §4.2). Null means this group names no CVE at all — distinct from `in_kev: false`, which means one was found and checked.
+             */
+            cve_id?: string | null;
+            /**
+             * In Kev
+             * @description Null when cve_id is null. Otherwise whether that CVE is in CISA's KEV catalog — false may mean 'checked, not listed' or 'not yet fetched', which `fetched_at` on GET /api/dashboard/threat-intel disambiguates.
+             */
+            in_kev?: boolean | null;
+            /**
+             * Epss Score
+             * @description 0-1, null if not scored yet.
+             */
+            epss_score?: number | null;
         };
         /**
          * FindingLocationOut
@@ -2072,6 +2114,21 @@ export interface components {
              * @default Every pull request Patchwork opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
              */
             note: string;
+        };
+        /**
+         * ScanResult
+         * @description spec 17 §2.5. Fire-and-forget on both dispatch paths — GitHub's and
+         *     Concourse's own APIs return no synchronous run id — so this reports what
+         *     was *attempted*, not a result to poll. The new runs surface on the
+         *     Harness tab like any other, once they complete.
+         */
+        ScanResult: {
+            /** Dispatched */
+            dispatched: string[];
+            /** Failed */
+            failed: string[];
+            /** Detail */
+            detail: string;
         };
         /**
          * ScanRunSubmission
@@ -3654,6 +3711,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CapabilityUpdateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_now_api_repos__repo_id__scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanResult"];
                 };
             };
             /** @description Validation Error */

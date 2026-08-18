@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -24,8 +25,10 @@ from mykronos.capabilities import (
     configurable_capabilities,
     validate_config,
 )
+from mykronos.ci import CAPABILITY_BY_JOB, ConcourseClient, pipeline_name_for
 from mykronos.db.models import (
     CapabilityConfig,
+    CapabilityGrant,
     RepoOnboarding,
     get_or_create_organization,
 )
@@ -33,6 +36,7 @@ from mykronos.github.client import GitHubError
 from mykronos.installer import (
     InstallerError,
     PathCollisionError,
+    TemplateError,
     WorkflowInstaller,
     capability_configs,
 )
@@ -41,6 +45,24 @@ from mykronos.schemas import Capability
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/repos", tags=["onboarding"])
+
+#: Which capabilities "scan now" (spec 17 §2.5) can actually dispatch — the
+#: ones with a workflow template (spec 04) or a Concourse job, as opposed to
+#: `aegis`/`oracle`/`patchwork`, which are event-driven (`ci.py`
+#: NON_SCANNING) and have nothing for a dispatch to trigger.
+DISPATCHABLE_CAPABILITIES = frozenset(
+    {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas"}
+)
+
+#: The reverse of `ci.py`'s `CAPABILITY_BY_JOB` — which Concourse job
+#: name(s) plausibly produce a given capability. A heuristic in the same
+#: spirit and for the same reason as the mapping it's derived from: a
+#: pipeline that names its job differently is simply not reached, which is
+#: the safe direction to be wrong in (a 404 from Concourse, not a crash).
+_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
+for _job_name, _caps in CAPABILITY_BY_JOB.items():
+    for _cap in (_caps if isinstance(_caps, tuple) else (_caps,)):
+        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +145,17 @@ class CapabilityUpdateResult(BaseModel):
     pull_request_url: str | None = None
     pull_request_number: int | None = None
     secret_provisioned: bool = False
+    detail: str
+
+
+class ScanResult(BaseModel):
+    """spec 17 §2.5. Fire-and-forget on both dispatch paths — GitHub's and
+    Concourse's own APIs return no synchronous run id — so this reports what
+    was *attempted*, not a result to poll. The new runs surface on the
+    Harness tab like any other, once they complete."""
+
+    dispatched: list[str]
+    failed: list[str]
     detail: str
 
 
@@ -469,3 +502,130 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
             note="historical findings retained for audit (spec 02 §6)",
         )
         return _summary(row)
+
+
+@router.post("/{repo_id}/scan", response_model=ScanResult)
+async def scan_now(request: Request, repo_id: str, actor: AdminDep) -> ScanResult:
+    """Dispatch every enabled scanning capability now (spec 17 §2.5), rather
+    than waiting for its next scheduled or push-triggered run.
+
+    Dispatch mechanism follows `scanned_by`, same as everywhere else it
+    matters (spec 15 §4a's coverage cross-check, this row's own read path):
+    a real GitHub Actions `workflow_dispatch` for an Actions-scanned repo, a
+    Concourse build trigger for a Concourse-scanned one. Neither call is
+    synchronous — both report only what was *attempted*.
+    """
+    db = request.app.state.db
+    with db.session() as session:
+        row = _get(session, repo_id)
+        if row.status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{row.github_repo_full_name} is offboarded. Nothing to scan.",
+            )
+
+        enabled = set(row.enabled_capabilities or [])
+        if row.scanned_by != "github_actions":
+            # Same union the portfolio/CI views apply (spec 15 §4a): the
+            # installer's ledger never moves for a Concourse-scanned repo, so
+            # the grants are the truth for what may write, and therefore
+            # what's worth dispatching.
+            enabled |= {
+                str(grant.capability)
+                for grant in session.execute(
+                    select(CapabilityGrant).where(
+                        CapabilityGrant.repo_full_name == row.github_repo_full_name
+                    )
+                ).scalars()
+            }
+        scanning = sorted(enabled & DISPATCHABLE_CAPABILITIES)
+        # `enabled_capabilities` and `pending_capabilities` are disjoint by
+        # construction — a capability is one or the other, never both — so
+        # this can never overlap `scanning`. It answers a different, more
+        # useful question when `scanning` turns out empty: "nothing to
+        # dispatch" and "nothing to dispatch *yet*, an install PR is still
+        # open" are different facts, and only one of them is worth a 409.
+        pending = sorted((set(row.pending_capabilities or [])) & DISPATCHABLE_CAPABILITIES)
+
+        repo_full_name = row.github_repo_full_name
+        scanned_by = row.scanned_by
+        default_branch = row.default_branch
+        installation_id = row.github_installation_id
+
+    if not scanning:
+        if pending:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Still awaiting an install pull request: {', '.join(pending)}. "
+                    "Merge it, then dispatch a scan for them."
+                ),
+            )
+        return ScanResult(
+            dispatched=[],
+            failed=[],
+            detail=f"No scanning capability is enabled for {repo_full_name}.",
+        )
+
+    dispatched: list[str] = []
+    failed: list[str] = []
+
+    if scanned_by == "github_actions":
+        github = request.app.state.github_factory.for_installation(installation_id)
+        templates = request.app.state.templates
+        for capability in scanning:
+            try:
+                workflow_file = PurePosixPath(templates.target_path(capability)).name
+            except TemplateError:
+                failed.append(capability)
+                continue
+            try:
+                await github.dispatch_workflow(repo_full_name, workflow_file, default_branch)
+                dispatched.append(capability)
+            except GitHubError as exc:
+                logger.warning(
+                    "Scan dispatch for %s/%s failed: %s", repo_full_name, capability, exc
+                )
+                failed.append(capability)
+        detail = (
+            f"Dispatched {len(dispatched)} of {len(scanning)} workflow(s) via GitHub Actions."
+        )
+
+    elif scanned_by == "concourse":
+        settings = request.app.state.settings
+        client = ConcourseClient(
+            settings.concourse_url,
+            team=settings.concourse_team,
+            external_url=settings.concourse_external_url,
+        )
+        if not client.configured or not settings.concourse_api_token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "No Concourse API token is configured for this deployment "
+                    "(spec 17 §2.5) — the pipeline-status panel still reads "
+                    "anonymously, but triggering a build is a write and needs one."
+                ),
+            )
+        pipeline = pipeline_name_for(repo_full_name)
+        for capability in scanning:
+            candidates = sorted(_JOBS_BY_CAPABILITY.get(capability, {capability}))
+            if any(
+                client.trigger_job(pipeline, job, token=settings.concourse_api_token)
+                for job in candidates
+            ):
+                dispatched.append(capability)
+            else:
+                failed.append(capability)
+        detail = f"Dispatched {len(dispatched)} of {len(scanning)} job(s) on pipeline {pipeline!r}."
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{repo_full_name} has no configured scanner (scanned_by=none) — "
+                "nothing dispatches its findings today, so there is nothing to trigger."
+            ),
+        )
+
+    return ScanResult(dispatched=dispatched, failed=failed, detail=detail)

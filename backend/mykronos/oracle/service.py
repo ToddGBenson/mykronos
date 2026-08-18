@@ -21,12 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from mykronos.db.session import Database
 from mykronos.github.client import GitHubClient, GitHubError
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.logsafe import scrub
-from mykronos.oracle.engine import Decision, OracleEngine
+from mykronos.oracle.engine import MODIFIER_CATEGORIES, Decision, OracleEngine
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
 
@@ -111,12 +112,7 @@ def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
     ]
     unavailable = [
         (name, snapshot[name]["reason"])
-        for name in (
-            "insider_risk",
-            "sscs_trust",
-            "remediation_in_flight",
-            "false_positive_dampening",
-        )
+        for name in MODIFIER_CATEGORIES
         if not snapshot[name]["available"]
     ]
     if unavailable:
@@ -155,11 +151,13 @@ class OracleService:
         buffer: WriteAheadBuffer,
         policy: Policy,
         store: KnowledgeStore | None = None,
+        *,
+        db: Database | None = None,
     ) -> None:
         self.catalog = catalog
         self.buffer = buffer
         self.policy = policy
-        self.engine = OracleEngine(catalog, policy, store)
+        self.engine = OracleEngine(catalog, policy, store, db=db)
 
     async def evaluate_and_publish(
         self,

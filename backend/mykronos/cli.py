@@ -367,7 +367,9 @@ def main(argv: list[str] | None = None) -> int:
             run = asyncio.run(
                 score_portfolio(
                     db,
-                    OracleService(catalog, buffer, load_policy(settings.oracle_policy_path)),
+                    OracleService(
+                        catalog, buffer, load_policy(settings.oracle_policy_path), db=db
+                    ),
                 )
             )
             # Bound before the call: passing sorted() straight in makes mypy
