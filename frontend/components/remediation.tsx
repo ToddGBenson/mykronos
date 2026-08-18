@@ -9,7 +9,13 @@
  */
 
 import { EmptyState, Label, Pill, RelativeTime } from "@/components/primitives";
+import { RemediationAction } from "@/components/remediation-action";
 import type { RemediationEvent } from "@/lib/api";
+
+/** Stages worth a second look from here (spec 18 §7.3) — a person starting
+ *  from this tab rather than from the finding itself, for exactly the rows
+ *  where nothing happened yet and something still could. */
+const RETRYABLE_STAGES = new Set(["no_fix_available", "triaged"]);
 
 const STAGE_LABEL: Record<string, string> = {
   pr_opened: "Draft PR open",
@@ -159,6 +165,17 @@ function EventCard({ event }: { event: RemediationEvent }) {
       <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
         {event.rationale}
       </p>
+
+      {/* Not offered for a combination event — there is no single finding_id
+          to fix alone, which is the entire reason it is a combination. */}
+      {RETRYABLE_STAGES.has(stage) && !isCombination ? (
+        <div className="border-t border-rule-soft px-3 py-2">
+          <Label>Preview and fix</Label>
+          <div className="mt-1.5">
+            <RemediationAction key={event.finding_id} findingId={event.finding_id} />
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }

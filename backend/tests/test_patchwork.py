@@ -780,6 +780,207 @@ class TestApi:
         assert client.post("/api/patchwork/run", json={}).status_code == 401
 
 
+class TestPerFindingRemediation:
+    """spec 18 §7: a person clicking one finding, not CI sweeping a repo."""
+
+    def _finding_id(self, catalog, rule_id: str) -> str:
+        rows = catalog.query(
+            "SELECT finding_id FROM findings WHERE rule_id = ? LIMIT 1", [rule_id]
+        )
+        return str(rows[0][0])
+
+    def test_preview_identifies_a_fix_without_opening_anything(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        body = client.post(
+            f"/api/patchwork/findings/{finding_id}/preview", headers=admin_auth
+        ).json()
+
+        assert body["stage"] == "would_fix"
+        assert body["fixer_name"]
+        assert REQUIREMENTS in body["fix_files"]
+        assert "2.2.2" in body["fix_files"][REQUIREMENTS]
+        assert github.repos[REPO].pull_requests == []
+
+    def test_preview_writes_no_remediation_event(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """A preview nobody acts on should leave no trace (spec 18 §7.2)."""
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        client.post(f"/api/patchwork/findings/{finding_id}/preview", headers=admin_auth)
+        run_compaction()
+
+        assert catalog.count("remediation_events") == 0
+
+    def test_fix_opens_exactly_one_draft_pr(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        body = client.post(
+            f"/api/patchwork/findings/{finding_id}/fix", headers=admin_auth
+        ).json()
+
+        assert body["stage"] == "pr_opened"
+        assert body["fix_pr_url"]
+        pr = github.repos[REPO].pull_requests[-1]
+        assert pr.draft is True
+
+    def test_fix_writes_a_remediation_event(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        client.post(f"/api/patchwork/findings/{finding_id}/fix", headers=admin_auth)
+        run_compaction()
+
+        assert catalog.count("remediation_events") == 1
+
+    def test_fix_requires_admin(
+        self, client, admin_auth, viewer_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        response = client.post(
+            f"/api/patchwork/findings/{finding_id}/fix", headers=viewer_auth
+        )
+
+        assert response.status_code == 403
+        assert github.repos[REPO].pull_requests == []
+
+    def test_preview_does_not_require_admin(
+        self, client, admin_auth, viewer_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """Read-only, so a viewer can see it — the same standard every other
+        finding detail is already held to."""
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        response = client.post(
+            f"/api/patchwork/findings/{finding_id}/preview", headers=viewer_auth
+        )
+
+        assert response.status_code == 200
+
+    def test_an_unknown_finding_id_is_404(self, client, admin_auth) -> None:
+        onboard(client, admin_auth)
+
+        response = client.post(
+            "/api/patchwork/findings/does-not-exist/preview", headers=admin_auth
+        )
+
+        assert response.status_code == 404
+
+    def test_a_finding_on_a_human_edited_branch_is_refused(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog, github
+    ) -> None:
+        """The permanent off-limits transition (spec 08 §3) applies to the
+        on-demand path exactly as it does to the batch one."""
+        from tests.test_onboarding import deliver
+
+        onboard(client, admin_auth)
+        put_file(github, REQUIREMENTS, "urllib3==2.0.4\n")
+        seed(client, patchwork_auth, run_compaction, [dependency_finding()])
+        finding_id = self._finding_id(catalog, "CVE-2024-4812")
+
+        # First fix opens the branch; a human push to it marks it off limits
+        # for every future run, batch or on-demand (spec 08 §3's own webhook
+        # path — TestHumanEdits in test_patchwork_stewardship.py).
+        client.post(f"/api/patchwork/findings/{finding_id}/fix", headers=admin_auth)
+        run_compaction()
+        branch = github.repos[REPO].pull_requests[-1].head_branch
+        client.app.state.settings.github_bot_logins = ["mykronos-platform[bot]"]
+        deliver(
+            client,
+            "push",
+            {
+                "ref": f"refs/heads/{branch}",
+                "repository": {"full_name": REPO},
+                "commits": [
+                    {
+                        "id": "abc123",
+                        "author": {"username": "octocat", "name": "octocat"},
+                        "committer": {"username": "octocat", "name": "octocat"},
+                    }
+                ],
+            },
+        )
+        run_compaction()
+
+        body = client.post(
+            f"/api/patchwork/findings/{finding_id}/fix", headers=admin_auth
+        ).json()
+
+        assert body["stage"] == "no_fix_available"
+        assert "already edited" in body["rationale"]
+
+    def test_a_finding_claimed_by_a_toxic_combination_is_not_fixed_alone(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="a"),
+                finding_payload(
+                    rule_id="CWE-306",
+                    title="Missing authentication check",
+                    severity="medium",
+                    symbol="b",
+                ),
+            ],
+        )
+        finding_id = self._finding_id(catalog, "CWE-89")
+
+        body = client.post(
+            f"/api/patchwork/findings/{finding_id}/preview", headers=admin_auth
+        ).json()
+
+        assert body["stage"] == "correlated"
+        assert body["toxic_combination_id"]
+
+    def test_a_low_severity_finding_is_not_fixed_unprompted(
+        self, client, admin_auth, patchwork_auth, run_compaction, catalog
+    ) -> None:
+        onboard(client, admin_auth)
+        seed(
+            client,
+            patchwork_auth,
+            run_compaction,
+            [finding_payload(rule_id="CWE-79", severity="low", symbol="a")],
+        )
+        finding_id = self._finding_id(catalog, "CWE-79")
+
+        body = client.post(
+            f"/api/patchwork/findings/{finding_id}/preview", headers=admin_auth
+        ).json()
+
+        assert body["stage"] == "triaged"
+        assert body["classification"] == "needs_human_judgment"
+
+
 class TestOracleSeesFixesInFlight:
     def test_a_finding_being_fixed_counts_for_less(
         self, client, admin_auth, patchwork_auth, run_compaction, catalog, github

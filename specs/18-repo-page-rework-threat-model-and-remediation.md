@@ -50,8 +50,8 @@ This spec covers, precisely:
 | Threat Model tab: capability-level STRIDE inventory | Done |
 | Threat Model: CWE-tag-based refinement (SARIF `properties.tags`) | Not planned this pass — capability-level mapping ships first; noted as an explicit, honest gap, not silently approximated |
 | Threat Model: AI-generated narrative | Plumbing only, off by default — same treatment as reachability (spec 17 §5.3). No LLM client exists in this backend and this spec does not add one |
-| Remediation: per-finding fix preview (no PR) | Planned |
-| Remediation: per-finding "create PR" | Planned |
+| Remediation: per-finding fix preview (no PR) | Done |
+| Remediation: per-finding "create PR" | Done |
 | Supply chain: SBOM download endpoint | Planned |
 | SBOM process documented (§9) | Planned |
 

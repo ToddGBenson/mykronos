@@ -837,6 +837,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/patchwork/findings/{finding_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Finding Fix
+         * @description What Patchwork would do for one finding, without doing it (spec 18 §7.2).
+         *
+         *     Principal-authenticated, not a workflow token: this is a person looking
+         *     at one finding, not CI asking about a repository. Every guardrail the
+         *     batch pipeline applies still applies — see `PatchworkPipeline.run_one`.
+         */
+        post: operations["preview_finding_fix_api_patchwork_findings__finding_id__preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/patchwork/findings/{finding_id}/fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fix Finding
+         * @description Actually attempt a fix for one finding (spec 18 §7.2).
+         *
+         *     Same pipeline, same guardrails, same draft-only PR `_open_draft_pr` has
+         *     always opened — the only difference from `POST /run` is the scope: one
+         *     finding a person picked, rather than every true-positive in the repo.
+         *
+         *     Admin-only: opening a branch and a pull request on the customer's
+         *     repository is a write, the same standard `PATCH /findings/{id}/status`
+         *     already holds a disposition to. `preview` above needs no such gate — it
+         *     writes nothing, to GitHub or to this platform's own state.
+         */
+        post: operations["fix_finding_api_patchwork_findings__finding_id__fix_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/patchwork/repos/{repo_id}": {
         parameters: {
             query?: never;
@@ -2074,6 +2127,36 @@ export interface components {
             /** Updated At */
             updated_at?: unknown;
         };
+        /**
+         * RemediationFixOut
+         * @description What actually happened (spec 18 §7.2) — the same StageOutcome the
+         *     batch pipeline records, for one finding, on request.
+         */
+        RemediationFixOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Stage */
+            stage: string;
+            /** Classification */
+            classification: string;
+            /** Rationale */
+            rationale: string;
+            /** Toxic Combination Id */
+            toxic_combination_id?: string | null;
+            /** Contributing Finding Ids */
+            contributing_finding_ids?: string[];
+            /** Fix Pr Number */
+            fix_pr_number?: number | null;
+            /** Fix Pr Url */
+            fix_pr_url?: string | null;
+            /** Pr Status */
+            pr_status?: string | null;
+            /**
+             * Note
+             * @default Draft, and it stays that way. Patchwork has no ability to merge — the client it uses exposes no merge operation at all (spec 08 §3).
+             */
+            note: string;
+        };
         /** RemediationPage */
         RemediationPage: {
             /** Repo Full Name */
@@ -2087,6 +2170,35 @@ export interface components {
              * @default Patchwork never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
              */
             note: string;
+        };
+        /**
+         * RemediationPreviewOut
+         * @description "Auto remediation identified" (spec 18 §7.2) — nothing written yet.
+         */
+        RemediationPreviewOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Stage */
+            stage: string;
+            /** Classification */
+            classification: string;
+            /** Rationale */
+            rationale: string;
+            /** Toxic Combination Id */
+            toxic_combination_id?: string | null;
+            /** Contributing Finding Ids */
+            contributing_finding_ids?: string[];
+            /** Fixer Name */
+            fixer_name?: string | null;
+            /** Fix Confidence */
+            fix_confidence?: number | null;
+            /**
+             * Fix Files
+             * @description Path -> full new content. Not a unified diff — the deterministic fixers already produce whole-file replacements, and this is what they produce, not a second representation of it.
+             */
+            fix_files?: {
+                [key: string]: string;
+            } | null;
         };
         /** RepoDetail */
         RepoDetail: {
@@ -3682,6 +3794,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_finding_fix_api_patchwork_findings__finding_id__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationPreviewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fix_finding_api_patchwork_findings__finding_id__fix_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationFixOut"];
                 };
             };
             /** @description Validation Error */
