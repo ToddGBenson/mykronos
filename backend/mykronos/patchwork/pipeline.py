@@ -40,6 +40,10 @@ STAGES = (
     "skipped_low_confidence",
     "queued",
     "superseded",
+    # Preview only (spec 18 §7.2) — never written to `remediation_events`;
+    # listed here anyway because it is a real `StageOutcome.stage` value and
+    # this tuple is the vocabulary's one definition.
+    "would_fix",
 )
 
 #: What Patchwork may write a patch for. Narrow by construction: each of
@@ -81,6 +85,13 @@ class StageOutcome:
     fix_pr_number: int | None = None
     fix_pr_url: str | None = None
     pr_status: str | None = None
+    #: Populated only by a `preview_only` `_attempt_fix` call (spec 18 §7.2) —
+    #: "auto remediation identified" without opening anything. Not persisted
+    #: by `to_row`: generated file content belongs in the response to the
+    #: person who asked for it, not in the lake's outcome history.
+    fixer_name: str | None = None
+    fix_confidence: float | None = None
+    fix_files: dict[str, str] | None = None
 
     def to_row(self, repo_full_name: str) -> dict[str, Any]:
         stamp = utcnow()
@@ -305,6 +316,128 @@ class PatchworkPipeline:
             )
         return result
 
+    async def run_one(
+        self,
+        repo_full_name: str,
+        finding_id: str,
+        *,
+        github: GitHubClient | None,
+        default_branch: str = "main",
+        open_prs: int = 0,
+        preview_only: bool = False,
+    ) -> StageOutcome | None:
+        """One finding, on request (spec 18 §7) — a person clicking a button
+        on the finding they are looking at, rather than the scheduled sweep
+        `run()` does across the whole repository.
+
+        Every guardrail `run()` applies still applies: the off-limits check
+        (a human-edited branch stays permanently untouched), the toxic-
+        combination claim (a finding that is half of a combination is not
+        fixed alone), the triage gate (`classify()`, the same rules the
+        Findings tab renders), and the draft-PR budget. Nothing here is a
+        second, looser path to a fix `run()` would have refused.
+
+        `None` means no open finding with this id exists in this repository —
+        the caller's job to turn into a 404, not this method's to invent a
+        `StageOutcome` for.
+
+        `preview_only=True` stops before any write reaches GitHub (see
+        `_attempt_fix`) and, when a fix would be generated, writes no
+        `RemediationEvent` either — a preview a person looks at and does not
+        act on should leave no trace, the same reason a `GET` does not.
+        """
+        columns = [
+            "finding_id",
+            "rule_id",
+            "title",
+            "severity",
+            "capability",
+            "file_path",
+            "line_start",
+            "line_end",
+            "symbol",
+            "package_name",
+            "package_version",
+            "raw_finding_json",
+        ]
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings "
+            "WHERE asset_id = ? AND finding_id = ? AND status = 'open'",
+            [repo_full_name, finding_id],
+        )
+        if not rows:
+            return None
+        finding = dict(zip(columns, rows[0], strict=True))
+        raw = finding.get("raw_finding_json")
+        if isinstance(raw, str) and raw:
+            try:
+                finding["raw_finding_json"] = json.loads(raw)
+            except json.JSONDecodeError:
+                finding["raw_finding_json"] = {}
+
+        def _record(outcome: StageOutcome) -> StageOutcome:
+            if not preview_only:
+                self.buffer.append("remediation_events", [outcome.to_row(repo_full_name)])
+            return outcome
+
+        off_limits = branches_off_limits(self.catalog, repo_full_name)
+        if finding_id in off_limits:
+            return _record(
+                StageOutcome(
+                    finding_id=finding_id,
+                    stage="no_fix_available",
+                    classification="true_positive",
+                    rationale=(
+                        "A person has already edited this fix's branch; "
+                        "Patchwork does not touch it again (spec 08 §3)."
+                    ),
+                )
+            )
+
+        # Correlation pool is fetched the same way `run()` fetches it —
+        # wider than fix generation, so a combination this finding belongs to
+        # is found even though the source-capability list alone would not
+        # have surfaced the other half.
+        correlation_pool = self._candidates(
+            repo_full_name, capability_set=self.correlation_capabilities
+        )
+        for combo in correlate.detect(correlation_pool):
+            if finding_id in combo.finding_ids:
+                return _record(
+                    StageOutcome(
+                        finding_id=combo.combination_id,
+                        stage="correlated",
+                        classification="needs_human_judgment",
+                        rationale=combo.rationale,
+                        toxic_combination_id=combo.combination_id,
+                        contributing=sorted(combo.finding_ids),
+                    )
+                )
+
+        classification, rationale = self._triage(finding, repo_full_name)
+        if classification != "true_positive":
+            return _record(
+                StageOutcome(
+                    finding_id=finding_id,
+                    stage="triaged",
+                    classification=classification,
+                    rationale=rationale,
+                )
+            )
+
+        budget = max(0, self.max_open_draft_prs - open_prs)
+        outcome = await self._attempt_fix(
+            repo_full_name,
+            finding,
+            rationale,
+            github=github,
+            default_branch=default_branch,
+            budget=budget,
+            result=PipelineResult(),
+            preview_only=preview_only,
+        )
+        return _record(outcome)
+
     async def _attempt_fix(
         self,
         repo_full_name: str,
@@ -315,6 +448,7 @@ class PatchworkPipeline:
         default_branch: str,
         budget: int,
         result: PipelineResult,
+        preview_only: bool = False,
     ) -> StageOutcome:
         finding_id = str(finding["finding_id"])
         path = str(finding.get("file_path") or "")
@@ -395,6 +529,24 @@ class PatchworkPipeline:
                     f"repository's floor of {self.min_confidence:.2f}. A "
                     "possibly-wrong fix costs more review than no fix."
                 ),
+                fixer_name=fixer_name,
+                fix_confidence=fix.confidence,
+            )
+
+        if preview_only:
+            # "Auto remediation identified" (spec 18 §7.2), stopping short of
+            # every write `_open_draft_pr` below would make: no branch, no
+            # commit, no pull request. Safe to call repeatedly — the fixer
+            # contract `render_pr_body` already advertises ("re-running
+            # produces the same diff") is what makes that true.
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="would_fix",
+                classification="true_positive",
+                rationale=f"{triage_rationale} {fix.summary} ({fixer_name}).",
+                fixer_name=fixer_name,
+                fix_confidence=fix.confidence,
+                fix_files=dict(fix.files),
             )
 
         try:

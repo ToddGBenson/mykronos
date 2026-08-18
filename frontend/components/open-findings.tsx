@@ -26,6 +26,7 @@ import Link from "next/link";
 
 import { DispositionForm } from "@/components/disposition";
 import { GroomButton } from "@/components/groom-button";
+import { RemediationAction } from "@/components/remediation-action";
 import {
   CAPABILITY_META,
   EmptyState,
@@ -633,6 +634,12 @@ export function OccurrenceDisposition({
       <Label>Disposition</Label>
       <div className="mt-2">
         <DispositionForm findingId={findingId} currentStatus={status} />
+      </div>
+      <div className="mt-3 border-t border-rule-soft pt-3">
+        <Label>Remediation</Label>
+        <div className="mt-2">
+          <RemediationAction key={findingId} findingId={findingId} />
+        </div>
       </div>
       <div className="mt-3 border-t border-rule-soft pt-3">
         <Label>i2i</Label>
