@@ -93,6 +93,8 @@ export type FindingsQuery = {
   kev_only?: string;
   /** EPSS threshold as a string, e.g. "0.5" (spec 17 §3, #20). */
   min_epss?: string;
+  /** classify()'s classification, plus toxic_combination (spec 18 §5.1). */
+  triage?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
@@ -139,12 +141,22 @@ export function OpenFindings({
       {page.groups.length === 0 ? (
         <EmptyState
           title={
-            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
+            query.severity ||
+            query.capability ||
+            query.rule_id ||
+            query.kev_only ||
+            query.min_epss ||
+            query.triage
               ? "Nothing matches these filters"
               : `No ${(query.status ?? "open").replace("_", " ")} findings`
           }
           detail={
-            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
+            query.severity ||
+            query.capability ||
+            query.rule_id ||
+            query.kev_only ||
+            query.min_epss ||
+            query.triage
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -312,6 +324,28 @@ function Filters({
           EPSS ≥ 50%
         </Link>
       </div>
+
+      {/* classify()'s own output (spec 18 §5.1) — the same classification
+          already rendered per group as a Pill, now also a filter. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Triage</Label>
+        {Object.entries(TRIAGE).map(([id, meta]) => (
+          <Link
+            key={id}
+            href={href({
+              triage: query.triage === id ? undefined : id,
+              ...CLEAR_SELECTION,
+            })}
+            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+              query.triage === id
+                ? "border-accent bg-accent-wash text-accent"
+                : "border-rule text-ink-3 hover:border-accent"
+            }`}
+          >
+            {meta.label}
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
@@ -472,15 +506,27 @@ function GroupTable({
                 </td>
                 <td className="whitespace-nowrap px-2 py-2 text-ink-3">
                   {group.capabilities.map((capability) => (
-                    <span
+                    // Found By, clickable (spec 18 §5.2): the capability filter
+                    // already existed in the filter bar; this connects the
+                    // column that already shows it to the same filter rather
+                    // than leaving it a second, unclickable display of the
+                    // same fact.
+                    <Link
                       key={capability}
+                      href={href({
+                        capability: query.capability === capability ? undefined : capability,
+                        ...CLEAR_SELECTION,
+                      })}
                       title={
                         CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ??
                         capability
                       }
+                      className={
+                        query.capability === capability ? "underline decoration-accent" : ""
+                      }
                     >
                       {CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.icon ?? "•"}
-                    </span>
+                    </Link>
                   ))}
                   <span className="ml-1 text-[9px]">{group.capabilities.join(", ")}</span>
                 </td>
