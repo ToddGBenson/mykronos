@@ -277,9 +277,16 @@ class DashboardQueries:
         }
 
     def _open_severity_counts(self) -> dict[str, dict[str, int]]:
+        # `asset_id`, not `repo_full_name` (spec 18 §1, D-061): every other
+        # repo-scoped query in this file already keys on asset_id
+        # (`_status_clause`) because it is the canonical column (spec 14 §5).
+        # This one didn't, so a finding whose asset_id was never backfilled
+        # (see migrate_assets.py) was counted here and invisible to
+        # open_findings() below it — the portfolio and the Findings tab
+        # disagreeing about the same repo's open count.
         rows = self.catalog.query(
             """
-            SELECT repo_full_name, severity, count(*)
+            SELECT asset_id, severity, count(*)
             FROM findings
             WHERE status = 'open'
             GROUP BY 1, 2
@@ -306,9 +313,12 @@ class DashboardQueries:
             ) WHERE rn = 1
             """
         )
+        # asset_id, matching `_open_severity_counts` above (spec 18 §1) — the
+        # `scans` query just above stays on repo_full_name, since scan_runs
+        # carries no asset_id and no such drift is possible there.
         open_counts = self.catalog.query(
             """
-            SELECT repo_full_name, capability, count(*)
+            SELECT asset_id, capability, count(*)
             FROM findings WHERE status = 'open' GROUP BY 1, 2
             """
         )

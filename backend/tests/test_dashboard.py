@@ -125,6 +125,38 @@ class TestPortfolio:
         assert row["risk_score"] is None
         assert row["recommendation"] is None
 
+    def test_agrees_with_open_findings_when_asset_id_is_missing(
+        self, client: TestClient, admin_auth: dict[str, str], catalog, seeded
+    ) -> None:
+        """spec 18 §1, D-061. Before the fix, this exact drift made the
+        portfolio's count and the Findings tab's count disagree: the portfolio
+        counted findings by `repo_full_name` (present on every row) while
+        every other repo-scoped query, including this repo's own Findings
+        tab, counted by `asset_id` (absent on an unmigrated row) — so an
+        unmigrated finding was visible in one count and not the other. Both
+        now key on asset_id, so both drop it, consistently."""
+        from mykronos.lake.mutate import locate_findings, update_findings
+
+        ids = [
+            str(r[0])
+            for r in catalog.query(
+                "SELECT finding_id FROM findings WHERE severity = 'critical'"
+            )
+        ]
+        update_findings(
+            catalog, locate_findings(catalog, ids), "asset_id = NULL", []
+        )
+
+        portfolio_row = client.get(
+            "/api/dashboard/portfolio", headers=admin_auth
+        ).json()["repos"][0]
+        open_findings_page = client.get(
+            f"/api/dashboard/repos/{seeded}/open-findings", headers=admin_auth
+        ).json()
+
+        assert portfolio_row["total_open"] == 2
+        assert open_findings_page["total"] == 2
+
     def test_offboarded_repos_are_hidden_but_retrievable(
         self, client: TestClient, admin_auth: dict[str, str], seeded
     ) -> None:
