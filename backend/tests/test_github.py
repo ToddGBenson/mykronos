@@ -248,3 +248,59 @@ class TestDispatchWorkflow:
             await client.dispatch_workflow(
                 "example-org/does-not-exist", "mykronos-sast.yml", "main"
             )
+
+
+class TestIssues:
+    """spec 17 §7.2 — i2i opens/updates a story as a GitHub issue."""
+
+    @pytest.fixture
+    def client(self) -> FakeGitHubClient:
+        github = FakeGitHubClient()
+        github.add_repo(REPO)
+        return github
+
+    async def test_creates_an_issue(self, client: FakeGitHubClient) -> None:
+        ref = await client.create_issue(
+            REPO, "SQL injection", "body text", labels=["mykronos:dev-ready"]
+        )
+
+        assert ref.number == 1
+        assert ref.url == f"https://github.com/{REPO}/issues/1"
+        assert client.repos[REPO].issues == [
+            {
+                "number": 1,
+                "title": "SQL injection",
+                "body": "body text",
+                "labels": ["mykronos:dev-ready"],
+                "state": "open",
+            }
+        ]
+
+    async def test_numbers_increment_across_issues(self, client: FakeGitHubClient) -> None:
+        first = await client.create_issue(REPO, "a", "a")
+        second = await client.create_issue(REPO, "b", "b")
+        assert (first.number, second.number) == (1, 2)
+
+    async def test_updates_an_existing_issue(self, client: FakeGitHubClient) -> None:
+        ref = await client.create_issue(REPO, "old title", "old body")
+
+        await client.update_issue(REPO, ref.number, title="new title", body="new body")
+
+        issue = client.repos[REPO].issues[0]
+        assert issue["title"] == "new title"
+        assert issue["body"] == "new body"
+
+    async def test_updating_an_unknown_issue_is_an_error(
+        self, client: FakeGitHubClient
+    ) -> None:
+        with pytest.raises(GitHubError, match="not found"):
+            await client.update_issue(REPO, 999, title="x")
+
+    async def test_needs_issues_write(self) -> None:
+        github = FakeGitHubClient(
+            permissions={"contents": "write", "pull_requests": "write", "metadata": "read"}
+        )
+        github.add_repo(REPO)
+        with pytest.raises(PermissionDeniedError) as excinfo:
+            await github.create_issue(REPO, "t", "b")
+        assert "issues: write" in str(excinfo.value)

@@ -958,6 +958,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/triage/{finding_id}/groom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Groom Finding
+         * @description Build and open (or update) a dev-ready story for one finding (spec 17 §7.2).
+         */
+        post: operations["groom_finding_api_triage__finding_id__groom_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/triage/repos/{repo_id}/combinations/{combination_id}/groom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Groom Combination
+         * @description Build and open (or update) a dev-ready story for a detected toxic
+         *     combination (spec 17 §7.2). Repo-scoped in the path — unlike a finding, a
+         *     `combination_id` alone names no repository, since combinations are
+         *     detected fresh from a repo's current pool rather than stored (spec 08 §2
+         *     stage 3): finding the one this id refers to means re-detecting over that
+         *     repo's findings, the same computation the Findings tab already runs.
+         */
+        post: operations["groom_combination_api_triage_repos__repo_id__combinations__combination_id__groom_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -1593,6 +1638,27 @@ export interface components {
              * @description False for viewer roles; raw output is admin-only (spec 12 §5).
              */
             raw_output_included: boolean;
+        };
+        /** GroomResult */
+        GroomResult: {
+            /** Story Id */
+            story_id: string;
+            /** Dev Ready */
+            dev_ready: boolean;
+            /**
+             * Missing Fields
+             * @description Empty when dev_ready. Named, not just implied by the boolean, so a caller knows what to fill in rather than only that something's missing.
+             */
+            missing_fields: string[];
+            /** Github Issue Number */
+            github_issue_number: number;
+            /** Github Issue Url */
+            github_issue_url: string;
+            /**
+             * Created
+             * @description True if this groom opened a new issue; false if it updated one already opened by an earlier groom of the same finding/combination.
+             */
+            created: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -3742,6 +3808,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    groom_finding_api_triage__finding_id__groom_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroomResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    groom_combination_api_triage_repos__repo_id__combinations__combination_id__groom_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                combination_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroomResult"];
                 };
             };
             /** @description Validation Error */

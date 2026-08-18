@@ -37,6 +37,10 @@ REQUIRED_PERMISSIONS = {
     "pull_requests": "write",
     "checks": "write",
     "actions": "write",
+    # Spent only by the i2i process opening/updating a groomed story (spec
+    # 17 §7.2) — deliberately distinct from `pull_requests`, since an issue
+    # is a work item, not a repository content change.
+    "issues": "write",
     "metadata": "read",
 }
 
@@ -57,6 +61,16 @@ class PermissionDeniedError(GitHubError):
     Raised separately because this is the D-008 failure mode: it means the App
     is registered wrong, and no amount of retrying will help.
     """
+
+
+@dataclass(frozen=True)
+class IssueRef:
+    """What `create_issue`/`update_issue` need to hand back (spec 17 §7.2) —
+    enough to record on a `TriageStory` and link to from the dashboard,
+    nothing more. Not a full issue model: nothing here reads an issue back."""
+
+    number: int
+    url: str
 
 
 @dataclass
@@ -225,6 +239,30 @@ class GitHubClient(Protocol):
         run id synchronously, so there is nothing to hand back — the new run
         shows up wherever scan results already show up, once it completes."""
 
+    async def create_issue(
+        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
+    ) -> IssueRef:
+        """Open an i2i story as a GitHub issue (spec 17 §7.2).
+
+        Issue creation, not pull-request creation, and not a merge — an
+        issue is a work item, not a repository content change. Patchwork's
+        structural "never merges" guarantee (spec 08 §3, enforced by the
+        protocol having no merge method at all) is untouched either
+        direction: this method crosses neither line."""
+
+    async def update_issue(
+        self,
+        repo_full_name: str,
+        number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        labels: list[str] | None = None,
+    ) -> None:
+        """Re-grooming the same finding updates this issue rather than
+        opening a second one (spec 17 §7.2) — the caller looks the issue up
+        by `TriageStory.id`, this just applies the new content to it."""
+
 
 # ---------------------------------------------------------------------------
 # Fake
@@ -241,6 +279,7 @@ class FakeRepo:
     pull_requests: list[PullRequest] = field(default_factory=list)
     check_runs: list[dict[str, Any]] = field(default_factory=list)
     dispatched_workflows: list[dict[str, Any]] = field(default_factory=list)
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FakeGitHubClient:
@@ -263,6 +302,7 @@ class FakeGitHubClient:
         #: actually read rather than only that a PR was opened.
         self.pull_request_bodies: dict[int, str] = {}
         self._next_pr_number = 1
+        self._next_issue_number = 1
         self.installations: dict[int, dict[str, Any]] = {}
 
     # -- helpers --------------------------------------------------------
@@ -486,6 +526,47 @@ class FakeGitHubClient:
         repo.dispatched_workflows.append(
             {"workflow_file": workflow_file, "ref": ref, "inputs": inputs or {}}
         )
+
+    async def create_issue(
+        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
+    ) -> IssueRef:
+        self.calls.append(("create_issue", f"{repo_full_name}:{title}"))
+        self._require("issues", "write", "Opening an issue")
+        repo = self._repo(repo_full_name)
+        number = self._next_issue_number
+        self._next_issue_number += 1
+        repo.issues.append(
+            {
+                "number": number,
+                "title": title,
+                "body": body,
+                "labels": list(labels or []),
+                "state": "open",
+            }
+        )
+        return IssueRef(number=number, url=f"https://github.com/{repo_full_name}/issues/{number}")
+
+    async def update_issue(
+        self,
+        repo_full_name: str,
+        number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        labels: list[str] | None = None,
+    ) -> None:
+        self.calls.append(("update_issue", f"{repo_full_name}#{number}"))
+        self._require("issues", "write", "Updating an issue")
+        repo = self._repo(repo_full_name)
+        issue = next((i for i in repo.issues if i["number"] == number), None)
+        if issue is None:
+            raise GitHubError(f"Issue #{number} not found on {repo_full_name}", status=404)
+        if title is not None:
+            issue["title"] = title
+        if body is not None:
+            issue["body"] = body
+        if labels is not None:
+            issue["labels"] = list(labels)
 
 
 # ---------------------------------------------------------------------------
@@ -901,3 +982,33 @@ class RestGitHubClient:
             f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/dispatches",
             json={"ref": ref, "inputs": inputs or {}},
         )
+
+    async def create_issue(
+        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
+    ) -> IssueRef:
+        item = await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/issues",
+            json={"title": title, "body": body, "labels": list(labels or [])},
+        )
+        return IssueRef(number=int(item["number"]), url=str(item["html_url"]))
+
+    async def update_issue(
+        self,
+        repo_full_name: str,
+        number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        labels: list[str] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        if labels is not None:
+            payload["labels"] = list(labels)
+        if not payload:
+            return
+        await self._json("PATCH", f"/repos/{repo_full_name}/issues/{number}", json=payload)

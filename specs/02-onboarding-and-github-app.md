@@ -74,7 +74,12 @@ capability's spec (04, 06, 07, 08, 09).
      `contents: write`
    - Pull requests: **Read & write** (to open/comment on PRs)
    - Checks: **Read & write** (for Aegis/Oracle to post check runs)
-   - Actions: **Read & write** (to enable/monitor workflow runs)
+   - Actions: **Read & write** (to enable/monitor workflow runs, and to
+     dispatch an on-demand scan — spec 17 §2.5)
+   - Issues: **Read & write** (to open/update the dev-ready stories the i2i
+     process grooms from triaged findings — spec 17 §7.2. Distinct from
+     Pull requests above: an issue is a work item, not a repository content
+     change, and this permission does not grant PR-opening or merge rights)
    - Metadata: **Read-only** (mandatory baseline)
    - Secrets: **Write** (to create and update the ingestion token secret it
      manages, spec 05 §4) — see the note below. Mykronos never *reads* a repo

@@ -25,6 +25,7 @@
 import Link from "next/link";
 
 import { DispositionForm } from "@/components/disposition";
+import { GroomButton } from "@/components/groom-button";
 import {
   CAPABILITY_META,
   EmptyState,
@@ -128,7 +129,7 @@ export function OpenFindings({
       <Filters repoId={repoId} page={page} query={query} href={href} />
 
       {page.toxic_combinations.length > 0 ? (
-        <ToxicCombinations combinations={page.toxic_combinations} />
+        <ToxicCombinations repoId={repoId} combinations={page.toxic_combinations} />
       ) : null}
 
       {page.groups.length === 0 ? (
@@ -284,7 +285,13 @@ function Filters({
  * a severity-ordered list is how it ends up below the individual mediums it
  * is made of.
  */
-function ToxicCombinations({ combinations }: { combinations: ToxicCombination[] }) {
+function ToxicCombinations({
+  repoId,
+  combinations,
+}: {
+  repoId: string;
+  combinations: ToxicCombination[];
+}) {
   return (
     <div className="border border-critical bg-critical-wash">
       <div className="flex flex-wrap items-baseline gap-x-3 border-b border-critical/30 px-3 py-2">
@@ -323,6 +330,11 @@ function ToxicCombinations({ combinations }: { combinations: ToxicCombination[] 
             <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
               {plain(combination.rationale)}
             </p>
+            <div className="mt-1.5">
+              <GroomButton
+                url={`/api/triage/repos/${repoId}/combinations/${combination.combination_id}/groom`}
+              />
+            </div>
           </li>
         ))}
       </ul>
@@ -538,6 +550,12 @@ export function OccurrenceDisposition({
       <Label>Disposition</Label>
       <div className="mt-2">
         <DispositionForm findingId={findingId} currentStatus={status} />
+      </div>
+      <div className="mt-3 border-t border-rule-soft pt-3">
+        <Label>i2i</Label>
+        <div className="mt-2">
+          <GroomButton url={`/api/triage/${findingId}/groom`} />
+        </div>
       </div>
     </div>
   );
