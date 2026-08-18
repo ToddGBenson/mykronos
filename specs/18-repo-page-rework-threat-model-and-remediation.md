@@ -41,13 +41,13 @@ This spec covers, precisely:
 
 | Item | Status |
 |---|---|
-| Portfolio/Findings open-count mismatch (§2) | Planned |
-| Tab restructure and renames (§3) | Planned |
-| Dashboard tab — summary cards + the pre-spec-17 combined content (§4) | Planned |
-| Harness tab: remove Pipeline stages, restyle Enabled jobs (§5) | Planned |
+| Portfolio/Findings open-count mismatch (§2) | Done — D-061 |
+| Tab restructure and renames (§3) | Done |
+| Dashboard tab — summary cards + the pre-spec-17 combined content (§4) | Done |
+| Harness tab: remove Pipeline stages, restyle Enabled jobs (§5) | Done |
 | Findings: `triage` filter | Planned |
 | Findings: `found_by` (capability) filter made clickable | Planned |
-| Threat Model tab: capability-level STRIDE inventory | Planned |
+| Threat Model tab: capability-level STRIDE inventory | Done |
 | Threat Model: CWE-tag-based refinement (SARIF `properties.tags`) | Not planned this pass — capability-level mapping ships first; noted as an explicit, honest gap, not silently approximated |
 | Threat Model: AI-generated narrative | Plumbing only, off by default — same treatment as reachability (spec 17 §5.3). No LLM client exists in this backend and this spec does not add one |
 | Remediation: per-finding fix preview (no PR) | Planned |

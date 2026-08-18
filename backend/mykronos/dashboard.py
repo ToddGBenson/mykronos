@@ -66,6 +66,39 @@ CORRELATION_CEILING = 5000
 #: (spec 10 §2.1).
 STALE_AFTER_DAYS = 7
 
+#: The Threat Model tab's whole vocabulary (spec 18 §6.2). Repudiation has no
+#: capability mapped to it deliberately — nothing this platform scans speaks
+#: to "can an action be denied after the fact," and a category with an
+#: invented capability behind it would be less honest than one that always
+#: renders empty and says why.
+STRIDE_CATEGORIES = (
+    "spoofing",
+    "tampering",
+    "repudiation",
+    "information_disclosure",
+    "denial_of_service",
+    "elevation_of_privilege",
+)
+
+#: Capability -> the STRIDE categories its findings can speak to (spec 18
+#: §6.2). Coarser than a CWE-level mapping would be, and said so in the
+#: response (`mapping_resolution`) rather than presented as more precise than
+#: the data supports — no `Finding` carries a structured CWE today. A
+#: capability maps to more than one category on purpose: a `sast` finding
+#: could be either a tampering issue or an information-disclosure one, and
+#: this data cannot tell which without per-rule taxonomy this platform does
+#: not have.
+STRIDE_BY_CAPABILITY: dict[str, tuple[str, ...]] = {
+    "dast": ("spoofing", "tampering"),
+    "network": ("spoofing", "denial_of_service"),
+    "cloud": ("elevation_of_privilege", "information_disclosure"),
+    "iac": ("elevation_of_privilege", "tampering"),
+    "secrets": ("information_disclosure",),
+    "sast": ("tampering", "information_disclosure"),
+    "containers": ("tampering", "elevation_of_privilege"),
+    "atlas": ("tampering", "information_disclosure"),
+}
+
 
 def _worse(candidate: str, current: str) -> bool:
     """Whether `candidate` is a more severe level than `current`."""
@@ -610,6 +643,84 @@ class DashboardQueries:
                 self._describe_combination(combo, by_id) for combo in combinations
             ],
             "truncated": truncated,
+        }
+
+    # -- threat model -----------------------------------------------------
+
+    def threat_model(self, repo_full_name: str) -> dict[str, Any]:
+        """A STRIDE-categorized attack-surface inventory (spec 18 §6).
+
+        Capability-level, not per-finding: no `Finding` carries a structured
+        CWE — `rule_id` is a free-form string the reporting tool chose, never
+        a taxonomy this platform controls — so `STRIDE_BY_CAPABILITY` maps
+        each finding's *capability* to the STRIDE categories it can speak to,
+        rather than pretending to place each finding in exactly one category
+        a CWE would support and this data does not. `mapping_resolution` says
+        so in the response itself, the same way Oracle's `inputs_snapshot`
+        names which inputs were actually available rather than leaving a
+        caller to assume every field means what a finer-grained one would.
+
+        Reuses `_finding_rows`/`_group_findings` rather than a second
+        grouping implementation — one rule firing on forty files is one
+        attack-surface item here for the identical reason it is one row on
+        the Findings tab.
+        """
+        columns = [
+            "finding_id",
+            "capability",
+            "rule_id",
+            "title",
+            "description",
+            "severity",
+            "cvss_score",
+            "file_path",
+            "line_start",
+            "package_name",
+            "package_version",
+            "status",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+        rows = self._finding_rows(
+            repo_full_name,
+            columns,
+            "open",
+            capabilities=frozenset(STRIDE_BY_CAPABILITY),
+            limit=CORRELATION_CEILING,
+        )
+        groups = self._group_findings(rows, repo_full_name, store=None, combination_of={})
+
+        by_category: dict[str, list[dict[str, Any]]] = {c: [] for c in STRIDE_CATEGORIES}
+        for group in groups:
+            categories: set[str] = set()
+            for capability in group["capabilities"]:
+                categories.update(STRIDE_BY_CAPABILITY.get(capability, ()))
+            for category in categories:
+                by_category[category].append(group)
+
+        evidence = self.sscs_evidence(repo_full_name, limit=1)
+        latest = evidence[0] if evidence else None
+
+        return {
+            "repo_full_name": repo_full_name,
+            "mapping_resolution": "capability",
+            "categories": [
+                {"stride": category, "findings": by_category[category]}
+                for category in STRIDE_CATEGORIES
+            ],
+            # Context for the Tampering/Information Disclosure categories'
+            # atlas-derived findings, not a finding itself — the dependency
+            # graph as a whole, distinct from the vulnerable slice of it the
+            # findings above already cover (spec 18 §8).
+            "supply_chain": (
+                {
+                    "trust_score": latest["trust_score"],
+                    "dependency_count": latest["dependency_count"],
+                    "vulnerable_dependency_count": latest["vulnerable_dependency_count"],
+                }
+                if latest is not None
+                else None
+            ),
         }
 
     def _status_clause(

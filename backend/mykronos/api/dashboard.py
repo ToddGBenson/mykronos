@@ -372,6 +372,34 @@ class SscsPage(BaseModel):
     )
 
 
+class ThreatModelSupplyChainOut(BaseModel):
+    """The dependency graph as a whole — context, not a finding (spec 18 §8)."""
+
+    trust_score: int | None = None
+    dependency_count: int = 0
+    vulnerable_dependency_count: int = 0
+
+
+class ThreatModelCategoryOut(BaseModel):
+    stride: str = Field(description="One of STRIDE_CATEGORIES (dashboard.py).")
+    findings: list[FindingGroupOut]
+
+
+class ThreatModelOut(BaseModel):
+    """A STRIDE-categorized attack-surface inventory (spec 18 §6)."""
+
+    repo_full_name: str
+    mapping_resolution: str = Field(
+        description="Always 'capability' today — no Finding carries a "
+        "structured CWE, so this is the finest resolution the data "
+        "honestly supports. A future CWE-aware pass would report 'cwe' "
+        "here instead, distinguishing the two rather than letting the "
+        "frontend assume one silently became the other."
+    )
+    categories: list[ThreatModelCategoryOut]
+    supply_chain: ThreatModelSupplyChainOut | None = None
+
+
 class StatusChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -909,6 +937,20 @@ async def repo_sscs(
         evidence=[SscsEvidenceOut(**row) for row in evidence],
         latest=SscsEvidenceOut(**evidence[0]) if evidence else None,
     )
+
+
+@router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)
+async def repo_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelOut:
+    """A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6).
+
+    Composed from `open_findings`' own building blocks — `_finding_rows` and
+    `_group_findings` — not a second grouping implementation reading the same
+    table differently.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return ThreatModelOut.model_validate(_queries(request).threat_model(repo_full_name))
 
 
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)

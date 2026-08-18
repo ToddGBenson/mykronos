@@ -13,12 +13,16 @@ import {
 import { RemediationTab } from "@/components/remediation";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { SscsTab } from "@/components/sscs";
+import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
   Crumb,
   ErrorPanel,
   Pill,
   Section,
+  StatTile,
+  Verdict,
+  ScoreMeter,
 } from "@/components/primitives";
 import type { CiPage, ScanHealth } from "@/lib/api";
 import {
@@ -31,33 +35,29 @@ import {
   getRepo,
   getScanHealth,
   getSscs,
+  getThreatModel,
 } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Harness and Findings, split back apart (spec 17 §2).
+ * Eight tabs, in this order (spec 18 §2).
  *
- * A prior version of this page folded findings, scan health, jobs and stages
- * into one "Dashboard" tab, on the reasoning that the four questions people
- * ask together — what is outstanding, is anything still scanning, is the
- * pipeline green, is every stage covered — couldn't be answered without
- * navigating. That reasoning was sound and the page it produced was still two
- * different jobs wearing one label: "is the harness healthy" and "what did it
- * find" are asked by different people, at different times, for different
- * reasons, and a single long scroll made neither quick to reach. **Harness**
- * is capability enable/disable plus scan health plus pipeline coverage — is
- * this running, and is it healthy. **Findings** is what it found. Risk
- * decisions, supply chain, insider risk and remediation stay behind their own
- * tabs, unchanged: each is a different subject with its own vocabulary, not
- * another view of the same findings.
+ * `Dashboard` duplicates content Harness and Findings already show, on
+ * purpose: asked directly whether the tab should be a new lightweight
+ * summary or the pre-spec-17 combined view, the answer was both. Harness and
+ * Findings stay the deeper, single-subject views spec 17 split them into;
+ * Dashboard is "what's the state of this repo, right now, without
+ * navigating" — the same question the original combined tab answered.
  */
 const TABS = [
-  { id: "harness", label: "Harness" },
+  { id: "dashboard", label: "Dashboard" },
   { id: "findings", label: "Findings" },
-  { id: "decisions", label: "Risk decisions" },
+  { id: "harness", label: "Harness" },
+  { id: "threat-model", label: "Threat Model" },
   { id: "sscs", label: "Supply chain" },
-  { id: "insider", label: "Insider risk" },
+  { id: "insider", label: "Insider Threat" },
+  { id: "decisions", label: "Risk Decision" },
   { id: "remediation", label: "Remediation" },
 ] as const;
 
@@ -70,7 +70,7 @@ export default async function RepoPage({
 }) {
   const { repoId } = await params;
   const query = await searchParams;
-  const tab = query.tab ?? "harness";
+  const tab = query.tab ?? "dashboard";
 
   const repo = await getRepo(repoId);
   if (!repo.ok) {
@@ -78,9 +78,10 @@ export default async function RepoPage({
   }
 
   // Fetched once per page load regardless of which tab is open: the
-  // Built/Scanned-by links (spec 17 §2.3) render at the top of every tab, and
-  // the Harness tab's capability buttons (spec 17 §2.2) need the same
-  // `CiPage` to colour themselves consistently with the panel below them.
+  // Built/Scanned-by links (spec 17 §2.3) render at the top of every tab, the
+  // Harness tab's capability buttons (spec 17 §2.2) need the same `CiPage` to
+  // colour themselves consistently with the panel below them, and Dashboard
+  // (spec 18 §3) reuses both rather than issuing its own copies.
   const [scanHealth, ci] = await Promise.all([getScanHealth(repoId), getCi(repoId)]);
   // What "enabled" means depends on who scans this repo: the installer's
   // ledger for Actions, the grants for everything else — same union the
@@ -134,7 +135,7 @@ export default async function RepoPage({
           <Link
             key={entry.id}
             href={
-              entry.id === "harness"
+              entry.id === "dashboard"
                 ? `/repos/${repoId}`
                 : `/repos/${repoId}?tab=${entry.id}`
             }
@@ -157,9 +158,11 @@ export default async function RepoPage({
         <AegisTab repoId={repoId} />
       ) : tab === "remediation" ? (
         <PatchworkTab repoId={repoId} />
+      ) : tab === "threat-model" ? (
+        <ThreatModelTabPanel repoId={repoId} />
       ) : tab === "findings" ? (
         <FindingsTab repoId={repoId} query={query} />
-      ) : (
+      ) : tab === "harness" ? (
         <HarnessTab
           repoId={repoId}
           enabled={[...enabledSet].sort()}
@@ -169,6 +172,115 @@ export default async function RepoPage({
           scanHealthError={scanHealth.ok ? null : scanHealth.error}
           ci={ci.ok ? ci.data : null}
         />
+      ) : (
+        <DashboardTab
+          repoId={repoId}
+          enabled={[...enabledSet].sort()}
+          pending={repo.data.pending_capabilities ?? []}
+          live={live}
+          scanHealth={scanHealth.ok ? scanHealth.data : null}
+          ci={ci.ok ? ci.data : null}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The landing tab (spec 18 §3): at-a-glance summary cards, then the
+ * capability manager, scan health, and open-findings list the pre-spec-17
+ * combined dashboard showed together — reusing the exact fetches Harness and
+ * Findings already issue rather than a second copy of either query.
+ */
+async function DashboardTab({
+  repoId,
+  enabled,
+  pending,
+  live,
+  scanHealth,
+  ci,
+}: {
+  repoId: string;
+  enabled: string[];
+  pending: string[];
+  live: string[];
+  scanHealth: ScanHealth | null;
+  ci: CiPage | null;
+}) {
+  const [findings, decisions] = await Promise.all([
+    getOpenFindings(repoId, {}),
+    getDecisions(repoId),
+  ]);
+
+  const latestDecision = decisions.ok
+    ? decisions.data.decisions.find((d) => d.decision_type === "portfolio")
+    : undefined;
+  const lastScanAt = scanHealth
+    ? scanHealth.capabilities
+        .map((c) => c.last_run_at)
+        .filter((v): v is string => Boolean(v))
+        .sort()
+        .at(-1)
+    : undefined;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <div className="flex flex-col gap-0.5 border border-rule bg-paper-2 p-2.5">
+          <span className="font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-ink-3">
+            Risk
+          </span>
+          {latestDecision ? (
+            <>
+              <Verdict
+                recommendation={latestDecision.recommendation}
+                score={latestDecision.overall_risk_score}
+              />
+              <ScoreMeter score={latestDecision.overall_risk_score} />
+            </>
+          ) : (
+            <Verdict recommendation={null} />
+          )}
+        </div>
+        <StatTile
+          label="Critical"
+          value={findings.ok ? (findings.data.by_severity.critical ?? 0) : "—"}
+          alert={findings.ok && (findings.data.by_severity.critical ?? 0) > 0}
+        />
+        <StatTile
+          label="High"
+          value={findings.ok ? (findings.data.by_severity.high ?? 0) : "—"}
+        />
+        <StatTile
+          label="Last scan"
+          value={lastScanAt ? new Date(lastScanAt).toLocaleDateString() : "never"}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <CapabilityManager repoId={repoId} enabled={enabled} pending={pending} live={live} ci={ci} />
+        <ScanNowButton repoId={repoId} />
+      </div>
+
+      <Section title="Scan health" detail="how many of each check's runs succeeded">
+        {scanHealth ? (
+          <ScanHealthBoxes
+            capabilities={ALL_CAPABILITIES.filter(
+              (c) =>
+                enabled.includes(c) ||
+                scanHealth.capabilities.some((row) => row.capability === c),
+            )}
+            health={scanHealth.capabilities}
+          />
+        ) : (
+          <p className="px-3 py-2 text-[11px] text-critical">Scan health unavailable.</p>
+        )}
+      </Section>
+
+      {findings.ok ? (
+        <OpenFindings repoId={repoId} page={findings.data} query={{}} />
+      ) : (
+        <ErrorPanel title="Findings unavailable" detail={findings.error} />
       )}
     </div>
   );
@@ -176,7 +288,7 @@ export default async function RepoPage({
 
 /**
  * Is the harness running, and is it healthy — enable/disable, scan health,
- * pipeline coverage. Not what it found; that's the Findings tab (spec 17 §2).
+ * enabled jobs. Not what it found; that's the Findings tab (spec 17 §2).
  */
 function HarnessTab({
   repoId,
@@ -242,7 +354,7 @@ function HarnessTab({
       ) : (
         // Said rather than dropped. A section that quietly disappears when
         // its fetch fails reads as a repository with no pipeline.
-        <Section title="Pipeline stages and jobs" detail="unavailable">
+        <Section title="Enabled jobs" detail="unavailable">
           <p className="px-3 py-2 text-[11px] text-critical">
             Pipeline state could not be read.
           </p>
@@ -345,6 +457,14 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
       latest={result.data.latest ?? null}
     />
   );
+}
+
+async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
+  const result = await getThreatModel(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Threat model unavailable" detail={result.error} />;
+  }
+  return <ThreatModelTab repoId={repoId} page={result.data} />;
 }
 
 async function AegisTab({ repoId }: { repoId: string }) {

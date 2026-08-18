@@ -17,8 +17,8 @@
  */
 
 import {
+  INDICATOR,
   IndicatorLegend,
-  IndicatorLight,
   Label,
   Pill,
   RelativeTime,
@@ -80,48 +80,6 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
 }
 
 /**
- * Every stage the platform covers, against what this repository has (PIP-6).
- *
- * `no_job` is the loudest state here because nothing else in the platform will
- * ever mention it: the repository believes it is covered and no job disagrees,
- * because no job exists.
- */
-export function StageLights({ stages }: { stages: CiStage[] }) {
-  if (stages.length === 0) {
-    return (
-      <p className="px-3 py-2 text-[11px] text-ink-3">
-        No stage coverage has been worked out for this repository yet.
-      </p>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2 px-3 py-2">
-      <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
-        {stages.map((stage) => (
-          <IndicatorLight
-            key={stage.stage}
-            tone={stageTone(stage)}
-            label={stage.stage}
-            state={stageState(stage)}
-            title={stage.problem ? `${stage.stage} — ${stage.problem}` : undefined}
-          />
-        ))}
-      </ul>
-      <IndicatorLegend
-        entries={[
-          { tone: "ok", meaning: "reporting, or event-driven and enabled" },
-          { tone: "bad", meaning: "enabled, no job or never reported" },
-          { tone: "warn", meaning: "enabled, gone quiet" },
-          { tone: "idle", meaning: "enabled, not run yet" },
-          { tone: "off", meaning: "not enabled" },
-        ]}
-      />
-    </div>
-  );
-}
-
-/**
  * Exported so anything else asking "is this capability healthy" — the
  * enable/disable buttons in `capability-manager.tsx` among them — reads the
  * same five colours off the same states, rather than a second copy of this
@@ -162,7 +120,11 @@ export function stageState(stage: CiStage): string {
   }
 }
 
-/** The jobs the pipeline actually runs, each linking to its own build. */
+/**
+ * The jobs the pipeline actually runs, as a tile grid (spec 18 §4) — the same
+ * card idiom `ScanHealthBoxes` uses, rather than the indicator-light list this
+ * replaces. Each tile links to its own build.
+ */
 export function JobLights({ ci }: { ci: CiPage }) {
   const jobs = ci.jobs ?? [];
 
@@ -176,33 +138,64 @@ export function JobLights({ ci }: { ci: CiPage }) {
   }
 
   return (
-    <div className="flex flex-col gap-2 px-3 py-2">
-      <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-2 gap-px bg-rule-soft sm:grid-cols-3 lg:grid-cols-5">
         {jobs.map((job) => (
-          <JobLight key={job.name} job={job} />
+          <JobTile key={job.name} job={job} />
         ))}
-      </ul>
-      <IndicatorLegend
-        entries={[
-          { tone: "ok", meaning: "last build succeeded" },
-          { tone: "bad", meaning: "failed or errored" },
-          { tone: "warn", meaning: "aborted" },
-          { tone: "idle", meaning: "never finished a build" },
-        ]}
-      />
+      </div>
+      <div className="px-3 pb-2">
+        <IndicatorLegend
+          entries={[
+            { tone: "ok", meaning: "last build succeeded" },
+            { tone: "bad", meaning: "failed or errored" },
+            { tone: "warn", meaning: "aborted" },
+            { tone: "idle", meaning: "never finished a build" },
+          ]}
+        />
+      </div>
     </div>
   );
 }
 
-function JobLight({ job }: { job: CiJob }) {
+function JobTile({ job }: { job: CiJob }) {
+  const tone = jobTone(job.status);
+  // "bg-pass border-pass" -> "border-pass": the tile's own left rule, same
+  // colour vocabulary IndicatorLight uses, in ScanHealthBoxes' card shape
+  // rather than its lamp-and-word one.
+  const border = INDICATOR[tone].lamp.split(" ")[1];
+
+  const body = (
+    <div className={`flex flex-col gap-1 border-l-2 bg-paper-2 p-2.5 ${border}`}>
+      <span className="font-mono text-[10px] text-ink-2">{job.name}</span>
+      <span
+        className={`font-mono text-xs font-bold uppercase tracking-[0.06em] ${INDICATOR[tone].word}`}
+      >
+        {job.status ?? "not run"}
+      </span>
+      <span className="font-mono text-[9px] leading-relaxed text-ink-3">
+        {job.build_name ? `#${job.build_name}` : "no build yet"}
+        {job.finished_at ? (
+          <>
+            {" "}
+            · <RelativeTime value={job.finished_at} />
+          </>
+        ) : null}
+      </span>
+    </div>
+  );
+
+  if (!job.build_url) return body;
   return (
-    <IndicatorLight
-      tone={jobTone(job.status)}
-      label={job.name}
-      state={`${job.status ?? "not run"}${job.build_name ? ` #${job.build_name}` : ""}`}
-      href={job.build_url ?? undefined}
+    <a
+      href={job.build_url}
+      target="_blank"
+      rel="noreferrer"
+      className="contents"
       title={job.finished_at ? `${job.name} — finished ${job.finished_at}` : undefined}
-    />
+    >
+      {body}
+    </a>
   );
 }
 
@@ -251,7 +244,11 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
 }
 
 /**
- * Stage coverage and job status, without the links row.
+ * Job status, without the links row and without the "Pipeline stages"
+ * section spec 18 §4 removes — the built/scanned-by links at the top of the
+ * page and this tile grid already say whether Concourse is green, and a
+ * second, differently-shaped view of the same fifteen checks added more to
+ * scan than it added to know.
  *
  * Split out so the Harness tab (spec 17 §2.2) can render this below a
  * `PipelineLinks` that's already rendered once, at the top of the repo page
@@ -260,15 +257,10 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
  */
 export function PipelineCoverage({ ci }: { ci: CiPage }) {
   return (
-    <>
-      <Section title="Pipeline stages" detail="coverage of the standard set of checks">
-        <StageLights stages={ci.stages ?? []} />
-        <ReportingGaps reporting={ci.reporting ?? []} />
-      </Section>
-      <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
-        <JobLights ci={ci} />
-      </Section>
-    </>
+    <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
+      <JobLights ci={ci} />
+      <ReportingGaps reporting={ci.reporting ?? []} />
+    </Section>
   );
 }
 
