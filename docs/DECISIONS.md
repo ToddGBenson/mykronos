@@ -2389,3 +2389,47 @@ refinement (spec 18 §6.3) and an actual LLM-backed narrative layer (§6.6) are
 both named, scoped, and left undone on purpose — the first needs adapters to
 carry a taxonomy field they do not have today, the second needs a deployment
 decision (a new dependency, a key, a cost) nobody has been asked to make yet.
+
+## D-063 — Dashboard *is* the Harness content; Harness becomes a real test tab
+
+**Status:** Decided and running
+**Spec:** [18](../specs/18-repo-page-rework-threat-model-and-remediation.md)
+**Trigger:** Direct correction after D-061/D-062 shipped
+
+D-061's "both" answer — Dashboard carries the old combined view *and* new
+summary cards, duplicating Harness and Findings on purpose — was reversed on
+sight of the result. The corrected shape: Dashboard *is* what D-061 called
+Harness (capability manager, scan health, enabled jobs), promoted to the
+default tab rather than duplicated into a second one; it carries no findings.
+Harness stops being a second view of the same thing and becomes what its name
+already implied and nothing had built yet: a tab that runs tests.
+
+**"Run tests" surfaced a real gap, not just a missing button.** `unit`,
+`functional`, and `qa` (D-046 — pass/fail `ScanRun`s, never `Finding`s) were
+never in `DISPATCHABLE_CAPABILITIES`, so `scan_now` never had a path for
+them. Adding them exposed that the gap is deeper on the GitHub Actions side:
+no workflow template exists for any of the three
+(`workflow-templates/manifest.json`), and an Actions-scanned repo's install
+PR is generated *from* the templates of the capabilities being enabled — so
+the capabilities endpoint itself refuses to enable `unit`/`functional`/`qa`
+there with a 422, before dispatch is ever reached. On-demand test running
+therefore works today for Concourse-scanned repositories only, through the
+same `_JOBS_BY_CAPABILITY` mapping (`ci.py`'s `CAPABILITY_BY_JOB`, reversed)
+every other on-demand dispatch already resolves through — reused, not
+rebuilt. This is said plainly on the tab rather than left to look broken for
+an Actions-scanned repo.
+
+**`ScanNowButton` gained an optional `capabilities` scope rather than a
+second button component.** The Test Harness tab's "run tests" needed to
+dispatch unit/functional/qa only, not bundle in a security scan — one prop,
+reused by both call sites, rather than a parallel dispatch button that could
+drift from the one Dashboard already uses.
+
+**What's still open.** Building an actual GitHub Actions workflow template
+for unit/functional/qa was explicitly not attempted here — D-046's own
+reasoning ("a repository's test runner is decided by its language and its
+own conventions") is exactly why no single generic template could serve
+every repo honestly; a real answer needs either a per-language template set
+or a convention this platform does not yet have. Concourse-scanned repos are
+a complete, working answer today; Actions-scanned repos are not, and the tab
+says so rather than pretending otherwise.

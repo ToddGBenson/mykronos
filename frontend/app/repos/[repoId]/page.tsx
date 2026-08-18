@@ -20,9 +20,6 @@ import {
   ErrorPanel,
   Pill,
   Section,
-  StatTile,
-  Verdict,
-  ScoreMeter,
 } from "@/components/primitives";
 import type { CiPage, ScanHealth } from "@/lib/api";
 import {
@@ -43,12 +40,11 @@ export const dynamic = "force-dynamic";
 /**
  * Eight tabs, in this order (spec 18 §2).
  *
- * `Dashboard` duplicates content Harness and Findings already show, on
- * purpose: asked directly whether the tab should be a new lightweight
- * summary or the pre-spec-17 combined view, the answer was both. Harness and
- * Findings stay the deeper, single-subject views spec 17 split them into;
- * Dashboard is "what's the state of this repo, right now, without
- * navigating" — the same question the original combined tab answered.
+ * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
+ * scan health, enabled jobs — promoted to the default landing tab rather than
+ * duplicated into a second one. It carries no findings; that is what the
+ * Findings tab is for. `Harness` is now specifically a test-running tab
+ * (`TestHarnessTab`) — unit/functional/QA execution, not general scan health.
  */
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
@@ -163,7 +159,9 @@ export default async function RepoPage({
       ) : tab === "findings" ? (
         <FindingsTab repoId={repoId} query={query} />
       ) : tab === "harness" ? (
-        <HarnessTab
+        <TestHarnessTab repoId={repoId} enabled={[...enabledSet].sort()} />
+      ) : (
+        <DashboardTab
           repoId={repoId}
           enabled={[...enabledSet].sort()}
           pending={repo.data.pending_capabilities ?? []}
@@ -172,125 +170,21 @@ export default async function RepoPage({
           scanHealthError={scanHealth.ok ? null : scanHealth.error}
           ci={ci.ok ? ci.data : null}
         />
-      ) : (
-        <DashboardTab
-          repoId={repoId}
-          enabled={[...enabledSet].sort()}
-          pending={repo.data.pending_capabilities ?? []}
-          live={live}
-          scanHealth={scanHealth.ok ? scanHealth.data : null}
-          ci={ci.ok ? ci.data : null}
-        />
       )}
     </div>
   );
 }
 
 /**
- * The landing tab (spec 18 §3): at-a-glance summary cards, then the
- * capability manager, scan health, and open-findings list the pre-spec-17
- * combined dashboard showed together — reusing the exact fetches Harness and
- * Findings already issue rather than a second copy of either query.
+ * The landing tab: is the harness running, and is it healthy —
+ * enable/disable, scan health, enabled jobs. On correction: this was
+ * originally split into "Harness" (this content) and a separately-composed
+ * "Dashboard" that duplicated it plus a findings list. Dashboard *is* this
+ * content now, not a second view of it — and carries no findings of its own;
+ * that is the Findings tab's subject, not this one's. "Harness" is freed up
+ * for actually running tests (`TestHarnessTab`, below).
  */
-async function DashboardTab({
-  repoId,
-  enabled,
-  pending,
-  live,
-  scanHealth,
-  ci,
-}: {
-  repoId: string;
-  enabled: string[];
-  pending: string[];
-  live: string[];
-  scanHealth: ScanHealth | null;
-  ci: CiPage | null;
-}) {
-  const [findings, decisions] = await Promise.all([
-    getOpenFindings(repoId, {}),
-    getDecisions(repoId),
-  ]);
-
-  const latestDecision = decisions.ok
-    ? decisions.data.decisions.find((d) => d.decision_type === "portfolio")
-    : undefined;
-  const lastScanAt = scanHealth
-    ? scanHealth.capabilities
-        .map((c) => c.last_run_at)
-        .filter((v): v is string => Boolean(v))
-        .sort()
-        .at(-1)
-    : undefined;
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <div className="flex flex-col gap-0.5 border border-rule bg-paper-2 p-2.5">
-          <span className="font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-ink-3">
-            Risk
-          </span>
-          {latestDecision ? (
-            <>
-              <Verdict
-                recommendation={latestDecision.recommendation}
-                score={latestDecision.overall_risk_score}
-              />
-              <ScoreMeter score={latestDecision.overall_risk_score} />
-            </>
-          ) : (
-            <Verdict recommendation={null} />
-          )}
-        </div>
-        <StatTile
-          label="Critical"
-          value={findings.ok ? (findings.data.by_severity.critical ?? 0) : "—"}
-          alert={findings.ok && (findings.data.by_severity.critical ?? 0) > 0}
-        />
-        <StatTile
-          label="High"
-          value={findings.ok ? (findings.data.by_severity.high ?? 0) : "—"}
-        />
-        <StatTile
-          label="Last scan"
-          value={lastScanAt ? new Date(lastScanAt).toLocaleDateString() : "never"}
-        />
-      </div>
-
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <CapabilityManager repoId={repoId} enabled={enabled} pending={pending} live={live} ci={ci} />
-        <ScanNowButton repoId={repoId} />
-      </div>
-
-      <Section title="Scan health" detail="how many of each check's runs succeeded">
-        {scanHealth ? (
-          <ScanHealthBoxes
-            capabilities={ALL_CAPABILITIES.filter(
-              (c) =>
-                enabled.includes(c) ||
-                scanHealth.capabilities.some((row) => row.capability === c),
-            )}
-            health={scanHealth.capabilities}
-          />
-        ) : (
-          <p className="px-3 py-2 text-[11px] text-critical">Scan health unavailable.</p>
-        )}
-      </Section>
-
-      {findings.ok ? (
-        <OpenFindings repoId={repoId} page={findings.data} query={{}} />
-      ) : (
-        <ErrorPanel title="Findings unavailable" detail={findings.error} />
-      )}
-    </div>
-  );
-}
-
-/**
- * Is the harness running, and is it healthy — enable/disable, scan health,
- * enabled jobs. Not what it found; that's the Findings tab (spec 17 §2).
- */
-function HarnessTab({
+function DashboardTab({
   repoId,
   enabled,
   pending,
@@ -360,6 +254,72 @@ function HarnessTab({
           </p>
         </Section>
       )}
+    </div>
+  );
+}
+
+/** Unit, functional, and QA-doc pass/fail lanes — a `ScanRun`, not a
+ *  `Finding` (D-046): these produce a status and a count, never a security
+ *  finding, so a failing test never enters Oracle's risk score. Reachable
+ *  on-demand today for Concourse-scanned repos only — no GitHub Actions
+ *  workflow template exists yet for any of the three, so an Actions-scanned
+ *  repo cannot even enable them (`api/repos.py`'s `DISPATCHABLE_CAPABILITIES`
+ *  comment has the full story). Said here rather than left to look broken. */
+const TEST_CAPABILITIES = ["unit", "functional", "qa"] as const;
+
+async function TestHarnessTab({
+  repoId,
+  enabled,
+}: {
+  repoId: string;
+  enabled: string[];
+}) {
+  const scanHealth = await getScanHealth(repoId);
+  const reported = scanHealth.ok
+    ? scanHealth.data.capabilities.map((c) => c.capability)
+    : [];
+  const boxes = TEST_CAPABILITIES.filter(
+    (capability) => enabled.includes(capability) || reported.includes(capability),
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+        <strong className="text-ink">Pass/fail, not findings.</strong> Unit,
+        functional, and QA-doc checks record a run and a count, never a
+        security finding — a failing test cannot lower this repository&rsquo;s
+        risk score by being suppressed the way a finding can. &ldquo;Run
+        tests&rdquo; reaches Concourse-scanned repositories today; no GitHub
+        Actions workflow template exists yet for these three lanes, so an
+        Actions-scanned repository cannot enable them here at all.
+      </p>
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <span className="font-mono text-[10px] text-ink-3">
+          {boxes.length === 0
+            ? "None of unit, functional, or qa is enabled for this repository — enable one on the Dashboard tab."
+            : `Enabled: ${boxes.join(", ")}`}
+        </span>
+        <ScanNowButton
+          repoId={repoId}
+          capabilities={[...TEST_CAPABILITIES]}
+          label="run tests"
+        />
+      </div>
+
+      <Section title="Test health" detail="pass/fail, most recent run">
+        {scanHealth.ok ? (
+          boxes.length > 0 ? (
+            <ScanHealthBoxes capabilities={boxes} health={scanHealth.data.capabilities} />
+          ) : (
+            <p className="px-3 py-3 text-[11px] text-ink-3">
+              Nothing to show until unit, functional, or qa is enabled.
+            </p>
+          )
+        ) : (
+          <p className="px-3 py-2 text-[11px] text-critical">{scanHealth.error}</p>
+        )}
+      </Section>
     </div>
   );
 }

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,8 +50,24 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 #: ones with a workflow template (spec 04) or a Concourse job, as opposed to
 #: `aegis`/`oracle`/`patchwork`, which are event-driven (`ci.py`
 #: NON_SCANNING) and have nothing for a dispatch to trigger.
+#:
+#: `unit`/`functional`/`qa` (spec 18, Test Harness tab) dispatch through the
+#: exact same two paths as everything else here, and need no special case in
+#: either — but only one of them is reachable today. No workflow template
+#: exists for them (`workflow-templates/manifest.json` has none), and an
+#: Actions-scanned repo's install PR is generated *from* the templates of the
+#: capabilities being enabled — so the capabilities endpoint itself refuses
+#: to enable `unit`/`functional`/`qa` there with a 422, before `scan_now` is
+#: ever reached; the `TemplateError` handling below exists for every other
+#: template-less capability and simply never fires for these three via an
+#: Actions repo's normal path. A Concourse-scanned repo's attempt resolves
+#: through `_JOBS_BY_CAPABILITY`, which already maps the
+#: `unit`/`qa`/`qa-spec-links`/`functional` job names `ci.py`'s
+#: `CAPABILITY_BY_JOB` names for stage-coverage cross-checking — the same
+#: mapping, reused rather than a second one built for this — which is why
+#: on-demand test dispatch works only for Concourse-scanned repos today.
 DISPATCHABLE_CAPABILITIES = frozenset(
-    {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas"}
+    {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )
 
 #: The reverse of `ci.py`'s `CAPABILITY_BY_JOB` — which Concourse job
@@ -505,9 +521,23 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
 
 
 @router.post("/{repo_id}/scan", response_model=ScanResult)
-async def scan_now(request: Request, repo_id: str, actor: AdminDep) -> ScanResult:
-    """Dispatch every enabled scanning capability now (spec 17 §2.5), rather
-    than waiting for its next scheduled or push-triggered run.
+async def scan_now(
+    request: Request,
+    repo_id: str,
+    actor: AdminDep,
+    capabilities: Annotated[
+        list[str] | None,
+        Query(
+            description="Scope the dispatch to these capabilities only "
+            "(repeat the param). Omitted — the default — dispatches every "
+            "enabled scanning capability, as before; the Test Harness tab "
+            "passes unit/functional/qa specifically so its 'run tests' "
+            "button does not also kick off a security scan."
+        ),
+    ] = None,
+) -> ScanResult:
+    """Dispatch enabled scanning capabilities now (spec 17 §2.5), rather
+    than waiting for the next scheduled or push-triggered run.
 
     Dispatch mechanism follows `scanned_by`, same as everywhere else it
     matters (spec 15 §4a's coverage cross-check, this row's own read path):
@@ -538,14 +568,17 @@ async def scan_now(request: Request, repo_id: str, actor: AdminDep) -> ScanResul
                     )
                 ).scalars()
             }
-        scanning = sorted(enabled & DISPATCHABLE_CAPABILITIES)
+        dispatchable = DISPATCHABLE_CAPABILITIES
+        if capabilities is not None:
+            dispatchable = DISPATCHABLE_CAPABILITIES & set(capabilities)
+        scanning = sorted(enabled & dispatchable)
         # `enabled_capabilities` and `pending_capabilities` are disjoint by
         # construction — a capability is one or the other, never both — so
         # this can never overlap `scanning`. It answers a different, more
         # useful question when `scanning` turns out empty: "nothing to
         # dispatch" and "nothing to dispatch *yet*, an install PR is still
         # open" are different facts, and only one of them is worth a 409.
-        pending = sorted((set(row.pending_capabilities or [])) & DISPATCHABLE_CAPABILITIES)
+        pending = sorted((set(row.pending_capabilities or [])) & dispatchable)
 
         repo_full_name = row.github_repo_full_name
         scanned_by = row.scanned_by

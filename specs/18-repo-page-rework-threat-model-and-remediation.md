@@ -22,20 +22,21 @@ This spec covers, precisely:
 
 1. A real data bug: the portfolio's per-repo "open findings" count disagrees with the count the
    repo's own Findings tab shows (§2).
-2. A repo page with eight tabs instead of six, in a specific order, three of them renamed, one of
-   them new (§3, §4).
-3. The Harness tab loses its "Pipeline stages" section and restyles "Enabled jobs" to match the
-   dashboard-card idiom used everywhere else on this page (§5).
-4. Findings gains two filters: triage classification (already computed, not yet filterable) and
-   found-by capability (already displayed, not yet clickable) (§6).
-5. A new Threat Model tab: a STRIDE-categorized attack-surface inventory derived from data already
-   in the lake — not a diagram tool, not an LLM narrative (§7).
-6. Remediation stops being read-only: a finding can be previewed for an auto-generated fix and, on
-   request, have Patchwork actually open the draft pull request (§8).
-7. Supply chain gains an actual SBOM download, and the SBOM lifecycle gets written down as a defined
-   process rather than left implicit across three specs (§9).
-8. The triage process (spec 17 §5) gets a short consolidating pass — no new classification logic,
-   just closing the gap between what it already decides and what a person can see and filter on (§10).
+2. A repo page with eight tabs instead of six, in a specific order, three of them renamed, two of
+   them new. Dashboard *is* the old Harness content (capability manager, scan health, enabled jobs)
+   promoted to the default tab, carrying no findings — not a second view of anything Harness or
+   Findings already shows (§3). Harness becomes an actual test harness: `unit`/`functional`/`qa`
+   health and an on-demand, scoped "run tests" dispatch (§4).
+3. Findings gains two filters: triage classification (already computed, not yet filterable) and
+   found-by capability (already displayed, not yet clickable) (§5).
+4. A new Threat Model tab: a STRIDE-categorized attack-surface inventory derived from data already
+   in the lake — not a diagram tool, not an LLM narrative (§6).
+5. Remediation stops being read-only: a finding can be previewed for an auto-generated fix and, on
+   request, have Patchwork actually open the draft pull request (§7).
+6. Supply chain gains an actual SBOM download, and the SBOM lifecycle gets written down as a defined
+   process rather than left implicit across three specs (§8).
+7. The triage process (spec 17 §5) gets a short consolidating pass — no new classification logic,
+   just closing the gap between what it already decides and what a person can see and filter on (§9).
 
 ## 0a. Implementation status (as of this spec's first commit)
 
@@ -43,8 +44,9 @@ This spec covers, precisely:
 |---|---|
 | Portfolio/Findings open-count mismatch (§2) | Done — D-061 |
 | Tab restructure and renames (§3) | Done |
-| Dashboard tab — summary cards + the pre-spec-17 combined content (§4) | Done |
-| Harness tab: remove Pipeline stages, restyle Enabled jobs (§5) | Done |
+| Dashboard tab — enable/disable, scan health, enabled jobs; no findings (§3) | Done — corrected, D-063: shipped once with summary cards + a findings list, reversed on sight |
+| Harness tab restyle: remove Pipeline stages, tile-grid Enabled jobs (§3.1) | Done |
+| Harness tab — real test harness: `unit`/`functional`/`qa` health + scoped "run tests" (§4) | Done — Concourse-scanned repos only; no GitHub Actions workflow template exists for these lanes, named as a real gap, not attempted this pass |
 | Findings: `triage` filter | Done |
 | Findings: `found_by` (capability) filter made clickable | Done |
 | Threat Model tab: capability-level STRIDE inventory | Done |
@@ -97,65 +99,91 @@ Eight tabs, in this order, replacing the current six:
 
 | id | Label | Backing today | Change |
 |---|---|---|---|
-| `dashboard` | Dashboard | — (new) | New: §4 |
-| `findings` | Findings | `OpenFindings` | Filters added, §6 |
-| `harness` | Harness | `HarnessTab` | Restyled, §5 |
-| `threat-model` | Threat Model | — (new) | New: §7 |
-| `sscs` | Supply chain | `SscsTab` | SBOM download added, §9 |
+| `dashboard` | Dashboard | — (new) | New: §3 |
+| `findings` | Findings | `OpenFindings` | Filters added, §5 |
+| `harness` | Harness | — (new) | New: §4 |
+| `threat-model` | Threat Model | — (new) | New: §6 |
+| `sscs` | Supply chain | `SscsTab` | SBOM download added, §8 |
 | `insider` | Insider Threat | `InsiderRiskTab` | Renamed only (was "Insider risk") |
 | `decisions` | Risk Decision | `DecisionsTab` | Renamed only (was "Risk decisions") |
-| `remediation` | Remediation | `RemediationTab` | Gains action buttons, §8 |
+| `remediation` | Remediation | `RemediationTab` | Gains action buttons, §7 |
 
-`Dashboard` becomes the default tab (`?tab=` omitted), matching how `harness` is the default today —
-the landing view changes, not the mechanism.
+`Dashboard` becomes the default tab (`?tab=` omitted), matching how `harness` was the default before
+this spec — the landing view changes, not the mechanism.
 
-### 2.2 Why Dashboard duplicates content on purpose
+### 2.2 Dashboard is the old Harness content, not a second view of it (D-063)
 
-Asked directly: should the new Dashboard tab be a lightweight new summary, or the old pre-spec-17
-combined view (capability toggles + findings list together) brought back? The answer was **both** —
-Dashboard carries the old combined content *and* new at-a-glance summary cards, even though Harness
-and Findings already show most of that content on their own tabs. This is a deliberate acceptance of
-duplication, not an oversight: Dashboard is for "what's the state of this repo, right now, without
-navigating," the same question spec 17 §0's original combined tab answered, while Harness and
-Findings remain the deeper, single-subject views for someone who came specifically to toggle a
-capability or triage a finding. Two tabs answering related questions at different depths is a known,
-accepted shape elsewhere on this page already — Risk Decision's per-decision cards and the portfolio
-verdict pill both summarize the same Oracle score at different resolutions.
+This spec's first pass gave Dashboard new summary cards *and* the pre-spec-17 combined content
+(capability toggles + a findings list), deliberately duplicating what Harness and Findings already
+showed. That shipped, and was corrected on sight of the result: a Dashboard that shows the same
+findings Findings shows is a second version of that tab to keep in step, not a distinct one, and
+"Harness" sitting next to "Dashboard" while showing the same capability manager and scan health twice
+serves nobody.
+
+The corrected shape: **Dashboard is what Harness used to be** — capability manager, scan health,
+enabled jobs — promoted to the default tab rather than duplicated into a second one (§3). It carries
+no findings; that is the Findings tab's subject, not this one's. **Harness is freed up** for what its
+name already implied and nothing had built: a tab that actually runs tests (§4).
 
 ## 3. Dashboard tab
 
-Composed of, top to bottom:
+Enable/disable, scan health, enabled jobs — is the harness running, and is it healthy. Exactly the
+content the original spec 17 split called "Harness" (`HarnessTab`), renamed and promoted to the
+default tab, not duplicated:
 
-1. **Summary cards** (new): risk score and recommendation (reusing `Verdict`/`ScoreMeter` from
-   `decisions.tsx`), severity counts (reusing `StatTile` from the triage queue page), last-scan
-   recency, and a stale-scan warning — the same fields `PortfolioRow` already carries for this repo,
-   fetched once rather than recomputed.
-2. **Capability manager** (existing `CapabilityManager`, unchanged) — enable/disable, same
-   `IndicatorTone` coloring as Harness.
-3. **Scan health boxes** (existing `ScanHealthBoxes`, unchanged).
-4. **Open findings** (existing `OpenFindings` grouped view, unchanged component, same data as the
-   Findings tab) — the combined-tab content spec 17 §0 described, restored here specifically.
+1. **Capability manager** (`CapabilityManager`, unchanged) — enable/disable, `IndicatorTone` coloring.
+2. **Scan health boxes** (`ScanHealthBoxes`, unchanged) — one box per enabled capability, plus
+   anything that has reported without being enabled.
+3. **Enabled jobs** (`PipelineCoverage`, restyled per §"Harness tab restyle" below).
 
-No new backend endpoint: item 1 is assembled from `getRepo` (already fetched for the page shell) plus
-one `getDecisions` call for the latest decision; items 2-4 reuse the exact queries Harness and
-Findings already issue. The Dashboard tab's added cost is one extra Oracle-decisions fetch per page
-load, not new query logic.
+No findings, no summary cards, no second copy of anything Findings or Risk Decision already show.
 
-## 4. Harness tab
+### 3.1 Harness tab restyle
 
 - **Removed**: the "Pipeline stages" section (`StageLights`, `pipelines.tsx:89-122`) and its
   surrounding `Section`. `PipelineLinks` (the Built-by/Scanned-by links at the top of the page,
-  spec 17 §2.3) is unaffected — it is a separate component, already outside `HarnessTab`.
+  spec 17 §2.3) is unaffected — it is a separate component, already outside this content.
 - **Restyled**: "Enabled jobs" (`JobLights`, `pipelines.tsx:166-195`) moves from a list of rows to a
   grid of cards matching `ScanHealthBoxes`' tile idiom — one card per job, `IndicatorTone`-colored
   the same way capability buttons already are, with the job name, last-run status, and a relative
   timestamp. `stageTone`/`stageState` (already exported from `pipelines.tsx`, reused by
   `capability-manager.tsx`) drive the coloring; no new tone vocabulary.
 - `PipelineCoverage`'s export shrinks to just this restyled jobs grid; `StageLights` and its
-  `Section` wrapper are deleted from `pipelines.tsx`, not merely unmounted — spec 17 §2.1's original
-  reasoning for showing pipeline stages (this component is what "Harness" already imports) still
-  applies to jobs, not to stages, once the pipeline links at the top of the page already say whether
-  Concourse is green.
+  `Section` wrapper are deleted from `pipelines.tsx`, not merely unmounted.
+
+## 4. Harness tab — a real test harness
+
+"Harness" now means what the word implies: a tab to run tests, not a second view of scan health.
+
+**Unit, functional, and QA-doc checks are `ScanRun`s, not `Finding`s (D-046)** — they record a
+pass/fail status and a count, never a security finding, so a failing test cannot suppress its way
+into lowering Oracle's risk score. `ScanHealthBoxes` already reports their pass/fail rate generically
+(no capability filter); this tab is that same component, scoped to `unit`/`functional`/`qa`, plus an
+on-demand "run tests" dispatch.
+
+**Dispatch reuses `scan_now`, scoped.** `POST /api/repos/{repo_id}/scan` gains an optional
+`capabilities` query param (repeatable) that narrows `scanning`/`pending` to the intersection with the
+requested set; omitted, it dispatches everything enabled, unchanged. `ScanNowButton` gains the same
+optional `capabilities`/`label` props, so the Test Harness tab's "run tests" reuses the one component
+rather than a second copy of it, and clicking it there dispatches unit/functional/qa only — not a
+security scan alongside them.
+
+**`unit`/`functional`/`qa` join `DISPATCHABLE_CAPABILITIES`** (`api/repos.py`) — and this is where a
+real gap surfaced, not just a missing button. No GitHub Actions workflow template exists for any of
+the three (`workflow-templates/manifest.json` has none), and an Actions-scanned repo's install PR is
+generated *from* the templates of the capabilities being enabled — so the capabilities endpoint
+itself refuses to enable `unit`/`functional`/`qa` there with a 422, before dispatch is ever reached.
+**On-demand test running therefore works today for Concourse-scanned repositories only**, resolving
+through `_JOBS_BY_CAPABILITY` — the reverse of `ci.py`'s `CAPABILITY_BY_JOB`, already built for
+stage-coverage cross-checking and reused here rather than duplicated. The tab states this limitation
+plainly rather than presenting a "run tests" button that silently does nothing for an Actions-scanned
+repo.
+
+**Not attempted: a GitHub Actions workflow template for these lanes.** D-046's own reasoning — "a
+repository's test runner is decided by its language and its own conventions" — is exactly why no
+single generic template could serve every repository honestly. A real answer needs either a
+per-language template set or a convention this platform does not yet have; that is separate, larger
+work, named here and left undone on purpose rather than half-built.
 
 ## 5. Findings: two new filters
 
@@ -357,9 +385,12 @@ same gap §7 closes for remediation and §8 closes for the SBOM artifact itself.
   portfolio and on that repo's Findings tab (both reduced by the same amount, not disagreeing) after
   `migrate_assets.py` runs; before the migration, both undercount consistently rather than
   disagreeing.
-- The repo page renders exactly the eight tabs in §2.1's order and labels; `Dashboard` is the default.
-- Harness renders no "Pipeline stages" section; "Enabled jobs" renders as a tile grid using
+- The repo page renders exactly the eight tabs in §2.1's order and labels; `Dashboard` is the default,
+  carries no findings, and renders no "Pipeline stages" section — "Enabled jobs" is a tile grid using
   `IndicatorTone` coloring, not a list.
+- The Harness tab renders `unit`/`functional`/`qa` scan health only (no other capability's boxes), and
+  its "run tests" button dispatches only those three — verified by a Concourse-scanned repo with both
+  `sast` and `unit` enabled: dispatching from Harness triggers `unit`'s Concourse job and not `sast`'s.
 - Findings can be filtered by `triage` (all four values) and by clicking a capability icon in the
   Found By column; both are reflected in the URL query string, matching every other filter on the
   page.
