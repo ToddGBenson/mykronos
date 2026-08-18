@@ -17,7 +17,19 @@ import type { paths } from "@/lib/api-types";
 type ScanResult =
   paths["/api/repos/{repo_id}/scan"]["post"]["responses"]["200"]["content"]["application/json"];
 
-export function ScanNowButton({ repoId }: { repoId: string }) {
+export function ScanNowButton({
+  repoId,
+  capabilities,
+  label = "scan now",
+}: {
+  repoId: string;
+  /** Scope the dispatch to these capabilities only — the Test Harness tab's
+   *  "run tests" reuses this component rather than a second copy of it, so
+   *  clicking it there does not also kick off a security scan. Omitted (the
+   *  default) dispatches every enabled scanning capability, unchanged. */
+  capabilities?: string[];
+  label?: string;
+}) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +39,13 @@ export function ScanNowButton({ repoId }: { repoId: string }) {
     setError(null);
     setResult(null);
     try {
-      const response = await fetch(`/api/repos/${repoId}/scan`, { method: "POST" });
+      const query = (capabilities ?? [])
+        .map((c) => `capabilities=${encodeURIComponent(c)}`)
+        .join("&");
+      const response = await fetch(
+        `/api/repos/${repoId}/scan${query ? `?${query}` : ""}`,
+        { method: "POST" },
+      );
       const body = await response.json().catch(() => null);
       if (!response.ok) {
         setError(
@@ -55,7 +73,7 @@ export function ScanNowButton({ repoId }: { repoId: string }) {
           busy ? "opacity-40" : ""
         }`}
       >
-        {busy ? "dispatching…" : "scan now"}
+        {busy ? "dispatching…" : label}
       </button>
 
       {error ? <p className="font-mono text-[10px] text-critical">{error}</p> : null}

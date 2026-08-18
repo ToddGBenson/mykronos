@@ -93,6 +93,28 @@ class TestGitHubActionsDispatch:
         repo_id = onboard(client, admin_auth).json()["id"]
         assert client.post(f"/api/repos/{repo_id}/scan", headers=viewer_auth).status_code == 403
 
+    def test_enabling_a_test_capability_is_refused_with_no_workflow_template(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """No unit.yml.j2 exists (spec 18, Test Harness tab), and an
+        Actions-scanned repo's install PR is generated from one — so `unit`
+        cannot even be *enabled* here today, refused at the same 422 any
+        other template-less capability already gets. Dispatch (scan_now)
+        never sees this repo's `unit`, because it can never reach
+        `enabled_capabilities` in the first place; the Concourse-side
+        `test_a_test_capability_dispatches_via_the_job_name_mapping` below is
+        the reachable path for these three capabilities today."""
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["unit"]},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 422
+        assert "unit" in response.json()["detail"]
+
 
 class TestConcourseDispatch:
     def test_no_token_configured_is_503(
@@ -164,3 +186,70 @@ class TestConcourseDispatch:
         body = client.post(f"/api/repos/{repo_id}/scan", headers=admin_auth).json()
         assert body["dispatched"] == []
         assert body["failed"] == ["sast"]
+
+    def test_a_test_capability_dispatches_via_the_job_name_mapping(
+        self, client: TestClient, admin_auth: dict[str, str], monkeypatch
+    ) -> None:
+        """`unit` resolves through `_JOBS_BY_CAPABILITY` — the reverse of
+        `ci.py`'s `CAPABILITY_BY_JOB`, reused rather than a second mapping
+        built just for the Test Harness tab."""
+        posted: list[str] = []
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+        def fake_post(url: str, headers=None, timeout: float = 0):
+            posted.append(url)
+            return FakeResponse()
+
+        monkeypatch.setattr("mykronos.ci.httpx2.post", fake_post)
+        client.app.state.settings.concourse_url = "http://concourse:8080"
+        client.app.state.settings.concourse_api_token = "test-token"
+
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["unit"], "install_workflows": False},
+            headers=admin_auth,
+        )
+
+        response = client.post(f"/api/repos/{repo_id}/scan", headers=admin_auth)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["dispatched"] == ["unit"]
+        assert any(u.endswith("/jobs/unit/builds") for u in posted)
+
+    def test_capabilities_param_scopes_the_dispatch(
+        self, client: TestClient, admin_auth: dict[str, str], monkeypatch
+    ) -> None:
+        """The Test Harness tab's 'run tests' button dispatches unit only,
+        not sast alongside it, even though both are enabled."""
+        posted: list[str] = []
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            "mykronos.ci.httpx2.post",
+            lambda url, headers=None, timeout=0: (posted.append(url), FakeResponse())[1],
+        )
+        client.app.state.settings.concourse_url = "http://concourse:8080"
+        client.app.state.settings.concourse_api_token = "test-token"
+
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast", "unit"], "install_workflows": False},
+            headers=admin_auth,
+        )
+
+        response = client.post(
+            f"/api/repos/{repo_id}/scan", params={"capabilities": "unit"}, headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        assert response.json()["dispatched"] == ["unit"]
+        assert not any("sast" in u for u in posted)

@@ -1043,8 +1043,8 @@ export interface paths {
         put?: never;
         /**
          * Scan Now
-         * @description Dispatch every enabled scanning capability now (spec 17 §2.5), rather
-         *     than waiting for its next scheduled or push-triggered run.
+         * @description Dispatch enabled scanning capabilities now (spec 17 §2.5), rather
+         *     than waiting for the next scheduled or push-triggered run.
          *
          *     Dispatch mechanism follows `scanned_by`, same as everywhere else it
          *     matters (spec 15 §4a's coverage cross-check, this row's own read path):
@@ -4145,7 +4145,10 @@ export interface operations {
     };
     scan_now_api_repos__repo_id__scan_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Scope the dispatch to these capabilities only (repeat the param). Omitted — the default — dispatches every enabled scanning capability, as before; the Test Harness tab passes unit/functional/qa specifically so its 'run tests' button does not also kick off a security scan. */
+                capabilities?: string[] | null;
+            };
             header?: never;
             path: {
                 repo_id: string;
