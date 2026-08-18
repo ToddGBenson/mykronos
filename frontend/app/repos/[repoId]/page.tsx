@@ -266,6 +266,8 @@ async function FindingsTab({
     capability: query.capability,
     finding_status: query.status,
     rule_id: query.rule_id,
+    kev_only: query.kev_only === "1",
+    min_epss: query.min_epss ? Number(query.min_epss) : undefined,
   });
 
   if (!findings.ok) {

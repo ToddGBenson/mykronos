@@ -119,6 +119,15 @@ class TriageItem(BaseModel):
             "means something different in a repo already called no_go."
         ),
     )
+    cve_id: str | None = Field(
+        default=None,
+        description="Extracted from rule_id/title, if either names one (spec 17 §4.2).",
+    )
+    in_kev: bool | None = Field(
+        default=None,
+        description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
+    )
+    epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
 
 
 class TriageQueue(BaseModel):
@@ -528,6 +537,8 @@ async def triage(
     severity: Annotated[Severity | None, Query()] = None,
     capability: Annotated[Capability | None, Query()] = None,
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
+    kev_only: Annotated[bool, Query()] = False,
+    min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -543,6 +554,8 @@ async def triage(
             capability=capability.value if capability else None,
             rule_id=rule_id,
             limit=limit,
+            kev_only=kev_only,
+            min_epss=min_epss,
         )
 
     return TriageQueue(
@@ -945,6 +958,8 @@ async def repo_open_findings(
     severity: Annotated[Severity | None, Query()] = None,
     finding_status: Annotated[FindingStatus, Query()] = FindingStatus.OPEN,
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
+    kev_only: Annotated[bool, Query()] = False,
+    min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -971,6 +986,8 @@ async def repo_open_findings(
             finding_status=finding_status.value,
             limit=limit,
             session=session,
+            kev_only=kev_only,
+            min_epss=min_epss,
         )
     return OpenFindingsPage.model_validate(page)
 

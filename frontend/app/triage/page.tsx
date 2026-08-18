@@ -35,10 +35,22 @@ const CAPABILITIES = ["sast", "dast", "secrets", "containers", "iac", "cloud", "
 export default async function TriagePage({
   searchParams,
 }: {
-  searchParams: Promise<{ severity?: string; capability?: string; rule_id?: string }>;
+  searchParams: Promise<{
+    severity?: string;
+    capability?: string;
+    rule_id?: string;
+    kev_only?: string;
+    min_epss?: string;
+  }>;
 }) {
   const query = await searchParams;
-  const result = await getTriage(query);
+  const result = await getTriage({
+    severity: query.severity,
+    capability: query.capability,
+    rule_id: query.rule_id,
+    kev_only: query.kev_only === "1",
+    min_epss: query.min_epss ? Number(query.min_epss) : undefined,
+  });
 
   if (!result.ok) {
     return <ErrorPanel title="Queue unavailable" detail={result.error} />;
@@ -145,15 +157,39 @@ export default async function TriagePage({
         ) : null}
       </form>
 
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Threat intel</Label>
+        <Link
+          href={filterHref({ kev_only: query.kev_only === "1" ? undefined : "1" })}
+          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            query.kev_only === "1"
+              ? "border-critical bg-critical-wash text-critical"
+              : "border-rule text-ink-3 hover:border-accent"
+          }`}
+        >
+          KEV only
+        </Link>
+        <Link
+          href={filterHref({ min_epss: query.min_epss === "0.5" ? undefined : "0.5" })}
+          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            query.min_epss === "0.5"
+              ? "border-high bg-high-wash text-high"
+              : "border-rule text-ink-3 hover:border-accent"
+          }`}
+        >
+          EPSS ≥ 50%
+        </Link>
+      </div>
+
       {items.length === 0 ? (
         <EmptyState
           title={
-            query.severity || query.capability || query.rule_id
+            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
               ? "Nothing matches these filters"
               : "Nothing open"
           }
           detail={
-            query.severity || query.capability || query.rule_id ? (
+            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss ? (
               "Clear the filters to see the whole queue."
             ) : (
               <>
@@ -189,6 +225,11 @@ export default async function TriagePage({
                 >
                   <td className="px-2 py-2">
                     <SeverityText severity={item.severity as Severity} />
+                    {item.in_kev ? (
+                      <span className="ml-1" title={`${item.cve_id} is in CISA's KEV catalog`}>
+                        <Pill tone="critical">KEV</Pill>
+                      </span>
+                    ) : null}
                   </td>
                   <td className="max-w-[22ch] truncate px-2 py-2">
                     <Link

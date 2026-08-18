@@ -191,6 +191,12 @@ GRANDFATHERED = {
     "capability_configs.repo_onboarding_id",
     "capability_configs.capability",
     "workflow_install_events.repo_onboarding_id",
+    "groomed_stories.repo_full_name",
+    "groomed_stories.subject_type",
+    "groomed_stories.subject_id",
+    "groomed_stories.github_issue_number",
+    "groomed_stories.github_issue_url",
+    "groomed_stories.dev_ready",
 }
 
 

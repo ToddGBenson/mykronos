@@ -762,7 +762,7 @@ class TestOpenFindingsKevBoost:
 
 
 class TestOpenFindingsThreatIntelBadge:
-    """spec 17 §4.4/§20 — cve_id/in_kev/epss_score stamped onto each group."""
+    """spec 17 §4.4, #20 — cve_id/in_kev/epss_score stamped onto each group."""
 
     def _seed(self, client, admin_auth, run_compaction, rule_id, title=None):
         repo_id = onboard(client, admin_auth).json()["id"]
@@ -824,6 +824,75 @@ class TestOpenFindingsThreatIntelBadge:
         group = self._group(client, admin_auth, repo_id)
         assert group["in_kev"] is True
         assert group["epss_score"] == pytest.approx(0.87)
+
+
+class TestOpenFindingsThreatIntelFilters:
+    """spec 17 §3 / #20 — min_epss/kev_only, applied against a different database
+    than the SQL query that fetched the candidate rows."""
+
+    def _seed_two(self, client, admin_auth, run_compaction):
+        from mykronos.db.models import ThreatIntelMatch
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        )
+        token = issue_token(client, REPO, "sast")
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-filter")
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(rule_id="CVE-2024-10001", severity="high", symbol="a"),
+                finding_payload(rule_id="CVE-2024-10002", severity="high", symbol="b"),
+                finding_payload(rule_id="CWE-89", severity="high", symbol="c"),  # no CVE at all
+            ],
+            scan_run_id="run-filter",
+        )
+        run_compaction()
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-10001", in_kev=True, epss_score=0.2))
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-10002", in_kev=False, epss_score=0.9))
+        return repo_id
+
+    def _page(self, client, admin_auth, repo_id, **params):
+        return client.get(
+            f"/api/dashboard/repos/{repo_id}/open-findings", params=params, headers=admin_auth
+        ).json()
+
+    def test_kev_only_keeps_only_kev_listed(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed_two(client, admin_auth, run_compaction)
+        page = self._page(client, admin_auth, repo_id, kev_only=True)
+        assert [g["cve_id"] for g in page["groups"]] == ["CVE-2024-10001"]
+        assert page["matching"] == 1
+
+    def test_min_epss_keeps_only_high_enough_scores(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed_two(client, admin_auth, run_compaction)
+        page = self._page(client, admin_auth, repo_id, min_epss=0.5)
+        assert [g["cve_id"] for g in page["groups"]] == ["CVE-2024-10002"]
+
+    def test_a_finding_with_no_cve_never_matches_either_filter(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed_two(client, admin_auth, run_compaction)
+        page = self._page(client, admin_auth, repo_id, min_epss=0.0)
+        cve_ids = {g["cve_id"] for g in page["groups"]}
+        assert "CWE-89" not in cve_ids  # its group_key, not its cve_id — sanity check below
+        assert None not in cve_ids
+
+    def test_no_filter_is_unaffected(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed_two(client, admin_auth, run_compaction)
+        page = self._page(client, admin_auth, repo_id)
+        assert len(page["groups"]) == 3
 
 
 class TestScanHealth:
@@ -1069,6 +1138,67 @@ class TestTriageQueue:
 
     def test_it_needs_authentication(self, client) -> None:
         assert client.get("/api/dashboard/triage").status_code == 401
+
+
+class TestTriageQueueThreatIntel:
+    """spec 17 §3 / #20 — the same cve_id/in_kev/epss_score badge, and the same
+    kev_only/min_epss filters, on the portfolio-wide queue."""
+
+    def _seed(self, client, admin_auth, run_compaction) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+        from tests.test_portfolio_job import register
+
+        register(client, REPO, capabilities=["sast"])
+        token = issue_token(client, REPO, "sast")
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-queue-ti")
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(rule_id="CVE-2024-20001", severity="critical", symbol="a"),
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="b"),
+            ],
+            scan_run_id="run-queue-ti",
+        )
+        run_compaction()
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-20001", in_kev=True, epss_score=0.6))
+
+    def test_badge_is_stamped_on_every_row(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        self._seed(client, admin_auth, run_compaction)
+        items = client.get("/api/dashboard/triage", headers=admin_auth).json()["items"]
+
+        by_rule = {item["rule_id"]: item for item in items}
+        assert by_rule["CVE-2024-20001"]["in_kev"] is True
+        assert by_rule["CVE-2024-20001"]["epss_score"] == pytest.approx(0.6)
+        assert by_rule["CWE-89"]["cve_id"] is None
+        assert by_rule["CWE-89"]["in_kev"] is None
+
+    def test_kev_only_narrows_the_queue(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        self._seed(client, admin_auth, run_compaction)
+        items = client.get(
+            "/api/dashboard/triage?kev_only=true", headers=admin_auth
+        ).json()["items"]
+        assert [item["rule_id"] for item in items] == ["CVE-2024-20001"]
+
+    def test_min_epss_narrows_the_queue(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        self._seed(client, admin_auth, run_compaction)
+        items = client.get(
+            "/api/dashboard/triage?min_epss=0.5", headers=admin_auth
+        ).json()["items"]
+        assert [item["rule_id"] for item in items] == ["CVE-2024-20001"]
+
+        none_match = client.get(
+            "/api/dashboard/triage?min_epss=0.99", headers=admin_auth
+        ).json()["items"]
+        assert none_match == []
 
 
 def test_severity_enum_covers_every_portfolio_bucket() -> None:

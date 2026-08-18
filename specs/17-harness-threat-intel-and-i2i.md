@@ -39,7 +39,8 @@ aspirational — each `done` row has a merged implementation and tests:
 | Exploitability as an Oracle input, KEV boost on toxic combinations (§5.4) | Done — `OracleEngine(db=...)`, `correlate.kev_boosted()` |
 | Reachability as an Oracle input (§5.3) | Done, honestly — always `available: False`; no call-graph engine exists, this is the "present, not omitted" plumbing only |
 | KEV/EPSS badges on Findings-tab rows (§4.4) | Done — `_attach_threat_intel`, `cve_id`/`in_kev`/`epss_score` on each group |
-| `min_epss`/`kev_only` finding filters; the same badge on the Triage queue (§3, §4.4) | Not started — `triage_queue()` is a flat query, not the grouped one the badge attaches to |
+| `min_epss`/`kev_only` filters + badge, on `open_findings()` and `triage_queue()` (§3, §4.4) | Done |
+| Same filters on the flat `findings()` endpoint (§3) | Not done — `findings()` has no frontend consumer today (spec 10 §4 documents it as the record, not a rendered view), so this is a smaller remaining gap than the other two were |
 | On-demand scan dispatch (§2.5) | Done — `dispatch_workflow`, `ConcourseClient.trigger_job`, `POST /api/repos/{id}/scan`, "scan now" button |
 | `ai` capability default tool (§6) | Done — `mykronos/ai_pin_check.py` (SDK pin check), `workflow-templates/ai.yml.j2`; prompt-injection and eval-regression detection remain unbuilt on purpose |
 | i2i grooming (§7) | Done — `triage_story.py`, `GroomedStory`, `create_issue`/`update_issue`, `POST /api/triage/{finding_id}/groom` + `POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom`, "groom as story" buttons |

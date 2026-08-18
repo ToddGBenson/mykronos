@@ -138,6 +138,8 @@ export async function getOpenFindings(
     severity?: string;
     finding_status?: string;
     rule_id?: string;
+    kev_only?: boolean;
+    min_epss?: number;
   },
 ): Promise<Result<OpenFindingsPage>> {
   try {
@@ -151,6 +153,8 @@ export async function getOpenFindings(
             severity: query.severity as never,
             finding_status: (query.finding_status ?? "open") as never,
             rule_id: query.rule_id as never,
+            kev_only: query.kev_only as never,
+            min_epss: query.min_epss as never,
           },
         },
         cache: "no-store",
@@ -188,6 +192,8 @@ export async function getTriage(query: {
   severity?: string;
   capability?: string;
   rule_id?: string;
+  kev_only?: boolean;
+  min_epss?: number;
 }): Promise<Result<TriageQueue>> {
   try {
     const { data, response } = await backendClient().GET("/api/dashboard/triage", {
@@ -196,6 +202,8 @@ export async function getTriage(query: {
           severity: query.severity as never,
           capability: query.capability as never,
           rule_id: query.rule_id as never,
+          kev_only: query.kev_only as never,
+          min_epss: query.min_epss as never,
           limit: 100,
         },
       },
