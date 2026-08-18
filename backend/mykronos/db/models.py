@@ -267,6 +267,29 @@ class ThreatIntelMatch(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class GroomedStory(Base):
+    """The i2i process's record of what it opened (spec 17 §7.2).
+
+    Operational, not lake: this is what makes "grooming the same finding
+    twice updates the issue" possible at all — without a stored pointer from
+    the derived story id to a GitHub issue number, a second groom would have
+    no way to find the first issue and would open a duplicate. `id` is
+    `triage_story.story_id()`, so this table's primary key *is* the lookup.
+    """
+
+    __tablename__ = "groomed_stories"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    subject_type: Mapped[str] = mapped_column(String(16))  # finding | combination
+    subject_id: Mapped[str] = mapped_column(String(255))
+    github_issue_number: Mapped[int] = mapped_column(Integer)
+    github_issue_url: Mapped[str] = mapped_column(String(512))
+    dev_ready: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class AuditLogEntry(Base):
     """Append-only actor log (spec 12 §7).
 

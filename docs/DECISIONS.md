@@ -2132,3 +2132,78 @@ and the i2i grooming process (finding → dev-ready GitHub issue). Each needs
 either a new `GitHubClient` method, a language-aware analysis this change
 correctly declined to fabricate a shortcut for, or both — tracked as issues
 against spec 17 rather than left as a paragraph nobody re-reads.
+
+---
+
+## D-058 — D-057's deferred list, closed out except reachability
+
+**Status:** Decided and running
+**Spec:** [17](../specs/17-harness-threat-intel-and-i2i.md)
+**Trigger:** "keep going"
+
+Four of D-057's five deferred rows landed in the same sitting, in dependency order —
+exploitability first, because everything after it either cites it or assumes the
+`GitHubClient` surface it shares a shape with.
+
+**Exploitability required threading a new dependency through `OracleEngine` that
+never existed before: the operational database.** Every other input Oracle reads
+comes from `self.catalog` (the lake); `ThreatIntelMatch` lives in SQLite. Rather
+than restructure the constructor, `db` joined `store` as a second optional
+keyword-only parameter, defaulting to `None` everywhere — the same shape, the
+same reason: a caller that hasn't wired one up gets `unavailable`, not a crash.
+Thirteen-plus test call sites across the suite construct `OracleEngine`/
+`OracleService` positionally and needed to change nothing.
+
+**The boost is additive, not a move between severity bands.** spec 17 §5.4 as
+originally written said a KEV-listed finding's "effective severity weight" gets
+raised a band, which reads like re-bucketing the finding into the next band's
+curve. That would touch `_band_contribution`'s tested arithmetic for every
+finding sharing that band, KEV-listed or not. Instead each KEV-listed finding
+gets its own `Term` worth `weight(next_band) - weight(this_band)` — the ordinary
+bands are computed exactly as before, and the exploitability contribution is
+individually auditable rather than folded into an aggregate nobody can
+re-derive by hand.
+
+**`kev_boosted()` is a function over detected combinations, not a field on
+`CombinationRule`.** The spec's first draft proposed a static
+`exploitability_boost: bool` on the rule. Whether a *specific instance* of a
+detected combination involves an actively-exploited CVE is a fact about which
+findings matched it, not about the rule that fired — a static per-rule flag
+could not express that, and would have needed to be `True` on every rule to
+mean anything.
+
+**Scan dispatch needed a Concourse write path that has never existed.** Spec
+15 §4a is anonymous reads only, by design — a status page has no business
+holding a credential. Triggering a build is a write, so it gets its own
+credential (`concourse_api_token`, unset by default) rather than reusing or
+widening the read path's trust. The job-name mapping for a Concourse trigger
+is the same documented heuristic `ci.py`'s read path already uses in reverse
+(`CAPABILITY_BY_JOB`) — a pipeline naming its job differently is simply not
+reached, the same safe-to-be-wrong direction the read side already commits to.
+
+**The `ai` capability's adapter already existed.** Confirmed by rereading the
+registry before writing anything: `AdapterSpec("ai", "mykronos-ai-checks", ...)`
+predates this work. The gap was narrower than D-057 first described it — no
+tool produced SARIF for that intake to receive, not no intake at all. Fixing
+the spec text to say so mattered as much as landing the checker itself; a spec
+describing a bigger gap than the real one sends the next person to rebuild
+something that already works.
+
+**i2i needed a permission nothing in this codebase had asked for.**
+`issues: write` joins `REQUIRED_PERMISSIONS` — previously six entries, all of
+which existed because an earlier phase's own outage demanded them (D-008's
+`workflows`/`secrets`). This one is added ahead of an incident, which is the
+better order and worth naming as the exception. It is scoped narrowly on
+purpose: distinct from `pull_requests: write`, spent only by the groom
+endpoints, so the permission review (spec 12 §6) can say exactly where it goes.
+Spec 02 §4 and spec 12 §6 both updated in the same change — restating a
+permission list in two places and updating only one is exactly how D-008
+happened the first time.
+
+**What's still open.** Reachability (#15) has no engine and none was attempted
+here — the honest plumbing (an Oracle category, always `available: false`)
+already landed with exploitability, and a call-graph analysis is real,
+separate, language-aware work this sitting correctly left alone. `min_epss`/
+`kev_only` finding filters and the same KEV badge on the Triage queue (#20)
+remain — `triage_queue()` is a flat query, not the grouped one the badge
+attaches to.

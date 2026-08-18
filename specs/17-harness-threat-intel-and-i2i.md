@@ -42,7 +42,7 @@ aspirational — each `done` row has a merged implementation and tests:
 | `min_epss`/`kev_only` finding filters; the same badge on the Triage queue (§3, §4.4) | Not started — `triage_queue()` is a flat query, not the grouped one the badge attaches to |
 | On-demand scan dispatch (§2.5) | Done — `dispatch_workflow`, `ConcourseClient.trigger_job`, `POST /api/repos/{id}/scan`, "scan now" button |
 | `ai` capability default tool (§6) | Done — `mykronos/ai_pin_check.py` (SDK pin check), `workflow-templates/ai.yml.j2`; prompt-injection and eval-regression detection remain unbuilt on purpose |
-| i2i grooming (§7) | Not started |
+| i2i grooming (§7) | Done — `triage_story.py`, `GroomedStory`, `create_issue`/`update_issue`, `POST /api/triage/{finding_id}/groom` + `POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom`, "groom as story" buttons |
 
 The unstarted rows are not silently dropped — see `docs/DECISIONS.md` for the
 entry logging this split and the follow-up issues it points to.
@@ -355,23 +355,22 @@ resolves to `mykronos-ai-checks`.
 
 ## 7. i2i — from triage output to a dev-ready story
 
-Confirmed absent: no issue-creation method on `GitHubClient`, no grooming/story logic anywhere.
-
 ### 7.1 Dev-ready fields
 
-A `TriageStory` is dev-ready only when every field is populated (missing fields render as
-missing, never silently dropped — `dev_ready: false` names the gap):
+A `TriageStory` is dev-ready only when title, description, and at least one acceptance criterion
+are populated. Missing fields render as missing, never silently dropped — `dev_ready: false`
+names the gap in both the API response and the rendered issue body.
 
-| Field | Populated from |
-|---|---|
-| Title, description | `Finding.title`/`.description`, or `Combination.rationale` (§5.6) |
-| Severity + Oracle contribution | `Finding.severity`; its weighted contribution from the repo's last `RiskDecision.inputs_snapshot` |
-| Reachability | §5.3 — `unknown` is honest and does not block dev-ready status |
-| Exploitability | §5.4 — same rule |
-| Dedup history | count of prior `superseded` identities for this fingerprint lineage (§5.1) |
-| False-positive precedent | any Knowledge Store entry for this `rule_id` in this repo |
-| Suggested fix | `RemediationEvent.rationale` if Patchwork already produced one, else `no_fix_available` verbatim |
-| Acceptance criteria | generated per capability from a template (e.g., SAST: "the flagged line no longer matches `rule_id`'s pattern on re-scan"; dependency: "the pinned lockfile version is at or above the fixed version") |
+| Field | Populated from | Blocks dev-ready if missing? |
+|---|---|---|
+| Title, description | `Finding.title`/`.description`, or the combination's rule name/rationale (§5.6) | Yes |
+| Severity + Oracle context | `Finding.severity`; the repo's last portfolio decision's overall score/recommendation, plus that severity band's own contribution if the decision scored one — **not** a per-finding split, which Oracle's log2 curve (spec 09 §5) has no clean way to produce; stated honestly rather than fabricated | No — Oracle not being enabled is not this story's fault |
+| Reachability | §5.3 — always `unknown` in v1 | No — honest, not a gap |
+| Exploitability | §5.4 — `unknown` when the finding names no CVE | No — same rule |
+| Dedup history | count of findings superseded into this one (§5.1) | No |
+| False-positive precedent | any reasoned Knowledge Store dismissal of this `rule_id` in this repo | No |
+| Suggested fix | the most recent `RemediationEvent.rationale` for this finding/combination, else `no_fix_available` verbatim | No |
+| Acceptance criteria | generated per capability from a template (e.g., SAST: "the flagged line no longer matches `rule_id`'s pattern on re-scan"; one criterion per member for a combination) | **Yes** — a story with nothing to check off isn't dev-ready |
 
 ### 7.2 Mechanics
 
@@ -381,12 +380,19 @@ async def create_issue(
 ) -> IssueRef: ...
 ```
 
-added to `GitHubClient` alongside `dispatch_workflow` (§2.5.1), on the Protocol and both
-implementations. `POST /api/triage/{finding_id}/groom` (and a `/combinations/{id}/groom`
-variant) builds a `TriageStory`, renders it as an issue body, and opens or updates it — looked
-up by a derived id (SHA-256 over `repo_full_name` + finding/combination id, same pattern as
-`finding_id`/`event_id`/`entry_id`) so grooming twice updates one issue rather than duplicating
-it. Labelled `mykronos:dev-ready` or `mykronos:needs-triage` per §7.1's check.
+added to `GitHubClient` alongside `dispatch_workflow` (§2.5.1) — plus `update_issue`, needed for
+the update-not-duplicate behaviour below — on the Protocol and both implementations.
+`POST /api/triage/{finding_id}/groom` builds a `TriageStory`, renders it as an issue body, and
+opens or updates it — looked up by a derived id (SHA-256 over `repo_full_name` + finding/
+combination id, same pattern as `finding_id`/`event_id`/`entry_id`) so grooming twice updates one
+issue rather than duplicating it. Labelled `mykronos:dev-ready` or `mykronos:needs-triage` per
+§7.1's check.
+
+The combination variant is `POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom`
+— repo-scoped in the path, not `/combinations/{id}/groom` alone. A combination id names no
+repository by itself: combinations are detected fresh from a repo's current findings rather than
+stored (spec 08 §2 stage 3), so finding the one an id refers to means re-running detection over
+that repo's pool, which needs the repo first.
 
 **This is issue creation, not pull-request creation, and not a merge.** Patchwork's hard line —
 opens draft PRs, never merges, enforced by the protocol having no merge method at all — is
@@ -407,7 +413,7 @@ whether the fix started from a groomed issue.
 | `POST` | `/api/repos/{id}/scan` | Dispatch every enabled scanner now, via Concourse or Actions per `scanned_by` (§2.5) |
 | `GET` | `/api/dashboard/threat-intel` | Portfolio-wide CVE list with KEV/EPSS (§4.4) |
 | `POST` | `/api/triage/{finding_id}/groom` | Build/open a dev-ready GitHub issue for one finding (§7.2) |
-| `POST` | `/api/triage/combinations/{id}/groom` | Same, for a toxic combination |
+| `POST` | `/api/triage/repos/{repo_id}/combinations/{combination_id}/groom` | Same, for a toxic combination |
 
 `GET /api/dashboard/repos/{id}/findings`, `/open-findings`, and `GET /api/dashboard/triage`
 gain the §3 filter parameters — additive only.

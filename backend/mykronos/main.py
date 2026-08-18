@@ -21,6 +21,7 @@ from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
+from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
@@ -306,6 +307,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(oracle_router)
     app.include_router(patchwork_router)
     app.include_router(repos_router)
+    app.include_router(triage_router)
     app.include_router(webhooks_router)
 
     # Outermost, so it runs before routing: a request that cannot present the

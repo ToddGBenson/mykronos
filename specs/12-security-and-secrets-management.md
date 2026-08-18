@@ -113,7 +113,12 @@ and scores the remaining signals.
 
 Restated from spec 02 §4 for completeness: the App requests
 `contents: write`, `workflows: write`, `pull_requests: write`,
-`checks: write`, `actions: write`, `metadata: read`.
+`checks: write`, `actions: write`, `issues: write`, `secrets: write`,
+`metadata: read`.
+
+`issues: write` is scoped narrowly: it is spent only by the i2i process
+opening or updating a groomed story (spec 17 §7.2), and by nothing else —
+it does not grant, and is not the same permission as, `pull_requests: write`.
 
 `workflows: write` is required because GitHub gates files under
 `.github/workflows/` behind their own permission — `contents: write` is
