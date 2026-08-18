@@ -1933,7 +1933,10 @@ export interface components {
             /** Risk Assessed At */
             risk_assessed_at?: string | null;
         };
-        /** PortfolioSummary */
+        /**
+         * PortfolioSummary
+         * @description The cards above the table (spec 10 §2.1).
+         */
         PortfolioSummary: {
             /**
              * Active Repos
