@@ -487,6 +487,25 @@ def outstanding(client: TestClient, admin_auth: dict[str, str], run_compaction):
 class TestOpenFindings:
     """The outstanding-work view: open only, deduplicated, triaged, correlated."""
 
+    def test_the_triage_filter_narrows_to_one_classification(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """spec 18 §5.1: the same classification already rendered per group,
+        now also a filter — `classify()`'s output, not a new judgement."""
+        page = self._page(client, admin_auth, outstanding, triage="true_positive")
+
+        assert {g["rule_id"] for g in page["groups"]} == {"CWE-79", "CVE-2024-4812"}
+        assert all(g["triage"] == "true_positive" for g in page["groups"])
+
+    def test_the_triage_filter_reaches_toxic_combinations(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """A combination overrides the per-finding verdict (`_group_findings`)
+        — filtering for it should find exactly the findings that override."""
+        page = self._page(client, admin_auth, outstanding, triage="toxic_combination")
+
+        assert {g["rule_id"] for g in page["groups"]} == {"CWE-89", "CWE-306"}
+
     def _page(self, client: TestClient, auth: dict[str, str], repo_id: str, **params):
         return client.get(
             f"/api/dashboard/repos/{repo_id}/open-findings", params=params, headers=auth

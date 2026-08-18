@@ -481,6 +481,7 @@ class DashboardQueries:
         session: Session | None = None,
         kev_only: bool = False,
         min_epss: float | None = None,
+        triage: str | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -509,6 +510,11 @@ class DashboardQueries:
 
         `kev_only`/`min_epss` (spec 17 §3, #20) also need `session` — a repo with
         neither filter set behaves exactly as before either way.
+
+        `triage` (spec 18 §5.1) filters on `classify()`'s own output — the same
+        classification already rendered per group, now also queryable. It is a
+        property of the group, not a column any row carries, so — like
+        `kev_only`/`min_epss` — it is applied after grouping, not in SQL.
         """
         columns = [
             "finding_id",
@@ -562,8 +568,13 @@ class DashboardQueries:
         # grouping moves to a group-level one afterward, since a `limit` of
         # *problems worth showing* is what the filter is answering for.
         wants_threat_intel_filter = kev_only or min_epss is not None
+        # `triage` joins the same after-grouping path for the same reason —
+        # it is not a column a single row carries either — but it needs no
+        # session, so it is kept a separate flag from the threat-intel one
+        # rather than folded into it and made to look like it does.
+        wants_group_filter = wants_threat_intel_filter or triage is not None
 
-        if wants_threat_intel_filter:
+        if wants_group_filter:
             rows = self._finding_rows(
                 repo_full_name,
                 columns,
@@ -607,8 +618,10 @@ class DashboardQueries:
                 for g in groups
                 if g["epss_score"] is not None and g["epss_score"] >= min_epss
             ]
+        if triage is not None:
+            groups = [g for g in groups if g["triage"] == triage]
 
-        if wants_threat_intel_filter:
+        if wants_group_filter:
             truncated = pool_truncated or len(groups) > limit
             groups = groups[:limit]
             shown_ids = {loc["finding_id"] for g in groups for loc in g["locations"]}
@@ -622,7 +635,7 @@ class DashboardQueries:
             "total": total,
             "matching": (
                 sum(g["occurrences"] for g in groups)
-                if wants_threat_intel_filter
+                if wants_group_filter
                 else (
                     total
                     if capability is None and severity is None and rule_id is None

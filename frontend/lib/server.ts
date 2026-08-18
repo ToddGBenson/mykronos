@@ -141,6 +141,7 @@ export async function getOpenFindings(
     rule_id?: string;
     kev_only?: boolean;
     min_epss?: number;
+    triage?: string;
   },
 ): Promise<Result<OpenFindingsPage>> {
   try {
@@ -156,6 +157,7 @@ export async function getOpenFindings(
             rule_id: query.rule_id as never,
             kev_only: query.kev_only as never,
             min_epss: query.min_epss as never,
+            triage: query.triage as never,
           },
         },
         cache: "no-store",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -207,6 +207,15 @@ class FindingLocationOut(BaseModel):
     line_start: int | None = None
     package_version: str | None = None
     first_seen_at: datetime | None = None
+
+
+#: `classify()`'s own vocabulary (`patchwork/triage.py`) plus the
+#: group-level `toxic_combination` `_group_findings` adds on top of it — the
+#: same four values `FindingGroupOut.triage` already renders, now also a
+#: filter (spec 18 §5.1).
+TriageFilter = Literal[
+    "true_positive", "likely_false_positive", "needs_human_judgment", "toxic_combination"
+]
 
 
 class FindingGroupOut(BaseModel):
@@ -1002,6 +1011,7 @@ async def repo_open_findings(
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     kev_only: Annotated[bool, Query()] = False,
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    triage: Annotated[TriageFilter | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -1030,6 +1040,7 @@ async def repo_open_findings(
             session=session,
             kev_only=kev_only,
             min_epss=min_epss,
+            triage=triage,
         )
     return OpenFindingsPage.model_validate(page)
 

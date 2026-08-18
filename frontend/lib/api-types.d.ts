@@ -3188,6 +3188,7 @@ export interface operations {
                 rule_id?: string | null;
                 kev_only?: boolean;
                 min_epss?: number | null;
+                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 limit?: number;
             };
             header?: never;
