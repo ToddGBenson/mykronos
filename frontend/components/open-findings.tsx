@@ -330,6 +330,35 @@ function ToxicCombinations({ combinations }: { combinations: ToxicCombination[] 
   );
 }
 
+/**
+ * KEV / EPSS, next to severity (spec 17 §4.4). Renders nothing for a group
+ * naming no CVE — `in_kev === null` — rather than a dash on every row; the
+ * absence of a badge already says "no exploitability data for this one."
+ */
+function ThreatIntelBadge({ group }: { group: FindingGroup }) {
+  if (group.in_kev === null || group.in_kev === undefined) return null;
+  const highEpss = typeof group.epss_score === "number" && group.epss_score >= 0.5;
+  if (!group.in_kev && !highEpss) return null;
+
+  return (
+    <span className="ml-1 inline-flex gap-1">
+      {group.in_kev ? (
+        <span title={`${group.cve_id} is listed in CISA's Known Exploited Vulnerabilities catalog`}>
+          <Pill tone="critical">KEV</Pill>
+        </span>
+      ) : null}
+      {highEpss ? (
+        <span
+          title={`${group.cve_id}: ${((group.epss_score ?? 0) * 100).toFixed(0)}% EPSS — probability of exploitation in the next 30 days`}
+          className="font-mono text-[8px] font-bold uppercase tracking-wider text-high"
+        >
+          {((group.epss_score ?? 0) * 100).toFixed(0)}% EPSS
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function GroupTable({
   groups,
   query,
@@ -367,6 +396,7 @@ function GroupTable({
               >
                 <td className="px-2 py-2">
                   <SeverityText severity={group.severity} />
+                  <ThreatIntelBadge group={group} />
                 </td>
                 <td className="px-2 py-2">
                   <Link

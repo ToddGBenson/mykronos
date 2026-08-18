@@ -36,11 +36,12 @@ aspirational — each `done` row has a merged implementation and tests:
 | Findings/triage `rule_id` search, `suppressed`/`superseded` status filters, `superseded_by` surfaced (§3) | Done |
 | `first_seen_after`/`first_seen_before` on the flat `findings()` endpoint (§3) | Done — not yet wired into `open_findings()` or any filter UI |
 | Threat Intelligence: `ThreatIntelMatch`, KEV/EPSS fetch+parse+upsert, daily job, `/api/dashboard/threat-intel`, nav page (§4) | Done |
-| Exploitability as an Oracle input, KEV boost on toxic combinations (§5.4) | Not started — the data (§4) exists; the Oracle/`correlate.py` wiring does not |
-| Reachability field + honest "unknown" plumbing (§5.3) | Not started |
-| `min_epss`/`kev_only` finding filters, KEV/EPSS badges on finding rows (§3, §4.4) | Not started — the Threat Intelligence page (§4.4) is the only surfacing today |
-| On-demand scan dispatch (§2.5) | Not started |
-| `ai` capability default tool (§6) | Not started |
+| Exploitability as an Oracle input, KEV boost on toxic combinations (§5.4) | Done — `OracleEngine(db=...)`, `correlate.kev_boosted()` |
+| Reachability as an Oracle input (§5.3) | Done, honestly — always `available: False`; no call-graph engine exists, this is the "present, not omitted" plumbing only |
+| KEV/EPSS badges on Findings-tab rows (§4.4) | Done — `_attach_threat_intel`, `cve_id`/`in_kev`/`epss_score` on each group |
+| `min_epss`/`kev_only` finding filters; the same badge on the Triage queue (§3, §4.4) | Not started — `triage_queue()` is a flat query, not the grouped one the badge attaches to |
+| On-demand scan dispatch (§2.5) | Done — `dispatch_workflow`, `ConcourseClient.trigger_job`, `POST /api/repos/{id}/scan`, "scan now" button |
+| `ai` capability default tool (§6) | Done — `mykronos/ai_pin_check.py` (SDK pin check), `workflow-templates/ai.yml.j2`; prompt-injection and eval-regression detection remain unbuilt on purpose |
 | i2i grooming (§7) | Not started |
 
 The unstarted rows are not silently dropped — see `docs/DECISIONS.md` for the
@@ -260,13 +261,14 @@ Confirmed absent: no reachability scoring, field, or engine anywhere. **Is the v
 reachable from anything the application runs**, as opposed to dead code or a vendored,
 never-imported dependency.
 
-v1 adds `Finding.reachability` (`reachable` / `unreachable` / `unknown`), default `unknown` for
-every finding, and wires it into Oracle's `inputs_snapshot` as a new category present with an
-explicit "not available" value (spec 09 §9's own rule for unwired categories) rather than
-silently absent. It does **not** add a call-graph/import-tracing engine — that's a real,
-separate, language-aware body of work, tracked as a follow-up rather than claimed here. `unknown`
-renders as a dash, never visually adjacent to "unreachable" — one is evidence, the other is its
-absence (same rule as Oracle's `not assessed` vs. `go`, spec 10 §2.1).
+v1 wires a `reachability` category into Oracle's `inputs_snapshot`, present with
+`available: False` and a reason on every decision (spec 09 §9's own rule for unwired categories)
+rather than silently absent. It does **not** add a `Finding`-level column or a call-graph/
+import-tracing engine — a lake column that is `unknown` on every row until an engine exists
+would be exactly the "dashboard-only number nothing traces to" spec 10 §6 forbids, just moved
+into the schema instead of the UI. When a real engine exists, it earns a `Finding.reachability`
+column and this category starts reporting `available: True` for the repos it covers; until then,
+the honest thing is one static category, not a field nothing populates.
 
 ### 5.4 Exploitability — new, and fully defined via §4
 
@@ -277,13 +279,22 @@ CVE (most SAST/IaC findings) stay `unknown` — there's no public feed for "is t
 *pattern* being exploited," and a fabricated proxy score would violate Oracle's own
 "explainability over sophistication" principle (spec 09 §5).
 
-Wired into Oracle as a new modifier: an open finding with `in_kev = true` raises its effective
-severity weight one band, cited in `inputs_snapshot` by CVE id and KEV date — same
-every-term-is-listed rule as every other modifier.
+Wired into Oracle as a new additive term, not a restructuring of the tested band-count curve
+(spec 09 §9's determinism guarantee): each open, in-scope, KEV-listed finding contributes
+`weight(next_band) - weight(this_band)` — one band's worth of points — as its own `Term`, cited
+by CVE id and KEV date, so it's individually auditable rather than folded into an aggregate. A
+`critical` finding has nowhere further to boost and contributes nothing extra; the exploitation
+is already reflected in every band below it. Requires `OracleEngine(db=...)` — the operational
+database `ThreatIntelMatch` lives in, not the lake `OracleEngine` otherwise only reads — optional
+like `store`, so a caller that hasn't wired it up gets `exploitability: unavailable` rather than
+a crash.
 
-`patchwork/correlate.py`'s `CombinationRule` gains an `exploitability_boost: bool` field
-(default `False` on every existing rule); when a detected combination includes a KEV-listed CVE,
-the rendered `rationale` says so — a toxic pair under active exploitation is a different urgency
+`patchwork/correlate.py` gains `kev_boosted()`, a function over already-detected combinations
+rather than a static field on `CombinationRule` — whether a *specific detected instance* involves
+an actively-exploited CVE is a fact about which findings matched, not about the rule that fired,
+and a rule-level flag couldn't express that. When a combination's members include a KEV-listed
+CVE, its `rationale` is prefixed to say so — a toxic pair under active exploitation is a different
+urgency
 than one that merely could be.
 
 ### 5.5 False positive — already built; one scope note
@@ -310,29 +321,37 @@ to it.
 **"AI CI/CD checks" already names something specific in this codebase**, and it isn't a Check
 Run — it's the `ai`/`ai-checks` capability (D-047), covering three of the four concerns "AI" was
 split into: prompt-injection surface, model/dependency provenance, and evaluation regression
-(the fourth, AI-authorship disclosure, deliberately stays in Aegis). The capability is
-registered (`Capability.AI`, `AiConfig`) and accepts SARIF from any tool — but **no default tool
-is wired**: no `workflow-templates/ai.yml.j2`, no adapter, unlike every other capability in
-spec 04's table. It is a slot, not a running check, which is the honest reading of "flesh out."
+(the fourth, AI-authorship disclosure, deliberately stays in Aegis). The capability is already
+registered (`Capability.AI`, `AiConfig`) and the adapter side already accepts SARIF from any
+tool — `adapters/registry.py`'s `AdapterSpec("ai", "mykronos-ai-checks", ...)` predates this
+spec. What's missing is narrower than "no adapter": **no default tool is wired** — no
+`workflow-templates/ai.yml.j2`, so nothing ever produces the SARIF that adapter is waiting for.
+It is a slot with a working intake and nothing feeding it, which is the honest reading of
+"flesh out."
 
-v1 adds one deterministic, first-party checker — matching the D-047 framing verbatim ("an
-unpinned model is treated like an unpinned dependency") — rather than a model-based scanner,
-consistent with Patchwork's own "deterministic first, LLM-assisted later, off without a
-configured endpoint" pattern (spec 08 §2 stage 4):
+v1 adds one deterministic, first-party checker (`mykronos/ai_pin_check.py`) — matching the
+D-047 framing verbatim ("an unpinned model is treated like an unpinned dependency") — rather
+than a model-based scanner, consistent with Patchwork's own "deterministic first, LLM-assisted
+later, off without a configured endpoint" pattern (spec 08 §2 stage 4):
 
-- **Provenance/pin check**: scans dependency manifests for unpinned or floating-version LLM
-  SDK/model references (`anthropic`, `openai`, `google-generativeai`, etc. without a pinned
-  version; a model string like `claude-*-latest` in application code) — the same class of
-  finding Atlas already produces for ordinary dependencies, scoped to the AI-specific set.
-  Emits SARIF, uploaded through the standard contract (spec 04 §2), so it's indistinguishable
-  in the lake from any other `ai`-capability finding a future tool adds.
+- **Provenance/pin check**: scans `requirements*.txt` and `package.json` for a named set of AI
+  SDK packages (`anthropic`, `openai`, `google-generativeai`, `@anthropic-ai/sdk`, etc.) pinned
+  to a floating version (`>=`, `^`, `~`, no version, `latest`) rather than an exact one — the
+  same class of finding Atlas already produces for ordinary dependencies, scoped to a named AI
+  package list rather than every dependency. Deliberately **not** scanning source code for
+  literal model-name strings (`claude-*-latest`) — that needs per-language parsing to avoid
+  false-positiving on string literals that aren't API calls, and is a larger, separate piece of
+  work than a manifest pin check. Emits SARIF directly (no bespoke adapter needed, since the
+  intake already accepts any SARIF), uploaded through the standard contract (spec 04 §2).
 - Prompt-injection-surface and eval-regression detection are **not** built in v1 — they need
   either a runtime harness (eval regression) or a semantic classifier (prompt injection) that
   a deterministic pattern check cannot honestly claim to do, and are left as the capability's
   next tool rather than stubbed with a check that would produce false confidence.
 
-`workflow-templates/ai.yml.j2` follows the existing template pattern (spec 04 §2's shared
-upload step, `--capability ai --tool mykronos-ai-pin-check`).
+`workflow-templates/ai.yml.j2` follows the same pattern as `atlas.yml.j2`'s own first-party
+Python step: install the `mykronos` package (`mykronos_package_spec`), run the module, upload
+through the shared step with no `tool_name` override needed — `default_tool("ai")` already
+resolves to `mykronos-ai-checks`.
 
 ## 7. i2i — from triage output to a dev-ready story
 

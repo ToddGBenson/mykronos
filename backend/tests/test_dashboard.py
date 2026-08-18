@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -708,6 +710,120 @@ class TestThreatIntel:
 
     def test_it_needs_authentication(self, client: TestClient) -> None:
         assert client.get("/api/dashboard/threat-intel").status_code == 401
+
+
+class TestOpenFindingsKevBoost:
+    """spec 17 §5.6 — a toxic combination naming a KEV-listed CVE says so."""
+
+    def test_a_combination_member_naming_a_kev_cve_is_flagged(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        )
+        token = issue_token(client, REPO, "sast")
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-combo")
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    rule_id="CWE-89", severity="high", symbol="a", file_path="web/a.py"
+                ),
+                finding_payload(
+                    rule_id="CWE-306",
+                    title="CVE-2024-55555 missing auth check",
+                    severity="medium",
+                    symbol="b",
+                    file_path="web/a.py",
+                ),
+            ],
+            scan_run_id="run-combo",
+        )
+        run_compaction()
+
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-55555", in_kev=True))
+
+        body = client.get(
+            f"/api/dashboard/repos/{repo_id}/open-findings", headers=admin_auth
+        ).json()
+
+        assert len(body["toxic_combinations"]) == 1
+        assert body["toxic_combinations"][0]["rationale"].startswith(
+            "**Actively exploited.**"
+        )
+
+
+class TestOpenFindingsThreatIntelBadge:
+    """spec 17 §4.4/§20 — cve_id/in_kev/epss_score stamped onto each group."""
+
+    def _seed(self, client, admin_auth, run_compaction, rule_id, title=None):
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        )
+        token = issue_token(client, REPO, "sast")
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-badge")
+        overrides: dict[str, Any] = {"rule_id": rule_id, "severity": "high", "symbol": "a"}
+        if title is not None:
+            overrides["title"] = title
+        post_findings(client, auth, [finding_payload(**overrides)], scan_run_id="run-badge")
+        run_compaction()
+        return repo_id
+
+    def _group(self, client, admin_auth, repo_id):
+        page = client.get(
+            f"/api/dashboard/repos/{repo_id}/open-findings", headers=admin_auth
+        ).json()
+        return page["groups"][0]
+
+    def test_a_finding_with_no_cve_gets_null_fields(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed(client, admin_auth, run_compaction, "CWE-89")
+        group = self._group(client, admin_auth, repo_id)
+
+        assert group["cve_id"] is None
+        assert group["in_kev"] is None
+        assert group["epss_score"] is None
+
+    def test_a_cve_with_no_match_row_is_checked_not_null(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        """Distinct from the no-CVE case above: `in_kev` becomes `False`,
+        not `None` — a CVE was found and looked up, it just isn't KEV-listed
+        (or hasn't been fetched yet)."""
+        repo_id = self._seed(client, admin_auth, run_compaction, "CVE-2024-77777")
+        group = self._group(client, admin_auth, repo_id)
+
+        assert group["cve_id"] == "CVE-2024-77777"
+        assert group["in_kev"] is False
+        assert group["epss_score"] is None
+
+    def test_a_kev_listed_cve_is_flagged(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        repo_id = self._seed(client, admin_auth, run_compaction, "CVE-2024-88888")
+        with client.app.state.db.session() as session:
+            session.add(
+                ThreatIntelMatch(cve_id="CVE-2024-88888", in_kev=True, epss_score=0.87)
+            )
+
+        group = self._group(client, admin_auth, repo_id)
+        assert group["in_kev"] is True
+        assert group["epss_score"] == pytest.approx(0.87)
 
 
 class TestScanHealth:

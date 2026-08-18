@@ -58,6 +58,29 @@ def concourse(monkeypatch):
     return client, routes
 
 
+@pytest.fixture
+def concourse_writable(monkeypatch):
+    """A `ConcourseClient` wired to a scripted POST API (spec 17 §2.5),
+    separate from `concourse` (GET-only) so a trigger test cannot
+    accidentally also script the status read it isn't testing."""
+
+    posts: dict[str, object] = {}
+
+    def fake_post(url: str, headers: dict[str, str] | None = None, timeout: float = 0):
+        for suffix, payload in posts.items():
+            if url.endswith(suffix):
+                if isinstance(payload, Exception):
+                    raise payload
+                return FakeResponse(payload)
+        return FakeResponse(None, status=404)
+
+    monkeypatch.setattr("mykronos.ci.httpx2.post", fake_post)
+    client = ConcourseClient(
+        "http://concourse:8080", team="main", external_url="http://localhost:8080"
+    )
+    return client, posts
+
+
 JOBS = [
     {
         "name": "unit",
@@ -496,3 +519,38 @@ class TestTheEndpoint:
         assert aegis["enabled"] is True
         assert aegis["state"] == "event_driven"
         assert aegis["problem"] is False
+
+
+class TestTriggerJob:
+    """spec 17 §2.5 — on-demand dispatch, the write half of this module."""
+
+    def test_accepted_returns_true(self, concourse_writable) -> None:
+        client, posts = concourse_writable
+        posts["/pipelines/thehub/jobs/sast/builds"] = {"id": "1"}
+
+        assert client.trigger_job("thehub", "sast", token="tok") is True
+
+    def test_a_nonexistent_job_returns_false_not_raises(self, concourse_writable) -> None:
+        client, _posts = concourse_writable  # nothing scripted -> 404 for every URL
+
+        assert client.trigger_job("thehub", "no-such-job", token="tok") is False
+
+    def test_an_unreachable_concourse_returns_false_not_raises(self, concourse_writable) -> None:
+        client, posts = concourse_writable
+        posts["/pipelines/thehub/jobs/sast/builds"] = RuntimeError("connection refused")
+
+        assert client.trigger_job("thehub", "sast", token="tok") is False
+
+    def test_sends_the_bearer_token(self, monkeypatch) -> None:
+        seen: dict[str, object] = {}
+
+        def fake_post(url: str, headers: dict[str, str] | None = None, timeout: float = 0):
+            seen["headers"] = headers
+            return FakeResponse({"id": "1"})
+
+        monkeypatch.setattr("mykronos.ci.httpx2.post", fake_post)
+        client = ConcourseClient("http://concourse:8080", team="main")
+
+        client.trigger_job("thehub", "sast", token="secret-token")
+
+        assert seen["headers"] == {"Authorization": "Bearer secret-token"}

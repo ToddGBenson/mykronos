@@ -329,6 +329,18 @@ class Settings(BaseSettings):
         description="Concourse team whose pipelines cover these repositories.",
     )
 
+    concourse_api_token: str = Field(
+        default="",
+        description=(
+            "Bearer token for triggering a Concourse build on demand (spec "
+            "17 §2.5) — a write, unlike every anonymous read `ConcourseClient` "
+            "otherwise makes (spec 15 §4a). Empty disables on-demand dispatch "
+            "for Concourse-scanned repos; the read-only pipeline-status "
+            "panel is unaffected. Sourced from the credential manager spec "
+            "15 §6 already calls for, not hand-typed into a config file."
+        ),
+    )
+
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"

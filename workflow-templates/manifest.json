@@ -61,6 +61,12 @@
       "version": "2.1.0",
       "summary": "Dependency vulnerabilities with osv-scanner, SBOM with syft, and provenance"
     },
+    "ai": {
+      "template": "ai.yml.j2",
+      "target": ".github/workflows/mykronos-ai.yml",
+      "version": "1.0.0",
+      "summary": "AI SDK dependency pinning — model/dependency provenance (D-047); prompt-injection and eval-regression checks are not built yet"
+    },
     "patchwork": {
       "template": "patchwork.yml.j2",
       "target": ".github/workflows/mykronos-patchwork.yml",

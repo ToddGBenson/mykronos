@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+
+from mykronos.threat_intel import extract_cve
 
 
 @dataclass(frozen=True)
@@ -374,3 +376,52 @@ def detect(
             )
 
     return combinations
+
+
+def kev_boosted(
+    combinations: list[Combination],
+    findings_by_id: dict[str, dict[str, Any]],
+    kev_cve_ids: set[str],
+) -> list[Combination]:
+    """Prefix a combination's rationale when a member names a KEV-listed CVE
+    (spec 17 §5.6).
+
+    Deliberately not a static field on `CombinationRule` — whether *this*
+    detected instance involves active exploitation is a fact about the
+    findings it matched, not about the rule, and a rule-level flag could not
+    say it correctly. `kev_cve_ids` comes from `ThreatIntelMatch` (spec 17
+    §4); an empty set (no threat-intel data, or nothing matched) is a no-op,
+    so callers with nothing to check pay only the cost of the loop.
+
+    A toxic pair under active exploitation is a different urgency than one
+    that merely could be — the prefix says so without changing what rule
+    fired or which findings it named.
+    """
+    if not kev_cve_ids:
+        return combinations
+
+    boosted: list[Combination] = []
+    for combo in combinations:
+        hit_cves: set[str] = set()
+        for finding_id in combo.finding_ids:
+            finding = findings_by_id.get(finding_id)
+            if finding is None:
+                continue
+            cve_id = extract_cve(
+                str(finding.get("rule_id") or ""), str(finding.get("title") or "")
+            )
+            if cve_id and cve_id in kev_cve_ids:
+                hit_cves.add(cve_id)
+
+        if not hit_cves:
+            boosted.append(combo)
+            continue
+
+        prefix = (
+            f"**Actively exploited.** {', '.join(sorted(hit_cves))} — a member "
+            "of this combination — is listed in CISA's Known Exploited "
+            "Vulnerabilities catalog. "
+        )
+        boosted.append(replace(combo, rationale=prefix + combo.rationale))
+
+    return boosted

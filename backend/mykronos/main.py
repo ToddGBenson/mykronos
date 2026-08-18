@@ -214,6 +214,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     app.state.buffer,
                     app.state.oracle_policy,
                     app.state.knowledge,
+                    db=app.state.db,
                 ),
             )
 
