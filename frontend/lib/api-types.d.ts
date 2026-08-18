@@ -2470,6 +2470,21 @@ export interface components {
              * @description The repo's standing Oracle verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
              */
             repo_recommendation?: string | null;
+            /**
+             * Cve Id
+             * @description Extracted from rule_id/title, if either names one (spec 17 §4.2).
+             */
+            cve_id?: string | null;
+            /**
+             * In Kev
+             * @description Null when cve_id is null — see FindingGroupOut's field for the same rule.
+             */
+            in_kev?: boolean | null;
+            /**
+             * Epss Score
+             * @description 0-1, null if not scored yet.
+             */
+            epss_score?: number | null;
         };
         /** TriageQueue */
         TriageQueue: {
@@ -2794,6 +2809,8 @@ export interface operations {
                 severity?: components["schemas"]["Severity"] | null;
                 capability?: components["schemas"]["Capability"] | null;
                 rule_id?: string | null;
+                kev_only?: boolean;
+                min_epss?: number | null;
                 limit?: number;
             };
             header?: never;
@@ -3067,6 +3084,8 @@ export interface operations {
                 severity?: components["schemas"]["Severity"] | null;
                 finding_status?: components["schemas"]["FindingStatus"];
                 rule_id?: string | null;
+                kev_only?: boolean;
+                min_epss?: number | null;
                 limit?: number;
             };
             header?: never;

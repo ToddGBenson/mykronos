@@ -2207,3 +2207,43 @@ separate, language-aware work this sitting correctly left alone. `min_epss`/
 `kev_only` finding filters and the same KEV badge on the Triage queue (#20)
 remain — `triage_queue()` is a flat query, not the grouped one the badge
 attaches to.
+
+## D-059 — #20 closed: KEV/EPSS reach the Triage queue
+
+**Status:** Decided and running
+**Spec:** [17](../specs/17-harness-threat-intel-and-i2i.md)
+**Trigger:** "keep going"
+
+D-058 left one row of D-057's list open: `triage_queue()` had no `kev_only`/
+`min_epss` filters and no KEV badge, because it is a flat per-finding query and
+`_attach_threat_intel` was written for the grouped shape `open_findings()`
+returns.
+
+**`_attach_threat_intel` was generalized rather than duplicated.** It keyed its
+output by group identity; retargeted to key by `id(row)` instead, it stamps
+`cve_id`/`in_kev`/`epss_score` onto either a grouped finding or a flat triage
+row with the same call. Writing a second, near-identical stamping function for
+the flat case would have meant two places that could drift on what "in KEV"
+means — the failure mode D-008 already named once.
+
+**The two query paths stay genuinely separate, not just labeled that way.**
+`open_findings()`'s existing behavior — `rows[:limit]` applied before
+grouping — had to survive unchanged for every caller that isn't filtering by
+threat intel, since grouping after limiting and limiting after grouping count
+`shown`/`deduplicated` differently. Only when `kev_only`/`min_epss` is active
+does the query switch to fetching up to `CORRELATION_CEILING` candidates,
+filtering, and limiting the *groups* afterward — the same trade `open_findings`
+already made for correlation, reused rather than reinvented for a second axis
+of filtering. `triage_queue()` picked up the identical branch.
+
+**A schema-drift bug from D-058 surfaced during this sitting's full-suite run,
+unrelated to this change, and got fixed here rather than left for later.**
+`GroomedStory` (D-058) shipped with six required columns and no defaults —
+correct for a table created whole by `create_all()`, but the drift guard
+(`tests/test_schema_upgrade.py`, D-052) checks every model column as if it
+might need adding to a table that already exists, and doesn't distinguish "new
+table, ships with the column" from "existing table, column added later". The
+established answer for that distinction is `GRANDFATHERED`, not a default that
+would be a lie (`groomed_stories.dev_ready` defaulting to `false` for rows that
+can't exist without a value) — the same reasoning already applied to
+`workflow_install_events.repo_onboarding_id`. All six columns joined it.

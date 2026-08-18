@@ -436,6 +436,8 @@ class DashboardQueries:
         finding_status: str = "open",
         limit: int = 400,
         session: Session | None = None,
+        kev_only: bool = False,
+        min_epss: float | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -461,6 +463,9 @@ class DashboardQueries:
         `session` is supplied, a combination naming a KEV-listed CVE has its
         rationale prefixed to say so (spec 17 §5.6) — omitted (not an error)
         when `session` is `None`, matching every other optional input here.
+
+        `kev_only`/`min_epss` (spec 17 §3, #20) also need `session` — a repo with
+        neither filter set behaves exactly as before either way.
         """
         columns = [
             "finding_id",
@@ -503,37 +508,88 @@ class DashboardQueries:
             for member in combo.finding_ids:
                 combination_of[member] = combo.combination_id
 
-        rows = self._finding_rows(
-            repo_full_name,
-            columns,
-            finding_status,
-            capability=capability,
-            severity=severity,
-            rule_id=rule_id,
-            limit=limit + 1,
-        )
-        truncated = len(rows) > limit
-        rows = rows[:limit]
+        # A KEV/EPSS filter is applied after this fetch, in Python, against
+        # data from a different database (spec 17 §4) — SQL has no way to
+        # narrow by it directly. When one is requested, the fetch has to stay
+        # generous enough that the filter doesn't cut candidates before ever
+        # seeing them, so it draws on CORRELATION_CEILING — already the
+        # platform's answer to "how large a single-repo pool is safe to hold
+        # in memory at once" (spec 08 §5a) — instead of `limit` itself, and
+        # the row-level truncation the unfiltered path applies before
+        # grouping moves to a group-level one afterward, since a `limit` of
+        # *problems worth showing* is what the filter is answering for.
+        wants_threat_intel_filter = kev_only or min_epss is not None
+
+        if wants_threat_intel_filter:
+            rows = self._finding_rows(
+                repo_full_name,
+                columns,
+                finding_status,
+                capability=capability,
+                severity=severity,
+                rule_id=rule_id,
+                limit=CORRELATION_CEILING,
+            )
+            pool_truncated = len(rows) >= CORRELATION_CEILING
+        else:
+            rows = self._finding_rows(
+                repo_full_name,
+                columns,
+                finding_status,
+                capability=capability,
+                severity=severity,
+                rule_id=rule_id,
+                limit=limit + 1,
+            )
+            pool_truncated = len(rows) > limit
+            rows = rows[:limit]
 
         groups = self._group_findings(
             rows, repo_full_name, store=store, combination_of=combination_of
         )
         if session is not None:
             self._attach_threat_intel(session, groups)
+        elif wants_threat_intel_filter:
+            # Requested but nothing to check against — the honest answer is
+            # "matches nothing", not a silently unfiltered list. Only
+            # reachable if a caller reaches this method directly with no
+            # session; the API layer always supplies one.
+            groups = []
+
+        if kev_only:
+            groups = [g for g in groups if g["in_kev"]]
+        if min_epss is not None:
+            groups = [
+                g
+                for g in groups
+                if g["epss_score"] is not None and g["epss_score"] >= min_epss
+            ]
+
+        if wants_threat_intel_filter:
+            truncated = pool_truncated or len(groups) > limit
+            groups = groups[:limit]
+            shown_ids = {loc["finding_id"] for g in groups for loc in g["locations"]}
+            rows = [r for r in rows if str(r["finding_id"]) in shown_ids]
+        else:
+            truncated = pool_truncated
 
         return {
             "repo_full_name": repo_full_name,
             "finding_status": finding_status,
             "total": total,
             "matching": (
-                total
-                if capability is None and severity is None and rule_id is None
-                else self._finding_count(
-                    repo_full_name,
-                    finding_status,
-                    capability=capability,
-                    severity=severity,
-                    rule_id=rule_id,
+                sum(g["occurrences"] for g in groups)
+                if wants_threat_intel_filter
+                else (
+                    total
+                    if capability is None and severity is None and rule_id is None
+                    else self._finding_count(
+                        repo_full_name,
+                        finding_status,
+                        capability=capability,
+                        severity=severity,
+                        rule_id=rule_id,
+                    )
                 )
             ),
             "shown": sum(g["occurrences"] for g in groups),
@@ -803,6 +859,8 @@ class DashboardQueries:
         capability: str | None = None,
         rule_id: str | None = None,
         limit: int = 100,
+        kev_only: bool = False,
+        min_epss: float | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
 
@@ -862,12 +920,18 @@ class DashboardQueries:
             "package_version",
             "first_seen_at",
         ]
+        # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
+        # is applied in Python against a different database, so the SQL
+        # fetch has to stay generous enough that LIMIT doesn't cut candidates
+        # before the filter ever sees them.
+        wants_threat_intel_filter = kev_only or min_epss is not None
+        fetch_limit = CORRELATION_CEILING if wants_threat_intel_filter else limit
         rows = self.catalog.query(
             f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
             "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
             "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, first_seen_at "
             "LIMIT ?",
-            [*params, limit],
+            [*params, fetch_limit],
         )
 
         decisions = self._latest_portfolio_decisions()
@@ -883,6 +947,21 @@ class DashboardQueries:
             decision = decisions.get(repo)
             record["repo_recommendation"] = str(decision[1]) if decision else None
             queue.append(record)
+
+        # cve_id/in_kev/epss_score stamped onto every row (spec 17 §4.4, #20) —
+        # not conditional on the filter being active, so a caller can render
+        # the badge whether or not they're also filtering by it.
+        self._attach_threat_intel(session, queue)
+        if kev_only:
+            queue = [item for item in queue if item["in_kev"]]
+        if min_epss is not None:
+            queue = [
+                item
+                for item in queue
+                if item["epss_score"] is not None and item["epss_score"] >= min_epss
+            ]
+        queue = queue[:limit]
+
         return queue, counts
 
     # -- Aegis and Atlas ------------------------------------------------
@@ -1244,45 +1323,50 @@ class DashboardQueries:
         return {str(row) for row in rows}
 
     @staticmethod
-    def _attach_threat_intel(session: Session, groups: list[dict[str, Any]]) -> None:
-        """Stamp `cve_id`/`in_kev`/`epss_score` onto each group, in place
-        (spec 17 §4.4, spec 20 polish). `None` for a group naming no CVE —
-        distinct from `in_kev: False`, which means a CVE was found and
-        checked. Mutates rather than returns a new list: `groups` already
-        carries every other per-row field this way (`_group_findings`), and
-        a second return convention here would be the odd one out.
+    def _attach_threat_intel(session: Session, rows: list[dict[str, Any]]) -> None:
+        """Stamp `cve_id`/`in_kev`/`epss_score` onto each row, in place
+        (spec 17 §4.4, #20). `None` for a row naming no CVE — distinct from
+        `in_kev: False`, which means a CVE was found and checked. Mutates
+        rather than returns a new list: every other per-row field here is
+        already attached this way (`_group_findings`), and a second
+        convention would be the odd one out.
+
+        Generic over what `rows` actually are — grouped findings
+        (`group_key`) or flat triage-queue rows (`finding_id`) both work,
+        keyed here by Python object identity rather than either field name,
+        since the two callers don't share one.
         """
-        cve_by_key: dict[str, str] = {}
-        for group in groups:
-            cve_id = extract_cve(str(group.get("rule_id") or ""), str(group.get("title") or ""))
-            group["cve_id"] = cve_id
-            group["in_kev"] = None
-            group["epss_score"] = None
+        cve_by_key: dict[int, str] = {}
+        for row in rows:
+            cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
+            row["cve_id"] = cve_id
+            row["in_kev"] = None
+            row["epss_score"] = None
             if cve_id:
-                cve_by_key[group["group_key"]] = cve_id
+                cve_by_key[id(row)] = cve_id
 
         if not cve_by_key:
             return
 
         matches = {
-            row.cve_id: row
-            for row in session.execute(
+            match.cve_id: match
+            for match in session.execute(
                 select(ThreatIntelMatch).where(
                     ThreatIntelMatch.cve_id.in_(set(cve_by_key.values()))
                 )
             ).scalars()
         }
-        for group in groups:
-            cve_id = cve_by_key.get(group["group_key"])
+        for row in rows:
+            cve_id = cve_by_key.get(id(row))
             if cve_id is None:
                 continue
             match = matches.get(cve_id)
             # Three states, not two: `in_kev` stays `None` above when the
-            # group names no CVE at all; it becomes `False` here — "a CVE
-            # was checked, and it isn't KEV-listed (or hasn't been fetched
-            # yet)" — only once one was found to check.
-            group["in_kev"] = bool(match and match.in_kev)
-            group["epss_score"] = match.epss_score if match else None
+            # row names no CVE at all; it becomes `False` here — "a CVE was
+            # checked, and it isn't KEV-listed (or hasn't been fetched yet)"
+            # — only once one was found to check.
+            row["in_kev"] = bool(match and match.in_kev)
+            row["epss_score"] = match.epss_score if match else None
 
     def threat_intel(self, session: Session) -> list[dict[str, Any]]:
         """Every CVE currently matched to an open finding somewhere in the

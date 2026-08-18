@@ -89,6 +89,10 @@ export type FindingsQuery = {
   status?: string;
   /** Free-text, matched against rule_id and title (spec 17 §3). */
   rule_id?: string;
+  /** "1" when set — CISA KEV-listed CVEs only (spec 17 §3, #20). */
+  kev_only?: string;
+  /** EPSS threshold as a string, e.g. "0.5" (spec 17 §3, #20). */
+  min_epss?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
@@ -135,12 +139,12 @@ export function OpenFindings({
       {page.groups.length === 0 ? (
         <EmptyState
           title={
-            query.severity || query.capability || query.rule_id
+            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
               ? "Nothing matches these filters"
               : `No ${(query.status ?? "open").replace("_", " ")} findings`
           }
           detail={
-            query.severity || query.capability || query.rule_id
+            query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -275,6 +279,39 @@ function Filters({
           </Link>
         ) : null}
       </form>
+
+      {/* Threat intel (spec 17 §3, #20) — a fact and a probability, so two
+          separate toggles rather than one "exploitable" checkbox that would
+          conflate them. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Threat intel</Label>
+        <Link
+          href={href({
+            kev_only: query.kev_only === "1" ? undefined : "1",
+            ...CLEAR_SELECTION,
+          })}
+          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            query.kev_only === "1"
+              ? "border-critical bg-critical-wash text-critical"
+              : "border-rule text-ink-3 hover:border-accent"
+          }`}
+        >
+          KEV only
+        </Link>
+        <Link
+          href={href({
+            min_epss: query.min_epss === "0.5" ? undefined : "0.5",
+            ...CLEAR_SELECTION,
+          })}
+          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            query.min_epss === "0.5"
+              ? "border-high bg-high-wash text-high"
+              : "border-rule text-ink-3 hover:border-accent"
+          }`}
+        >
+          EPSS ≥ 50%
+        </Link>
+      </div>
     </div>
   );
 }
