@@ -406,6 +406,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/threat-model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Threat Model
+         * @description A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6).
+         *
+         *     Composed from `open_findings`' own building blocks — `_finding_rows` and
+         *     `_group_findings` — not a second grouping implementation reading the same
+         *     table differently.
+         */
+        get: operations["repo_threat_model_api_dashboard_repos__repo_id__threat_model_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/findings": {
         parameters: {
             query?: never;
@@ -2409,6 +2433,50 @@ export interface components {
             /** Finding Count */
             finding_count: number;
         };
+        /** ThreatModelCategoryOut */
+        ThreatModelCategoryOut: {
+            /**
+             * Stride
+             * @description One of STRIDE_CATEGORIES (dashboard.py).
+             */
+            stride: string;
+            /** Findings */
+            findings: components["schemas"]["FindingGroupOut"][];
+        };
+        /**
+         * ThreatModelOut
+         * @description A STRIDE-categorized attack-surface inventory (spec 18 §6).
+         */
+        ThreatModelOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Mapping Resolution
+             * @description Always 'capability' today — no Finding carries a structured CWE, so this is the finest resolution the data honestly supports. A future CWE-aware pass would report 'cwe' here instead, distinguishing the two rather than letting the frontend assume one silently became the other.
+             */
+            mapping_resolution: string;
+            /** Categories */
+            categories: components["schemas"]["ThreatModelCategoryOut"][];
+            supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
+        };
+        /**
+         * ThreatModelSupplyChainOut
+         * @description The dependency graph as a whole — context, not a finding (spec 18 §8).
+         */
+        ThreatModelSupplyChainOut: {
+            /** Trust Score */
+            trust_score?: number | null;
+            /**
+             * Dependency Count
+             * @default 0
+             */
+            dependency_count: number;
+            /**
+             * Vulnerable Dependency Count
+             * @default 0
+             */
+            vulnerable_dependency_count: number;
+        };
         /** ToxicCombinationMemberOut */
         ToxicCombinationMemberOut: {
             /** Finding Id */
@@ -3027,6 +3095,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SscsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_threat_model_api_dashboard_repos__repo_id__threat_model_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelOut"];
                 };
             };
             /** @description Validation Error */

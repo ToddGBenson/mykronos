@@ -29,6 +29,7 @@ import {
   type ShadowModeReport,
   type SscsPage,
   type ThreatIntelEntry,
+  type ThreatModelPage,
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
@@ -292,6 +293,21 @@ export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load supply-chain evidence") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getThreatModel(repoId: string): Promise<Result<ThreatModelPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/threat-model",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the threat model") };
     }
     return { ok: true, data };
   } catch (error) {

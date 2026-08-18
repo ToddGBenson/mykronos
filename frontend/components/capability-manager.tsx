@@ -214,7 +214,7 @@ function ExplainRedCapability({
   const meta = CAPABILITY_META[capability as keyof typeof CAPABILITY_META];
   const reason =
     (stage && RED_REASON[stage.state]) ??
-    "Enabled, and not answering — check the Harness tab's pipeline stages for detail.";
+    "Enabled, and not answering — check the Enabled jobs section on the Harness tab for detail.";
   return (
     <div className="border-l-2 border-critical bg-critical-wash px-3 py-2 text-[11px] text-ink-2">
       <p>

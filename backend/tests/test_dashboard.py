@@ -1233,6 +1233,94 @@ class TestTriageQueueThreatIntel:
         assert none_match == []
 
 
+class TestThreatModel:
+    """spec 18 §6: a STRIDE-categorized attack-surface inventory."""
+
+    def _seed(self, client, admin_auth: dict[str, str], run_compaction) -> str:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["dast", "secrets", "atlas"]},
+            headers=admin_auth,
+        )
+        token = issue_token(client, REPO, "dast", "secrets", "atlas")
+        auth = {"Authorization": f"Bearer {token}"}
+
+        post_scan(client, auth, scan_run_id="run-dast", capability="dast")
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id="exposed-admin-panel", severity="high", symbol="a")],
+            scan_run_id="run-dast",
+            capability="dast",
+        )
+        post_scan(client, auth, scan_run_id="run-secrets", capability="secrets")
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id="hardcoded-api-key", severity="critical", symbol="b")],
+            scan_run_id="run-secrets",
+            capability="secrets",
+        )
+        run_compaction()
+        return repo_id
+
+    def test_findings_land_in_every_category_their_capability_maps_to(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed(client, admin_auth, run_compaction)
+
+        body = client.get(
+            f"/api/dashboard/repos/{repo_id}/threat-model", headers=admin_auth
+        ).json()
+
+        by_stride = {c["stride"]: c["findings"] for c in body["categories"]}
+        assert {f["rule_id"] for f in by_stride["spoofing"]} == {"exposed-admin-panel"}
+        assert {f["rule_id"] for f in by_stride["tampering"]} == {"exposed-admin-panel"}
+        assert {f["rule_id"] for f in by_stride["information_disclosure"]} == {
+            "hardcoded-api-key"
+        }
+
+    def test_a_category_with_no_capability_mapped_to_it_is_empty_not_absent(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        """Repudiation has no capability behind it (spec 18 §6.2) — it should
+        still appear, empty, rather than being missing from the response."""
+        repo_id = self._seed(client, admin_auth, run_compaction)
+
+        body = client.get(
+            f"/api/dashboard/repos/{repo_id}/threat-model", headers=admin_auth
+        ).json()
+
+        stride_names = {c["stride"] for c in body["categories"]}
+        assert "repudiation" in stride_names
+        assert [c for c in body["categories"] if c["stride"] == "repudiation"][0][
+            "findings"
+        ] == []
+
+    def test_the_mapping_resolution_is_disclosed(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed(client, admin_auth, run_compaction)
+
+        body = client.get(
+            f"/api/dashboard/repos/{repo_id}/threat-model", headers=admin_auth
+        ).json()
+
+        assert body["mapping_resolution"] == "capability"
+
+    def test_a_repo_with_no_supply_chain_evidence_reports_none(
+        self, client, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        repo_id = self._seed(client, admin_auth, run_compaction)
+
+        body = client.get(
+            f"/api/dashboard/repos/{repo_id}/threat-model", headers=admin_auth
+        ).json()
+
+        assert body["supply_chain"] is None
+
+
 def test_severity_enum_covers_every_portfolio_bucket() -> None:
     """A new severity must not silently vanish from the summary."""
     from mykronos.dashboard import SEVERITIES
