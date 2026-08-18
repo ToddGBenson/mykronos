@@ -2304,3 +2304,51 @@ different pipelines checking two different things, and only one of them
 publishes what `deploy.ps1` pulls. "Merged" is not "deployed"; confirming
 deploy means checking the Concourse job graph itself, the way this fix was
 found.
+
+## D-061 — Spec 18: the repo page rework, on request
+
+**Status:** Decided and running
+**Spec:** [18](../specs/18-repo-page-rework-threat-model-and-remediation.md)
+**Trigger:** User-reported portfolio/Findings count mismatch, plus a direct
+request for tab restructuring, filters, on-demand remediation, and a defined
+SBOM process
+
+Three scoping questions were asked before writing anything, because each had
+more than one reasonable reading and the wrong one would have meant building
+the wrong thing at spec-18 scale:
+
+**"Threat Model" meant a formal STRIDE analysis, not a repackaging of KEV/EPSS
+data.** The cheaper reading — consolidate exploit-exposure data already
+computed elsewhere into one tab — was offered and declined. The chosen scope
+is a real, new capability: a STRIDE-categorized attack-surface inventory. Built
+capability-level rather than CWE-level because no `Finding` carries a
+structured CWE today (`rule_id` is a free-form tool string) — see spec 18 §6.3
+for why that resolution is disclosed rather than papered over.
+
+**The narrative layer is honest plumbing, not a new LLM dependency.** Asked
+directly, given that this backend has never called an LLM (confirmed by
+re-reading specs 06/08/09/12 and the actual code — `fix_generator_url` and
+`ai_classifier_url` are both nullable, validated, and never dereferenced) and
+Oracle's own spec explicitly chose templates over free-form narrative. The
+answer chosen was the same pattern reachability got: a nullable
+`narrative_generator_url`, unavailable by default, no SDK added, no key
+required. Building a real LLM call was the other option on the table and was
+declined — worth naming because "AI-generated threat model" is exactly the
+kind of request that quietly grows into a new external dependency if the
+question isn't asked first.
+
+**Dashboard duplicates content on purpose.** Spec 17 split Harness and
+Findings apart for good reasons that still hold; this spec adds Dashboard back
+as an eighth tab carrying the pre-split combined view *and* new summary cards,
+even though most of that content already has its own tab. Offered as "pick
+one," the answer was "both" — confirmed rather than assumed, since building a
+tab whose entire purpose is answering a question two other tabs already answer
+is the kind of thing worth checking before writing it.
+
+**The count-mismatch bug traces to the same `asset_id`/`repo_full_name`
+migration D-052's drift guard exists near.** Portfolio aggregates
+(`_open_severity_counts`, `_capability_scan_state`) never moved off
+`repo_full_name` when every other repo-scoped query in `dashboard.py` did;
+`migrate_assets.py` existed specifically to backfill the column this bug shows
+the consequence of not universally depending on. Fixed by making the portfolio
+queries match everything else, not by adding a third convention.
