@@ -78,6 +78,17 @@ DEFAULT_ACCEPTANCE_CRITERION = "The finding no longer appears on a re-scan of th
 LABEL_DEV_READY = "mykronos:dev-ready"
 LABEL_NEEDS_TRIAGE = "mykronos:needs-triage"
 
+#: Severity -> the priority label an auto-filed story carries (spec 19 §4.3).
+#: A label on the issue rather than a field on `TriageStory`, so a tracker can
+#: sort a backlog without Mykronos owning what "priority" means to a team.
+PRIORITY_LABELS = {
+    "critical": "mykronos:priority-urgent",
+    "high": "mykronos:priority-urgent",
+    "medium": "mykronos:priority-normal",
+    "low": "mykronos:priority-low",
+    "info": "mykronos:priority-low",
+}
+
 
 def story_id(repo_full_name: str, subject_id: str) -> str:
     """Derived, not random (spec 17 §7.2) — same rule as `finding_id`
@@ -246,7 +257,11 @@ class TriageStory:
 
     @property
     def labels(self) -> list[str]:
-        return [LABEL_DEV_READY if self.dev_ready else LABEL_NEEDS_TRIAGE]
+        labels = [LABEL_DEV_READY if self.dev_ready else LABEL_NEEDS_TRIAGE]
+        priority = PRIORITY_LABELS.get(self.severity)
+        if priority:
+            labels.append(priority)
+        return labels
 
 
 # ---------------------------------------------------------------------------

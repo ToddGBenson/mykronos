@@ -95,6 +95,35 @@ class TestRoundTrip:
         assert catalog.count("scan_runs") == 1
         assert catalog.count("findings") == 0
 
+    def test_the_finalising_post_can_add_a_detail(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog, run_compaction
+    ) -> None:
+        """A scan run is posted twice — registered at start, finalised at
+        completion (D-002) — and `detail` (spec 19 §1.2) only exists on the
+        second. That makes it an UPDATE, and the upsert's SET clause is an
+        explicit column list: a column missing from it is silently dropped,
+        which is how this shipped broken once. The regression, exactly as
+        `upload.py` performs it."""
+        post_scan(client, auth, scan_run_id="two-post", completed_at=None)
+        # Compacted *between* the two posts, which is what makes the second
+        # an UPDATE rather than a row collapsed into one INSERT by
+        # `_stage_incoming`. Any scan running longer than the compaction
+        # interval takes this path in production, which is most of them.
+        run_compaction()
+        post_scan(
+            client,
+            auth,
+            scan_run_id="two-post",
+            scan_status="failure",
+            detail="3 of 10 test(s) failed (2 failure(s), 1 error(s)).",
+        )
+        run_compaction()
+
+        (detail,) = one(
+            catalog, "SELECT detail FROM scan_runs WHERE scan_run_id = 'two-post'"
+        )
+        assert detail == "3 of 10 test(s) failed (2 failure(s), 1 error(s))."
+
     def test_raw_tool_record_is_preserved_verbatim(
         self, client: TestClient, auth: dict[str, str], catalog: Catalog, run_compaction
     ) -> None:

@@ -18,8 +18,9 @@ from sqlalchemy import select
 
 from mykronos.adminauth import AdminDep
 from mykronos.dashboard import DashboardQueries
-from mykronos.db.models import GroomedStory, RepoOnboarding
+from mykronos.db.models import RepoOnboarding
 from mykronos.github.client import GitHubError
+from mykronos.groom import open_or_update_story
 from mykronos.logsafe import scrub
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
@@ -71,6 +72,13 @@ def _github_for(request: Request, repo_full_name: str) -> Any:
 
 
 async def _open_or_update(request: Request, actor: str, story: TriageStory) -> GroomResult:
+    """The API's wrapper around the shared grooming path (spec 19 §4.3).
+
+    The work itself lives in `mykronos.groom` so the scheduled auto-routing
+    pass runs identical code; this adds only what is specific to being inside
+    a request — resolving the installation, and turning a GitHub failure into
+    a status code rather than an exception a job would log.
+    """
     github = _github_for(request, story.repo_full_name)
     if github is None:
         raise HTTPException(
@@ -81,73 +89,23 @@ async def _open_or_update(request: Request, actor: str, story: TriageStory) -> G
             ),
         )
 
-    db = request.app.state.db
-    with db.session() as session:
-        existing = session.get(GroomedStory, story.id)
-
-        try:
-            if existing is None:
-                ref = await github.create_issue(
-                    story.repo_full_name,
-                    story.title,
-                    story.render_issue_body(),
-                    labels=story.labels,
-                )
-                created = True
-            else:
-                await github.update_issue(
-                    story.repo_full_name,
-                    existing.github_issue_number,
-                    title=story.title,
-                    body=story.render_issue_body(),
-                    labels=story.labels,
-                )
-                ref = None
-                created = False
-        except GitHubError as exc:
-            logger.warning(
-                "Grooming %s %s failed: %s", story.subject_type, scrub(story.subject_id), exc
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail=f"GitHub refused this: {exc}"
-            ) from exc
-
-        if created and ref is not None:
-            row = GroomedStory(
-                id=story.id,
-                repo_full_name=story.repo_full_name,
-                subject_type=story.subject_type,
-                subject_id=story.subject_id,
-                github_issue_number=ref.number,
-                github_issue_url=ref.url,
-                dev_ready=story.dev_ready,
-            )
-            session.add(row)
-        else:
-            assert existing is not None  # narrows for mypy; `created` implies otherwise
-            existing.dev_ready = story.dev_ready
-
-        db.audit(
-            session,
-            actor=actor,
-            action="triage.groom",
-            entity_type=story.subject_type,
-            entity_id=story.subject_id,
-            repo=story.repo_full_name,
-            dev_ready=story.dev_ready,
-            created=created,
+    try:
+        outcome = await open_or_update_story(request.app.state.db, github, actor, story)
+    except GitHubError as exc:
+        logger.warning(
+            "Grooming %s %s failed: %s", story.subject_type, scrub(story.subject_id), exc
         )
-
-        issue_number = ref.number if created and ref is not None else existing.github_issue_number
-        issue_url = ref.url if created and ref is not None else existing.github_issue_url
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"GitHub refused this: {exc}"
+        ) from exc
 
     return GroomResult(
-        story_id=story.id,
+        story_id=outcome.story_id,
         dev_ready=story.dev_ready,
         missing_fields=story.missing_fields,
-        github_issue_number=issue_number,
-        github_issue_url=issue_url,
-        created=created,
+        github_issue_number=outcome.github_issue_number,
+        github_issue_url=outcome.github_issue_url,
+        created=outcome.created,
     )
 
 

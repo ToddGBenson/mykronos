@@ -158,6 +158,7 @@ def _pipeline(request: Request, repo_full_name: str) -> tuple[PatchworkPipeline,
         max_open_draft_prs=int(config.get("max_open_draft_prs_per_repo", 10)),
         source_capabilities=tuple(sources),
         fix_generator_url=config.get("fix_generator_url"),
+        auto_fix_min_severity=str(config.get("auto_fix_min_severity", "high")),
     )
     return pipeline, default_branch
 

@@ -15,7 +15,7 @@ with one definition instead of a schema file and a parser that can disagree.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -383,6 +383,17 @@ class PatchworkConfig(BaseCapabilityConfig):
             "Backpressure (spec 08 §5). A repository that wakes up to forty "
             "draft pull requests does not triage them, it turns the "
             "capability off."
+        ),
+    )
+    auto_fix_min_severity: Literal["critical", "high", "medium", "low"] = Field(
+        default="high",
+        description=(
+            "Severity floor for the *unprompted* batch sweep (spec 19 §4.5). "
+            "`high` is what `classify()` hardcoded before this field existed, "
+            "so the default changes nothing. Lower it once the fixer library "
+            "covers a repo's medium findings reliably — the per-finding "
+            "on-demand fix (spec 18 §7) is unaffected either way; it has "
+            "never been severity-gated."
         ),
     )
     fix_generator_url: str | None = Field(

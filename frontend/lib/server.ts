@@ -25,6 +25,7 @@ import {
   type RepoDetail,
   type RetroReport,
   type RiskDecision,
+  type RiskProfile,
   type ScanHealth,
   type ScanRunTrend,
   type ShadowModeReport,
@@ -441,6 +442,21 @@ export async function getScanHealth(repoId: string): Promise<Result<ScanHealth>>
     );
     if (!data) return { ok: false, error: describe(response, "Could not load scan health") };
     return { ok: true, data: data as ScanHealth };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getRiskProfile(repoId: string): Promise<Result<RiskProfile>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/repos/{repo_id}/risk-profile",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the risk profile") };
+    }
+    return { ok: true, data };
   } catch (error) {
     return failure(error);
   }

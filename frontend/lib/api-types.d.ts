@@ -1082,6 +1082,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/repos/{repo_id}/risk-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Risk Profile
+         * @description What this application is, as an asset (spec 21 §1.3).
+         *
+         *     Readable by any authenticated principal — nothing here is more sensitive
+         *     than a capability config, and a viewer reading a risk decision should be
+         *     able to see the asset facts that drove it.
+         */
+        get: operations["get_risk_profile_api_repos__repo_id__risk_profile_get"];
+        /**
+         * Put Risk Profile
+         * @description Record or replace this repository's risk profile (spec 21 §1.3).
+         *
+         *     Admin-only and audit-logged: this changes what Oracle will decide, so it
+         *     is a write in the same sense a finding disposition is (spec 10 §2.2), not
+         *     a preference. `updated_by` is stamped from the caller rather than accepted
+         *     from the body — "who said this repository is internet-facing" is exactly
+         *     the field nobody should be able to fill in on somebody else's behalf.
+         */
+        put: operations["put_risk_profile_api_repos__repo_id__risk_profile_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/triage/{finding_id}/groom": {
         parameters: {
             query?: never;
@@ -2330,6 +2364,60 @@ export interface components {
             text: string;
             /** Repo Full Name */
             repo_full_name?: string | null;
+        };
+        /**
+         * RiskProfileOut
+         * @description What this application is, as an asset (spec 21 §1).
+         *
+         *     Every field independently nullable: a partially-filled profile is still
+         *     useful. `exists` distinguishes the two states that matter to Oracle — a
+         *     profile recorded but not yet filled in is an auditable fact, no profile
+         *     at all is `available: false`.
+         */
+        RiskProfileOut: {
+            /** Exists */
+            exists: boolean;
+            /** Internet Facing */
+            internet_facing?: boolean | null;
+            /** Data Classification */
+            data_classification?: ("public" | "internal" | "confidential" | "regulated") | null;
+            /** Business Criticality */
+            business_criticality?: ("low" | "medium" | "high" | "critical") | null;
+            /** Compliance Scope */
+            compliance_scope?: string[];
+            /** Owner */
+            owner?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Updated By
+             * @default
+             */
+            updated_by: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * RiskProfileUpdate
+         * @description A full replace, not a patch (spec 21 §1.3).
+         *
+         *     A risk profile is a small, complete statement of fact about an asset;
+         *     a field-by-field patch endpoint invites one that drifts a field at a
+         *     time with nobody ever reading the whole thing.
+         */
+        RiskProfileUpdate: {
+            /** Internet Facing */
+            internet_facing?: boolean | null;
+            /** Data Classification */
+            data_classification?: ("public" | "internal" | "confidential" | "regulated") | null;
+            /** Business Criticality */
+            business_criticality?: ("low" | "medium" | "high" | "critical") | null;
+            /** Compliance Scope */
+            compliance_scope?: string[];
+            /** Owner */
+            owner?: string | null;
+            /** Notes */
+            notes?: string | null;
         };
         /**
          * RunRequest
@@ -4226,6 +4314,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_risk_profile_api_repos__repo_id__risk_profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RiskProfileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_risk_profile_api_repos__repo_id__risk_profile_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RiskProfileUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RiskProfileOut"];
                 };
             };
             /** @description Validation Error */

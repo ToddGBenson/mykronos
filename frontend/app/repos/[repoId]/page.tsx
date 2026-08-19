@@ -12,6 +12,7 @@ import {
   type FindingsQuery,
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
+import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { SscsTab } from "@/components/sscs";
 import { ThreatModelTab } from "@/components/threat-model";
@@ -31,6 +32,7 @@ import {
   getOpenFindings,
   getRemediation,
   getRepo,
+  getRiskProfile,
   getScanHealth,
   getScanRunTrend,
   getSscs,
@@ -419,15 +421,32 @@ async function FindingDisposition({ findingId }: { findingId: string }) {
 }
 
 async function RiskDecisionsTab({ repoId }: { repoId: string }) {
-  const result = await getDecisions(repoId);
+  // The profile is one of the inputs the decisions below are computed from
+  // (spec 21 §1.5), so it belongs beside the term breakdown that reads it —
+  // not on a settings page somewhere else. Fetched alongside rather than
+  // nested, so a profile that fails to load does not take the decisions with
+  // it.
+  const [result, profile] = await Promise.all([
+    getDecisions(repoId),
+    getRiskProfile(repoId),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Decisions unavailable" detail={result.error} />;
   }
   return (
-    <DecisionsTab
-      repoFullName={result.data.repo_full_name}
-      decisions={result.data.decisions}
-    />
+    <div className="flex flex-col gap-4">
+      {profile.ok ? (
+        <RiskProfileCard repoId={repoId} profile={profile.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+          {profile.error}
+        </p>
+      )}
+      <DecisionsTab
+        repoFullName={result.data.repo_full_name}
+        decisions={result.data.decisions}
+      />
+    </div>
   );
 }
 

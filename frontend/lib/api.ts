@@ -51,6 +51,9 @@ export type RepoList =
   paths["/api/repos"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RepoDetail =
   paths["/api/repos/{repo_id}"]["get"]["responses"]["200"]["content"]["application/json"];
+/** What this application is, as an asset (spec 21 §1). */
+export type RiskProfile =
+  paths["/api/repos/{repo_id}/risk-profile"]["get"]["responses"]["200"]["content"]["application/json"];
 export type InsiderRiskPage =
   paths["/api/dashboard/repos/{repo_id}/insider-risk"]["get"]["responses"]["200"]["content"]["application/json"];
 export type InsiderRiskSignal = InsiderRiskPage["signals"][number];

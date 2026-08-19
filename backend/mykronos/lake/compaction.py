@@ -132,6 +132,11 @@ _UPDATE_SETS: dict[str, str] = {
         scan_status            = i.scan_status,
         finding_count          = i.finding_count,
         raw_output_ref         = i.raw_output_ref,
+        -- spec 19 §1.2. Only ever set on the finalising post (D-002), which
+        -- is an UPDATE whenever compaction ran between the two — i.e. for
+        -- any scan longer than the compaction interval. Omitting it here
+        -- dropped the message silently for exactly those scans.
+        detail                 = i.detail,
         ingested_at            = i.ingested_at
     """,
 }
