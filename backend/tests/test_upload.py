@@ -342,15 +342,21 @@ class TestOrchestration:
         assert detail is not None
         assert "3 of 10" in detail
 
-    def test_a_scan_with_nothing_to_say_sends_no_detail(
+    def test_a_scan_with_nothing_to_say_omits_detail_entirely(
         self, results: Path, workspace: Path
     ) -> None:
-        """Most scans, most of the time — `detail` is for an adapter that has
-        something specific to add, not a field every run has to fill."""
+        """Not `detail: null` — the key is absent (spec 19 §1.2).
+
+        CI installs the uploader from the commit under test and posts to
+        whatever backend was last deployed, so a new uploader routinely talks
+        to an older one. `ScanRunSubmission` forbids extra keys, so sending
+        `detail: null` to a backend that predates the field 422s the
+        finalising post and loses the ScanRun — the gap spec 04 §7 exists to
+        prevent. Omitting it keeps the common case compatible both ways."""
         client = RecordingClient()
         upload(make_args(results, workspace), client=client)
 
-        assert client.bodies_for("/api/ingest/scan-run")[1].get("detail") is None
+        assert "detail" not in client.bodies_for("/api/ingest/scan-run")[1]
 
     def test_pr_number_zero_becomes_null(self, results: Path, workspace: Path) -> None:
         """GitHub expression fallbacks yield 0 for "not a pull request"; a run
