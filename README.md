@@ -63,6 +63,17 @@ Read the specs in this order:
 | 15 | [Concourse Pipeline](specs/15-concourse-pipeline.md) | The self-hosted second execution environment: quality, security, gate, build, deploy |
 | 16 | [TheHub Delivery Pipeline](specs/16-thehub-delivery-pipeline.md) | Delivery to demo, DAST, a manual gate before prod, and the retirement of this repo's GitHub Actions |
 | 17 | [Harness Promotion, Threat Intel, i2i](specs/17-harness-threat-intel-and-i2i.md) | Harness/Findings as real tabs, KEV/EPSS threat intelligence, and the (not-yet-built) issue-to-implementation grooming process |
+| 18 | [Repo Page Rework](specs/18-repo-page-rework-threat-model-and-remediation.md) | Eight tabs, a real test harness, a STRIDE threat model, and remediation from a finding |
+| 19 | [Harness, Triage and Remediation Depth](specs/19-harness-triage-and-remediation-depth.md) | Flaky-test flagging, blast radius, import reachability, partial fixes, auto-routing |
+| 20 | [Aegis Depth](specs/20-aegis-depth.md) | The AI-authorship classifier call, `privilege_adjacent`, and stating whether Aegis blocks |
+| 21 | [Oracle Depth & Risk Profile](specs/21-oracle-depth-and-risk-profile.md) | Asset context as an input, real portfolio aggregation, fleet term analytics, the override button |
+| 22 | [Atlas (SCA) Depth](specs/22-atlas-sca-depth.md) | License compliance, a real freshness signal, package/license denylists |
+
+Specs 18–22 close a round of depth work: each began as a full read of a
+subsystem, and each is a list of things that were *named* in an earlier spec —
+a capped signal, a scoring term, a snapshot category — and never wired to
+anything. Their status tables record what shipped and what was deliberately
+left, with the reasoning in `docs/DECISIONS.md`.
 
 ## Provenance
 
