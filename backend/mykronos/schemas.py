@@ -336,6 +336,47 @@ class EcosystemEvidence(BaseModel):
     )
 
 
+class ReachabilitySubmission(BaseModel):
+    """What the reachability analysis posts (spec 19 §2.1).
+
+    Conclusions only, like every other runner-side analysis: which files
+    nothing imports, and how many were read. No source, no import graph — the
+    graph is an intermediate the platform has no use for, and shipping it
+    would be sending repository structure somewhere it does not need to go.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(default="python", max_length=32)
+    commit_sha: str = Field(default="", max_length=64)
+    orphaned_paths: list[str] = Field(
+        default_factory=list,
+        max_length=5000,
+        description=(
+            "Repo-relative paths nothing in the repository imports, and that "
+            "are not entry points. An empty list is a real answer — analysed, "
+            "everything is imported from somewhere — and is not the same as "
+            "the analysis never having run."
+        ),
+    )
+    files_analysed: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "The denominator. Three orphaned files means something different "
+            "out of twelve than out of twelve hundred."
+        ),
+    )
+    files_unparseable: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Never counted as orphaned: a file whose imports could not be "
+            "read leaves everything it might import unproven too."
+        ),
+    )
+
+
 class SscsEvidenceSubmission(BaseModel):
     """What the Atlas workflow posts (spec 07 §3, §4).
 
@@ -393,6 +434,18 @@ class AegisAccepted(BaseModel):
     check_run_id: str | None = None
     check_run_error: str | None = None
     detail: str = "Written to the durability buffer."
+
+
+class ReachabilityAccepted(BaseModel):
+    accepted: int
+    orphaned: int
+    files_analysed: int
+    note: str = (
+        "Import reachability for Python only, and only 'does anything import "
+        "this file' — not whether a function is called (spec 19 §2.1). A file "
+        "not listed here is not proven reachable; it is simply not proven "
+        "orphaned."
+    )
 
 
 class AtlasAccepted(BaseModel):

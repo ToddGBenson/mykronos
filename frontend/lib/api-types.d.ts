@@ -161,6 +161,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/reachability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Reachability
+         * @description Record which files nothing imports (spec 19 §2.1).
+         *
+         *     Under the `sast` capability's token: reachability is a fact about source
+         *     code, and `sast` is the capability whose findings it prioritises. A
+         *     capability of its own would mean a separate grant for something that has
+         *     no findings, no workflow of its own, and nothing to enable.
+         *
+         *     One row per repository, replaced outright. This is current state, not
+         *     evidence — the previous analysis is superseded by this one and nothing
+         *     reads its history (see `ReachabilityReport`).
+         */
+        post: operations["ingest_reachability_api_ingest_reachability_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/{capability}": {
         parameters: {
             query?: never;
@@ -2395,6 +2424,58 @@ export interface components {
             /** Bytes Written */
             bytes_written: number;
         };
+        /** ReachabilityAccepted */
+        ReachabilityAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** Orphaned */
+            orphaned: number;
+            /** Files Analysed */
+            files_analysed: number;
+            /**
+             * Note
+             * @default Import reachability for Python only, and only 'does anything import this file' — not whether a function is called (spec 19 §2.1). A file not listed here is not proven reachable; it is simply not proven orphaned.
+             */
+            note: string;
+        };
+        /**
+         * ReachabilitySubmission
+         * @description What the reachability analysis posts (spec 19 §2.1).
+         *
+         *     Conclusions only, like every other runner-side analysis: which files
+         *     nothing imports, and how many were read. No source, no import graph — the
+         *     graph is an intermediate the platform has no use for, and shipping it
+         *     would be sending repository structure somewhere it does not need to go.
+         */
+        ReachabilitySubmission: {
+            /**
+             * Language
+             * @default python
+             */
+            language: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Orphaned Paths
+             * @description Repo-relative paths nothing in the repository imports, and that are not entry points. An empty list is a real answer — analysed, everything is imported from somewhere — and is not the same as the analysis never having run.
+             */
+            orphaned_paths?: string[];
+            /**
+             * Files Analysed
+             * @description The denominator. Three orphaned files means something different out of twelve than out of twelve hundred.
+             * @default 0
+             */
+            files_analysed: number;
+            /**
+             * Files Unparseable
+             * @description Never counted as orphaned: a file whose imports could not be read leaves everything it might import unproven too.
+             * @default 0
+             */
+            files_unparseable: number;
+        };
         /** RemediationEventOut */
         RemediationEventOut: {
             /** Event Id */
@@ -3242,6 +3323,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AtlasAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_reachability_api_ingest_reachability_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReachabilitySubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReachabilityAccepted"];
                 };
             };
             /** @description Validation Error */

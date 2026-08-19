@@ -59,7 +59,7 @@ class TestEvaluate:
 
         assert body["overall_risk_score"] == 63  # 40 × log2(3)
         assert body["recommendation"] == "review_recommended"
-        assert body["policy_version"] == "1.2"
+        assert body["policy_version"] == "1.3"
 
     def test_the_repo_comes_from_the_token(self, client, oracle_auth, seeded) -> None:
         """There is no repo field in the request, so a workflow cannot ask for
@@ -95,7 +95,7 @@ class TestEvaluate:
         rows = catalog.query(
             "SELECT decision_id, recommendation, policy_version FROM risk_decisions"
         )
-        assert rows == [(decision_id, "review_recommended", "1.2")]
+        assert rows == [(decision_id, "review_recommended", "1.3")]
 
     def test_re_evaluating_creates_a_new_decision(
         self, client, oracle_auth, seeded, run_compaction, catalog
@@ -332,7 +332,7 @@ class TestOverride:
 class TestPolicyEndpoint:
     def test_the_active_policy_is_readable(self, client, admin_auth) -> None:
         body = client.get("/api/oracle/policy", headers=admin_auth).json()
-        assert body["version"] == "1.2"
+        assert body["version"] == "1.3"
         assert body["source"]["findings"]["weights"]["critical"] == 40
 
     def test_viewers_can_read_the_policy(self, client, viewer_auth) -> None:

@@ -2653,3 +2653,51 @@ pull requests — one pull request touching ten repositories would bypass
 per-repo review and CODEOWNERS, which is most of what makes a draft PR an
 acceptable thing for a bot to open. The page says so in its own note rather
 than leaving a reader to assume the opposite.
+
+## D-072 — Import reachability: a discount, and the first negative weight
+
+Spec 17 §5.3 built the `reachability` Oracle category, declined to build a
+call-graph engine, and left the category permanently `available: false`.
+Declining was right — a call graph that handles dynamic dispatch, decorators
+and framework registration is a project. What it left unbuilt was the floor
+underneath: for Python only, does anything in this repository import this file.
+
+That is much less than reachability and the snapshot says so in its own
+`reason` field, because "not listed as orphaned" must not be read as "proven
+reachable".
+
+**It subtracts.** A finding in a file nothing imports is lower priority than
+the same finding on a request path, so this is the only negative weight in
+`oracle-policy-v1.yaml`. That inverts which way a wrong answer hurts: every
+other input, being wrong means raising a score somebody will investigate and
+dismiss; here it means quietly lowering one nobody looks at again. Every
+design choice follows from that:
+
+- A file that will not parse is never called orphaned — and neither is
+  anything else in that repository. Its imports are unknown, so it might have
+  been the only importer of anything else in the tree. One bad file silences
+  the signal for the whole repo. Blunt, and the right way round: this category
+  subtracts, so the safe failure is saying nothing. `files_unparseable` is
+  recorded so an operator can see why it went quiet.
+- Entry points are detected from an `if __name__ == "__main__"` block, not
+  only from a glob list. The first run over Mykronos itself reported `cli.py`
+  and the analysis module as orphaned — true about their imports, false about
+  their purpose — and a glob list would have needed a new entry for every such
+  file forever.
+- Import matching deliberately over-matches: every suffix of a dotted path,
+  both halves of `from pkg.thing import x`, relative imports resolved against
+  the file's own package. A spurious edge costs a signal; a missed edge calls
+  live code dead.
+- The discount is capped at 15, less than the gap between `review_recommended`
+  and `no_go`, so it can never clear a threshold on its own.
+
+**Stored operationally, not in the lake.** `ReachabilityReport` is one row per
+repository, replaced outright. Every other scan observation is append-only
+because its history is evidence; this is current state about the tree, wholly
+superseded by the next analysis, and a row per commit would be a growing table
+nothing reads the old rows of. Same reasoning as `RiskProfile`.
+
+**Ingested under the `sast` token.** Reachability is a fact about source code
+and `sast` is the capability whose findings it prioritises. A capability of its
+own would mean a separate grant for something with no findings, no workflow,
+and nothing to enable.

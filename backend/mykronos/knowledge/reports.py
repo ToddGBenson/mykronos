@@ -285,14 +285,17 @@ def render_retro_markdown(report: RetroReport) -> str:
             "human-reviewed (spec 08 §5).",
             "",
         ]
-        for candidate in report.candidate_combinations:
-            first, second = candidate.capabilities
+        # A distinct name from the promotion-candidate loop above. Reusing
+        # `candidate` made mypy infer the wider of the two types and then
+        # reject every attribute access on it.
+        for combination in report.candidate_combinations:
+            first, second = combination.capabilities
             lines.append(
-                f"- **{first} + {second}** — {candidate.files} file(s) across "
-                f"{candidate.repos} repositor"
-                f"{'y' if candidate.repos == 1 else 'ies'}"
+                f"- **{first} + {second}** — {combination.files} file(s) across "
+                f"{combination.repos} repositor"
+                f"{'y' if combination.repos == 1 else 'ies'}"
             )
-            for example in candidate.examples[:2]:
+            for example in combination.examples[:2]:
                 rules = " / ".join(f["rule_id"] for f in example["findings"])
                 lines.append(
                     f"  - `{example['file_path']}` in "

@@ -202,6 +202,11 @@ GRANDFATHERED = {
     # cannot exist without it, so there is no value to backfill an existing
     # row with, and inventing one would attach every old row to one repo.
     "risk_profiles.repo_onboarding_id",
+    # And again for the import analysis (spec 19 §2.1). Identical case: a
+    # reachability report is *about* a repository and cannot exist without
+    # one, so there is nothing to backfill an existing row with. The table is
+    # new, so no database has rows this would have to be added to.
+    "reachability_reports.repo_onboarding_id",
 }
 
 

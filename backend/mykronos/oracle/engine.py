@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import select
 
 from mykronos import blast_radius
-from mykronos.db.models import RepoOnboarding, RiskProfile, ThreatIntelMatch
+from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
 from mykronos.knowledge.store import KnowledgeStore
@@ -262,24 +262,79 @@ def _sscs_snapshot(sscs: dict[str, Any] | None, *, cap: float) -> dict[str, Any]
     }
 
 
-def _reachability_snapshot() -> dict[str, Any]:
-    """Present, honestly, as not yet computed (spec 17 §5.3).
+def _reachability_snapshot(
+    report: dict[str, Any] | None, orphaned_findings: int, policy: Policy
+) -> tuple[dict[str, Any], list[Term]]:
+    """Findings in code nothing imports (spec 19 §2.1).
 
-    v1 has no call-graph/import-tracing engine — see the deferred-work table
-    in specs/17 §0a. This category exists so a future engine has somewhere to
-    write, and so nothing downstream (a dashboard, a groomed issue) has to
-    special-case "the key isn't there yet" versus "the key says unknown".
-    Always unavailable in this version, on purpose — never silently dropped.
+    Much less than reachability, and the snapshot says so. Spec 17 §5.3
+    declined to build a call-graph engine and left this category permanently
+    unavailable; this is the floor underneath it — for Python only, does
+    anything in the repository import this file.
+
+    The direction of the term is worth stating: it is a *discount*, not a
+    penalty. A finding in a file nothing imports is lower priority than the
+    same finding on a request path, so this subtracts. That makes the failure
+    mode of a wrong answer specific and worth guarding: a file wrongly called
+    orphaned quietly deprioritises a real finding. Everything the analysis is
+    unsure of — a file that would not parse, an entry point, a non-Python
+    file, a repository it never ran for — stays out of the orphaned list, so
+    the error can only be in the direction of discounting nothing.
     """
-    return {
-        "available": False,
+    if report is None:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "reason": (
+                    "No import analysis has run for this repository "
+                    "(spec 19 §2.1). It runs alongside the sast capability, "
+                    "and covers Python only."
+                ),
+            },
+            [],
+        )
+
+    orphaned = list(report.get("orphaned_paths") or [])
+    snapshot = {
+        "available": True,
+        "language": report.get("language") or "python",
+        "analysed_commit": report.get("commit_sha") or None,
+        "files_analysed": int(report.get("files_analysed") or 0),
+        "files_unparseable": int(report.get("files_unparseable") or 0),
+        "orphaned_files": len(orphaned),
+        "findings_in_orphaned_files": orphaned_findings,
         "contribution": 0.0,
         "reason": (
-            "No reachability analysis is configured for this deployment "
-            "(spec 17 §5.3) — this category exists so a future analysis has "
-            "somewhere to report, not because one runs today."
+            "Whether anything in the repository imports the file — not "
+            "whether the code runs. A file not listed as orphaned is not "
+            "proven reachable, only not proven dead."
         ),
     }
+
+    points = policy.reachability.orphaned_discount_per_finding * orphaned_findings
+    points = min(points, policy.reachability.discount_cap)
+    if not points:
+        return (snapshot, [])
+
+    snapshot["contribution"] = round(-points, 2)
+    return (
+        snapshot,
+        [
+            Term(
+                key="reachability.orphaned",
+                label="Findings in files nothing imports",
+                contribution=-points,
+                detail=(
+                    f"{orphaned_findings} finding(s) in {len(orphaned)} "
+                    f"file(s) that nothing in the repository imports, "
+                    f"discounted {points:g} points. Import reachability for "
+                    "Python only — not whether the code is called."
+                ),
+                inputs={"orphaned_files": len(orphaned)},
+            )
+        ],
+    )
 
 
 def _risk_profile_snapshot(
@@ -667,6 +722,59 @@ class OracleEngine:
             as_of=self._as_of,
         )
 
+    def _reachability(self, repo_full_name: str) -> tuple[dict[str, Any] | None, int]:
+        """The stored import analysis, and how many findings sit in dead files.
+
+        `None` when the operational DB is not wired in or no analysis has run
+        — both are `available: false`, which is the honest answer either way.
+        Deliberately not distinguished: there is nothing different to tell an
+        admin about the two.
+        """
+        if self.db is None:
+            return (None, 0)
+        with self.db.session() as session:
+            row = (
+                session.execute(
+                    select(ReachabilityReport)
+                    .join(
+                        RepoOnboarding,
+                        RepoOnboarding.id == ReachabilityReport.repo_onboarding_id,
+                    )
+                    .where(RepoOnboarding.github_repo_full_name == repo_full_name)
+                )
+                .scalars()
+                .first()
+            )
+        if row is None:
+            return (None, 0)
+
+        paths: list[str] = [str(p) for p in (row.orphaned_paths or [])]
+        report: dict[str, Any] = {
+            "language": row.language,
+            "commit_sha": row.commit_sha,
+            "orphaned_paths": paths,
+            "files_analysed": row.files_analysed,
+            "files_unparseable": row.files_unparseable,
+        }
+        if not paths:
+            return (report, 0)
+
+        # Counted against the same scope the score uses, not against every
+        # finding ever recorded: discounting a resolved finding would move a
+        # score for work already done.
+        severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
+        placeholders = ", ".join("?" for _ in paths)
+        rows = self.catalog.query(
+            f"""
+            SELECT count(*) FROM findings
+            WHERE asset_id = ? AND status = 'open'
+              AND severity IN ({severities})
+              AND file_path IN ({placeholders})
+            """,
+            [repo_full_name, *paths],
+        )
+        return (report, int(rows[0][0]) if rows else 0)
+
     def _blast_radius(self, repo_full_name: str) -> tuple[list[str], dict[str, int] | None]:
         """This repo's finding packages, and the portfolio map (spec 19 §2.4).
 
@@ -1034,6 +1142,16 @@ class OracleEngine:
                 )
             )
 
+        # 8. Reachability (spec 19 §2.1). A discount, not a penalty: a
+        #    finding in a file nothing imports is lower priority than the
+        #    same finding on a request path. The only negative term in the
+        #    model, and the reason the analysis behind it refuses to guess.
+        reach_report, orphaned_findings = self._reachability(repo_full_name)
+        reach_snapshot, reach_terms = _reachability_snapshot(
+            reach_report, orphaned_findings, self.policy
+        )
+        terms.extend(reach_terms)
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -1051,6 +1169,7 @@ class OracleEngine:
             exploitable=exploitable,
             risk_profile=risk_profile,
             blast_radius_snapshot=radius_snapshot,
+            reachability_snapshot=reach_snapshot,
         )
 
         decision = Decision(
@@ -1091,6 +1210,7 @@ class OracleEngine:
         exploitable: list[dict[str, Any]] | None = None,
         risk_profile: dict[str, Any] | None = None,
         blast_radius_snapshot: dict[str, Any] | None = None,
+        reachability_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -1137,7 +1257,8 @@ class OracleEngine:
             "exploitability": _exploitability_snapshot(
                 exploitable or [], db_configured=self.db is not None
             ),
-            "reachability": _reachability_snapshot(),
+            "reachability": reachability_snapshot
+            or _reachability_snapshot(None, 0, self.policy)[0],
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "blast_radius": blast_radius_snapshot
             or blast_radius.snapshot([], None)[0],

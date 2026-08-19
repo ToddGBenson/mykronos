@@ -64,3 +64,40 @@
 {% endblock %}
 
 {% block tool_name %}codeql{% endblock %}
+
+{% block post_upload %}
+{%- if config.import_reachability | default(true) %}
+      - name: Import reachability
+        # Which Python files nothing in the repository imports (spec 19 §2.1).
+        #
+        # Not reachability in the call-graph sense, and the platform says so
+        # everywhere it surfaces this. It answers one narrow question that is
+        # nonetheless true, where spec 17 §5.3 correctly declined to answer a
+        # much harder one falsely.
+        #
+        # Under sast because reachability is a fact about source code and
+        # sast is the capability whose findings it prioritises. A capability
+        # of its own would mean a separate grant for something with no
+        # findings and no workflow to enable.
+        #
+        # Runs once per workflow, not once per matrix language: the analysis
+        # is Python-only and the matrix would post the same result several
+        # times, each overwriting the last.
+        if: matrix.language == 'python' || matrix.language == 'javascript-typescript'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python -m pip install --quiet '<< mykronos_package_spec >>' || exit 0
+          python -m mykronos.reachability . \
+            --commit-sha "${{ github.sha }}" > reachability.json || exit 0
+
+          echo "Analysed $(jq -r '.files_analysed' reachability.json) Python file(s);" \
+               "$(jq -r '.orphaned_paths | length' reachability.json) orphaned."
+
+          curl --fail --silent --show-error --max-time 60 \
+            -X POST "<< ingestion_api_url >>/api/ingest/reachability" \
+            -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
+            -H "Content-Type: application/json" \
+            -d @reachability.json > /dev/null
+{%- endif %}
+{% endblock %}
