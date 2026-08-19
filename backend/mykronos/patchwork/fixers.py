@@ -19,6 +19,7 @@ file is either written or it is not.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -59,6 +60,17 @@ Fixer = Callable[[dict[str, Any], str], ProposedFix | None]
 
 _REQUIREMENT = re.compile(
     r"^(?P<prefix>\s*)(?P<name>[A-Za-z0-9._-]+)\s*(?P<op>[=><~!]{1,2})\s*(?P<version>[^\s;#]+)"
+)
+
+#: An npm version that is already an exact pin. Anything carrying a range
+#: operator, a tag, a URL or a workspace protocol is deliberately not matched.
+_EXACT_NPM_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+
+#: One `require` line in a go.mod, with the trailing `// indirect` comment
+#: preserved: dropping it would change what `go mod tidy` believes about the
+#: module and produce a diff that is not only the version.
+_GO_REQUIREMENT = re.compile(
+    r"^(?P<prefix>\s*(?:require\s+)?)(?P<module>[^\s]+)\s+v[^\s]+(?P<suffix>\s*//.*)?$"
 )
 
 
@@ -187,6 +199,122 @@ def remove_committed_secret(finding: dict[str, Any], content: str) -> ProposedFi
 
 
 # --------------------------------------------------------------------------
+# npm and Go dependency pinning (spec 19 §3.1)
+# --------------------------------------------------------------------------
+#
+# One fixer per manifest format rather than one generic dependency fixer,
+# matching `pin_python_requirement`'s shape. The formats disagree about
+# almost everything that matters here — where the version lives, what a range
+# looks like, whether the exact-pin rule even applies — and a single function
+# branching on file extension would be three fixers wearing one name, with
+# one set of tests covering whichever branch was written last.
+
+
+def pin_npm_dependency(finding: dict[str, Any], content: str) -> ProposedFix | None:
+    """Pin a vulnerable npm dependency to its fixed version.
+
+    Same restraint as the Python fixer: only an already-exact pin is
+    rewritten. `^1.2.3` and `~1.2.3` are a project's stated tolerance for
+    updates, and narrowing that to an exact version is a dependency-policy
+    change rather than a security fix — even when it happens to also fix the
+    advisory.
+    """
+    package = str(finding.get("package_name") or "")
+    fixed = _fixed_version(finding)
+    if not package or not fixed:
+        return None
+
+    path = str(finding.get("file_path") or "")
+    if not path.endswith("package.json"):
+        return None
+
+    try:
+        document = json.loads(content)
+    except json.JSONDecodeError:
+        # Unparseable package.json: not this fixer's problem to guess at.
+        return None
+
+    changed = False
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        block = document.get(section)
+        if not isinstance(block, dict) or package not in block:
+            continue
+        current = str(block[package])
+        if not _EXACT_NPM_VERSION.match(current):
+            logger.info(
+                "Leaving %s alone: %s is a range, and narrowing it is a "
+                "dependency-policy change rather than a security fix",
+                package,
+                current,
+            )
+            continue
+        block[package] = fixed
+        changed = True
+
+    if not changed:
+        return None
+
+    # Two spaces and a trailing newline is what npm itself writes, so the
+    # diff is the version line and nothing else.
+    rewritten = json.dumps(document, indent=2) + ("\n" if content.endswith("\n") else "")
+    return ProposedFix(
+        files={path: rewritten},
+        summary=f"Pin `{package}` to {fixed}",
+        review_notes=[
+            f"Confirm {fixed} is the version you want — it is the lowest "
+            "version the advisory reports as fixed, which is the safest "
+            "assumption but not always the one a project wants.",
+            "The lockfile is not updated here. Run `npm install` so "
+            "package-lock.json matches, or this pin changes nothing at "
+            "install time.",
+        ],
+    )
+
+
+def pin_go_module(finding: dict[str, Any], content: str) -> ProposedFix | None:
+    """Pin a vulnerable Go module to its fixed version in `go.mod`.
+
+    Go versions are already exact by construction — there is no range syntax
+    to preserve — so unlike npm and Python there is no policy question here,
+    only whether the line is found.
+    """
+    package = str(finding.get("package_name") or "")
+    fixed = _fixed_version(finding)
+    if not package or not fixed:
+        return None
+
+    path = str(finding.get("file_path") or "")
+    if not path.endswith("go.mod"):
+        return None
+
+    lines = content.splitlines()
+    changed = False
+    for index, line in enumerate(lines):
+        match = _GO_REQUIREMENT.match(line)
+        if not match or match.group("module") != package:
+            continue
+        lines[index] = (
+            f"{match.group('prefix')}{match.group('module')} {fixed}"
+            f"{match.group('suffix') or ''}"
+        )
+        changed = True
+
+    if not changed:
+        return None
+
+    return ProposedFix(
+        files={path: "\n".join(lines) + ("\n" if content.endswith("\n") else "")},
+        summary=f"Pin `{package}` to {fixed}",
+        review_notes=[
+            f"Confirm {fixed} is the version you want — it is the lowest "
+            "version the advisory reports as fixed.",
+            "`go.sum` is not updated here. Run `go mod tidy` before merging, "
+            "or the build will refuse the new version's checksum.",
+        ],
+    )
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -194,6 +322,8 @@ def remove_committed_secret(finding: dict[str, Any], content: str) -> ProposedFi
 #: come first.
 FIXERS: list[tuple[str, Fixer]] = [
     ("pin-python-requirement", pin_python_requirement),
+    ("pin-npm-dependency", pin_npm_dependency),
+    ("pin-go-module", pin_go_module),
     ("remove-committed-secret", remove_committed_secret),
 ]
 

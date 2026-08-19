@@ -1677,6 +1677,11 @@ export interface components {
              * @description 0-1, null if not scored yet.
              */
             epss_score?: number | null;
+            /**
+             * Fixable
+             * @description Whether Patchwork produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
+             */
+            fixable?: boolean | null;
         };
         /**
          * FindingLocationOut
@@ -3536,6 +3541,7 @@ export interface operations {
                 kev_only?: boolean;
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
+                fixable?: boolean | null;
                 limit?: number;
             };
             header?: never;

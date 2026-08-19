@@ -33,12 +33,22 @@ const RECOMMENDATION_TONE: Record<string, "critical" | "warn" | "pass" | "muted"
   pass: "pass",
 };
 
+/**
+ * Every key `aegis.py`'s `SIGNAL_CAP` can emit (spec 20 §3.1). The four
+ * review-integrity signals were missing, so they rendered as raw snake_case
+ * — the one part of an insider-risk card a person is most likely to have to
+ * explain to the colleague it is about.
+ */
 const SIGNAL_LABEL: Record<string, string> = {
   sensitive_path: "Sensitive path",
   access_anomaly: "First contribution",
   author_baseline: "Unusual size for this author",
   ai_authorship: "AI authorship",
   privilege_adjacent: "Privilege-adjacent change",
+  self_approval: "Approved their own change",
+  sole_approver: "Single approver on a sensitive path",
+  fast_approval: "Approved faster than the diff could be read",
+  unverified_ai: "AI-authored, approved without stated verification",
 };
 
 export function InsiderRiskTab({

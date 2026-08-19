@@ -262,6 +262,17 @@ class FindingGroupOut(BaseModel):
         "fetched', which `fetched_at` on GET /api/dashboard/threat-intel disambiguates.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    fixable: bool | None = Field(
+        default=None,
+        description=(
+            "Whether Patchwork produced a fix for any occurrence in this "
+            "group (spec 19 §3.2). Read from what it actually did, not "
+            "predicted — a fixer cannot say whether it applies without the "
+            "file content, and a prediction would never self-correct. Null "
+            "means nobody has looked yet, which is distinct from `false`: "
+            "looked, and there is no mechanical fix."
+        ),
+    )
 
 
 class ToxicCombinationMemberOut(BaseModel):
@@ -1073,6 +1084,7 @@ async def repo_open_findings(
     kev_only: Annotated[bool, Query()] = False,
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     triage: Annotated[TriageFilter | None, Query()] = None,
+    fixable: Annotated[bool | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -1102,6 +1114,7 @@ async def repo_open_findings(
             kev_only=kev_only,
             min_epss=min_epss,
             triage=triage,
+            fixable=fixable,
         )
     return OpenFindingsPage.model_validate(page)
 

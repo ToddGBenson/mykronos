@@ -367,6 +367,7 @@ async function FindingsTab({
     kev_only: query.kev_only === "1",
     min_epss: query.min_epss ? Number(query.min_epss) : undefined,
     triage: query.triage,
+    fixable: query.fixable === "1" ? true : undefined,
   });
 
   if (!findings.ok) {

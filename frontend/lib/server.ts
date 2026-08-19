@@ -144,6 +144,7 @@ export async function getOpenFindings(
     kev_only?: boolean;
     min_epss?: number;
     triage?: string;
+    fixable?: boolean;
   },
 ): Promise<Result<OpenFindingsPage>> {
   try {
@@ -160,6 +161,7 @@ export async function getOpenFindings(
             kev_only: query.kev_only as never,
             min_epss: query.min_epss as never,
             triage: query.triage as never,
+            fixable: query.fixable as never,
           },
         },
         cache: "no-store",

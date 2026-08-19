@@ -66,6 +66,17 @@ CORRELATION_CEILING = 5000
 #: (spec 10 §2.1).
 STALE_AFTER_DAYS = 7
 
+#: Patchwork stages that mean it produced something (spec 19 §3.2). Read from
+#: `remediation_events` rather than predicted: a fixer cannot say whether it
+#: applies without the file content, so the only honest answer to "is this
+#: fixable" is what Patchwork actually did when it looked.
+_FIX_PRODUCED = frozenset({"pr_opened", "fix_generated", "queued"})
+
+#: Stages that mean it looked and could not help. Distinct from never having
+#: looked, which stays `None` — "we tried and there is no mechanical fix" and
+#: "nobody has checked" send a reader to different places.
+_FIX_REFUSED = frozenset({"no_fix_available", "skipped_low_confidence"})
+
 #: The Threat Model tab's whole vocabulary (spec 18 §6.2). Repudiation has no
 #: capability mapped to it deliberately — nothing this platform scans speaks
 #: to "can an action be denied after the fact," and a category with an
@@ -497,6 +508,7 @@ class DashboardQueries:
         kev_only: bool = False,
         min_epss: float | None = None,
         triage: str | None = None,
+        fixable: bool | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -587,7 +599,9 @@ class DashboardQueries:
         # it is not a column a single row carries either — but it needs no
         # session, so it is kept a separate flag from the threat-intel one
         # rather than folded into it and made to look like it does.
-        wants_group_filter = wants_threat_intel_filter or triage is not None
+        wants_group_filter = (
+            wants_threat_intel_filter or triage is not None or fixable is not None
+        )
 
         if wants_group_filter:
             rows = self._finding_rows(
@@ -614,7 +628,11 @@ class DashboardQueries:
             rows = rows[:limit]
 
         groups = self._group_findings(
-            rows, repo_full_name, store=store, combination_of=combination_of
+            rows,
+            repo_full_name,
+            store=store,
+            combination_of=combination_of,
+            fix_stage_of=self._fix_stages(repo_full_name),
         )
         if session is not None:
             self._attach_threat_intel(session, groups)
@@ -635,6 +653,8 @@ class DashboardQueries:
             ]
         if triage is not None:
             groups = [g for g in groups if g["triage"] == triage]
+        if fixable is not None:
+            groups = [g for g in groups if g["fixable"] is fixable]
 
         if wants_group_filter:
             truncated = pool_truncated or len(groups) > limit
@@ -751,6 +771,29 @@ class DashboardQueries:
             ),
         }
 
+    def _fix_stages(self, repo_full_name: str) -> dict[str, str]:
+        """finding_id -> the stage Patchwork last reached for it (spec 08 §7).
+
+        The same read `jobs.route_open_findings` makes, for the same reason:
+        what Patchwork *did* is the only honest answer to "is this fixable",
+        since a fixer cannot decide without the file content and this query
+        layer has no business fetching one.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT finding_id, pipeline_stage_reached FROM (
+                SELECT finding_id, pipeline_stage_reached,
+                       row_number() OVER (
+                           PARTITION BY finding_id ORDER BY updated_at DESC
+                       ) AS rn
+                FROM remediation_events
+                WHERE repo_full_name = ?
+            ) WHERE rn = 1
+            """,
+            [repo_full_name],
+        )
+        return {str(finding_id): str(stage) for finding_id, stage in rows}
+
     def _status_clause(
         self,
         repo_full_name: str,
@@ -865,6 +908,7 @@ class DashboardQueries:
         *,
         store: KnowledgeStore | None,
         combination_of: dict[str, str],
+        fix_stage_of: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collapse repeat occurrences of the same problem into one row.
 
@@ -963,6 +1007,19 @@ class DashboardQueries:
             group["triage"] = classification
             group["triage_rationale"] = rationale
             group["age_days"] = _age_days(group["first_seen_at"])
+            # `fixable` is about the group, and a group is one decision even
+            # when it has forty occurrences: if Patchwork produced a fix for
+            # any of them, the row is actionable.
+            stages = {
+                (fix_stage_of or {}).get(str(location["finding_id"]))
+                for location in group["locations"]
+            }
+            if stages & _FIX_PRODUCED:
+                group["fixable"] = True
+            elif stages & _FIX_REFUSED:
+                group["fixable"] = False
+            else:
+                group["fixable"] = None
             result.append(group)
         return result
 

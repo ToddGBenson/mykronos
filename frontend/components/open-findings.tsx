@@ -96,6 +96,8 @@ export type FindingsQuery = {
   min_epss?: string;
   /** classify()'s classification, plus toxic_combination (spec 18 §5.1). */
   triage?: string;
+  /** "1" when set — only groups Patchwork produced a fix for (spec 19 §3.2). */
+  fixable?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
@@ -147,7 +149,8 @@ export function OpenFindings({
             query.rule_id ||
             query.kev_only ||
             query.min_epss ||
-            query.triage
+            query.triage ||
+            query.fixable
               ? "Nothing matches these filters"
               : `No ${(query.status ?? "open").replace("_", " ")} findings`
           }
@@ -157,7 +160,8 @@ export function OpenFindings({
             query.rule_id ||
             query.kev_only ||
             query.min_epss ||
-            query.triage
+            query.triage ||
+            query.fixable
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -326,6 +330,27 @@ function Filters({
         </Link>
       </div>
 
+      {/* What Patchwork actually did (spec 19 §3.2). Deliberately only a
+          "fixable" chip and not a "not fixable" one: `false` and "nobody has
+          looked" are different facts, and one chip cannot honestly stand for
+          both. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Remediation</Label>
+        <Link
+          href={href({
+            fixable: query.fixable === "1" ? undefined : "1",
+            ...CLEAR_SELECTION,
+          })}
+          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            query.fixable === "1"
+              ? "border-pass bg-pass-wash text-pass"
+              : "border-rule text-ink-3 hover:border-accent"
+          }`}
+        >
+          fix available
+        </Link>
+      </div>
+
       {/* classify()'s own output (spec 18 §5.1) — the same classification
           already rendered per group as a Pill, now also a filter. */}
       <div className="flex flex-wrap items-center gap-1.5">
@@ -481,6 +506,14 @@ function GroupTable({
                 <td className="px-2 py-2">
                   <SeverityText severity={group.severity} />
                   <ThreatIntelBadge group={group} />
+                  {group.fixable ? (
+                    <span
+                      className="ml-1"
+                      title="Patchwork produced a fix for this — open the row to review it."
+                    >
+                      <Pill tone="pass">fix</Pill>
+                    </span>
+                  ) : null}
                 </td>
                 <td className="px-2 py-2">
                   <Link

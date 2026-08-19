@@ -818,6 +818,19 @@ jobs:
                   -H "Accept: application/vnd.github.v3+json" \
                   "$API/pulls/$PR/reviews" > reviews.json || echo '[]' > reviews.json
 
+                # The author's role on this repo, for `privilege_adjacent`.
+                # Tolerated failure: the endpoint needs push access, and a
+                # token without it must cost this one signal rather than the
+                # whole assessment. An empty ROLE means "not established",
+                # which the scorer treats as absent, not as ordinary access.
+                ROLE=""
+                if curl --fail --silent --show-error --max-time 30                   -H "Accept: application/vnd.github.v3+json"                   "$API/collaborators/$AUTHOR/permission" > perm.json; then
+                  # `role_name` distinguishes maintain from write; the older
+                  # `permission` field collapses them, and maintain is exactly
+                  # the case this signal is about.
+                  ROLE=$(jq -r '.role_name // .permission // ""' perm.json)
+                fi
+
                 # The base branch is not fetched by the git resource, and the
                 # author-baseline signal compares against it. Without this the
                 # signal is skipped rather than guessed (spec 06 §7).
@@ -833,7 +846,7 @@ jobs:
                   --base-ref "FETCH_HEAD" \
                   --head-ref "$SHA" \
                   --pr-body-file pr-body.txt \
-                  --reviews-file reviews.json \
+                  --reviews-file reviews.json                   ${ROLE:+--author-role "$ROLE"} \
                   --sensitive-path '**/auth/**' \
                   --sensitive-path '**/*secret*' \
                   --sensitive-path '**/.github/workflows/**' \

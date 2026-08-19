@@ -47,12 +47,32 @@ class Requirement:
     """
 
     pattern: str
-    capability: str | None = None
+    #: One capability, or several that satisfy this half equally (spec 22 §4).
+    #: A tuple rather than a second requirement, because `detect` needs a
+    #: *distinct* finding per requirement — adding "or atlas" as its own
+    #: requirement would stop the rule firing for a repository that has only
+    #: the containers half, which is the common case it already covers.
+    capability: str | tuple[str, ...] | None = None
     #: Findings below this are ignored for this requirement. Used where a
     #: rule would otherwise fire on nearly every repository: a low-severity
     #: CVE in a reachable service is not a different kind of problem from a
     #: low-severity CVE anywhere else.
     min_severity: str | None = None
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """`capability` normalised, so callers never re-derive it.
+
+        Three readings of the same field went out of sync the first time this
+        accepted a tuple — `_matches` handled it, two invariant tests did not,
+        and they were the tests whose whole job is noticing a rule that cannot
+        fire. One accessor, used everywhere.
+        """
+        if self.capability is None:
+            return ()
+        if isinstance(self.capability, str):
+            return (self.capability,)
+        return tuple(self.capability)
 
 
 @dataclass(frozen=True)
@@ -274,7 +294,16 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
             # this repository accepted 243 of them - and without the floor
             # this rule would fire on every repository that runs a web
             # server, which is the definition of a rule nobody reads.
-            Requirement(r"CVE-", capability="containers", min_severity="high"),
+            # Either half of "a known-exploitable component": the built
+            # image, or the dependency tree it was built from. Atlas findings
+            # are CVE-bearing exactly like container ones — Oracle's KEV boost
+            # already reads them generically — so a vulnerable *application*
+            # dependency behind a reachable service is the same shape of risk
+            # as a vulnerable image layer, and was simply never matched
+            # (spec 22 §4).
+            Requirement(
+                r"CVE-", capability=("containers", "atlas"), min_severity="high"
+            ),
             Requirement(
                 r"auth|exposed|version|banner|outdated|fingerprint", capability="dast"
             ),
@@ -304,10 +333,8 @@ def _at_least(severity: str, floor: str) -> bool:
 
 
 def _matches(requirement: Requirement, finding: dict[str, Any]) -> bool:
-    if (
-        requirement.capability is not None
-        and str(finding.get("capability", "")) != requirement.capability
-    ):
+    allowed = requirement.capabilities
+    if allowed and str(finding.get("capability", "")) not in allowed:
         return False
     if requirement.min_severity is not None and not _at_least(
         str(finding.get("severity", "")), requirement.min_severity
