@@ -52,6 +52,19 @@ _UPDATE_SETS: dict[str, str] = {
         line_end               = i.line_end,
         symbol                 = i.symbol,
         code_snippet           = i.code_snippet,
+        -- Refreshed, though for most findings it cannot change: `file_path`
+        -- is part of identity for the snippet and line fingerprints, so a
+        -- different path is a different finding by construction.
+        --
+        -- It can drift for the two fingerprints that exclude it — `v2-package`
+        -- and `v2-repo`. A container CVE is keyed on the package, not the
+        -- image (spec 05 §5), so the row keeps whatever image name it was
+        -- first seen under. TheHub's Perl findings were still displaying
+        -- `library/mykronos-scan` — the tag the retired Actions workflow
+        -- used — a week after every scan had been reporting `thehub`. The
+        -- findings were current; only the name was six days stale, and it
+        -- named an image that no longer exists in the registry.
+        file_path              = i.file_path,
         fingerprint_version    = i.fingerprint_version,
         severity               = i.severity,
         title                  = i.title,

@@ -2701,3 +2701,49 @@ nothing reads the old rows of. Same reasoning as `RiskProfile`.
 and `sast` is the capability whose findings it prioritises. A capability of its
 own would mean a separate grant for something with no findings, no workflow,
 and nothing to enable.
+
+## D-073 — A container CVE is keyed on its package, not its image
+
+Found while asking why TheHub's Oracle gate was blocking. Sixteen critical
+Perl CVEs were displaying the image name `library/mykronos-scan` — an image
+that is not in the registry and not what the pipeline scans. The archived
+SARIF from the same scan said `thehub` for 252 of its 256 results, so Trivy,
+the pipeline and the adapter were all correct.
+
+Two separate things were wrong underneath.
+
+**The stored image name was stale, and now is not.** `compaction.py`'s
+`_UPDATE_SETS["findings"]` did not include `file_path`, so the value written
+at first sighting was never refreshed. For most findings that is invisible —
+`file_path` is part of identity for the snippet and line fingerprints, so a
+different path is a different finding. It can only drift for the two
+fingerprints that exclude it, `v2-package` and `v2-repo`. These rows were
+created on 2026-08-12 under the tag the retired Actions workflow used, and
+still carried it a week later. Fixed by adding the column to the SET clause.
+
+**Identity ignores the image, deliberately, and that is now pinned.**
+`compute_finding_id` dispatches on `package_name` before `file_path`, so a
+container CVE is keyed on `(repo, capability, rule_id, package_name)`. The
+same CVE and package in two different images is one finding.
+
+`test_two_images_do_not_collapse_into_one_finding` claimed to prevent exactly
+that, and had never tested it: its helper called `compute_finding_id` without
+`package_name`, taking the `v1-line` branch where the path *is* part of
+identity. Production passes `package_name` and takes `v2-package`. The test
+asserted an invariant the production call path violates, and passed because it
+was not the production call path. It now makes the same call `api/ingest.py`
+makes, and asserts what actually happens.
+
+**The collapse stays, for now.** Spec 05 §5's dependency rule was written for
+dependency manifests, where a repository has one dependency tree; a repository
+building two images has two, which is where the assumption stops holding.
+Including the image in the key would fix that — and would retire and recreate
+every existing container finding, destroying `first_seen_at`, which
+`fingerprint.py`'s docstring names as the thing it exists to protect. That is
+roughly 410 rows on TheHub alone, and it buys nothing today: no onboarded
+repository builds more than one image. Deferred until one does, at which point
+the migration is worth its cost. Pinned by a test either way, so the next
+person meets a decision rather than a surprise.
+
+**What this did not change:** the sixteen Perl criticals are real, current, and
+in TheHub's own image. The gate was right to block on them.
