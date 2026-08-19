@@ -303,6 +303,17 @@ class AegisConfig(BaseCapabilityConfig):
             "(spec 12 §5.2)."
         ),
     )
+    ai_classifier_secret_name: str = Field(
+        default="MYKRONOS_AI_CLASSIFIER_TOKEN",
+        max_length=128,
+        pattern="^[A-Z][A-Z0-9_]*$",
+        description=(
+            "Repository or org secret holding the classifier gateway's "
+            "credential. A name, never the value: spec 12 §2 keeps "
+            "credentials out of the rendered workflow, and a workflow file is "
+            "something anybody with read access can see."
+        ),
+    )
     retention_days: int = Field(
         default=90,
         ge=1,

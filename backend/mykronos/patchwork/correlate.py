@@ -89,6 +89,21 @@ class CombinationRule:
     #: most of what makes a combination toxic rather than coincidental.
     scope: str = "file"
     explanation: str = ""
+    #: The capability whose half of this combination is still safe to fix on
+    #: its own, or None — the default, and the answer for every rule but one
+    #: (spec 19 §3.3).
+    #:
+    #: The combination as a whole stays `needs_human_judgment` either way.
+    #: This only says that one requirement's finding may still be routed to a
+    #: fixer, because fixing it is correct whether or not the other half is
+    #: ever addressed.
+    #:
+    #: Per rule and reviewed, deliberately, rather than a generic "fix half a
+    #: combination" capability. spec 08 §8 exists because closing one half
+    #: usually closes the *finding* without closing the *risk*, and a
+    #: platform-wide switch would repeat that mistake for nine rules at once
+    #: to get it right for one.
+    safe_partial_fix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +112,11 @@ class Combination:
     rule_id: str
     finding_ids: frozenset[str]
     rationale: str
+    #: The one member finding, if any, that may still be fixed on its own
+    #: (spec 19 §3.3). Resolved here rather than at the pipeline, because
+    #: `detect` is what knows which finding satisfied which requirement —
+    #: the pipeline sees only a set of ids.
+    partial_fix_finding_id: str | None = None
 
 
 #: Small on purpose. Every rule here is one where the composite risk is
@@ -138,6 +158,17 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
             "being in git history; the unauthenticated surface is how someone "
             "finds out it is worth using."
         ),
+        # The one rule with a safe partial fix (spec 19 §3.3). Removing a
+        # committed credential is correct whether or not the unauthenticated
+        # surface is ever fixed: the danger here is a leaked credential
+        # somebody can find a use for, and pulling the credential closes that
+        # half outright rather than hiding it.
+        #
+        # The combination event still says `needs_human_judgment` — the
+        # surface is a separate problem and a person still has to look at it.
+        # What changes is that the credential does not sit in the repository
+        # waiting for them.
+        safe_partial_fix="secrets",
     ),
     # -- cross-capability (spec 08 §5a) -----------------------------------
     #
@@ -376,12 +407,19 @@ def detect(
             if rule.scope == "file" and not key:
                 continue
             members: set[str] = set()
+            partial: str | None = None
             for requirement in rule.requires:
                 hit = next((f for f in group if _matches(requirement, f)), None)
                 if hit is None:
                     members.clear()
+                    partial = None
                     break
                 members.add(str(hit["finding_id"]))
+                if (
+                    rule.safe_partial_fix
+                    and rule.safe_partial_fix in requirement.capabilities
+                ):
+                    partial = str(hit["finding_id"])
             if len(members) < len(rule.requires):
                 continue
 
@@ -395,10 +433,20 @@ def detect(
                     finding_ids=frozen,
                     rationale=(
                         f"**{rule.name}** {where}. {rule.explanation} "
-                        "Patchwork has not generated a fix: these need to be "
-                        "addressed together, and fixing one in isolation would "
-                        "close the finding without closing the risk."
+                        + (
+                            "These need to be addressed together, and fixing "
+                            "one in isolation would close the finding without "
+                            "closing the risk — so Patchwork has generated "
+                            "nothing."
+                            if partial is None
+                            else "This still needs a person: the halves have "
+                            "to be understood together. Patchwork has "
+                            "separately attempted the one half that is "
+                            "correct to fix regardless of the other — see "
+                            "the fix event for that finding."
+                        )
                     ),
+                    partial_fix_finding_id=partial,
                 )
             )
 

@@ -84,6 +84,46 @@ class RemediationPage(BaseModel):
     )
 
 
+class DigestRepoOut(BaseModel):
+    repo_full_name: str
+    finding_id: str
+    fix_pr_number: int | None = None
+    fix_pr_url: str | None = None
+    pr_status: str | None = None
+
+
+class DigestGroupOut(BaseModel):
+    """One fix, repeated across the portfolio (spec 19 §3.4)."""
+
+    rule_id: str
+    title: str
+    severity: str | None = None
+    rationale: str = Field(
+        default="",
+        description=(
+            "One representative rationale. They are generated from the same "
+            "template for the same rule, so showing all twelve would be "
+            "twelve copies of one sentence."
+        ),
+    )
+    repos: list[DigestRepoOut]
+
+    @property
+    def count(self) -> int:
+        return len(self.repos)
+
+
+class DigestPage(BaseModel):
+    groups: list[DigestGroupOut]
+    total_open_prs: int
+    note: str = (
+        "Grouped for the reviewer, not merged for the machine. Each of these "
+        "is still a separate pull request against a separate repository — "
+        "one pull request touching ten repositories would break per-repo "
+        "review and CODEOWNERS, which is the point of them."
+    )
+
+
 class RemediationPreviewOut(BaseModel):
     """"Auto remediation identified" (spec 18 §7.2) — nothing written yet."""
 
@@ -286,6 +326,80 @@ async def fix_finding(
         fix_pr_number=outcome.fix_pr_number,
         fix_pr_url=outcome.fix_pr_url,
         pr_status=outcome.pr_status,
+    )
+
+
+@router.get("/digest", response_model=DigestPage)
+async def cross_repo_digest(
+    request: Request,
+    principal: PrincipalDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> DigestPage:
+    """The same fix, everywhere it is open (spec 19 §3.4).
+
+    Ten repositories with the same unpinned dependency means ten draft pull
+    requests, reviewed one at a time with nothing to say they are the same
+    change. This groups them for the reviewer.
+
+    Grouped by `rule_id`, which is not on `remediation_events` — it is on the
+    finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
+    column exists on the events table, and `fixer_name` is not recorded
+    anywhere, so the grouping is by rule alone. That is the coarser key, and
+    coarser is the safe direction: two fixers for one rule would land in one
+    card, which a reviewer can see, rather than one fixer's work being split
+    across two cards, which they cannot.
+
+    Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
+    by the parameterised one.
+    """
+    rows = request.app.state.catalog.query(
+        """
+        SELECT
+            f.rule_id,
+            f.title,
+            f.severity,
+            e.repo_full_name,
+            e.finding_id,
+            e.fix_pr_number,
+            e.fix_pr_url,
+            e.pr_status,
+            e.rationale
+        FROM remediation_events e
+        JOIN findings f ON f.finding_id = e.finding_id
+        WHERE e.fix_pr_url IS NOT NULL
+          AND e.pr_status IN ('draft_open', 'human_edited')
+        ORDER BY f.rule_id, e.repo_full_name
+        """
+    )
+
+    grouped: dict[str, DigestGroupOut] = {}
+    for rule_id, title, severity, repo, finding_id, number, url, pr_state, rationale in rows:
+        group = grouped.get(str(rule_id))
+        if group is None:
+            group = DigestGroupOut(
+                rule_id=str(rule_id),
+                title=str(title or rule_id),
+                severity=str(severity) if severity else None,
+                rationale=str(rationale or ""),
+                repos=[],
+            )
+            grouped[str(rule_id)] = group
+        group.repos.append(
+            DigestRepoOut(
+                repo_full_name=str(repo),
+                finding_id=str(finding_id),
+                fix_pr_number=int(number) if number is not None else None,
+                fix_pr_url=str(url) if url else None,
+                pr_status=str(pr_state) if pr_state else None,
+            )
+        )
+
+    # Widest first: a fix open in twelve repositories is the one worth
+    # reviewing once and applying twelve times.
+    groups = sorted(grouped.values(), key=lambda g: (-g.count, g.rule_id))
+    return DigestPage(
+        groups=groups[:limit],
+        total_open_prs=sum(group.count for group in groups),
     )
 
 

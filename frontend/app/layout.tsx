@@ -31,7 +31,7 @@ const NAV: {
       { label: "Threat intelligence", href: "/threat-intel" },
       { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
-      { label: "Remediation", href: "/triage" },
+      { label: "Remediation", href: "/remediation" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
     ],

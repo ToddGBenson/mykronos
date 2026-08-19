@@ -36,6 +36,7 @@ import {
   type TrendSeries,
   type TriageQueue,
 } from "./api";
+import type { paths } from "./api-types";
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -559,6 +560,28 @@ export async function getPullRequests(): Promise<Result<PullRequestsPage>> {
       return { ok: false, error: describe(response, "Could not load pull requests") };
     }
     return { ok: true, data: data as PullRequestsPage };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type RemediationDigest =
+  paths["/api/patchwork/digest"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * The same fix, everywhere it is open (spec 19 §3.4). Grouped for the
+ * reviewer — never merged into one pull request, which would break per-repo
+ * review and CODEOWNERS.
+ */
+export async function getRemediationDigest(): Promise<Result<RemediationDigest>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/patchwork/digest", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the digest") };
+    }
+    return { ok: true, data };
   } catch (error) {
     return failure(error);
   }

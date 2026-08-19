@@ -14,8 +14,10 @@
   1. **Nothing leaves the runner.** The scorer reads git history and the diff
      locally and posts only its conclusions — which globs matched, whether the
      author has contributed before. The diff itself is never transmitted. The
-     one exception in the design, the AI-authorship classifier, is off unless
-     an endpoint is configured and is not invoked here at all.
+     one exception in the design is the AI-authorship classifier: it sends
+     the diff to a configured gateway, and its step is rendered only when
+     `ai_classifier_url` is set. Unset — the default — means no such step
+     exists in the generated workflow, not that one exists and no-ops.
 
   2. **`permissions` is minimal and read-mostly.** spec 06 §6 requires that
      Aegis can never merge, close or force-push. `pull-requests` is
@@ -96,6 +98,79 @@ jobs:
         # one definition of the submission schema.
         run: pip install --quiet '<< mykronos_package_spec >>'
 
+{%- if config.ai_classifier_url | default(false) %}
+      - name: Ask the configured AI-authorship classifier
+        # spec 06 §5's one deliberate exception to "nothing leaves the runner
+        # except conclusions", and the only setting in this platform that
+        # sends repository content to a third party. It exists only because
+        # this repository configured `ai_classifier_url`; with it unset this
+        # step is not rendered at all, rather than rendered and skipped.
+        #
+        # Runs before the scorer, not after: its answer is an *input* to the
+        # assessment. It feeds `ai_authorship_flag` and can raise the
+        # `unverified_ai` signal that the pull-request description alone
+        # would have missed.
+        #
+        # Every failure path ends at `ai_authorship_flag: null` — the state
+        # the platform has modelled since spec 06 and never been able to
+        # reach. A slow, down, or hedging classifier costs one flag and never
+        # the assessment, which is why this step cannot fail the job.
+        continue-on-error: true
+        env:
+          CLASSIFIER_TOKEN: ${{ secrets.<< config.ai_classifier_secret_name | default('MYKRONOS_AI_CLASSIFIER_TOKEN') >> }}
+          # Attacker-controlled text, both of them. Written to files and
+          # passed by path, never interpolated into a command line — the same
+          # rule the signals step already follows for the description.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          printf '%s' "$PR_TITLE" > classifier-title.txt
+          printf '%s' "$PR_BODY" > classifier-body.txt
+
+          # The diff, capped. An unbounded POST of a forty-megabyte refactor
+          # to a third party is a different act from asking about a change
+          # somebody could read, and a classifier cannot use what will not
+          # fit in its context anyway.
+          git fetch --quiet origin "$BASE_REF" || true
+          git diff --unified=3 "FETCH_HEAD...$HEAD_SHA" 2>/dev/null \
+            | head -c 200000 > classifier-diff.txt || true
+
+          jq -n \
+            --rawfile title classifier-title.txt \
+            --rawfile body classifier-body.txt \
+            --rawfile diff classifier-diff.txt \
+            '{title: $title, description: $body, diff: $diff}' \
+            > classifier-request.json
+
+          # One retry, short timeout. The credential is a repository secret,
+          # never embedded in this template (spec 12 §2). An unset secret
+          # sends an empty bearer, the gateway refuses it, and that is the
+          # null path again rather than a confident wrong answer.
+          curl --silent --show-error --fail \
+            --max-time 20 --retry 1 --retry-max-time 45 \
+            -X POST "<< config.ai_classifier_url >>" \
+            -H "Authorization: Bearer $CLASSIFIER_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @classifier-request.json > classifier.json \
+            || rm -f classifier.json
+
+          # The diff does not outlive the request. Nothing later in this job
+          # needs it, and a copy left in the workspace is a copy something
+          # else could pick up.
+          rm -f classifier-diff.txt classifier-request.json \
+                classifier-title.txt classifier-body.txt
+
+          if [ -f classifier.json ]; then
+            echo "Classifier answered. Only ai_authored and confidence are read;"
+            echo "anything else in the response is discarded before scoring."
+          else
+            echo "::warning::The configured AI-authorship classifier did not answer. Recording ai_authorship_flag as null - not established, which is not the same as human-authored."
+          fi
+{%- endif %}
+
       - name: Collect signals
         id: signals
         env:
@@ -147,6 +222,9 @@ jobs:
             --head-ref "$HEAD_SHA" \
             --pr-body-file pr-body.txt \
             --reviews-file reviews.json \
+{%- if config.ai_classifier_url | default(false) %}
+            --ai-classifier-file classifier.json \
+{%- endif %}
 {%- for pattern in config.sensitive_paths | default(['**/auth/**', '**/*secret*', '**/.github/workflows/**', '**/iam/**']) %}
             --sensitive-path '<< pattern >>' \
 {%- endfor %}

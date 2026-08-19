@@ -179,7 +179,9 @@ async def retro(
 ) -> Any:
     """What was learned, reconfirmed and forgotten in one period (spec 11 §7)."""
     store = request.app.state.knowledge
-    report = build_retro(store, period_days=period_days)
+    report = build_retro(
+        store, period_days=period_days, catalog=request.app.state.catalog
+    )
 
     if fmt == "markdown":
         from fastapi.responses import PlainTextResponse
@@ -194,6 +196,15 @@ async def retro(
         "reconfirmed": report.reconfirmed,
         "decaying": report.decaying,
         "unreasoned": report.unreasoned,
+        "candidate_combinations": [
+            {
+                "capabilities": list(candidate.capabilities),
+                "files": candidate.files,
+                "repos": candidate.repos,
+                "examples": candidate.examples,
+            }
+            for candidate in report.candidate_combinations
+        ],
         "promotion_candidates": [
             CandidateOut(
                 subject=c.subject,

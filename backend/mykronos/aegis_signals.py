@@ -395,6 +395,41 @@ def unverified_ai_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
     }
 
 
+#: Below this the classifier's answer is discarded as unknown. A classifier
+#: that says "probably, 0.3" has not established anything, and spec 06 §5's
+#: three-state flag has a value for exactly that: null. Recording a low
+#: confidence as `true` would let a guess read as a finding about a person.
+AI_CLASSIFIER_MIN_CONFIDENCE = 0.7
+
+
+def parse_classifier_result(payload: Any) -> bool | None:
+    """The classifier's answer, or None (spec 06 §5, spec 20 §1.2).
+
+    A boolean and a confidence float, nothing else accepted. The classifier is
+    a third party by construction — `ai_classifier_url` is the one setting in
+    this platform that sends repository content off the runner — and letting
+    free-form text back from it into a record about a named colleague would
+    give away on the return trip what §5 protects on the way out.
+
+    None for every failure: not configured, unreachable, malformed, or
+    answered with too little confidence to mean anything. That is the state
+    the platform has always modelled and never been able to reach.
+    """
+    if not isinstance(payload, dict):
+        return None
+    flag = payload.get("ai_authored")
+    if not isinstance(flag, bool):
+        return None
+    confidence = payload.get("confidence")
+    if not isinstance(confidence, int | float) or isinstance(confidence, bool):
+        return None
+    if not 0.0 <= float(confidence) <= 1.0:
+        return None
+    if float(confidence) < AI_CLASSIFIER_MIN_CONFIDENCE:
+        return None
+    return flag
+
+
 def privilege_adjacent_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
     """The author already has more access than the review process assumes.
 
@@ -636,6 +671,16 @@ def main(argv: list[str] | None = None) -> int:
         help="File holding the PR description, for AI-disclosure checking.",
     )
     parser.add_argument(
+        "--ai-classifier-file",
+        default=None,
+        help=(
+            "File holding the configured classifier's response. Absent, "
+            "unreadable, or low-confidence all mean `ai_authorship_flag: "
+            "null` — spec 06 §5's 'we did not establish this', never 'we "
+            "checked and it is human'."
+        ),
+    )
+    parser.add_argument(
         "--author-role",
         default=None,
         help=(
@@ -673,17 +718,30 @@ def main(argv: list[str] | None = None) -> int:
                 payload = None
         reviews = parse_reviews(payload, _head_commit_time(args.head_ref))
 
-    # Disclosure only. A local heuristic must never claim a change is *not*
-    # AI-authored — that is what the configured classifier is for (spec 06 §5)
-    # — but a PR that says so itself is a fact, and it is the input the
-    # `unverified_ai` signal needs.
+    classified: bool | None = None
+    if args.ai_classifier_file and os.path.exists(args.ai_classifier_file):
+        with open(args.ai_classifier_file, encoding="utf-8", errors="replace") as handle:
+            try:
+                classified = parse_classifier_result(json.load(handle))
+            except json.JSONDecodeError:
+                classified = None
+
+    # Disclosure only, from the local heuristic. A local heuristic must never
+    # claim a change is *not* AI-authored — that is what the configured
+    # classifier is for (spec 06 §5) — but a PR that says so itself is a fact,
+    # and it is the input the `unverified_ai` signal needs.
+    #
+    # The classifier can add a `true` the description did not disclose. It
+    # cannot take one away: a PR that says it was AI-assisted was, whatever a
+    # model thinks, and `unverified_ai` is about the gap between disclosure
+    # and review rather than about the model's opinion.
     facts = gather_facts(
         args.author,
         args.base_ref,
         args.head_ref,
         pr_body,
         reviews=reviews,
-        ai_authored=discloses_ai(pr_body),
+        ai_authored=discloses_ai(pr_body) or classified is True,
         author_role=args.author_role or None,
     )
 
@@ -692,11 +750,12 @@ def main(argv: list[str] | None = None) -> int:
         "commit_sha": args.commit_sha,
         "author_login": args.author,
         "signals": collect(facts, args.sensitive_path),
-        # Null, always, from this scorer. Classification requires sending the
-        # diff to a configured endpoint, which is opt-in and not something a
-        # local heuristic can stand in for — reporting false here would claim
-        # "we checked, it is human" (spec 06 §3, §5).
-        "ai_authorship_flag": None,
+        # Null unless a configured classifier answered with enough
+        # confidence to mean something. No classifier, an unreachable one, or
+        # a hedged answer all stay null: reporting false would claim "we
+        # checked, it is human" (spec 06 §3, §5), which is the one thing a
+        # local heuristic must never say.
+        "ai_authorship_flag": classified,
     }
     json.dump(payload, sys.stdout, ensure_ascii=False)
     return 0
