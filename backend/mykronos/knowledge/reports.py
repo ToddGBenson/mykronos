@@ -20,6 +20,8 @@ from typing import Any
 
 from mykronos.knowledge.promotion import PromotionCandidate, find_cross_project_candidates
 from mykronos.knowledge.store import KnowledgeStore
+from mykronos.lake.catalog import Catalog
+from mykronos.patchwork.discovery import CandidateCombination, find_candidates
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -41,11 +43,21 @@ class RetroReport:
     reconfirmed: list[dict[str, Any]] = field(default_factory=list)
     decaying: list[dict[str, Any]] = field(default_factory=list)
     promotion_candidates: list[PromotionCandidate] = field(default_factory=list)
+    #: Capability pairs landing in the same file across repositories that no
+    #: `CombinationRule` covers (spec 19 §2.2). Empty when no catalog was
+    #: passed — this section is optional so the Knowledge Store stays the only
+    #: hard dependency of a retro.
+    candidate_combinations: list[CandidateCombination] = field(default_factory=list)
     unreasoned: int = 0
 
     @property
     def is_quiet(self) -> bool:
-        return not (self.new_entries or self.reconfirmed or self.promotion_candidates)
+        return not (
+            self.new_entries
+            or self.reconfirmed
+            or self.promotion_candidates
+            or self.candidate_combinations
+        )
 
 
 def _describe(entry: Any, confidence: float) -> dict[str, Any]:
@@ -68,6 +80,7 @@ def build_retro(
     period_days: int = 14,
     as_of: datetime | None = None,
     decay_warning_at: float = 0.3,
+    catalog: Catalog | None = None,
 ) -> RetroReport:
     """What the platform learned, and forgot, in one period (spec 11 §7).
 
@@ -98,6 +111,10 @@ def build_retro(
             report.unreasoned += 1
 
     report.promotion_candidates = find_cross_project_candidates(store, as_of=stamp)
+    # Optional, and quiet about it: a deployment calling this without a
+    # catalog gets every other section unchanged rather than an error.
+    if catalog is not None:
+        report.candidate_combinations = find_candidates(catalog)
 
     for bucket in (report.new_entries, report.reconfirmed, report.decaying):
         bucket.sort(key=lambda row: (-row["confidence"], row["subject"]))
@@ -255,6 +272,32 @@ def render_retro_markdown(report: RetroReport) -> str:
         ]
         for candidate in report.promotion_candidates:
             lines.append(f"- {candidate.summary()}")
+        lines.append("")
+
+    if report.candidate_combinations:
+        lines += [
+            f"## Candidate combinations ({len(report.candidate_combinations)})",
+            "",
+            "Capability pairs that keep landing in the same file across "
+            "repositories, and that no correlation rule covers. Nothing has "
+            "been written to `correlate.py` — turning one of these into a "
+            "rule is a person's judgement, and rules stay declarative and "
+            "human-reviewed (spec 08 §5).",
+            "",
+        ]
+        for candidate in report.candidate_combinations:
+            first, second = candidate.capabilities
+            lines.append(
+                f"- **{first} + {second}** — {candidate.files} file(s) across "
+                f"{candidate.repos} repositor"
+                f"{'y' if candidate.repos == 1 else 'ies'}"
+            )
+            for example in candidate.examples[:2]:
+                rules = " / ".join(f["rule_id"] for f in example["findings"])
+                lines.append(
+                    f"  - `{example['file_path']}` in "
+                    f"{example['repo_full_name']}: {rules}"
+                )
         lines.append("")
 
     if report.unreasoned:

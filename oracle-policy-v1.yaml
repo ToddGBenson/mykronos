@@ -17,7 +17,12 @@
 # 1.1 — adds the risk_profile modifier (spec 21). Every existing weight is
 # unchanged, so a repo with no recorded profile scores exactly as it did
 # under 1.0; only a repo whose admin has recorded asset context can differ.
-version: "1.1"
+#
+# 1.2 — adds the blast_radius modifier (spec 19 §2.4). Same shape of change:
+# every existing weight untouched, and a repository whose packages nobody
+# else in the portfolio carries a finding on scores exactly as it did under
+# 1.1. It can only differ where the concentration is real.
+version: "1.2"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -114,6 +119,27 @@ modifiers:
     # Unbounded on purpose: an asset in four regimes carries four kinds of
     # exposure, and a cap would silently hide the fourth.
     compliance_scope_points_per_entry: 3
+
+  # Portfolio-wide package concentration (spec 19 §2.4). The one input here
+  # that is not a fact about this repository: a vulnerable package five other
+  # teams also carry is a different problem from the same package in one leaf
+  # service, and until now nothing read across repositories to notice.
+  #
+  # Small on purpose. SSCS trust already scores a repository's own dependency
+  # health at length; this is only the concentration on top of it, and the
+  # map it reads is deliberately approximate (package name, not version).
+  # A weight that could move a verdict on its own would be claiming more
+  # precision than the underlying map has.
+  blast_radius:
+    # Where "several teams use it" becomes "concentrated". A judgement about
+    # this portfolio's size, not a universal constant.
+    min_dependents: 5
+    points_per_package: 4
+    # Flat, unlike compliance_scope above: ten concentrated packages in one
+    # repository is a supply-chain problem the trust score already covers, and
+    # letting this run away would let one dependency-heavy repo dominate the
+    # ranking on the most approximate signal in the set.
+    cap: 20
 
 # ---------------------------------------------------------------------------
 # Thresholds

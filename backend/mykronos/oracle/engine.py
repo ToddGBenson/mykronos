@@ -29,6 +29,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from mykronos import blast_radius
 from mykronos.db.models import RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
@@ -55,6 +56,7 @@ MODIFIER_CATEGORIES = (
     "exploitability",
     "reachability",
     "risk_profile",
+    "blast_radius",
 )
 
 #: One band up (spec 17 §5.4). `critical` has nowhere further to go — a
@@ -665,6 +667,29 @@ class OracleEngine:
             as_of=self._as_of,
         )
 
+    def _blast_radius(self, repo_full_name: str) -> tuple[list[str], dict[str, int] | None]:
+        """This repo's finding packages, and the portfolio map (spec 19 §2.4).
+
+        The map is built on every evaluation rather than cached. It is one
+        grouped query over `findings`, and a cache would have to be
+        invalidated by every ingestion — the staleness window that buys is
+        worse than the query it saves, which is the same trade D-016 already
+        made for the portfolio aggregate.
+
+        `None` for the map only when the query itself cannot run. An empty
+        map is *available* and contributes nothing: "no package in this
+        portfolio is carried by five repositories" is a real answer.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT DISTINCT lower(trim(package_name)) FROM findings
+            WHERE asset_id = ? AND status = 'open'
+              AND package_name IS NOT NULL AND trim(package_name) <> ''
+            """,
+            [repo_full_name],
+        )
+        return ([str(row[0]) for row in rows], blast_radius.build(self.catalog))
+
     def _risk_profile(self, repo_full_name: str) -> dict[str, Any] | None:
         """This repository's recorded asset context (spec 21 §1.4).
 
@@ -974,6 +999,41 @@ class OracleEngine:
         risk_profile = self._risk_profile(repo_full_name)
         terms.extend(_risk_profile_snapshot(risk_profile, self.policy)[1])
 
+        # 7. Blast radius (spec 19 §2.4). The only input here derived from
+        #    other repositories: a vulnerable package five other teams also
+        #    carry is a different problem from the same package in one leaf
+        #    service. Capped hard — the map behind it is package-name
+        #    matching, not version resolution, and a deliberately approximate
+        #    signal should not be able to swing a verdict.
+        radius_packages, radius_map = self._blast_radius(repo_full_name)
+        radius_snapshot, radius_points = blast_radius.snapshot(
+            radius_packages,
+            radius_map,
+            min_dependents=self.policy.blast_radius.min_dependents,
+            points_per_package=self.policy.blast_radius.points_per_package,
+        )
+        radius_points = min(radius_points, self.policy.blast_radius.cap)
+        if radius_points:
+            concentrated = radius_snapshot["concentrated_packages"]
+            radius_snapshot["contribution"] = round(radius_points, 2)
+            terms.append(
+                Term(
+                    key="blast_radius",
+                    label="Packages many repositories share",
+                    contribution=radius_points,
+                    detail=(
+                        f"{len(concentrated)} package(s) with open findings in "
+                        f"{self.policy.blast_radius.min_dependents}+ repositories: "
+                        + ", ".join(
+                            f"{p['package_name']} ({p['dependent_repos']})"
+                            for p in concentrated[:5]
+                        )
+                        + (" …" if len(concentrated) > 5 else "")
+                    ),
+                    inputs={"packages": concentrated},
+                )
+            )
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -990,6 +1050,7 @@ class OracleEngine:
             covered=covered,
             exploitable=exploitable,
             risk_profile=risk_profile,
+            blast_radius_snapshot=radius_snapshot,
         )
 
         decision = Decision(
@@ -1029,6 +1090,7 @@ class OracleEngine:
         covered: set[str] | None = None,
         exploitable: list[dict[str, Any]] | None = None,
         risk_profile: dict[str, Any] | None = None,
+        blast_radius_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -1077,6 +1139,8 @@ class OracleEngine:
             ),
             "reachability": _reachability_snapshot(),
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
+            "blast_radius": blast_radius_snapshot
+            or blast_radius.snapshot([], None)[0],
             "terms": [
                 {
                     "key": term.key,

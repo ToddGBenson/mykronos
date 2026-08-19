@@ -63,6 +63,27 @@ class RiskProfilePolicy:
 
 
 @dataclass(frozen=True)
+class BlastRadiusPolicy:
+    """Weights for portfolio-wide package concentration (spec 19 §2.4).
+
+    Two numbers rather than one, because they answer different questions.
+    `min_dependents` is where "used by several teams" becomes "concentrated",
+    a judgement about this portfolio's size; `points_per_package` is what that
+    concentration is worth, a judgement about how much it should move a score.
+    Folding them together would make one un-tunable without the other.
+    """
+
+    min_dependents: int
+    points_per_package: float
+    #: Flat rather than unbounded. Ten concentrated packages in one repository
+    #: is a supply-chain problem SSCS trust already scores at length; this
+    #: category is about the fact of concentration, and letting it run away
+    #: would let one dependency-heavy repo dominate the portfolio ranking on a
+    #: signal that is deliberately approximate.
+    cap: float
+
+
+@dataclass(frozen=True)
 class Policy:
     version: str
     curve: str
@@ -74,6 +95,7 @@ class Policy:
     age: AgePolicy
     dampening: DampeningPolicy
     risk_profile: RiskProfilePolicy
+    blast_radius: BlastRadiusPolicy
 
     no_go: float
     review_recommended: float
@@ -155,6 +177,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # hard `_require` here would have made this spec's policy change
     # mandatory before the code could load at all.
     profile_raw = modifiers.get("risk_profile") or {}
+    # Optional for the same reason, one spec later: a policy file from
+    # before spec 19 §2.4 loads, with the category available and worth
+    # zero, rather than refusing to load at all.
+    blast_raw = modifiers.get("blast_radius") or {}
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -228,6 +254,16 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 profile_raw.get("compliance_scope_points_per_entry", 0),
                 "risk_profile.compliance_scope_points_per_entry",
             ),
+        ),
+        blast_radius=BlastRadiusPolicy(
+            min_dependents=int(
+                _number(blast_raw.get("min_dependents", 5), "blast_radius.min_dependents")
+            ),
+            points_per_package=_number(
+                blast_raw.get("points_per_package", 0),
+                "blast_radius.points_per_package",
+            ),
+            cap=_number(blast_raw.get("cap", 0), "blast_radius.cap"),
         ),
         no_go=no_go,
         review_recommended=review,

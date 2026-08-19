@@ -30,13 +30,13 @@ correctly declined to build.
 | Test Harness: real failure text (`scan_runs.detail`) | Done |
 | Test Harness: flaky-test flagging | Done |
 | Triage: reachability, cheap first cut (import-reachable) | Planned |
-| Triage: combination-rule discovery (candidate surfacing) | Planned |
+| Triage: combination-rule discovery (candidate surfacing) | Done |
 | Triage: cross-repo dampening approve action | Done — adds at the higher tier, leaves the evidence in place |
-| Triage: blast-radius signal | Planned |
-| Remediation: new deterministic fixers | Planned |
-| Remediation: auto-preview on ingestion (`fixable` badge) | Planned |
-| Remediation: toxic-combination partial fixes | Planned |
-| Remediation: cross-repo batch digest | Planned |
+| Triage: blast-radius signal | Done — from findings, not the SBOM (D-069) |
+| Remediation: new deterministic fixers | Done — npm and Go pinning |
+| Remediation: auto-preview on ingestion (`fixable` badge) | Done — read from observed outcome |
+| Remediation: toxic-combination partial fixes | Done — one rule, reviewed (D-070) |
+| Remediation: cross-repo batch digest | Done — /remediation |
 | Auto-routing: fixable → PR, not-fixable → story | Done — routed on Patchwork's *observed* outcome, not a prediction (see §4.3) |
 | Auto-routing: `auto_fix_min_severity` config knob | Done |
 

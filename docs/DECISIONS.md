@@ -2533,3 +2533,123 @@ decision predates the move.
 The endpoint's own `note` names what is missing rather than letting the
 feature's title imply it is complete. Until the App is installed, the file's
 textual history is where it has always been, in git.
+
+## D-068 — The AI-authorship classifier call, and why a hedge is null
+
+`ai_authorship_flag` has had three-state logic, a `SIGNAL_CAP` entry, and a
+dead "configured but unreachable" branch since spec 06. `ai_classifier_url`
+has been a validated config field the whole time. Nothing anywhere called it —
+the Aegis workflow template said so in a comment. Spec 20 §1 wires the call.
+
+Four choices worth recording.
+
+**The step is rendered, not guarded.** With `ai_classifier_url` unset the
+generated workflow contains no classifier step at all, rather than one behind
+an `if:`. Somebody auditing what a repository sends to third parties should be
+able to answer that by reading the workflow file, and an `if:`-guarded step
+that POSTs a diff is a step that POSTs a diff as far as that reading goes.
+
+**A hedge is null, not true.** The response contract is one boolean and one
+confidence float; anything else — free-form text, a missing field, a
+confidence out of range — is discarded. Below `AI_CLASSIFIER_MIN_CONFIDENCE`
+(0.7) the answer is thrown away entirely. "Probably, 0.3" has established
+nothing, and recording it as `true` would let a model's guess read as a
+finding about a named person. Spec 06 §5 already has a value for
+not-established, and it is the one this uses.
+
+Restricting what comes *back* matters as much as restricting what goes out.
+`ai_classifier_url` is the only setting in this platform that sends repository
+content to a third party; letting that party write free-form text into a
+record about a colleague would give away on the return trip exactly what §5
+protects on the way out.
+
+**It runs before the scorer.** The answer is an input to the assessment, not a
+footnote on it — it can raise `unverified_ai` for a pull request whose
+description disclosed nothing. It cannot do the reverse: a PR that says it was
+AI-assisted was, whatever a model thinks, so a `false` from the classifier
+never withdraws a disclosure. The flag reports what the classifier said; the
+signal reports what the author said. They are different questions and the code
+keeps them apart.
+
+**The diff does not outlive the request.** Capped at 200KB before it is sent —
+an unbounded POST of a forty-megabyte refactor to a third party is a different
+act from asking about a change somebody could read — and deleted from the
+workspace immediately after, because a copy left behind is a copy something
+later could pick up.
+
+## D-069 — Blast radius counts findings, not dependencies
+
+Spec 19 §2.4 asks for a portfolio-wide map built by aggregating
+`sscs_evidence.ecosystems_json` into package-name → dependent-repo-count. That
+blob does not contain package names. It contains per-ecosystem *counts*, which
+is exactly what spec 07 §4 asks the runner to report, so the full resolved
+dependency set is not in the lake at all.
+
+Two ways forward: add a package list to the evidence submission, or count
+something already recorded. The second wins, and not only because it is
+cheaper. `findings.package_name` is already there, and for a *prioritisation*
+signal it is the better population: the question this input answers is "is
+this vulnerable package one that many teams are exposed to", and a repository
+with no finding on a package has nothing here to prioritise.
+
+The cost is stated in the code and worth repeating: a repository that depends
+on the package but whose scan found nothing wrong with it is not counted. The
+map under-reports true dependency spread and never over-reports it, which is
+the correct direction of error for a signal that *adds* points. Resolved
+findings are excluded too — a package everyone has already fixed is not a
+concentration risk, and counting it would make the signal insensitive to
+exactly the work it exists to encourage.
+
+The weight is small and hard-capped (`cap: 20`, below the `no_go` threshold),
+because the map behind it is package-name matching rather than version
+resolution. A deliberately approximate signal should not be able to change a
+verdict on its own, and SSCS trust already scores a repository's own
+dependency health at length — this is only the concentration on top of it.
+
+## D-070 — One combination rule gets a partial fix, and only one
+
+Spec 08 §8 stops Patchwork fixing any half of a toxic combination, because
+closing one half usually closes the *finding* without closing the *risk*. That
+default is right and stays.
+
+Spec 19 §3.3 carves out one exception, and the shape of the carve-out is the
+decision worth recording: it is a field on `CombinationRule`
+(`safe_partial_fix`), null for nine rules out of ten, rather than a generic
+"fix half a combination" capability. A platform-wide switch would repeat §8's
+mistake for nine rules in order to get it right for one. Adding a second is a
+reviewed, per-rule change, and `test_no_other_built_in_rule_has_a_partial_fix`
+is what makes somebody make that decision deliberately.
+
+The one rule is `secret-and-public-surface`. Removing a committed credential
+is correct whether or not the unauthenticated surface beside it is ever fixed:
+the danger is a leaked credential somebody can find a use for, and pulling the
+credential closes that half outright rather than hiding it. The other half — an
+unauthenticated surface — is a design question, and fixing it blind is exactly
+how a combination gets closed without being understood.
+
+The combination event still reads `needs_human_judgment`. What changes is only
+that the credential does not sit in the repository waiting for that person to
+arrive. The rationale says both things, because "needs human judgment" next to
+an open pull request reads as a contradiction otherwise.
+
+`detect` resolves *which* finding may be fixed, not the pipeline. Only `detect`
+knows which finding satisfied which requirement — the pipeline sees a set of
+ids and could not tell the credential from the surface.
+
+## D-071 — The remediation digest groups by rule, not by rule and fixer
+
+Spec 19 §3.4 asks to group open remediation PRs by `(rule_id, fixer_name)` and
+says it needs "no new backend query logic". Both are slightly wrong about the
+schema. `remediation_events` has neither column: `rule_id` lives on the finding
+(so the digest joins), and `fixer_name` is not recorded anywhere at all.
+
+Grouping is therefore by rule alone. That is the coarser key, and coarser is
+the safe direction to be wrong in here: two fixers for one rule land in one
+card, which a reviewer can see and separate, whereas one fixer's work split
+across two cards is a duplication they cannot see and would review twice.
+
+The page groups and never merges. Ten repositories with the same fix stay ten
+pull requests — one pull request touching ten repositories would bypass
+per-repo review and CODEOWNERS, which is most of what makes a draft PR an
+acceptable thing for a bot to open. The page says so in its own note rather
+than leaving a reader to assume the opposite.

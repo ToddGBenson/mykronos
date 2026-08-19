@@ -1026,6 +1026,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/patchwork/digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Cross Repo Digest
+         * @description The same fix, everywhere it is open (spec 19 §3.4).
+         *
+         *     Ten repositories with the same unpinned dependency means ten draft pull
+         *     requests, reviewed one at a time with nothing to say they are the same
+         *     change. This groups them for the reviewer.
+         *
+         *     Grouped by `rule_id`, which is not on `remediation_events` — it is on the
+         *     finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
+         *     column exists on the events table, and `fixer_name` is not recorded
+         *     anywhere, so the grouping is by rule alone. That is the coarser key, and
+         *     coarser is the safe direction: two fixers for one rule would land in one
+         *     card, which a reviewer can see, rather than one fixer's work being split
+         *     across two cards, which they cannot.
+         *
+         *     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
+         *     by the parameterised one.
+         */
+        get: operations["cross_repo_digest_api_patchwork_digest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/patchwork/repos/{repo_id}": {
         parameters: {
             query?: never;
@@ -1487,6 +1522,51 @@ export interface components {
              * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. not_run: no successful build to compare against.
              */
             state: string;
+        };
+        /**
+         * DigestGroupOut
+         * @description One fix, repeated across the portfolio (spec 19 §3.4).
+         */
+        DigestGroupOut: {
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            /** Severity */
+            severity?: string | null;
+            /**
+             * Rationale
+             * @description One representative rationale. They are generated from the same template for the same rule, so showing all twelve would be twelve copies of one sentence.
+             * @default
+             */
+            rationale: string;
+            /** Repos */
+            repos: components["schemas"]["DigestRepoOut"][];
+        };
+        /** DigestPage */
+        DigestPage: {
+            /** Groups */
+            groups: components["schemas"]["DigestGroupOut"][];
+            /** Total Open Prs */
+            total_open_prs: number;
+            /**
+             * Note
+             * @default Grouped for the reviewer, not merged for the machine. Each of these is still a separate pull request against a separate repository — one pull request touching ten repositories would break per-repo review and CODEOWNERS, which is the point of them.
+             */
+            note: string;
+        };
+        /** DigestRepoOut */
+        DigestRepoOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Fix Pr Number */
+            fix_pr_number?: number | null;
+            /** Fix Pr Url */
+            fix_pr_url?: string | null;
+            /** Pr Status */
+            pr_status?: string | null;
         };
         /**
          * EcosystemEvidence
@@ -4288,6 +4368,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RemediationFixOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cross_repo_digest_api_patchwork_digest_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DigestPage"];
                 };
             };
             /** @description Validation Error */

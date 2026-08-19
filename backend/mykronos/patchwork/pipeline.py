@@ -260,6 +260,17 @@ class PatchworkPipeline:
         # and the reason combinations are detected at all.
         combinations = correlate.detect(correlation_pool)
         claimed = {fid for combo in combinations for fid in combo.finding_ids}
+        # The exception spec 19 §3.3 scopes to exactly one rule: a member
+        # finding whose fix is correct whether or not the other half is ever
+        # addressed. Removed from `claimed` so the normal fix path still sees
+        # it; the combination event above still says needs_human_judgment,
+        # because the *combination* still does.
+        partial = {
+            combo.partial_fix_finding_id
+            for combo in combinations
+            if combo.partial_fix_finding_id
+        }
+        claimed -= partial
 
         for combo in combinations:
             result.outcomes.append(
