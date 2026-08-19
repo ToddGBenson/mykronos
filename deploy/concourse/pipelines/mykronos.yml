@@ -193,6 +193,11 @@ jobs:
             args:
               - -ec
               - |
+                # pip needs git to resolve a `git+https://` requirement, and
+                # the python image does not ship it. Every other job that
+                # installs the uploader does this first; this one did not, and
+                # failed its first build on `Cannot find command 'git'`.
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
                 # The pinned package, installed exactly as every scanning task
                 # installs it -- then introspected from this checkout, which is
