@@ -356,3 +356,53 @@ class TestItRunsWhereTheScansRun:
 
         assert "python -m mykronos.reachability" in pipeline
         assert "/api/ingest/reachability" in pipeline
+
+
+class TestTheStepCannotFailTheScan:
+    """It did, once, and the shape is worth pinning.
+
+    The `sast` task runs under `bash -ec`, which aborts on the first failing
+    command inside an `if` body as readily as outside one. The first version
+    of this step summarised its output with `jq`, which the python image does
+    not have — so the step took the whole job down, and `oracle-gate` and
+    `remediate` both gate on `sast`.
+
+    What made it hard to see: while the pinned package predated
+    `mykronos.reachability`, the `if` condition failed and control took the
+    `else` branch, which touched no jq. The step only broke once the analysis
+    started *working*.
+    """
+
+    @staticmethod
+    def _block() -> str:
+        from pathlib import Path
+
+        pipeline = (
+            Path(__file__).resolve().parents[2]
+            / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+        ).read_text(encoding="utf-8")
+        # From the subshell that opens the block, not from the module name —
+        # `set +e` is the line above it, and slicing from the name cut off
+        # the very guard this class is checking for.
+        call = pipeline.index("mykronos.reachability")
+        start = pipeline.rindex("(", 0, call)
+        return pipeline[start : pipeline.index(") || true", call) + len(") || true")]
+
+    def test_it_uses_no_tool_the_image_may_not_have(self) -> None:
+        """python is proven present — the step before this one just ran it.
+        jq is not, and that is what broke it."""
+        assert "jq" not in self._block()
+
+    def test_the_wrapper_swallows_any_failure(self) -> None:
+        """Whatever happens inside, the scan's own findings — already
+        uploaded above this block — must still count as a successful job."""
+        block = self._block()
+
+        assert block.rstrip().endswith(") || true")
+        assert "set +e" in block
+
+    def test_an_empty_result_is_not_posted(self) -> None:
+        """A zero-byte file would POST an empty body and record a report
+        claiming nothing was analysed, which is worse than no report: the
+        Oracle category would read `available` with nothing behind it."""
+        assert "-s /tmp/reachability.json" in self._block()
