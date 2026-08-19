@@ -2747,3 +2747,53 @@ person meets a decision rather than a surprise.
 
 **What this did not change:** the sixteen Perl criticals are real, current, and
 in TheHub's own image. The gate was right to block on them.
+
+## D-074 — `v3`, and a check so there is no D-0xx for `v4`
+
+**Status:** Decided and shipped
+
+D-051 found the `mykronos-ref` pin 53 commits stale, resolved it by cutting
+`v2` at a chosen commit, and wrote: "the next jump is a deliberate `v3`, not a
+moved tag." This is that jump. The pin was 61 commits behind, and the
+prediction in D-051's own resolution — that this would recur — was right.
+
+Found the same way as last time, which is the part worth fixing. The
+reachability step shipped in #39/#40 ran on its first Concourse build and
+printed `No module named mykronos.reachability`. It degraded correctly and
+cost nothing, but the feature had been merged, deployed and reported as
+working while being inert in CI.
+
+Everything runner-side added since `v2` was affected: `atlas_sbom`,
+`atlas_freshness`, `reachability`, `ai_pin_check`, and the `--author-role`,
+`--ai-classifier-file`, `--sbom` and `--check-freshness` flags. Two of those
+were latent *hard* failures rather than graceful ones — `--sbom` is passed
+unconditionally by the Actions atlas template inside `set -euo pipefail`, and
+`--author-role` survives only because `${ROLE:+…}` omits it when the
+collaborator lookup fails, which it currently always does.
+
+**What is different this time.** D-051's "worth doing regardless" was to have
+the install step print its resolved commit. That shipped, and it did not
+prevent this: printing a fact into a build log nobody reads is not a control.
+
+`scripts/check_pinned_ref.py` is. It runs from the source checkout, installs
+the pinned ref exactly as every scanning task does, and asserts that each
+module the pipelines invoke and each flag they pass is actually there. Run
+against `v2` it reproduces all eight problems by name and says to cut a tag.
+
+Three properties it was given on purpose:
+
+- **Not a version-distance check.** "You are 61 commits behind" every build is
+  noise, and a pin being old is fine. A pipeline invoking something the pin
+  does not have is not fine, and that is the only thing it asserts.
+- **It gates nothing.** A stale pin makes a loud red job, not a stopped fleet:
+  the scans still running produce real results, they are only missing what
+  came after the tag. Gating `build` would turn "one signal is inert" into
+  "nothing ships".
+- **It cannot go quiet.** A module whose `--help` cannot be read is reported
+  as unverifiable rather than passed. A guard that says nothing when it cannot
+  tell is how the pin went stale unnoticed twice.
+
+A companion test asserts the requirement list matches every `python -m
+mykronos.*` call across all three pipelines and every workflow template. It
+earned itself on its first run by finding `mykronos.ai_pin_check`, which the
+manual sweep of the same question had missed.
