@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos.adminauth import AdminDep
+from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.auth import TokenRegistry
 from mykronos.capabilities import (
     CapabilityConfigError,
@@ -30,6 +30,7 @@ from mykronos.db.models import (
     CapabilityConfig,
     CapabilityGrant,
     RepoOnboarding,
+    RiskProfile,
     get_or_create_organization,
 )
 from mykronos.github.client import GitHubError
@@ -162,6 +163,52 @@ class CapabilityUpdateResult(BaseModel):
     pull_request_number: int | None = None
     secret_provisioned: bool = False
     detail: str
+
+
+#: The vocabularies Oracle's policy has weights for (spec 21 §1.4). Typed as
+#: literals rather than free strings because a profile field Oracle scores has
+#: to be one Oracle can look up — a typo'd "confidental" would silently
+#: contribute zero and look like an honest "we said public".
+DataClassification = Literal["public", "internal", "confidential", "regulated"]
+BusinessCriticality = Literal["low", "medium", "high", "critical"]
+
+
+class RiskProfileOut(BaseModel):
+    """What this application is, as an asset (spec 21 §1).
+
+    Every field independently nullable: a partially-filled profile is still
+    useful. `exists` distinguishes the two states that matter to Oracle — a
+    profile recorded but not yet filled in is an auditable fact, no profile
+    at all is `available: false`.
+    """
+
+    exists: bool
+    internet_facing: bool | None = None
+    data_classification: DataClassification | None = None
+    business_criticality: BusinessCriticality | None = None
+    compliance_scope: list[str] = Field(default_factory=list)
+    owner: str | None = None
+    notes: str | None = None
+    updated_by: str = ""
+    updated_at: datetime | None = None
+
+
+class RiskProfileUpdate(BaseModel):
+    """A full replace, not a patch (spec 21 §1.3).
+
+    A risk profile is a small, complete statement of fact about an asset;
+    a field-by-field patch endpoint invites one that drifts a field at a
+    time with nobody ever reading the whole thing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    internet_facing: bool | None = None
+    data_classification: DataClassification | None = None
+    business_criticality: BusinessCriticality | None = None
+    compliance_scope: list[str] = Field(default_factory=list, max_length=20)
+    owner: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=4000)
 
 
 class ScanResult(BaseModel):
@@ -662,3 +709,98 @@ async def scan_now(
         )
 
     return ScanResult(dispatched=dispatched, failed=failed, detail=detail)
+
+
+def _profile_out(row: RiskProfile | None) -> RiskProfileOut:
+    """A missing profile and an empty one are different answers (spec 21 §1).
+
+    No row is `exists: False` — Oracle reports `available: false` for it and
+    contributes nothing. A row whose every field is null is `exists: True`:
+    somebody opened the form and recorded that they do not know yet, which is
+    an auditable fact and not the same as never having been asked.
+    """
+    if row is None:
+        return RiskProfileOut(exists=False)
+    return RiskProfileOut(
+        exists=True,
+        internet_facing=row.internet_facing,
+        data_classification=row.data_classification,  # type: ignore[arg-type]
+        business_criticality=row.business_criticality,  # type: ignore[arg-type]
+        compliance_scope=list(row.compliance_scope or []),
+        owner=row.owner,
+        notes=row.notes,
+        updated_by=row.updated_by,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get("/{repo_id}/risk-profile", response_model=RiskProfileOut)
+async def get_risk_profile(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> RiskProfileOut:
+    """What this application is, as an asset (spec 21 §1.3).
+
+    Readable by any authenticated principal — nothing here is more sensitive
+    than a capability config, and a viewer reading a risk decision should be
+    able to see the asset facts that drove it.
+    """
+    with request.app.state.db.session() as session:
+        row = _get(session, repo_id)
+        profile = (
+            session.execute(
+                select(RiskProfile).where(RiskProfile.repo_onboarding_id == row.id)
+            )
+            .scalars()
+            .first()
+        )
+        return _profile_out(profile)
+
+
+@router.put("/{repo_id}/risk-profile", response_model=RiskProfileOut)
+async def put_risk_profile(
+    request: Request, repo_id: str, body: RiskProfileUpdate, actor: AdminDep
+) -> RiskProfileOut:
+    """Record or replace this repository's risk profile (spec 21 §1.3).
+
+    Admin-only and audit-logged: this changes what Oracle will decide, so it
+    is a write in the same sense a finding disposition is (spec 10 §2.2), not
+    a preference. `updated_by` is stamped from the caller rather than accepted
+    from the body — "who said this repository is internet-facing" is exactly
+    the field nobody should be able to fill in on somebody else's behalf.
+    """
+    db = request.app.state.db
+    with db.session() as session:
+        row = _get(session, repo_id)
+        profile = (
+            session.execute(
+                select(RiskProfile).where(RiskProfile.repo_onboarding_id == row.id)
+            )
+            .scalars()
+            .first()
+        )
+        if profile is None:
+            profile = RiskProfile(repo_onboarding_id=row.id)
+            session.add(profile)
+
+        profile.internet_facing = body.internet_facing
+        profile.data_classification = body.data_classification
+        profile.business_criticality = body.business_criticality
+        profile.compliance_scope = list(body.compliance_scope)
+        profile.owner = body.owner
+        profile.notes = body.notes
+        profile.updated_by = actor
+
+        db.audit(
+            session,
+            actor=actor,
+            action="repo.risk_profile.set",
+            entity_type="risk_profile",
+            entity_id=row.id,
+            repo=row.github_repo_full_name,
+            internet_facing=body.internet_facing,
+            data_classification=body.data_classification,
+            business_criticality=body.business_criticality,
+            compliance_scope=list(body.compliance_scope),
+        )
+        session.flush()
+        return _profile_out(profile)

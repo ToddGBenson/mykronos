@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     select,
 )
@@ -142,6 +143,48 @@ class RepoOnboarding(Base):
         kept distinct in the model so the dashboard can say "paused" rather
         than "gone"."""
         return self.status == "active"
+
+
+class RiskProfile(Base):
+    """What this application *is*, as an asset (spec 21 §1).
+
+    Every other Oracle input is derived from what a scanner found. None of
+    them can tell you whether an application is internet-facing or handles
+    regulated data — no scan sees that, and a repo that is an internal build
+    tool and one that is a public payments API otherwise score identically
+    for the identical finding.
+
+    Admin-authored, never inferred. One row per repository (unlike
+    `CapabilityConfig`'s per-capability rows), and every field independently
+    nullable: a partially-filled profile is still useful, and Oracle scores
+    what is known rather than treating one missing field as "no profile".
+    The distinction that matters is row-exists vs. row-absent — a profile
+    saying "we don't know yet" is an auditable fact; no profile at all is
+    `available: false`, never defaulted to "internal, low criticality",
+    which would be a guess wearing a fact's clothes.
+    """
+
+    __tablename__ = "risk_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_onboarding_id: Mapped[str] = mapped_column(
+        ForeignKey("repo_onboardings.id"), unique=True, index=True
+    )
+    internet_facing: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    #: public | internal | confidential | regulated
+    data_classification: Mapped[str | None] = mapped_column(String(32), default=None)
+    #: low | medium | high | critical
+    business_criticality: Mapped[str | None] = mapped_column(String(16), default=None)
+    #: Regulatory regimes (`pci`, `hipaa`, `soc2`, ...). An empty list is a
+    #: real answer ("none apply"), distinct from the field never being asked.
+    compliance_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Context only, never scored.
+    owner: Mapped[str | None] = mapped_column(String(255), default=None)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
+    #: Who last said this, and when. A risk profile that nobody owns is one
+    #: nobody will correct when it goes stale.
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class CapabilityConfig(Base):

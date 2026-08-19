@@ -969,6 +969,107 @@ class TestScanHealth:
         body = client.get(f"/api/dashboard/repos/{repo_id}/scan-health", headers=admin_auth).json()
         assert body["capabilities"] == []
 
+    def test_the_most_recent_runs_detail_is_reported(
+        self, client: TestClient, admin_auth: dict[str, str], seeded, run_compaction
+    ) -> None:
+        """spec 19 §1.2 — the adapter's own message, not just scan_status."""
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(
+            client,
+            auth,
+            scan_run_id="run-2",
+            scan_status="failure",
+            detail="3 of 10 test(s) failed (2 failure(s), 1 error(s)).",
+        )
+        run_compaction()
+
+        body = client.get(f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth).json()
+
+        sast = next(c for c in body["capabilities"] if c["capability"] == "sast")
+        assert sast["detail"] == "3 of 10 test(s) failed (2 failure(s), 1 error(s))."
+
+    def test_a_lane_that_flips_on_the_same_commit_is_flaky(
+        self, client: TestClient, admin_auth: dict[str, str], seeded, run_compaction
+    ) -> None:
+        """spec 19 §1.3 — same commit, disagreeing status."""
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        # `seeded`'s own run is scan_run_id="run-1", commit_sha defaults the
+        # same across calls unless overridden — exactly the "nothing about
+        # the repo changed" case this signal exists for.
+        post_scan(client, auth, scan_run_id="run-2", scan_status="failure")
+        run_compaction()
+
+        body = client.get(f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth).json()
+
+        sast = next(c for c in body["capabilities"] if c["capability"] == "sast")
+        assert sast["flaky"] is True
+
+    def test_a_lane_that_fails_on_a_new_commit_is_not_flaky(
+        self, client: TestClient, admin_auth: dict[str, str], seeded, run_compaction
+    ) -> None:
+        """A regression, not a flake — the repository actually changed."""
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(
+            client,
+            auth,
+            scan_run_id="run-2",
+            scan_status="failure",
+            commit_sha="deadbeef",
+        )
+        run_compaction()
+
+        body = client.get(f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth).json()
+
+        sast = next(c for c in body["capabilities"] if c["capability"] == "sast")
+        assert sast["flaky"] is False
+
+
+class TestScanRunTrend:
+    """spec 19 §1.1 — a lane's pass rate over time, not just the current rate."""
+
+    def test_a_run_lands_in_its_own_bucket(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/scan-runs/trend",
+            params={"capability": "sast", "days": 7, "points": 7},
+            headers=admin_auth,
+        ).json()
+
+        assert body["capability"] == "sast"
+        assert len(body["points"]) == 7
+        assert body["points"][-1]["runs"] == 1
+        assert body["points"][-1]["success_rate"] == 1.0
+
+    def test_a_window_with_no_runs_is_null_not_zero(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/scan-runs/trend",
+            params={"capability": "sast", "days": 700, "points": 10},
+            headers=admin_auth,
+        ).json()
+
+        # The one seeded run falls in the most recent bucket; every earlier
+        # bucket has nothing in it, and null is the honest answer for that,
+        # not a zero rate that would read as "ran and failed every time."
+        assert body["points"][0]["success_rate"] is None
+        assert body["points"][0]["runs"] == 0
+
+    def test_an_unknown_capability_is_an_empty_but_valid_series(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/scan-runs/trend",
+            params={"capability": "functional", "days": 7, "points": 3},
+            headers=admin_auth,
+        ).json()
+
+        assert all(p["runs"] == 0 and p["success_rate"] is None for p in body["points"])
+
 
 class TestPortfolioCarriesOracleScores:
     """The Risk and Oracle columns, which were placeholders until Phase 3."""

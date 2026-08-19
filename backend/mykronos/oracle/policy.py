@@ -45,6 +45,24 @@ class DampeningPolicy:
 
 
 @dataclass(frozen=True)
+class RiskProfilePolicy:
+    """Weights for the asset facts an admin records (spec 21 §1.4).
+
+    Per-field rather than one scalar, because each is an independent fact
+    worth naming separately in the reasoning — "internet-facing: +10" and
+    "regulated data: +15" tell an admin which choice moved the score, where
+    a single combined number would not.
+    """
+
+    internet_facing_points: float
+    data_classification_points: dict[str, float]
+    business_criticality_points: dict[str, float]
+    #: Unbounded on purpose: an asset in four regimes really does carry four
+    #: kinds of exposure, and a cap would hide the fourth.
+    compliance_scope_points_per_entry: float
+
+
+@dataclass(frozen=True)
 class Policy:
     version: str
     curve: str
@@ -55,6 +73,7 @@ class Policy:
     remediation_discount: float
     age: AgePolicy
     dampening: DampeningPolicy
+    risk_profile: RiskProfilePolicy
 
     no_go: float
     review_recommended: float
@@ -129,6 +148,13 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     modifiers = _require(document, "modifiers", "the policy root")
     age_raw = _require(modifiers, "finding_age", "modifiers")
     dampening_raw = _require(modifiers, "false_positive_dampening", "modifiers")
+    # Optional, unlike the modifiers above: a deployment running the policy
+    # file from before spec 21 keeps working, with every risk-profile weight
+    # at zero — the category still appears in the snapshot and still reports
+    # `available`, it simply contributes nothing until weights are set. A
+    # hard `_require` here would have made this spec's policy change
+    # mandatory before the code could load at all.
+    profile_raw = modifiers.get("risk_profile") or {}
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -183,6 +209,24 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                     dampening_raw.get("min_observations", 3),
                     "dampening.min_observations",
                 )
+            ),
+        ),
+        risk_profile=RiskProfilePolicy(
+            internet_facing_points=_number(
+                profile_raw.get("internet_facing_points", 0),
+                "risk_profile.internet_facing_points",
+            ),
+            data_classification_points={
+                str(key): _number(value, f"risk_profile.data_classification_points.{key}")
+                for key, value in (profile_raw.get("data_classification_points") or {}).items()
+            },
+            business_criticality_points={
+                str(key): _number(value, f"risk_profile.business_criticality_points.{key}")
+                for key, value in (profile_raw.get("business_criticality_points") or {}).items()
+            },
+            compliance_scope_points_per_entry=_number(
+                profile_raw.get("compliance_scope_points_per_entry", 0),
+                "risk_profile.compliance_scope_points_per_entry",
             ),
         ),
         no_go=no_go,

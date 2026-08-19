@@ -319,6 +319,39 @@ class TestOrchestration:
         assert outcome.findings_accepted == 1
         assert outcome.raw_output_ref is None
 
+    def test_an_adapters_warning_reaches_the_scan_run(
+        self, tmp_path: Path, workspace: Path
+    ) -> None:
+        """spec 19 §1.2. The JUnit adapter has always computed "3 of 10
+        test(s) failed"; it died in the CI step summary and never reached
+        the lake, so a failing lane could say only *that* it failed."""
+        directory = tmp_path / "junit-results"
+        directory.mkdir()
+        (directory / "unit.xml").write_bytes(
+            b'<?xml version="1.0"?><testsuites><testsuite name="unit" '
+            b'tests="10" failures="2" errors="1" skipped="0"/></testsuites>'
+        )
+        client = RecordingClient()
+
+        upload(
+            make_args(directory, workspace, capability="unit", tool="junit"),
+            client=client,
+        )
+
+        detail = client.bodies_for("/api/ingest/scan-run")[1]["detail"]
+        assert detail is not None
+        assert "3 of 10" in detail
+
+    def test_a_scan_with_nothing_to_say_sends_no_detail(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """Most scans, most of the time — `detail` is for an adapter that has
+        something specific to add, not a field every run has to fill."""
+        client = RecordingClient()
+        upload(make_args(results, workspace), client=client)
+
+        assert client.bodies_for("/api/ingest/scan-run")[1].get("detail") is None
+
     def test_pr_number_zero_becomes_null(self, results: Path, workspace: Path) -> None:
         """GitHub expression fallbacks yield 0 for "not a pull request"; a run
         claiming to belong to PR #0 would be a lie in the audit trail."""

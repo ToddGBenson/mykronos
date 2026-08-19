@@ -14,7 +14,10 @@
 #      scores; a policy edit that does not update them fails the build, which
 #      is the point — nobody should change how risk is scored by accident.
 
-version: "1.0"
+# 1.1 — adds the risk_profile modifier (spec 21). Every existing weight is
+# unchanged, so a repo with no recorded profile scores exactly as it did
+# under 1.0; only a repo whose admin has recorded asset context can differ.
+version: "1.1"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -85,6 +88,32 @@ modifiers:
     threshold: 0.5           # historical FP rate at or above which dampening applies
     dampening_factor: 0.5    # severity weight × (1 - factor)
     min_observations: 3      # reasoned dismissals required before any dampening
+
+  # Risk profile (spec 21). Asset context, and the only input here that is
+  # not derived from something a scanner found — no scan can tell you whether
+  # an application is internet-facing or handles regulated data. An admin
+  # records it; null until they do, exactly like every modifier above before
+  # its source exists.
+  #
+  # Per-field rather than one combined number, so `render_reasoning` can name
+  # which fact moved the score: "internet-facing: +10" is checkable, a single
+  # "asset context: +25" is not. Points are flat, like finding_age's, not
+  # curved — there is no count here to curve, each fact is true once.
+  risk_profile:
+    internet_facing_points: 10
+    data_classification_points:
+      public: 0
+      internal: 3
+      confidential: 10
+      regulated: 15
+    business_criticality_points:
+      low: 0
+      medium: 3
+      high: 8
+      critical: 15
+    # Unbounded on purpose: an asset in four regimes carries four kinds of
+    # exposure, and a cap would silently hide the fourth.
+    compliance_scope_points_per_entry: 3
 
 # ---------------------------------------------------------------------------
 # Thresholds

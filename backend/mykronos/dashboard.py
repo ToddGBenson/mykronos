@@ -27,7 +27,7 @@ import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -103,6 +103,21 @@ STRIDE_BY_CAPABILITY: dict[str, tuple[str, ...]] = {
 def _worse(candidate: str, current: str) -> bool:
     """Whether `candidate` is a more severe level than `current`."""
     return _SEVERITY_RANK.get(candidate, -1) > _SEVERITY_RANK.get(current, -1)
+
+
+def _is_flaky(recent: list[dict[str, Any]]) -> bool:
+    """Same commit, disagreeing status, on the two most recent runs (spec 19
+    §1.3) — a lane that fails, then passes, on nothing the repository changed.
+    Fewer than two runs, or two runs of different commits, is not evidence of
+    either way and reads as not flaky rather than guessed at."""
+    if len(recent) < 2:
+        return False
+    newest, previous = recent[0], recent[1]
+    return bool(
+        newest.get("commit_sha")
+        and newest["commit_sha"] == previous.get("commit_sha")
+        and newest.get("scan_status") != previous.get("scan_status")
+    )
 
 
 def _age_days(first_seen_at: Any) -> int | None:
@@ -1382,6 +1397,7 @@ class DashboardQueries:
             """,
             [repo_full_name, limit],
         )
+        recent = self._recent_scan_runs(repo_full_name)
         health = []
         for capability, runs, succeeded, failed, no_targets, last_run_at, peak in rows:
             total = int(runs) or 1
@@ -1395,9 +1411,104 @@ class DashboardQueries:
                     "failure_rate": round(int(failed or 0) / total, 3),
                     "last_run_at": last_run_at,
                     "peak_findings": int(peak or 0),
+                    # The last run's own detail text (spec 19 §1.2) — the
+                    # aggregate above has no room for one run's message, and
+                    # a box showing "70% succeeded" says nothing about what
+                    # the most recent failure actually was.
+                    "detail": recent.get(str(capability), [{}])[0].get("detail"),
+                    # Same commit, disagreeing status (spec 19 §1.3) — a
+                    # flake, not a regression. Two rows is enough to say so;
+                    # a longer streak would only change how loudly, not
+                    # whether.
+                    "flaky": _is_flaky(recent.get(str(capability), [])),
                 }
             )
         return health
+
+    def _recent_scan_runs(
+        self, repo_full_name: str, per_capability: int = 2
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The last `per_capability` runs of every capability, newest first.
+
+        One windowed query rather than one query per capability — this feeds
+        `scan_health()`, which already returns every capability for a repo in
+        one call, and a per-capability query here would turn that one call
+        into fifteen.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT capability, commit_sha, scan_status, detail, completed_at FROM (
+                SELECT capability, commit_sha, scan_status, detail, completed_at,
+                       row_number() OVER (
+                           PARTITION BY capability
+                           ORDER BY coalesce(completed_at, started_at) DESC
+                       ) AS rn
+                FROM scan_runs
+                WHERE repo_full_name = ?
+            ) WHERE rn <= ?
+            """,
+            [repo_full_name, per_capability],
+        )
+        by_capability: dict[str, list[dict[str, Any]]] = {}
+        for capability, commit_sha, scan_status, detail, completed_at in rows:
+            by_capability.setdefault(str(capability), []).append(
+                {
+                    "commit_sha": commit_sha,
+                    "scan_status": str(scan_status),
+                    "detail": detail,
+                    "completed_at": completed_at,
+                }
+            )
+        return by_capability
+
+    def scan_run_trend(
+        self,
+        repo_full_name: str,
+        capability: str,
+        *,
+        days: int = 90,
+        points: int = 12,
+    ) -> list[dict[str, Any]]:
+        """One lane's pass rate over time (spec 19 §1.1) — `scan_health()`
+        only ever shows the current rate; a lane that has been sliding for
+        two weeks looks identical to one that just started failing today
+        unless something plots the history.
+
+        Bucketed, not reconstructed: each point is "runs completed in this
+        window," not a point-in-time snapshot the way `trend_series` replays
+        open findings — a scan either ran in a window or it didn't, there is
+        no "was still running" state to reconstruct.
+        """
+        now = utcnow()
+        step = timedelta(days=days / points)
+        series: list[dict[str, Any]] = []
+        for index in range(points, 0, -1):
+            end = now - step * (index - 1)
+            start = end - step
+            rows = self.catalog.query(
+                """
+                SELECT count(*),
+                       sum(CASE WHEN scan_status = 'success' THEN 1 ELSE 0 END)
+                FROM scan_runs
+                WHERE repo_full_name = ? AND capability = ?
+                  AND coalesce(completed_at, started_at) >= ?
+                  AND coalesce(completed_at, started_at) < ?
+                """,
+                [repo_full_name, capability, start, end],
+            )
+            runs, succeeded = (int(rows[0][0]), int(rows[0][1] or 0)) if rows else (0, 0)
+            series.append(
+                {
+                    "at": end,
+                    "runs": runs,
+                    # Null, not zero, for a window with nothing in it — a gap
+                    # in coverage and a lane that failed every run both would
+                    # otherwise plot at the same point (spec 05 §7a's "not
+                    # assessed is not the same as zero" convention).
+                    "success_rate": round(succeeded / runs, 3) if runs else None,
+                }
+            )
+        return series
 
     def finding(self, finding_id: str, *, include_raw: bool = False) -> dict[str, Any] | None:
         # `rule_id` is here because the disposition endpoint turns a dismissal

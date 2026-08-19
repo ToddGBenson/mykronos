@@ -26,6 +26,7 @@ import {
   type RetroReport,
   type RiskDecision,
   type ScanHealth,
+  type ScanRunTrend,
   type ShadowModeReport,
   type SscsPage,
   type ThreatIntelEntry,
@@ -440,6 +441,25 @@ export async function getScanHealth(repoId: string): Promise<Result<ScanHealth>>
     );
     if (!data) return { ok: false, error: describe(response, "Could not load scan health") };
     return { ok: true, data: data as ScanHealth };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getScanRunTrend(
+  repoId: string,
+  capability: string,
+): Promise<Result<ScanRunTrend>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/scan-runs/trend",
+      {
+        params: { path: { repo_id: repoId }, query: { capability } },
+        cache: "no-store",
+      },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the trend") };
+    return { ok: true, data: data as ScanRunTrend };
   } catch (error) {
     return failure(error);
   }

@@ -197,6 +197,11 @@ GRANDFATHERED = {
     "groomed_stories.github_issue_number",
     "groomed_stories.github_issue_url",
     "groomed_stories.dev_ready",
+    # The FK identifying which repo a profile is about (spec 21 §1.2) — the
+    # same case as `workflow_install_events.repo_onboarding_id` above: a row
+    # cannot exist without it, so there is no value to backfill an existing
+    # row with, and inventing one would attach every old row to one repo.
+    "risk_profiles.repo_onboarding_id",
 }
 
 
