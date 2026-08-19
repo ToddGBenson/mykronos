@@ -826,6 +826,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/oracle/policy/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Policy History
+         * @description Which policy version scored what, and when (spec 21 §5).
+         *
+         *     Readable by viewers, on the same reasoning as `/policy` itself: somebody
+         *     looking at a decision they disagree with is entitled to know whether the
+         *     rules that produced it are the rules in force today.
+         */
+        get: operations["policy_history_api_oracle_policy_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/shadow-mode": {
         parameters: {
             query?: never;
@@ -846,6 +870,33 @@ export interface paths {
          *     shadowed by the parameterised one.
          */
         get: operations["shadow_mode_api_oracle_shadow_mode_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/oracle/term-analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Term Analytics
+         * @description What is driving risk across the fleet, term by term (spec 21 §3).
+         *
+         *     The question a portfolio page could not answer: is the score coming from
+         *     aging findings, KEV boosts, insider risk, or the risk profile? Every
+         *     decision already stores its terms; nothing aggregated them.
+         *
+         *     Ordered before `/decisions/{repo_id}` for the same reason `/shadow-mode`
+         *     is — a literal path must not be shadowed by the parameterised one.
+         */
+        get: operations["term_analytics_api_oracle_term_analytics_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1494,6 +1545,13 @@ export interface components {
              * @description Dependencies whose maintenance recency could actually be determined. Private-registry packages have none and are excluded from the stale ratio's denominator rather than counted as fresh or as stale (spec 07 §8). Null means the tool did not report it, in which case dependency_count is used.
              */
             maintenance_data_available_for?: number | null;
+            /**
+             * Licenses Seen
+             * @description License identifier to component count, from the SBOM Syft already produces (spec 22 §1). Empty means the license pass did not run for this ecosystem — not that its components are unlicensed, which is what the `unknown` key means when the pass did run.
+             */
+            licenses_seen?: {
+                [key: string]: number;
+            };
         };
         /** EntriesPage */
         EntriesPage: {
@@ -1957,6 +2015,12 @@ export interface components {
              * @description Served with the data on purpose. A consumer of this endpoint should not have to read spec 06 §9 to learn that these rows are not a per-person rating.
              */
             governance: string;
+            /**
+             * Blocking
+             * @description Whether this repository's Aegis Check Run can fail a pull request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, and off by default. Stated here rather than left to the reader because the gap between what an admin configured and what a reviewer believes is happening is exactly where a governance note stops being one.
+             * @default false
+             */
+            blocking: boolean;
         };
         /**
          * InsiderRiskSubmission
@@ -3983,7 +4047,62 @@ export interface operations {
             };
         };
     };
+    policy_history_api_oracle_policy_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     shadow_mode_api_oracle_shadow_mode_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    term_analytics_api_oracle_term_analytics_get: {
         parameters: {
             query?: {
                 days?: number;

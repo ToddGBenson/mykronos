@@ -23,7 +23,7 @@ modeling, no trend view. Every constraint that section states stays exactly as s
 | AI-authorship classifier: workflow-side call, opt-in | Planned |
 | `privilege_adjacent`: a cheap, honest first signal (org-role proxy) | Built (D-064) |
 | UI: complete `SIGNAL_LABEL` map | Built |
-| Config: `blocking` visibility check (confirm no drift between spec and `AegisConfig`) | Planned |
+| Config: `blocking` visibility check | Built — confirmed real, now stated per repo |
 
 ## 1. The AI-authorship classifier
 

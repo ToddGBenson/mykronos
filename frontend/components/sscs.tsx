@@ -39,6 +39,13 @@ const TERM_LABEL: Record<string, string> = {
   medium_vulnerabilities: "Medium advisories",
   floating_versions: "Unpinned versions",
   stale_dependencies: "Unmaintained packages",
+  // Two terms, not one, because they say different things. "Restrictive
+  // licenses" is a fact about obligations this dependency tree creates;
+  // "License not stated" is a fact about what the SBOM does not say. Folding
+  // them together would let a tree of unlabelled components read as a tree of
+  // copyleft ones.
+  flagged_licenses: "Restrictive licenses",
+  unknown_licenses: "License not stated",
 };
 
 /** Higher is better here, unlike every other score in the platform. */

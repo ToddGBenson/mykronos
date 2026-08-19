@@ -341,6 +341,55 @@ class AtlasConfig(BaseCapabilityConfig):
         le=100,
         description="With blocking on, a release below this fails its workflow.",
     )
+    banned_packages: list[str] = Field(
+        default_factory=list,
+        max_length=200,
+        description=(
+            "Packages this repository must not depend on. Present in the "
+            "tree produces a finding regardless of whether any advisory "
+            "covers it — the ban is the finding (spec 22 §3)."
+        ),
+    )
+    blocked_licenses: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+        description=(
+            "SPDX identifiers that are never acceptable here, beyond the "
+            "score penalty flagged licenses already carry. A component "
+            "declaring several is blocked if any one of them is listed."
+        ),
+    )
+
+    check_freshness: bool = Field(
+        default=False,
+        description=(
+            "Query the npm and PyPI registries for each package's last "
+            "publish date, making `stale_dependencies` real (spec 22 §2). "
+            "Off by default because it is an outbound call to a third party, "
+            "which spec 07 §7 requires be opted into rather than assumed."
+        ),
+    )
+    staleness_threshold_days: int = Field(
+        default=730,
+        ge=30,
+        le=3650,
+        description=(
+            "No release in this long counts as stale. Two years by default — "
+            "long enough that what trips it is an abandoned package rather "
+            "than a merely finished one."
+        ),
+    )
+
+    @field_validator("banned_packages", "blocked_licenses")
+    @classmethod
+    def _no_blanks(cls, value: list[str]) -> list[str]:
+        """A blank entry would match nothing and read as a configured ban.
+
+        Empty strings arrive from a UI list editor with a stray row, and a
+        list that *looks* like it bans something while banning nothing is the
+        worst outcome available here.
+        """
+        return [entry.strip() for entry in value if entry.strip()]
 
     @field_validator("sbom_format")
     @classmethod

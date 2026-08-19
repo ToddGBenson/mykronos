@@ -20,7 +20,7 @@ from sqlalchemy import select
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
-from mykronos.db.models import CapabilityGrant, RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
@@ -358,6 +358,17 @@ class InsiderRiskPage(BaseModel):
             "not a per-person rating."
         )
     )
+    blocking: bool = Field(
+        default=False,
+        description=(
+            "Whether this repository's Aegis Check Run can fail a pull "
+            "request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, "
+            "and off by default. Stated here rather than left to the reader "
+            "because the gap between what an admin configured and what a "
+            "reviewer believes is happening is exactly where a governance "
+            "note stops being one."
+        ),
+    )
 
 
 class SscsEvidenceOut(BaseModel):
@@ -645,6 +656,11 @@ async def trends(
                 "open_high": point.open_high,
                 "open_total": point.open_total,
                 "risk_score": point.risk_score,
+                # Null for a single repo, where there is nothing to aggregate
+                # (spec 21 §2). Present for the portfolio, where the mean
+                # alone can be dragged by one very bad repository.
+                "risk_score_median": point.risk_score_median,
+                "repos_scored": point.repos_scored,
                 "trust_score": point.trust_score,
             }
             for point in series
@@ -743,9 +759,14 @@ async def repo_insider_risk(
     repo_full_name = _resolve_repo(request, repo_id)
     include_detail = principal.may_see_insider_risk
 
+    with request.app.state.db.session() as session:
+        aegis_config = capability_config_for(session, repo_full_name, "aegis")
+    blocking = bool(aegis_config.get("blocking"))
+
     return InsiderRiskPage(
         repo_full_name=repo_full_name,
         detail_included=include_detail,
+        blocking=blocking,
         signals=[
             InsiderRiskOut(**signal)
             for signal in _queries(request).insider_risk(
@@ -755,7 +776,14 @@ async def repo_insider_risk(
         governance=(
             "These rows are a review prompt about a change, not a rating of a "
             "person. Nothing here aggregates or ranks contributors, and rows "
-            "are deleted after this repository's retention period (spec 06 §9)."
+            "are deleted after this repository's retention period (spec 06 §9). "
+            + (
+                "This repository's Aegis Check Run is BLOCKING: a score at or "
+                "above the threshold fails the pull request."
+                if blocking
+                else "This repository's Aegis Check Run is advisory — it never "
+                "fails a pull request."
+            )
         ),
     )
 

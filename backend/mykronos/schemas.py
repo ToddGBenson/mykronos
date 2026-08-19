@@ -324,6 +324,16 @@ class EcosystemEvidence(BaseModel):
             "in which case dependency_count is used."
         ),
     )
+    licenses_seen: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "License identifier to component count, from the SBOM Syft "
+            "already produces (spec 22 §1). Empty means the license pass did "
+            "not run for this ecosystem — not that its components are "
+            "unlicensed, which is what the `unknown` key means when the pass "
+            "did run."
+        ),
+    )
 
 
 class SscsEvidenceSubmission(BaseModel):

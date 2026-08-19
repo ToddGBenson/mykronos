@@ -18,8 +18,10 @@ rollups would be a second copy of the truth, able to disagree with the first.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -435,6 +437,107 @@ class TrendPoint:
     open_total: int = 0
     risk_score: int | None = None
     trust_score: int | None = None
+    #: Portfolio scope only. The mean can be dragged a long way by one very
+    #: bad repository; the median cannot, and a median alone hides exactly
+    #: that repository. Showing both rather than picking one avoids replacing
+    #: the misrepresentation spec 21 §2 fixes with a different one — for a
+    #: single repo they are both that repo's score, so they are null there
+    #: rather than repeating `risk_score` twice.
+    risk_score_median: int | None = None
+    #: How many repositories the aggregate is over. A mean of two repos and a
+    #: mean of forty read identically without it.
+    repos_scored: int | None = None
+
+
+def _risk_at(
+    catalog: Catalog, at: datetime, repo_full_name: str | None
+) -> tuple[int | None, int | None, int | None]:
+    """Risk at one instant: `(mean, median, repos)` (spec 21 §2).
+
+    For one repo this is just that repo's most recent decision, and the
+    median and count are null — averaging one number is not an aggregate and
+    dressing it up as one would invite reading the two lines as agreement.
+
+    For the portfolio it is a real fleet aggregate. It was not before: the
+    query had no repo filter and no grouping, so it returned whichever single
+    repository happened to have decided most recently before each bucket. The
+    chart rendered that as "portfolio risk over time" and it never was —
+    consecutive points could come from different repositories, so the line
+    moved when the *decision order* changed and not when any risk did.
+
+    Aggregated over the snapshot's `raw_score`, not `overall_risk_score`, for
+    D-018's reason: several repos pinned at the clamp are indistinguishable in
+    the clamped value, and a mean of clamped scores stops responding once
+    enough of the fleet is bad. `raw_score` is not a column — it lives in
+    `inputs_snapshot.totals`, which is read whole and never filtered on — so
+    it is parsed here rather than selected, falling back to the clamped column
+    for any row whose snapshot will not parse.
+
+    The per-point value is rounded back into the same 0-100 space the chart
+    already draws, so the two scopes stay comparable.
+    """
+    if repo_full_name:
+        rows = catalog.query(
+            """
+            SELECT overall_risk_score FROM risk_decisions
+            WHERE decision_type = 'portfolio' AND evaluated_at <= ?
+              AND repo_full_name = ?
+            ORDER BY evaluated_at DESC LIMIT 1
+            """,
+            [at, repo_full_name],
+        )
+        return (int(rows[0][0]) if rows and rows[0][0] is not None else None, None, None)
+
+    # One row per repository: its latest decision as of this instant. A
+    # window function rather than a correlated subquery so the whole fleet is
+    # one scan, which matters at twelve buckets per request.
+    rows = catalog.query(
+        """
+        SELECT overall_risk_score, inputs_snapshot FROM (
+            SELECT
+                overall_risk_score,
+                inputs_snapshot,
+                row_number() OVER (
+                    PARTITION BY repo_full_name ORDER BY evaluated_at DESC
+                ) AS recency
+            FROM risk_decisions
+            WHERE decision_type = 'portfolio' AND evaluated_at <= ?
+        )
+        WHERE recency = 1
+        """,
+        [at],
+    )
+
+    scores = []
+    for clamped, snapshot in rows:
+        raw = None
+        if snapshot:
+            with suppress(json.JSONDecodeError, AttributeError, TypeError):
+                raw = json.loads(snapshot).get("totals", {}).get("raw_score")
+        # Falling back to the clamped column rather than dropping the
+        # repository: an unparseable snapshot should cost this repo its
+        # above-100 detail, not its place in the fleet, which would make
+        # `repos_scored` quietly wrong.
+        if raw is None:
+            raw = clamped
+        if raw is not None:
+            scores.append(float(raw))
+
+    if not scores:
+        return (None, None, None)
+
+    scores.sort()
+    middle = len(scores) // 2
+    median = (
+        scores[middle]
+        if len(scores) % 2
+        else (scores[middle - 1] + scores[middle]) / 2
+    )
+    return (
+        int(round(max(0.0, min(100.0, sum(scores) / len(scores))))),
+        int(round(max(0.0, min(100.0, median)))),
+        len(scores),
+    )
 
 
 def trend_series(
@@ -486,14 +589,7 @@ def trend_series(
 
         # The most recent decision and evidence *as of that instant* — not the
         # latest overall, which would draw a flat line at today's value.
-        risk = catalog.query(
-            f"""
-            SELECT overall_risk_score FROM risk_decisions
-            WHERE decision_type = 'portfolio' AND evaluated_at <= ? {scope}
-            ORDER BY evaluated_at DESC LIMIT 1
-            """,
-            [at, *repo_param],
-        )
+        risk_mean, risk_median, repos_scored = _risk_at(catalog, at, repo_full_name)
         # Not filtered to assessed rows. If the most recent evidence at this
         # instant resolved nothing, the point is a gap (spec 07 §5a) rather
         # than the last real score carried forward — the line should break
@@ -513,7 +609,9 @@ def trend_series(
                 open_critical=critical,
                 open_high=high,
                 open_total=total,
-                risk_score=int(risk[0][0]) if risk else None,
+                risk_score=risk_mean,
+                risk_score_median=risk_median,
+                repos_scored=repos_scored,
                 trust_score=(
                     int(trust[0][0])
                     if trust and trust[0][0] is not None

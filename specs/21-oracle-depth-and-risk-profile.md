@@ -30,10 +30,11 @@ for a repo to opt into different scoring rules.
 | Risk profile: data model, admin-authored, per repo | Done |
 | Risk profile: editor on the Risk Decision tab | Done |
 | Risk profile: new Oracle input category | Done — policy bumped to 1.1 |
-| Portfolio-wide trend: real aggregation, not "most recent decision" | Planned |
-| Fleet analytics: which policy terms drive `no_go` across the portfolio | Planned |
-| Override: a UI button, not API-only | Planned |
-| Policy version history/diff | Planned |
+| Portfolio-wide trend: real aggregation, not "most recent decision" | Done |
+| Fleet analytics: which policy terms drive `no_go` across the portfolio | Done |
+| Override: a UI button, not API-only | Done |
+| Policy version history | Done — derived from decisions (D-067) |
+| Policy version *diff* | Blocked: needs the App on the Mykronos repo |
 
 ## 1. Risk profile
 
