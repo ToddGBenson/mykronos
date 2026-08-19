@@ -80,6 +80,10 @@ SCAN_RUNS_COLUMNS: Final[list[Column]] = [
     ("finding_count", "INTEGER"),
     ("raw_output_ref", "VARCHAR"),
     ("ingested_at", "TIMESTAMP"),
+    # A one-line summary (spec 19 §1.2) — nullable, no default, so it needs
+    # no GRANDFATHERED entry in the schema-drift guard (D-052): a column
+    # that's fine to be absent on an old row needs neither.
+    ("detail", "VARCHAR"),
 ]
 
 RISK_DECISIONS_COLUMNS: Final[list[Column]] = [

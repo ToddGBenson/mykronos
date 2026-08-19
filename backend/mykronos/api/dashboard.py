@@ -1120,6 +1120,30 @@ async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -
     }
 
 
+@router.get("/repos/{repo_id}/scan-runs/trend")
+async def scan_run_trend(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    capability: Annotated[str, Query()],
+    days: Annotated[int, Query(ge=7, le=730)] = 90,
+    points: Annotated[int, Query(ge=2, le=60)] = 12,
+) -> dict[str, Any]:
+    """One capability's pass rate over time (spec 19 §1.1) — the Harness
+    tab's sparkline, same bucketed-not-reconstructed shape `/trends` uses
+    for findings/risk, computed separately because a scan either ran in a
+    window or it didn't; there is no open-ended state to replay.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return {
+        "repo_full_name": repo_full_name,
+        "capability": capability,
+        "points": _queries(request).scan_run_trend(
+            repo_full_name, capability, days=days, points=points
+        ),
+    }
+
+
 @router.get("/findings/{finding_id}", response_model=FindingOut)
 async def finding_detail(
     request: Request, finding_id: str, principal: PrincipalDep

@@ -142,6 +142,11 @@ class ScanRunSubmission(BaseModel):
     scan_status: ScanStatus = ScanStatus.SUCCESS
     finding_count: int = Field(default=0, ge=0)
     raw_output_ref: str | None = Field(default=None, max_length=512)
+    #: A one-line summary an adapter had something specific to say (spec 19
+    #: §1.2) — "3 of 10 test(s) failed", not a log dump. The full output is
+    #: already archived via `raw_output_ref` for anyone who needs it. Null
+    #: for the common case of nothing specific to add beyond `scan_status`.
+    detail: str | None = Field(default=None, max_length=200)
 
     @field_validator("started_at", "completed_at")
     @classmethod

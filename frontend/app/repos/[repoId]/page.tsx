@@ -3,6 +3,7 @@ import Link from "next/link";
 import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
+import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
 import { ScanNowButton } from "@/components/scan-now";
 import {
@@ -31,6 +32,7 @@ import {
   getRemediation,
   getRepo,
   getScanHealth,
+  getScanRunTrend,
   getSscs,
   getThreatModel,
 } from "@/lib/server";
@@ -320,7 +322,29 @@ async function TestHarnessTab({
           <p className="px-3 py-2 text-[11px] text-critical">{scanHealth.error}</p>
         )}
       </Section>
+
+      {boxes.map((capability) => (
+        <LaneTrend key={capability} repoId={repoId} capability={capability} />
+      ))}
     </div>
+  );
+}
+
+/** One lane's pass rate over time (spec 19 §1.1) — its own component so each
+ *  lane's fetch is independent: a trend that fails to load for `qa` should
+ *  not take `unit`'s down with it. */
+async function LaneTrend({ repoId, capability }: { repoId: string; capability: string }) {
+  const trend = await getScanRunTrend(repoId, capability);
+  return (
+    <Section title={`${capability} — pass rate`} detail="last 90 days">
+      <div className="px-3 py-2">
+        {trend.ok ? (
+          <PassRateSparkline capability={capability} points={trend.data.points} />
+        ) : (
+          <p className="text-[11px] text-critical">{trend.error}</p>
+        )}
+      </div>
+    </Section>
   );
 }
 

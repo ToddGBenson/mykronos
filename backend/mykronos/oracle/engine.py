@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from mykronos.db.models import ThreatIntelMatch
+from mykronos.db.models import RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
 from mykronos.knowledge.store import KnowledgeStore
@@ -54,6 +54,7 @@ MODIFIER_CATEGORIES = (
     "false_positive_dampening",
     "exploitability",
     "reachability",
+    "risk_profile",
 )
 
 #: One band up (spec 17 §5.4). `critical` has nowhere further to go — a
@@ -277,6 +278,108 @@ def _reachability_snapshot() -> dict[str, Any]:
             "somewhere to report, not because one runs today."
         ),
     }
+
+
+def _risk_profile_snapshot(
+    profile: dict[str, Any] | None, policy: Policy
+) -> tuple[dict[str, Any], list[Term]]:
+    """What this application *is*, as an asset (spec 21 §1.4).
+
+    The only input here not derived from a scan: nothing a scanner sees can
+    say whether an application is internet-facing or handles regulated data.
+    An admin records it, and a repository nobody has recorded one for is
+    `available: false` — never defaulted to "internal, low criticality",
+    which would be a guess presented as a fact.
+
+    A profile that exists with every field null *is* available: somebody
+    opened the form and recorded that they do not know yet, which is an
+    auditable state and not the same as never having been asked. Each
+    non-null field contributes its own `Term`, so the reasoning can say
+    which fact moved the score rather than only that something did.
+    """
+    if profile is None:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "reason": (
+                    "No risk profile has been recorded for this repository "
+                    "(spec 21 §1) — what the application is has never been "
+                    "stated, which is not the same as it being low risk."
+                ),
+            },
+            [],
+        )
+
+    weights = policy.risk_profile
+    terms: list[Term] = []
+
+    if profile.get("internet_facing") and weights.internet_facing_points:
+        terms.append(
+            Term(
+                key="risk_profile.internet_facing",
+                label="Internet-facing application",
+                contribution=weights.internet_facing_points,
+                detail=(
+                    "Recorded as accepting traffic from the public internet, "
+                    f"worth {weights.internet_facing_points:g} points."
+                ),
+            )
+        )
+
+    classification = profile.get("data_classification")
+    if classification:
+        points = weights.data_classification_points.get(str(classification), 0.0)
+        if points:
+            terms.append(
+                Term(
+                    key="risk_profile.data_classification",
+                    label=f"Handles {classification} data",
+                    contribution=points,
+                    detail=f"data_classification={classification}, worth {points:g} points.",
+                )
+            )
+
+    criticality = profile.get("business_criticality")
+    if criticality:
+        points = weights.business_criticality_points.get(str(criticality), 0.0)
+        if points:
+            terms.append(
+                Term(
+                    key="risk_profile.business_criticality",
+                    label=f"Business criticality: {criticality}",
+                    contribution=points,
+                    detail=f"business_criticality={criticality}, worth {points:g} points.",
+                )
+            )
+
+    scope = list(profile.get("compliance_scope") or [])
+    if scope and weights.compliance_scope_points_per_entry:
+        points = weights.compliance_scope_points_per_entry * len(scope)
+        terms.append(
+            Term(
+                key="risk_profile.compliance_scope",
+                label=f"In scope for {', '.join(sorted(scope))}",
+                contribution=points,
+                detail=(
+                    f"{len(scope)} regime(s) × "
+                    f"{weights.compliance_scope_points_per_entry:g} points."
+                ),
+            )
+        )
+
+    return (
+        {
+            "available": True,
+            "internet_facing": profile.get("internet_facing"),
+            "data_classification": classification,
+            "business_criticality": criticality,
+            "compliance_scope": scope,
+            "recorded_by": profile.get("updated_by") or None,
+            "contribution": round(sum(t.contribution for t in terms), 2),
+        },
+        terms,
+    )
 
 
 def _exploitability_snapshot(
@@ -562,6 +665,42 @@ class OracleEngine:
             as_of=self._as_of,
         )
 
+    def _risk_profile(self, repo_full_name: str) -> dict[str, Any] | None:
+        """This repository's recorded asset context (spec 21 §1.4).
+
+        `None` when `self.db` is not configured *or* when no profile row
+        exists — both render as `available: false`, which is the honest
+        answer either way: nobody has stated what this application is.
+        Deliberately not distinguished further, unlike exploitability's
+        db-configured check, because there is no useful third thing to say
+        to an admin whose deployment has no operational DB wired into
+        Oracle at all.
+        """
+        if self.db is None:
+            return None
+        with self.db.session() as session:
+            row = (
+                session.execute(
+                    select(RiskProfile)
+                    .join(
+                        RepoOnboarding,
+                        RepoOnboarding.id == RiskProfile.repo_onboarding_id,
+                    )
+                    .where(RepoOnboarding.github_repo_full_name == repo_full_name)
+                )
+                .scalars()
+                .first()
+            )
+            if row is None:
+                return None
+            return {
+                "internet_facing": row.internet_facing,
+                "data_classification": row.data_classification,
+                "business_criticality": row.business_criticality,
+                "compliance_scope": list(row.compliance_scope or []),
+                "updated_by": row.updated_by,
+            }
+
     def _exploitable_findings(
         self, repo_full_name: str, *, for_gate: bool
     ) -> list[dict[str, Any]]:
@@ -828,6 +967,13 @@ class OracleEngine:
                 )
             )
 
+        # 6. Risk profile (spec 21 §1.4). What the application *is*, as
+        #    opposed to what was found in it — recorded by an admin, and the
+        #    only category here no scanner can produce. Additive per recorded
+        #    fact, so the reasoning names which one moved the score.
+        risk_profile = self._risk_profile(repo_full_name)
+        terms.extend(_risk_profile_snapshot(risk_profile, self.policy)[1])
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -843,6 +989,7 @@ class OracleEngine:
             dampened=dampened,
             covered=covered,
             exploitable=exploitable,
+            risk_profile=risk_profile,
         )
 
         decision = Decision(
@@ -881,6 +1028,7 @@ class OracleEngine:
         dampened: dict[str, Any] | None = None,
         covered: set[str] | None = None,
         exploitable: list[dict[str, Any]] | None = None,
+        risk_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -928,6 +1076,7 @@ class OracleEngine:
                 exploitable or [], db_configured=self.db is not None
             ),
             "reachability": _reachability_snapshot(),
+            "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "terms": [
                 {
                     "key": term.key,

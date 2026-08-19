@@ -406,6 +406,14 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
                 scan_status=outcome.scan_status.value,
                 finding_count=outcome.findings_accepted,
                 raw_output_ref=outcome.raw_output_ref,
+                # The adapter's own warning, not just its status (spec 19
+                # §1.2) — "3 of 10 test(s) failed" used to die in the CI
+                # step summary and never reach Mykronos. Only the first: a
+                # one-line summary, not the log dump `raw_output_ref`
+                # already archives. Truncated defensively even though the
+                # schema already caps it, so a future adapter's longer
+                # warning degrades to "cut off" rather than a rejected post.
+                detail=(outcome.warnings[0][:200] if outcome.warnings else None),
             ),
         )
 

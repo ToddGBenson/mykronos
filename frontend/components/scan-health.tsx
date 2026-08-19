@@ -69,6 +69,14 @@ export function ScanHealthBoxes({
             <span className="flex items-baseline gap-1.5">
               <span aria-hidden>{meta?.icon ?? "•"}</span>
               <Label>{capability}</Label>
+              {row?.flaky ? (
+                <span
+                  className="border border-high bg-high-wash px-1 font-mono text-[8px] uppercase tracking-[0.08em] text-high"
+                  title="Same commit, disagreeing status on the last two runs — a flake, not a regression."
+                >
+                  flaky
+                </span>
+              ) : null}
             </span>
 
             <span
@@ -93,6 +101,14 @@ export function ScanHealthBoxes({
                   ) : (
                     "never run"
                   )}
+                  {/* The most recent run's own message (spec 19 §1.2) — a
+                      failed lane says why, not just that. */}
+                  {row.detail ? (
+                    <>
+                      <br />
+                      <span className="text-ink-2">{row.detail}</span>
+                    </>
+                  ) : null}
                 </>
               ) : NO_SCAN_RUNS.has(capability) ? (
                 "records no scan runs by design"

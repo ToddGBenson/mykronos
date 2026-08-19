@@ -307,7 +307,29 @@ export type ScanHealth = {
     failure_rate: number;
     last_run_at: string | null;
     peak_findings: number;
+    /** The most recent run's own one-line message, if it had one (spec 19 §1.2). */
+    detail: string | null;
+    /** Same commit, disagreeing status, on the last two runs (spec 19 §1.3). */
+    flaky: boolean;
   }[];
+};
+
+/**
+ * One bucket of a lane's pass rate over time (spec 19 §1.1). Hand-typed for
+ * the same reason `ScanHealth` is: the endpoint returns rows shaped in
+ * Python, so its OpenAPI schema is an open object.
+ */
+export type ScanRunTrendPoint = {
+  at: string;
+  runs: number;
+  /** Null for a window with no runs — a coverage gap, not a zero pass rate. */
+  success_rate: number | null;
+};
+
+export type ScanRunTrend = {
+  repo_full_name: string;
+  capability: string;
+  points: ScanRunTrendPoint[];
 };
 
 /** Backend unreachable is a normal state here, not an exception. */
