@@ -398,6 +398,81 @@ class TestApi:
         assert "CKV_AWS_123" in body["policy_proposal"]
         assert "Nothing here has been applied" in body["note"]
 
+    def test_approving_a_candidate_writes_it_at_the_next_tier(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """spec 19 §2.3 — `promotion.py` always found candidates and said a
+        person decides; the deciding had nowhere to happen."""
+        from mykronos.knowledge.store import KnowledgeStore
+
+        response = client.post(
+            "/api/knowledge/promotion-candidates/CKV_AWS_123/approve",
+            json={"source_type": "finding_dismissal"},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["from_tier"] == "personal"
+        assert body["to_tier"] == "team"
+        assert sorted(body["repos"]) == ["org/a", "org/b"]
+
+        store = client.app.state.knowledge
+        team = KnowledgeStore(store.store_dir, tier="team")
+        promoted = team.list_entries()
+        assert [e.subject for e in promoted] == ["CKV_AWS_123"]
+        # No repo: the whole point is that this is no longer about one.
+        assert promoted[0].repo_full_name is None
+
+    def test_the_evidence_it_generalises_is_left_in_place(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """Deleting the per-repo entries would make the promotion
+        unauditable afterwards, and each of them is still true."""
+        before = len(client.app.state.knowledge.list_entries())
+
+        client.post(
+            "/api/knowledge/promotion-candidates/CKV_AWS_123/approve",
+            json={"source_type": "finding_dismissal"},
+            headers=admin_auth,
+        )
+
+        assert len(client.app.state.knowledge.list_entries()) == before
+
+    def test_approving_something_that_is_not_a_candidate_is_404(
+        self, client, admin_auth, seeded
+    ) -> None:
+        response = client.post(
+            "/api/knowledge/promotion-candidates/NOT_A_RULE/approve",
+            json={"source_type": "finding_dismissal"},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 404
+        assert "not currently a promotion candidate" in response.json()["detail"]
+
+    def test_a_viewer_cannot_promote(self, client, viewer_auth, seeded) -> None:
+        response = client.post(
+            "/api/knowledge/promotion-candidates/CKV_AWS_123/approve",
+            json={"source_type": "finding_dismissal"},
+            headers=viewer_auth,
+        )
+
+        assert response.status_code == 403
+
+    def test_the_promotion_is_audited(self, client, admin_auth, seeded) -> None:
+        from mykronos.db.models import AuditLogEntry
+
+        client.post(
+            "/api/knowledge/promotion-candidates/CKV_AWS_123/approve",
+            json={"source_type": "finding_dismissal"},
+            headers=admin_auth,
+        )
+
+        with client.app.state.db.session() as session:
+            actions = [row.action for row in session.query(AuditLogEntry).all()]
+        assert "knowledge.promote" in actions
+
     def test_min_projects_cannot_be_lowered_to_one(self, client, admin_auth) -> None:
         """Allowing 1 would turn this into a list of every entry."""
         response = client.get(

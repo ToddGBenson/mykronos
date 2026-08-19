@@ -6,6 +6,7 @@ import {
   RelativeTime,
   StatTile,
 } from "@/components/primitives";
+import { PromoteButton } from "@/components/promote-button";
 import type { LearningRow, PromotionCandidate } from "@/lib/api";
 import { getRetro, getTrend } from "@/lib/server";
 
@@ -252,6 +253,13 @@ function CandidateCard({ candidate }: { candidate: PromotionCandidate }) {
           repositories involved.
         </p>
       )}
+      <div className="mt-2">
+        <PromoteButton
+          subject={candidate.subject}
+          sourceType={candidate.source_type}
+          toTier={candidate.to_tier}
+        />
+      </div>
     </li>
   );
 }

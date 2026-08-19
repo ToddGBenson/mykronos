@@ -31,7 +31,7 @@ correctly declined to build.
 | Test Harness: flaky-test flagging | Done |
 | Triage: reachability, cheap first cut (import-reachable) | Planned |
 | Triage: combination-rule discovery (candidate surfacing) | Planned |
-| Triage: cross-repo dampening approve/reject UI | Planned |
+| Triage: cross-repo dampening approve action | Done — adds at the higher tier, leaves the evidence in place |
 | Triage: blast-radius signal | Planned |
 | Remediation: new deterministic fixers | Planned |
 | Remediation: auto-preview on ingestion (`fixable` badge) | Planned |
