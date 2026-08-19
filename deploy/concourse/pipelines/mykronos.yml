@@ -785,20 +785,29 @@ jobs:
                 # above are the reason this job exists. Nothing here may cost
                 # them. Silence leaves the category `available: false`, which
                 # reads as "we did not check" rather than "nothing is dead".
-                if python -m mykronos.reachability . \
-                     --commit-sha "$(git rev-parse HEAD)" > /tmp/reachability.json; then
-                  ORPHANED=$(jq -r '.orphaned_paths | length' /tmp/reachability.json)
-                  ANALYSED=$(jq -r '.files_analysed' /tmp/reachability.json)
-                  echo "Import analysis: $ANALYSED Python file(s), $ORPHANED orphaned."
-                  curl --fail --silent --show-error --max-time 60 \
-                    -X POST "$MYKRONOS_URL/api/ingest/reachability" \
-                    -H "Authorization: Bearer $MYKRONOS_TOKEN" \
-                    -H "Content-Type: application/json" \
-                    -d @/tmp/reachability.json > /dev/null \
-                    || echo "Could not report the import analysis."
-                else
-                  echo "Import analysis did not run; reachability stays unavailable."
-                fi
+                # The subshell and the trailing `|| true` are load-bearing,
+                # and the first version of this had neither. The task runs
+                # under `bash -ec`, which aborts on the first failing command
+                # inside an `if` body as readily as outside one -- so the
+                # summary line, written with `jq`, took the whole job down:
+                # jq is not in this image.
+                #
+                # Worse than a plain bug because of when it fired. While the
+                # pinned package predated the module, the `if` condition
+                # failed and control took the `else` branch, which touched no
+                # jq. The step only broke once the analysis started *working*,
+                # which is the least likely moment to suspect it.
+                #
+                # So: nothing here uses a tool not already proven present in
+                # this image (python is -- it just ran), and the wrapper
+                # cannot propagate a failure whatever happens inside it.
+                (
+                  set +e
+                  python -m mykronos.reachability .                     --commit-sha "$(git rev-parse HEAD)" > /tmp/reachability.json
+                  [ -s /tmp/reachability.json ] || exit 0
+                  python -c 'import json; d = json.load(open("/tmp/reachability.json")); print("Import analysis:", d["files_analysed"], "Python file(s),", len(d["orphaned_paths"]), "orphaned.")'
+                  curl --fail --silent --show-error --max-time 60                     -X POST "$MYKRONOS_URL/api/ingest/reachability"                     -H "Authorization: Bearer $MYKRONOS_TOKEN"                     -H "Content-Type: application/json"                     -d @/tmp/reachability.json > /dev/null                     && echo "Reported to Mykronos."                     || echo "Could not report it; reachability stays unavailable."
+                ) || true
 
   # Replaces `mykronos-aegis.yml`. That workflow ran on `pull_request` and
   # `pull_request_review`; Concourse sees a branch, so the pull request that
