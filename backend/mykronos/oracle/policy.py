@@ -84,6 +84,21 @@ class BlastRadiusPolicy:
 
 
 @dataclass(frozen=True)
+class ReachabilityPolicy:
+    """How much a finding in un-imported code is discounted (spec 19 §2.1).
+
+    The only *negative* weight in the policy, and the only one where being
+    wrong quietly lowers a score rather than raising it. Small and capped for
+    that reason: the analysis is Python-only and answers "does anything
+    import this file", not "does this code run", and a discount large enough
+    to move a verdict would be trusting it further than it can see.
+    """
+
+    orphaned_discount_per_finding: float
+    discount_cap: float
+
+
+@dataclass(frozen=True)
 class Policy:
     version: str
     curve: str
@@ -96,6 +111,7 @@ class Policy:
     dampening: DampeningPolicy
     risk_profile: RiskProfilePolicy
     blast_radius: BlastRadiusPolicy
+    reachability: ReachabilityPolicy
 
     no_go: float
     review_recommended: float
@@ -181,6 +197,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # before spec 19 §2.4 loads, with the category available and worth
     # zero, rather than refusing to load at all.
     blast_raw = modifiers.get("blast_radius") or {}
+    reach_raw = modifiers.get("reachability") or {}
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -264,6 +281,15 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 "blast_radius.points_per_package",
             ),
             cap=_number(blast_raw.get("cap", 0), "blast_radius.cap"),
+        ),
+        reachability=ReachabilityPolicy(
+            orphaned_discount_per_finding=_number(
+                reach_raw.get("orphaned_discount_per_finding", 0),
+                "reachability.orphaned_discount_per_finding",
+            ),
+            discount_cap=_number(
+                reach_raw.get("discount_cap", 0), "reachability.discount_cap"
+            ),
         ),
         no_go=no_go,
         review_recommended=review,

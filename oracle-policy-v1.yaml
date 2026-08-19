@@ -22,7 +22,11 @@
 # every existing weight untouched, and a repository whose packages nobody
 # else in the portfolio carries a finding on scores exactly as it did under
 # 1.1. It can only differ where the concentration is real.
-version: "1.2"
+#
+# 1.3 — adds the reachability modifier (spec 19 §2.1), the first negative
+# weight in this file. A repository with no import analysis, or with nothing
+# orphaned, scores exactly as it did under 1.2.
+version: "1.3"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -140,6 +144,22 @@ modifiers:
     # letting this run away would let one dependency-heavy repo dominate the
     # ranking on the most approximate signal in the set.
     cap: 20
+
+  # Findings in code nothing imports (spec 19 §2.1). The only negative weight
+  # in this file, and the only one where being wrong lowers a score.
+  #
+  # The analysis behind it is deliberately narrow: Python only, and "does
+  # anything in this repository import this file" — never "does this code
+  # run". A discount big enough to move a verdict would be trusting it much
+  # further than it can see, so it is small and capped well below the
+  # difference between two thresholds.
+  #
+  # Set both to 0 to turn the discount off while keeping the category
+  # reported: the snapshot still says what was analysed, it just stops
+  # affecting the score.
+  reachability:
+    orphaned_discount_per_finding: 3
+    discount_cap: 15
 
 # ---------------------------------------------------------------------------
 # Thresholds

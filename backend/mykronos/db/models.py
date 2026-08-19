@@ -187,6 +187,50 @@ class RiskProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class ReachabilityReport(Base):
+    """Which Python files nothing in the repository imports (spec 19 §2.1).
+
+    Operational, not lake. Every other observation about a scan is
+    append-only in the lake because its history is evidence — you have to be
+    able to say what a finding looked like in March. This is not that: it is
+    a fact about the current tree, superseded entirely by the next analysis,
+    and keeping a row per commit would be a growing table nothing ever reads
+    the old rows of. The same reasoning `RiskProfile` follows, and one row
+    per repository for the same reason.
+
+    Stored as a list of paths rather than a per-file table. The number of
+    orphaned files in a repository is small by construction — a repository
+    where most files are orphaned has a layout problem, not a reachability
+    finding — and a table would buy joins nothing needs.
+
+    Absence is meaningful and must stay so: no row means the analysis has
+    never run for this repository, which Oracle reports as `available:
+    false`. It must never read as "nothing is orphaned".
+    """
+
+    __tablename__ = "reachability_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_onboarding_id: Mapped[str] = mapped_column(
+        ForeignKey("repo_onboardings.id"), unique=True, index=True
+    )
+    #: Only ever `python` today. Named rather than assumed so a second
+    #: analyser can be added without every reader having to guess which
+    #: language the numbers describe.
+    language: Mapped[str] = mapped_column(String(32), default="python")
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: Repo-relative paths. An empty list is a real answer — analysed, and
+    #: everything is imported from somewhere.
+    orphaned_paths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: How many files the analysis actually read. The denominator: "3
+    #: orphaned" means something different out of 12 files than out of 1,200.
+    files_analysed: Mapped[int] = mapped_column(Integer, default=0)
+    #: Files that would not parse. Never reported orphaned — their own
+    #: imports are unknown, so anything they might import is unproven too.
+    files_unparseable: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class CapabilityConfig(Base):
     """Per-repo, per-capability overrides (spec 02 §3)."""
 

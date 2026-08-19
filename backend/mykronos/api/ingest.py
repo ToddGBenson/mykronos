@@ -43,7 +43,11 @@ from mykronos.atlas import evidence_id as atlas_evidence_id
 from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
-from mykronos.db.models import RepoOnboarding, capability_config_for
+from mykronos.db.models import (
+    ReachabilityReport,
+    RepoOnboarding,
+    capability_config_for,
+)
 from mykronos.fingerprint import compute_finding_id
 from mykronos.github.client import GitHubError
 from mykronos.logsafe import scrub
@@ -58,6 +62,8 @@ from mykronos.schemas import (
     IngestAccepted,
     InsiderRiskSubmission,
     RawAccepted,
+    ReachabilityAccepted,
+    ReachabilitySubmission,
     ScanRunSubmission,
     ScanStatus,
     SscsEvidenceSubmission,
@@ -547,6 +553,63 @@ async def ingest_atlas(
         # compare, and reporting it as below would block a release for a
         # measurement that never happened (spec 07 §5a).
         below_minimum=(assessment.trust_score is not None and assessment.trust_score < minimum),
+    )
+
+
+@router.post("/reachability", response_model=ReachabilityAccepted)
+async def ingest_reachability(
+    request: Request, body: ReachabilitySubmission, token: TokenDep
+) -> ReachabilityAccepted:
+    """Record which files nothing imports (spec 19 §2.1).
+
+    Under the `sast` capability's token: reachability is a fact about source
+    code, and `sast` is the capability whose findings it prioritises. A
+    capability of its own would mean a separate grant for something that has
+    no findings, no workflow of its own, and nothing to enable.
+
+    One row per repository, replaced outright. This is current state, not
+    evidence — the previous analysis is superseded by this one and nothing
+    reads its history (see `ReachabilityReport`).
+    """
+    _require_capability(token, Capability.SAST.value)
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == token.repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if onboarding is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{token.repo_full_name} is not onboarded.",
+            )
+        report = (
+            session.execute(
+                select(ReachabilityReport).where(
+                    ReachabilityReport.repo_onboarding_id == onboarding.id
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if report is None:
+            report = ReachabilityReport(repo_onboarding_id=onboarding.id)
+            session.add(report)
+        report.language = body.language
+        report.commit_sha = body.commit_sha
+        report.orphaned_paths = list(body.orphaned_paths)
+        report.files_analysed = body.files_analysed
+        report.files_unparseable = body.files_unparseable
+
+    return ReachabilityAccepted(
+        accepted=1,
+        orphaned=len(body.orphaned_paths),
+        files_analysed=body.files_analysed,
     )
 
 
