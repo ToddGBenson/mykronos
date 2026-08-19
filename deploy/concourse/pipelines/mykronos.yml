@@ -733,6 +733,30 @@ jobs:
                   --branch main --workspace "$PWD" \
                   --severity-threshold low --blocking false
 
+                # Which Python files nothing here imports (spec 19 §2.1).
+                # Under sast because reachability is a fact about source
+                # code, and sast owns the findings it prioritises.
+                #
+                # Tolerated failure throughout: this is one Oracle input
+                # worth a small discount, and the semgrep findings uploaded
+                # above are the reason this job exists. Nothing here may cost
+                # them. Silence leaves the category `available: false`, which
+                # reads as "we did not check" rather than "nothing is dead".
+                if python -m mykronos.reachability . \
+                     --commit-sha "$(git rev-parse HEAD)" > /tmp/reachability.json; then
+                  ORPHANED=$(jq -r '.orphaned_paths | length' /tmp/reachability.json)
+                  ANALYSED=$(jq -r '.files_analysed' /tmp/reachability.json)
+                  echo "Import analysis: $ANALYSED Python file(s), $ORPHANED orphaned."
+                  curl --fail --silent --show-error --max-time 60 \
+                    -X POST "$MYKRONOS_URL/api/ingest/reachability" \
+                    -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                    -H "Content-Type: application/json" \
+                    -d @/tmp/reachability.json > /dev/null \
+                    || echo "Could not report the import analysis."
+                else
+                  echo "Import analysis did not run; reachability stays unavailable."
+                fi
+
   # Replaces `mykronos-aegis.yml`. That workflow ran on `pull_request` and
   # `pull_request_review`; Concourse sees a branch, so the pull request that
   # introduced the commit is looked up instead. Spec 16 §6 is the full

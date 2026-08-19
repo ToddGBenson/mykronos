@@ -143,6 +143,17 @@ class SastConfig(BaseCapabilityConfig):
         description="CodeQL language matrix. Auto-detected when empty.",
     )
     queries: str = Field(default="security-extended", max_length=200)
+    import_reachability: bool = Field(
+        default=True,
+        description=(
+            "Run the Python import analysis alongside the scan (spec 19 "
+            "§2.1). On by default, unlike the outbound-call features "
+            "elsewhere: this reads the checkout the scan already has and "
+            "sends nothing anywhere except its conclusions. Turn it off for "
+            "a repository where the answer is noise — a plugin tree loaded "
+            "by name, say, where nothing imports anything."
+        ),
+    )
 
 
 class SecretsConfig(BaseCapabilityConfig):
