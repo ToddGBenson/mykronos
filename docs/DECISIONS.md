@@ -1892,7 +1892,6 @@ backlog.
 
 | Tier promotion *execution* | Candidates are found, proposals are rendered, and the Oracle policy proposal is written. Actually moving a row between tier files on approval is a dashboard action with no consumer yet — the team and org tiers have nothing reading them until more than one repo is onboarded | When a second repo is onboarded |
 | Automatic draft-PR opening for policy proposals | `render_policy_proposal` produces the body; opening it needs the App installed on the Mykronos repo itself, which is a different installation from the ones being scanned | When the App is registered |
-| Aegis's `privilege_adjacent` signal | spec 06 §2 makes it conditional on an external event feed that is off by default and has no configured source. The signal key is registered and capped, so a deployment that adds a feed needs no platform change | When a feed exists |
 | SBOM **download** endpoint | `sbom_ref` is recorded and surfaced; serving the archived file to a browser is a separate authorisation question from serving the evidence row | When somebody needs to download one |
 | Rate limiter behind shared storage | In-process memory is correct for a single-process deployment | When the backend scales out |
 | Installer honouring a repo's `PULL_REQUEST_TEMPLATE.md` | D-037. On a repository with a governance gate the installer opens a pull request that cannot be merged, and the platform does not notice. The template is readable through the same `get_file` the collision check already uses | When a second repo refuses one |
@@ -2433,3 +2432,37 @@ every repo honestly; a real answer needs either a per-language template set
 or a convention this platform does not yet have. Concourse-scanned repos are
 a complete, working answer today; Actions-scanned repos are not, and the tab
 says so rather than pretending otherwise.
+
+## D-064 — `privilege_adjacent` reads a GitHub org role, not a personnel feed
+
+Spec 06 §2 named the signal and `SIGNAL_CAP` has weighted it at 30 since that
+spec shipped, but nothing ever produced it: the intended input was an external
+event feed carrying access-grant changes, and no deployment has one. It sat in
+the deferred table indefinitely.
+
+The narrower reading needs no new integration. GitHub already knows the
+author's role on the repository, and `admin`/`maintain` is the part that
+matters — those are the people who can change branch protection, add a deploy
+key, or otherwise alter the controls the *other* signals measure. That is what
+makes the change worth a second look. `write`, `triage` and `read` are ordinary
+contributor access and do not fire it.
+
+Three things this deliberately does not do:
+
+- **It does not treat an unresolved role as ordinary access.** The collaborator
+  permission endpoint needs push access, so the lookup can fail. A failed
+  lookup makes the signal *absent*, never zero-scored. Recording "not
+  privileged" because a `curl` returned 403 would be a claim nobody checked.
+- **It does not escalate the Actions workflow's permissions to get it.** spec
+  06 §6 withholds `pull-requests: write` so Aegis structurally cannot merge,
+  close or force-push, and the collaborator endpoint sits behind push access.
+  Actions-scanned repos lose this one signal; the guarantee is worth more. The
+  Concourse pipelines pass it, their credential having push access already.
+- **It does not name the person in the rationale.** spec 06 §9's purpose
+  limitation holds: the text says what role the change came from and why that
+  matters, not who wrote it. The rationale is a sentence a colleague may end up
+  reading.
+
+The block invariant is unaffected — the two heaviest caps still sum to less
+than the default threshold of 80, so no single signal, this one included, can
+block on its own.

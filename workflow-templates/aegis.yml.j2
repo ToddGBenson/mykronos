@@ -130,6 +130,15 @@ jobs:
             "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --paginate > reviews.json || echo '[]' > reviews.json
 
+          # No `--author-role`, deliberately. The `privilege_adjacent` signal
+          # wants the author's repository role, and reading it means
+          # `/collaborators/{user}/permission`, which needs push access — a
+          # permission spec 06 §6 withholds on purpose so that Aegis can never
+          # merge, close or force-push. One signal is the right price for that
+          # guarantee, and the scorer treats an unsupplied role as absent
+          # rather than as ordinary access, so nothing is claimed here that
+          # was not checked. The Concourse pipelines, whose credential already
+          # carries push access for other reasons, do pass it.
           python -m mykronos.aegis_signals \
             --pr-number "$PR_NUMBER" \
             --commit-sha "$HEAD_SHA" \

@@ -606,7 +606,9 @@ class TestCrossCapabilityCombinations:
             findings = [
                 self._f(
                     f"f{i}",
-                    requirement.capability or "sast",
+                    # Any one of them satisfies the half, so the first is
+                    # enough to prove the rule can fire.
+                    next(iter(requirement.capabilities), "sast"),
                     self._sample_for(requirement.pattern),
                     severity="critical",
                 )
@@ -676,10 +678,10 @@ class TestCrossCapabilityCombinations:
         from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 
         named = {
-            requirement.capability
+            capability
             for rule in correlate.BUILT_IN_RULES
             for requirement in rule.requires
-            if requirement.capability
+            for capability in requirement.capabilities
         }
 
         assert named <= set(DEFAULT_CORRELATION_CAPABILITIES), (

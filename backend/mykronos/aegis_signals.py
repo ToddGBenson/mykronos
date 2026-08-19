@@ -72,6 +72,18 @@ FAST_APPROVAL_SCORE = 15.0
 #: observable: nobody verified the machine's work.
 UNVERIFIED_AI_SCORE = 20.0
 
+#: Elevated org access (spec 20 §2). Weighted with `self_approval` as the
+#: heaviest pair, matching `SIGNAL_CAP` — like that one it is a fact rather
+#: than a heuristic (GitHub either reports the role or it does not), and like
+#: that one it still cannot block on its own.
+PRIVILEGE_ADJACENT_SCORE = 30.0
+
+#: The GitHub org roles that count as elevated. `write`/`triage`/`read` are
+#: ordinary contributor access and deliberately absent: the signal is about
+#: somebody who can change the rules the review process relies on, not about
+#: anybody who can open a pull request.
+ELEVATED_ROLES = frozenset({"admin", "maintain"})
+
 #: Lines a careful reviewer gets through per second. Deliberately generous —
 #: 20 lines/second is roughly 1200 lines a minute, far faster than anyone
 #: reads for meaning — so the signal fires only on approvals that could not
@@ -142,6 +154,12 @@ class PullRequestFacts:
     diff_lines: int = 0
     #: True when the PR discloses AI authorship, or a classifier flagged it.
     ai_authored: bool = False
+    #: The author's role in the repository's org, as GitHub reports it, or
+    #: None when it could not be resolved — an external contributor, or a
+    #: permissions gap. None is *absent*, never "ordinary": claiming somebody
+    #: is unprivileged because the lookup failed is the wrong direction to be
+    #: wrong in (spec 20 §2.2).
+    author_role: str | None = None
 
 
 def matches_glob(path: str, pattern: str) -> bool:
@@ -377,6 +395,33 @@ def unverified_ai_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
     }
 
 
+def privilege_adjacent_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
+    """The author already has more access than the review process assumes.
+
+    A narrow, cheap reading of "privilege-adjacent" (spec 20 §2.2): GitHub org
+    role, which the App can already read, rather than the HR/personnel feed
+    spec 06 §2 imagined and nobody has. An org admin is somebody who can
+    change branch protection, add a deploy key, or approve their own way past
+    the controls the other signals measure — which is what makes their change
+    worth a second look, not anything about them.
+
+    Absent, not zero, when the role is unknown. A failed lookup is not
+    evidence of ordinary access.
+    """
+    if facts.author_role is None or facts.author_role not in ELEVATED_ROLES:
+        return None
+    return {
+        "key": "privilege_adjacent",
+        "score": PRIVILEGE_ADJACENT_SCORE,
+        "rationale": (
+            f"The author holds `{facts.author_role}` on this repository, so "
+            "they can change the controls the rest of this assessment relies "
+            "on. Not a judgement about them — the same change from an "
+            "ordinary contributor is reviewed by a process they cannot alter."
+        ),
+    }
+
+
 def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[str, Any]]:
     """Every signal that fired, in a stable order.
 
@@ -392,6 +437,7 @@ def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[st
         sole_approver_signal(facts, sensitive_paths),
         fast_approval_signal(facts),
         unverified_ai_signal(facts),
+        privilege_adjacent_signal(facts),
     ]
     return [signal for signal in candidates if signal is not None]
 
@@ -507,6 +553,7 @@ def gather_facts(
     *,
     reviews: tuple[ReviewFact, ...] = (),
     ai_authored: bool = False,
+    author_role: str | None = None,
 ) -> PullRequestFacts:
     """Read the facts out of the checked-out repository.
 
@@ -552,6 +599,7 @@ def gather_facts(
         reviews=reviews,
         diff_lines=diff_lines,
         ai_authored=ai_authored,
+        author_role=author_role,
     )
 
 
@@ -586,6 +634,16 @@ def main(argv: list[str] | None = None) -> int:
         "--pr-body-file",
         default=None,
         help="File holding the PR description, for AI-disclosure checking.",
+    )
+    parser.add_argument(
+        "--author-role",
+        default=None,
+        help=(
+            "The author's role on this repository, as GitHub's collaborator "
+            "permission endpoint reports it. Omit when it could not be "
+            "fetched: the `privilege_adjacent` signal then stays silent "
+            "rather than treating an unreadable role as ordinary access."
+        ),
     )
     parser.add_argument(
         "--reviews-file",
@@ -626,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
         pr_body,
         reviews=reviews,
         ai_authored=discloses_ai(pr_body),
+        author_role=args.author_role or None,
     )
 
     payload = {
