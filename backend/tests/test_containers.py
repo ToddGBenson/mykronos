@@ -206,15 +206,30 @@ class TestTheTrivyAdapter:
         assert "fixed_version" not in (finding.raw_finding_json or {})
 
 
-class TestFindingsStayAttributableToTheirImage:
-    def test_two_images_do_not_collapse_into_one_finding(self) -> None:
-        """The defect the first real run exposed.
+class TestContainerFindingIdentity:
+    """What a container finding is keyed on, and what that costs (D-073).
 
-        Every image was tagged `mykronos-scan:<sha>-N`, so Trivy wrote the
-        same `library/mykronos-scan` into every SARIF. Finding identity
-        includes the path (spec 05 §5), so the same CVE in Dockerfile and
-        Dockerfile.hardened became one row — 600 results stored as 118, with
-        no way to tell whether the hardened image had fixed anything.
+    This class used to assert the opposite of what production does. Its
+    helper called `compute_finding_id` without `package_name`, which takes
+    the `v1-line` branch where `file_path` *is* part of identity — so two
+    images produced two ids and the test passed. Ingestion passes
+    `package_name` (the Trivy adapter fills it in), which takes the
+    `v2-package` branch where `file_path` is excluded, so in production the
+    two images collapse into one finding.
+
+    The invariant it claimed to protect had never held. Every test below now
+    goes through `_ids`, which calls `compute_finding_id` exactly as
+    `api/ingest.py` does.
+    """
+
+    def test_the_same_cve_and_package_in_two_images_is_one_finding(self) -> None:
+        """The documented consequence of spec 05 §5's dependency rule, pinned
+        so it is a decision rather than a surprise (D-073).
+
+        The rule was written for dependency manifests, where a repository has
+        one dependency tree. A repository building two images has two, and
+        this is where that assumption stops holding — see D-073 for why the
+        fix is deferred rather than applied.
         """
         import copy
 
@@ -224,20 +239,36 @@ class TestFindingsStayAttributableToTheirImage:
             "artifactLocation"
         ]["uri"] = "library/mykronos-scan/backend-dockerfile-hardened"
 
-        first = self._ids(plain)
-        second = self._ids(hardened)
+        assert self._ids(plain) == self._ids(hardened)
 
-        assert first != second, (
-            "the same CVE in two different images must not share an identity"
+    def test_it_is_the_package_that_distinguishes_them(self) -> None:
+        """Not a claim that container findings have no identity — the same
+        CVE against a different package is a different finding, which is what
+        makes the 16 Perl rows on TheHub sixteen and not one."""
+        import copy
+
+        perl = copy.deepcopy(TRIVY_SARIF)
+        base = copy.deepcopy(TRIVY_SARIF)
+        base["runs"][0]["results"][0]["message"]["text"] = (
+            "Package: perl-base\nInstalled Version: 5.40.1-6\nFixed Version: 5.40.1-7\n"
         )
 
+        assert self._ids(perl) != self._ids(base)
+
+    def test_the_image_name_is_still_recorded(self) -> None:
+        """Excluded from *identity*, not discarded. A person still has to be
+        able to see which image a CVE was found in, and compaction refreshes
+        it so the stored name cannot go stale the way TheHub's did."""
+        finding = self._finding(TRIVY_SARIF)
+
+        assert finding.file_path
+
     @staticmethod
-    def _ids(document):
+    def _finding(document):
         import json as _json
 
         from mykronos.adapters.base import ScanContext
         from mykronos.adapters.containers_trivy import normalize
-        from mykronos.fingerprint import compute_finding_id
 
         result = normalize(
             _json.dumps(document).encode(),
@@ -250,7 +281,18 @@ class TestFindingsStayAttributableToTheirImage:
                 branch="develop",
             ),
         )
-        finding = result.findings[0]
+        return result.findings[0]
+
+    @classmethod
+    def _ids(cls, document):
+        """Exactly the call `api/ingest.py` makes — `package_name` included.
+
+        Omitting it is what made this class pass while production did the
+        opposite, so every argument that endpoint passes is passed here.
+        """
+        from mykronos.fingerprint import compute_finding_id
+
+        finding = cls._finding(document)
         return compute_finding_id(
             repo_full_name="ToddGBenson/TheHub",
             capability="containers",
@@ -259,6 +301,10 @@ class TestFindingsStayAttributableToTheirImage:
             symbol=finding.symbol,
             code_snippet=finding.code_snippet,
             line_start=finding.line_start,
+            package_name=finding.package_name,
+            address=finding.address,
+            port=finding.port,
+            title=finding.title,
         )
 
     def test_the_template_tags_each_image_after_its_dockerfile(self) -> None:

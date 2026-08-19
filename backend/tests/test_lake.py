@@ -464,3 +464,75 @@ class TestSnippetHandling:
 
 def test_snippet_constant_is_realistic() -> None:
     assert "cursor.execute" in SNIPPET
+
+
+class TestTheImageNameOnAContainerFinding:
+    """A container CVE is keyed on the package, not the image (spec 05 §5),
+    so `file_path` can change on a row that keeps its identity. It has to be
+    in the upsert's SET clause or it never does.
+
+    Found on TheHub: sixteen critical Perl CVEs were still displaying
+    `library/mykronos-scan` — the tag the retired Actions workflow used — a
+    week after every scan had reported `thehub`. The findings were current
+    and the gate was right to block on them; the image name had been stale
+    since 2026-08-12 and named an image no longer in the registry.
+    """
+
+    def test_a_rescan_under_a_new_image_name_refreshes_it(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog, run_compaction
+    ) -> None:
+        payload = dependency_finding(
+            rule_id="CVE-2026-13221", package_name="perl", file_path="library/old-tag"
+        )
+        # The default capability: the `v2-package` dispatch turns on
+        # `package_name` being set, not on which capability produced it, so
+        # this exercises the same upsert path a container scan takes.
+        post_scan(client, auth, scan_run_id="img-1")
+        post_findings(client, auth, [payload], scan_run_id="img-1")
+        # Compacted between the two posts, so the second is an UPDATE rather
+        # than a row collapsed into one INSERT by `_stage_incoming`.
+        run_compaction()
+
+        renamed = dict(payload, file_path="thehub")
+        post_scan(client, auth, scan_run_id="img-2")
+        post_findings(client, auth, [renamed], scan_run_id="img-2")
+        run_compaction()
+
+        rows = catalog.query(
+            "SELECT file_path, first_seen_at, last_seen_at FROM findings "
+            "WHERE rule_id = 'CVE-2026-13221'"
+        )
+        assert len(rows) == 1, "the package keys the finding, so this is one row"
+        assert rows[0][0] == "thehub"
+
+    def test_the_refresh_does_not_reset_first_seen(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog, run_compaction
+    ) -> None:
+        """The whole point of upserting rather than appending, and the thing
+        `fingerprint.py` exists to protect. A finding that has been open since
+        August must not look like it was discovered today because the image it
+        lives in was renamed."""
+        payload = dependency_finding(
+            rule_id="CVE-2026-99999", package_name="openssl", file_path="library/old-tag"
+        )
+        post_scan(client, auth, scan_run_id="img-3")
+        post_findings(client, auth, [payload], scan_run_id="img-3")
+        run_compaction()
+        before = catalog.query(
+            "SELECT first_seen_at FROM findings WHERE rule_id = 'CVE-2026-99999'"
+        )[0][0]
+
+        post_scan(client, auth, scan_run_id="img-4")
+        post_findings(
+            client,
+            auth,
+            [dict(payload, file_path="thehub")],
+            scan_run_id="img-4",
+        )
+        run_compaction()
+
+        after = catalog.query(
+            "SELECT first_seen_at, file_path FROM findings WHERE rule_id = 'CVE-2026-99999'"
+        )[0]
+        assert after[0] == before
+        assert after[1] == "thehub"
