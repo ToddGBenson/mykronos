@@ -18,7 +18,7 @@ import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from mykronos.db.session import Database
@@ -451,3 +451,145 @@ class OracleService:
             "human_override",
         ]
         return dict(zip(keys, rows[0], strict=True))
+
+    def term_analytics(self, *, days: int = 30) -> dict[str, Any]:
+        """What is actually driving risk across the fleet (spec 21 §3).
+
+        A read-time aggregate over `inputs_snapshot`, which every decision
+        already stores. No new computation at decision time and no new write
+        path — the same shape the portfolio summary and the shadow-mode report
+        already take, for the same reason: a rollup written at decision time is
+        a second copy of the truth, free to disagree with the decisions it
+        summarises.
+
+        One decision per repository — the latest `portfolio` decision inside
+        the window. Summing every decision would weight a repository by how
+        often it happened to be evaluated, which is a fact about scan cadence
+        rather than about risk.
+        """
+        since = utcnow() - timedelta(days=days)
+        rows = self.catalog.query(
+            """
+            SELECT recommendation, inputs_snapshot FROM (
+                SELECT
+                    repo_full_name,
+                    recommendation,
+                    inputs_snapshot,
+                    row_number() OVER (
+                        PARTITION BY repo_full_name ORDER BY evaluated_at DESC
+                    ) AS recency
+                FROM risk_decisions
+                WHERE decision_type = 'portfolio' AND evaluated_at >= ?
+            )
+            WHERE recency = 1
+            """,
+            [since],
+        )
+
+        totals: dict[str, dict[str, Any]] = {}
+        repos_considered = 0
+        no_go_repos = 0
+
+        for recommendation, raw_snapshot in rows:
+            try:
+                snapshot = json.loads(raw_snapshot) if raw_snapshot else {}
+            except json.JSONDecodeError:
+                # One unreadable snapshot costs that repo's contribution, not
+                # the report. A decision row this old or this broken is a fact
+                # worth not crashing over.
+                continue
+            repos_considered += 1
+            if recommendation == "no_go":
+                no_go_repos += 1
+
+            for term in snapshot.get("terms") or []:
+                key = str(term.get("key") or "unknown")
+                entry = totals.setdefault(
+                    key,
+                    {
+                        "key": key,
+                        "label": term.get("label") or key,
+                        "total_contribution": 0.0,
+                        "repos": 0,
+                        # Counted separately so the ranking can be read two
+                        # ways: a term worth 300 points across 30 repos is a
+                        # fleet-wide policy question, and one worth 300 across
+                        # 2 is a conversation with two teams.
+                        "no_go_repos": 0,
+                    },
+                )
+                entry["total_contribution"] += float(term.get("contribution") or 0.0)
+                entry["repos"] += 1
+                if recommendation == "no_go":
+                    entry["no_go_repos"] += 1
+
+        ranked = sorted(
+            (
+                {**entry, "total_contribution": round(entry["total_contribution"], 2)}
+                for entry in totals.values()
+            ),
+            key=lambda entry: (-entry["total_contribution"], entry["key"]),
+        )
+        return {
+            "window_days": days,
+            "since": since.isoformat(),
+            "repos_considered": repos_considered,
+            "no_go_repos": no_go_repos,
+            "terms": ranked,
+            "note": (
+                "One decision per repository — its latest portfolio decision "
+                "in the window. Summing every decision would weight a "
+                "repository by how often it was evaluated rather than by its "
+                "risk. Contributions are pre-clamp (D-018), so they can sum "
+                "past 100 for a repository pinned at the ceiling."
+            ),
+        }
+
+    def policy_history(self) -> list[dict[str, Any]]:
+        """Every policy version that has produced a decision (spec 21 §5).
+
+        Not read from git. Spec 21 §5 imagined pulling `oracle-policy-v1.yaml`'s
+        commit history through the GitHub API, which needs the App installed on
+        the Mykronos repository itself — the same thing already blocking
+        automatic policy-proposal PRs, and still not true.
+
+        What the platform *can* answer without it turns out to be the more
+        useful half anyway: which decisions were made under which version, and
+        when each version was in force. That is the question somebody actually
+        has when they find an old decision they disagree with — "was this
+        scored under the rules we have now?" — and it is answered from
+        `risk_decisions`, which records `policy_version` on every row.
+
+        The diff between two versions is the part that stays missing, and the
+        endpoint says so rather than implying this is the whole feature.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT
+                policy_version,
+                count(*),
+                min(evaluated_at),
+                max(evaluated_at),
+                count(*) FILTER (WHERE recommendation = 'no_go'),
+                count(DISTINCT repo_full_name)
+            FROM risk_decisions
+            WHERE policy_version IS NOT NULL AND policy_version <> ''
+            GROUP BY policy_version
+            ORDER BY max(evaluated_at) DESC
+            """
+        )
+        return [
+            {
+                "version": version,
+                "decisions": int(count),
+                "first_used": first.isoformat() if first else None,
+                "last_used": last.isoformat() if last else None,
+                "no_go_decisions": int(no_go),
+                "repos": int(repos),
+                # The current policy is the one loaded into this process, not
+                # the one that decided most recently: a version bumped and
+                # deployed but not yet exercised is in force and has no rows.
+                "current": version == self.policy.version,
+            }
+            for version, count, first, last, no_go, repos in rows
+        ]

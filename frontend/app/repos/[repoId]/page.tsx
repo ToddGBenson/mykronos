@@ -484,6 +484,7 @@ async function AegisTab({ repoId }: { repoId: string }) {
       signals={result.data.signals}
       detailIncluded={result.data.detail_included}
       governance={result.data.governance}
+      blocking={result.data.blocking}
     />
   );
 }

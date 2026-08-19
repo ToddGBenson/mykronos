@@ -16,6 +16,7 @@ import {
   ScoreMeter,
   Verdict,
 } from "@/components/primitives";
+import { OverrideDecision } from "@/components/override-decision";
 import type { RiskDecision } from "@/lib/api";
 
 const DECISION_TYPE_LABEL: Record<string, string> = {
@@ -168,7 +169,15 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
             <RelativeTime value={override.overridden_at} />
           </p>
         </div>
-      ) : null}
+      ) : (
+        // Only where there is not one already: overrides are append-only
+        // history, and the endpoint 409s on a second attempt. Offering the
+        // button anyway would be offering a click that cannot work.
+        <OverrideDecision
+          decisionId={decision.decision_id}
+          recommendation={decision.recommendation}
+        />
+      )}
 
       <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[9px] text-ink-3">
         policy {decision.policy_version} · {decision.decision_id}

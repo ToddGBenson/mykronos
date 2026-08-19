@@ -28,6 +28,37 @@ VULN_WEIGHTS: dict[str, float] = {"critical": 20.0, "high": 10.0, "medium": 3.0}
 FLOATING_PENALTY = 10.0
 STALE_PENALTY = 10.0
 
+#: Copyleft and source-available terms that create real obligations on
+#: redistribution (spec 22 §1.3). Deliberately short: the penalty is for
+#: licenses that oblige, not for "a license we have not seen before". A
+#: license absent from this list costs nothing, which is the correct answer
+#: for the permissive majority of any dependency tree.
+FLAGGED_LICENSES: frozenset[str] = frozenset(
+    {
+        "gpl-2.0",
+        "gpl-2.0-only",
+        "gpl-2.0-or-later",
+        "gpl-3.0",
+        "gpl-3.0-only",
+        "gpl-3.0-or-later",
+        "agpl-3.0",
+        "agpl-3.0-only",
+        "agpl-3.0-or-later",
+        "sspl-1.0",
+        "bsl-1.1",
+        "elastic-2.0",
+    }
+)
+
+#: Per component carrying a flagged license.
+LICENSE_PENALTY_PER_FLAGGED = 2.0
+
+#: Per component whose license the SBOM does not state. Smaller on purpose —
+#: "we do not know" is a lesser risk than "we know it obliges", and unknown is
+#: also the more common shape, so a heavier weight here would drown the terms
+#: that mean something.
+UNKNOWN_LICENSE_PENALTY = 0.5
+
 
 def evidence_id(repo_full_name: str, commit_sha: str) -> str:
     """Derived from repo + commit (spec 07 §3).
@@ -87,8 +118,17 @@ def score(ecosystems: list[EcosystemEvidence]) -> TrustAssessment:
     floating = 0
     stale = 0
     maintenance_known = 0
+    flagged_licensed = 0
+    unknown_licensed = 0
+    flagged_names: set[str] = set()
 
     for eco in ecosystems:
+        for identifier, count in (eco.licenses_seen or {}).items():
+            if identifier == "unknown":
+                unknown_licensed += count
+            elif identifier in FLAGGED_LICENSES:
+                flagged_licensed += count
+                flagged_names.add(identifier)
         totals["critical"] += eco.critical_vulns
         totals["high"] += eco.high_vulns
         totals["medium"] += eco.medium_vulns
@@ -154,6 +194,43 @@ def score(ecosystems: list[EcosystemEvidence]) -> TrustAssessment:
                     "maintenance data."
                 ),
                 "count": stale,
+            }
+        )
+
+    # Curved, like the vulnerability terms and for the same reason: a
+    # monorepo pulling in two hundred GPL components has a licensing question
+    # to answer, not a trust score of zero, and a linear term would floor it
+    # there and stop distinguishing it from a repo with a thousand.
+    if flagged_licensed:
+        contribution = LICENSE_PENALTY_PER_FLAGGED * _curve(flagged_licensed)
+        penalty += contribution
+        terms.append(
+            {
+                "key": "flagged_licenses",
+                "penalty": round(contribution, 2),
+                "detail": (
+                    f"{flagged_licensed} component(s) under "
+                    f"{', '.join(sorted(flagged_names))}. "
+                    f"{LICENSE_PENALTY_PER_FLAGGED:.0f} × "
+                    f"log2(1 + {flagged_licensed}) = {contribution:.1f}"
+                ),
+                "count": flagged_licensed,
+            }
+        )
+
+    if unknown_licensed:
+        contribution = UNKNOWN_LICENSE_PENALTY * _curve(unknown_licensed)
+        penalty += contribution
+        terms.append(
+            {
+                "key": "unknown_licenses",
+                "penalty": round(contribution, 2),
+                "detail": (
+                    f"{unknown_licensed} component(s) declare no license in "
+                    f"the SBOM. {UNKNOWN_LICENSE_PENALTY} × "
+                    f"log2(1 + {unknown_licensed}) = {contribution:.1f}"
+                ),
+                "count": unknown_licensed,
             }
         )
 

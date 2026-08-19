@@ -274,6 +274,29 @@
             rm -f sbom.json
           fi
 
+      - name: Check the denylists
+        # A second read of the SBOM already produced — no new scan, no new
+        # tool (spec 22 §3). SARIF into the same results directory as
+        # osv-scanner's, so these travel the road every other finding on this
+        # platform travels rather than getting a private ingestion path.
+        #
+        # A banned package produces a finding, not a score deduction: it is a
+        # policy violation somebody has to act on, and a silent penalty buries
+        # it in a single number nobody reads term by term.
+        if: hashFiles('sbom.json') != ''
+        run: |
+          set -euo pipefail
+          python -m mykronos.atlas_sbom sbom.json \
+            --sarif "${{ runner.temp }}/mykronos-results/atlas-denylist.sarif" \
+{%- for name in config.banned_packages | default([]) %}
+            --banned-package '<< name >>' \
+{%- endfor %}
+{%- for identifier in config.blocked_licenses | default([]) %}
+            --blocked-license '<< identifier >>' \
+{%- endfor %}
+            > denylist.json
+          jq -r '.findings[] | "  \(.rule_id): \(.title)"' denylist.json
+
       - name: Archive the SBOM
         id: sbom
         # Keyed on the file existing rather than repeating the condition
@@ -304,7 +327,23 @@
           # Counts, not a score. The trust formula lives in the platform so it
           # is reproducible and cannot drift between action versions
           # (spec 07 §5, §7).
-          ECOSYSTEMS=$(python -m mykronos.atlas_counts osv.json)
+          # --sbom enables the license pass (spec 22 §1); without it
+          # `licenses_seen` stays empty, which the platform reads as
+          # not-computed rather than as no-licenses-found. Guarded because
+          # the SBOM step skips pull requests and deletes an empty document.
+          SBOM_ARGS=""
+          if [ -f sbom.json ]; then
+            SBOM_ARGS="--sbom sbom.json"
+{%- if config.check_freshness | default(false) %}
+            # Opt-in per spec 07 §7: this queries the npm and PyPI registries
+            # for each package's last publish date, which is an outbound call
+            # to a third party and so is never on by default.
+            SBOM_ARGS="$SBOM_ARGS --check-freshness --staleness-threshold-days << config.staleness_threshold_days | default(730) >>"
+{%- endif %}
+          fi
+
+          # shellcheck disable=SC2086  # deliberate word splitting
+          ECOSYSTEMS=$(python -m mykronos.atlas_counts osv.json $SBOM_ARGS)
 
           PROVENANCE=$(jq -nc \
             --arg builder "github-actions" \

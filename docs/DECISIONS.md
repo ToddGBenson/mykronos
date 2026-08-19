@@ -2466,3 +2466,70 @@ Three things this deliberately does not do:
 The block invariant is unaffected — the two heaviest caps still sum to less
 than the default threshold of 80, so no single signal, this one included, can
 block on its own.
+
+## D-065 — License data rides in `ecosystems_json`, not a new lake column
+
+Spec 22 §1.2 asks for a `licenses_json` column on `sscs_evidence`. It does not
+ship, and this is deliberate rather than an omission.
+
+`licenses_seen` is a field on `EcosystemEvidence`, and `to_row` already
+serialises every ecosystem's full `model_dump()` into `ecosystems_json` — so
+the data is in the lake either way. A dedicated column would store it twice,
+and adding a column to a lake table has a specific, recently-demonstrated
+cost: it has to be added to `_UPDATE_SETS` as well, and omitting it there
+drops the value silently on every UPDATE. That exact bug cost `scan_runs.detail`
+its message for any scan longer than the compaction interval, and the first
+regression test written for it did not catch it. A column carrying a copy of
+data already present is not worth re-entering that class of risk for.
+
+What this costs: querying licenses across the fleet means unpacking JSON
+rather than selecting a column. That is already true of `score_terms`,
+`floored`, and the per-ecosystem counts — every consumer of this table already
+reads the blob.
+
+## D-066 — Freshness is opt-in, and absent is not zero
+
+Spec 22 §2's registry lookup makes outbound calls to npm and PyPI for every
+resolved package. Spec 07 §7 already holds Atlas to "no default-on external
+call", which is the same rule Aegis's `ai_classifier_url` follows, so
+`check_freshness` defaults to false and the workflow only passes the flag when
+a repository has asked for it.
+
+The more consequential half is what happens when it does not run, or runs and
+fails for one package. `maintenance_data_available_for` stays null — which
+spec 07 §8 already knows how to read — rather than being set to
+`dependency_count`. A package whose registry lookup timed out, or that is not
+on a public registry at all, is counted in neither the numerator nor the
+denominator. Both alternatives were available and both are claims: counting it
+fresh says somebody is maintaining it, counting it stale says nobody is, and
+the truth is that nobody asked successfully.
+
+This matters more here than for most terms because `stale_dependencies` has
+been in the trust formula since spec 07 shipped and has contributed exactly
+zero to every score ever computed — nothing populated it. The first thing that
+does must not make "we now check" indistinguishable from "we found nothing".
+
+## D-067 — Policy history comes from the decisions, not from git
+
+Spec 21 §5 asks for `GET /api/oracle/policy/history` reading
+`oracle-policy-v1.yaml`'s commit history through the GitHub API and rendering
+each bump as a diff. The diff half does not ship: reading that file's history
+needs the App installed on the Mykronos repository itself, which is the same
+thing already blocking automatic policy-proposal pull requests and is still
+not true. Building it against a credential that does not exist would have
+produced an endpoint that 403s.
+
+The endpoint ships anyway, answering a different and — on reflection — more
+useful question, from data the platform already holds. Every `risk_decisions`
+row has recorded `policy_version` since spec 09, so the platform can say which
+decisions were made under which version, over what window, across how many
+repositories, and how many of them were `no_go`.
+
+That is the question somebody actually has when they open an old decision they
+disagree with: *were these the rules we have now?* A textual diff would not
+answer it — knowing that a threshold moved does not tell you whether this
+decision predates the move.
+
+The endpoint's own `note` names what is missing rather than letting the
+feature's title imply it is complete. Until the App is installed, the file's
+textual history is where it has always been, in git.

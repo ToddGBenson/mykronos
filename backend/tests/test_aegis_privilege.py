@@ -104,3 +104,55 @@ class TestItReachesTheScore:
         outcome = assess(submission(author_role="admin"), REPO)
 
         assert outcome.recommendation != "block_recommended"
+
+
+class TestBlockingIsStated:
+    """spec 20 §3.2. `blocking` has always been on `BaseCapabilityConfig`, so
+    Aegis has always carried it — what was missing was any way for a person
+    reading the tab to know which way it was set for *this* repository. The
+    gap between what an admin configured and what a reviewer believes is
+    happening is exactly where a governance note stops being one."""
+
+    def page(self, client, auth, repo_id):
+        return client.get(
+            f"/api/dashboard/repos/{repo_id}/insider-risk", headers=auth
+        ).json()
+
+    def test_advisory_by_default(self, client, admin_auth) -> None:
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        body = self.page(client, admin_auth, repo_id)
+
+        assert body["blocking"] is False
+        assert "advisory" in body["governance"]
+
+    def test_a_blocking_repo_says_so(self, client, admin_auth) -> None:
+        from mykronos.db.models import CapabilityConfig
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        with client.app.state.db.session() as session:
+            session.add(
+                CapabilityConfig(
+                    repo_onboarding_id=repo_id,
+                    capability="aegis",
+                    config_json={"blocking": True},
+                )
+            )
+
+        body = self.page(client, admin_auth, repo_id)
+
+        assert body["blocking"] is True
+        assert "BLOCKING" in body["governance"]
+
+    def test_a_viewer_is_told_too(self, client, admin_auth, viewer_auth) -> None:
+        """Withholding the breakdown from a viewer is spec 06 §9. Withholding
+        whether the check can fail their pull request would not be — that is
+        the part that affects them."""
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        assert "blocking" in self.page(client, viewer_auth, repo_id)

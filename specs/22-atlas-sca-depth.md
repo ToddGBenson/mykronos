@@ -24,10 +24,10 @@ compliance reporting, or alert routing (spec 07 §2's own stated v1 exclusions, 
 
 | Item | Status |
 |---|---|
-| License data: captured, scored, surfaced | Planned |
-| Freshness penalty: a real data source | Planned |
-| Package/license denylist | Planned |
-| Combination rule: vulnerable dependency + reachable service | Planned |
+| License data: captured, scored, surfaced | Built |
+| Freshness penalty: a real data source | Built (opt-in) |
+| Package/license denylist | Built |
+| Combination rule: vulnerable dependency + reachable service | Built |
 
 ## 1. License compliance
 

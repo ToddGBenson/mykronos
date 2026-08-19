@@ -252,6 +252,28 @@ async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, 
     }
 
 
+@router.get("/policy/history")
+async def policy_history(request: Request, principal: PrincipalDep) -> dict[str, Any]:
+    """Which policy version scored what, and when (spec 21 §5).
+
+    Readable by viewers, on the same reasoning as `/policy` itself: somebody
+    looking at a decision they disagree with is entitled to know whether the
+    rules that produced it are the rules in force today.
+    """
+    return {
+        "current_version": request.app.state.oracle_policy.version,
+        "versions": _service(request).policy_history(),
+        "note": (
+            "Derived from the decisions themselves — every row records the "
+            "policy version that produced it — not from the policy file's "
+            "commit history. A textual diff between two versions needs the "
+            "GitHub App installed on the Mykronos repository, which is the "
+            "same thing blocking automatic policy-proposal pull requests and "
+            "is not yet true. Until then the file's history is in git."
+        ),
+    }
+
+
 @router.get("/shadow-mode")
 async def shadow_mode(
     request: Request,
@@ -271,6 +293,24 @@ async def shadow_mode(
     since = utcnow() - timedelta(days=days)
     report = _service(request).shadow_mode_report(since=since)
     return {"window_days": days, "since": since.isoformat(), **report}
+
+
+@router.get("/term-analytics")
+async def term_analytics(
+    request: Request,
+    principal: PrincipalDep,
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+) -> dict[str, Any]:
+    """What is driving risk across the fleet, term by term (spec 21 §3).
+
+    The question a portfolio page could not answer: is the score coming from
+    aging findings, KEV boosts, insider risk, or the risk profile? Every
+    decision already stores its terms; nothing aggregated them.
+
+    Ordered before `/decisions/{repo_id}` for the same reason `/shadow-mode`
+    is — a literal path must not be shadowed by the parameterised one.
+    """
+    return _service(request).term_analytics(days=days)
 
 
 @router.get("/decisions/{repo_id}")

@@ -56,11 +56,13 @@ export function InsiderRiskTab({
   signals,
   detailIncluded,
   governance,
+  blocking = false,
 }: {
   repoFullName: string;
   signals: InsiderRiskSignal[];
   detailIncluded: boolean;
   governance: string;
+  blocking?: boolean;
 }) {
   if (signals.length === 0) {
     return (
@@ -76,14 +78,22 @@ export function InsiderRiskTab({
             </>
           }
         />
-        <GovernanceNote note={governance} detailIncluded={detailIncluded} />
+        <GovernanceNote
+          note={governance}
+          detailIncluded={detailIncluded}
+          blocking={blocking}
+        />
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <GovernanceNote note={governance} detailIncluded={detailIncluded} />
+      <GovernanceNote
+        note={governance}
+        detailIncluded={detailIncluded}
+        blocking={blocking}
+      />
 
       <Label>
         {signals.length} assessment{signals.length === 1 ? "" : "s"} for{" "}
@@ -102,15 +112,30 @@ export function InsiderRiskTab({
 function GovernanceNote({
   note,
   detailIncluded,
+  blocking,
 }: {
   note: string;
   detailIncluded: boolean;
+  blocking: boolean;
 }) {
   return (
     <div className="border-l-2 border-accent bg-accent-wash px-3 py-2">
       <Label>What this is, and is not</Label>
       <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
         {note}
+      </p>
+      {/* Repeated as its own line, not left inside the paragraph above.
+          Whether a check can fail somebody's pull request is the one thing
+          here a reviewer needs at a glance, and a sentence at the end of a
+          governance note is a sentence people skim past. */}
+      <p
+        className={`mt-1.5 font-mono text-[10px] ${
+          blocking ? "text-high" : "text-ink-3"
+        }`}
+      >
+        {blocking
+          ? "Aegis is BLOCKING for this repository — a score at or above the threshold fails the pull request."
+          : "Aegis is advisory for this repository — it never fails a pull request."}
       </p>
       {!detailIncluded ? (
         <p className="mt-1.5 max-w-prose text-[11px] leading-relaxed text-ink-3">

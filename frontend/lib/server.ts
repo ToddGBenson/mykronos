@@ -255,6 +255,72 @@ export async function getShadowMode(): Promise<Result<ShadowModeReport>> {
   }
 }
 
+export type TermAnalytics = {
+  window_days: number;
+  repos_considered: number;
+  no_go_repos: number;
+  terms: {
+    key: string;
+    label: string;
+    total_contribution: number;
+    repos: number;
+    no_go_repos: number;
+  }[];
+  note: string;
+};
+
+/**
+ * What is driving risk across the fleet, term by term (spec 21 §3). A
+ * read-time aggregate over snapshots every decision already stores — the
+ * portfolio table says *which* repos are worst, this says *why*.
+ */
+export async function getTermAnalytics(): Promise<Result<TermAnalytics>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/oracle/term-analytics", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load term analytics") };
+    }
+    return { ok: true, data: data as TermAnalytics };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type PolicyHistory = {
+  current_version: string;
+  versions: {
+    version: string;
+    decisions: number;
+    first_used: string | null;
+    last_used: string | null;
+    no_go_decisions: number;
+    repos: number;
+    current: boolean;
+  }[];
+  note: string;
+};
+
+/**
+ * Which policy version scored what (spec 21 §5). Derived from the decisions,
+ * not from the policy file's commit history — see the endpoint's own note for
+ * why, and for the part that is still missing.
+ */
+export async function getPolicyHistory(): Promise<Result<PolicyHistory>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/oracle/policy/history", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load policy history") };
+    }
+    return { ok: true, data: data as PolicyHistory };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 /**
  * `source` is the parsed policy document, not the YAML text — the endpoint
  * serves the structure so machine consumers do not have to parse it, and the
