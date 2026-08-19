@@ -43,7 +43,9 @@ class TestGroomFinding:
 
         fake = client.app.state.github_factory.client
         issue = fake.repos[REPO].issues[0]
-        assert issue["labels"] == ["mykronos:dev-ready"]
+        # Plus a severity-derived priority label (spec 19 §4.3) — asserted
+        # by membership so adding one does not break every groom test.
+        assert "mykronos:dev-ready" in issue["labels"]
         assert "SQL injection" in issue["title"] or "CWE-89" in issue["title"]
         assert "## Acceptance criteria" in issue["body"]
 

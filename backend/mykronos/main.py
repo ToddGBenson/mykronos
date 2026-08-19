@@ -39,6 +39,7 @@ from mykronos.jobs import (
     purge_orphaned_learnings,
     reconcile_installations,
     rotate_ingestion_tokens,
+    route_open_findings,
     score_portfolio,
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
@@ -239,6 +240,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
+        async def _routing() -> None:
+            await route_open_findings(
+                app.state.db,
+                app.state.catalog,
+                app.state.knowledge,
+                app.state.github_factory,
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -261,6 +270,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
+            # Off unless a deployment opts in (`routing_enabled`): this
+            # one opens issues in somebody's tracker, and doing that the
+            # moment the platform is upgraded is not its decision to make.
+            *(
+                [("routing", settings.finding_routing_interval_seconds, _routing)]
+                if settings.routing_enabled
+                else []
+            ),
         ):
             tasks.append(
                 asyncio.create_task(

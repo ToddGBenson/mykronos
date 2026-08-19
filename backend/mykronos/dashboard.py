@@ -1441,7 +1441,17 @@ class DashboardQueries:
                 SELECT capability, commit_sha, scan_status, detail, completed_at,
                        row_number() OVER (
                            PARTITION BY capability
-                           ORDER BY coalesce(completed_at, started_at) DESC
+                           -- `ingested_at` and `scan_run_id` break the tie
+                           -- explicitly. Without them two runs whose
+                           -- timestamps compare equal — a scan registered
+                           -- and finalised inside the same clock tick, which
+                           -- is most of them on a fast machine — came back in
+                           -- whichever order the Parquet scan happened to
+                           -- produce, so "the most recent run" flipped
+                           -- between two identical calls.
+                           ORDER BY coalesce(completed_at, started_at) DESC,
+                                    ingested_at DESC,
+                                    scan_run_id DESC
                        ) AS rn
                 FROM scan_runs
                 WHERE repo_full_name = ?

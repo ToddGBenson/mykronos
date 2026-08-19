@@ -124,13 +124,16 @@ class TestDevReady:
         story = _story()
         assert story.dev_ready is True
         assert story.missing_fields == []
-        assert story.labels == [LABEL_DEV_READY]
+        # Membership, not equality: a story also carries a priority label
+        # derived from its severity (spec 19 §4.3), and this test is about
+        # dev-readiness, not the whole label set.
+        assert LABEL_DEV_READY in story.labels
 
     def test_no_acceptance_criteria_blocks_dev_ready(self) -> None:
         story = _story(acceptance_criteria=[])
         assert story.dev_ready is False
         assert "acceptance_criteria" in story.missing_fields
-        assert story.labels == [LABEL_NEEDS_TRIAGE]
+        assert LABEL_NEEDS_TRIAGE in story.labels
 
     def test_unknown_reachability_does_not_block_dev_ready(self) -> None:
         """spec 17 §7.1 — unknown is a valid, honest value."""

@@ -24,12 +24,26 @@ from mykronos.knowledge.store import KnowledgeEntry, KnowledgeStore
 CLASSIFICATIONS = ("true_positive", "likely_false_positive", "needs_human_judgment")
 
 
+#: Severity ordered worst-first, so "at or above the floor" is an index
+#: comparison rather than a set that has to be kept in step with the floor.
+_SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+
+
+def _at_or_above(severity: str, floor: str) -> bool:
+    try:
+        return _SEVERITY_ORDER.index(severity) <= _SEVERITY_ORDER.index(floor)
+    except ValueError:
+        # An unrecognised severity is not silently promoted to fixable.
+        return False
+
+
 def classify(
     finding: dict[str, Any],
     repo_full_name: str,
     store: KnowledgeStore | None = None,
     *,
     entries: list[tuple[KnowledgeEntry, float]] | None = None,
+    min_severity: str = "high",
 ) -> tuple[str, str]:
     """Classify one finding, consulting the Knowledge Store.
 
@@ -64,7 +78,7 @@ def classify(
             )
 
     severity = str(finding.get("severity") or "")
-    if severity in ("critical", "high"):
+    if _at_or_above(severity, min_severity):
         return (
             "true_positive",
             f"A {severity} {finding.get('capability')} finding with no "
@@ -72,7 +86,8 @@ def classify(
         )
     return (
         "needs_human_judgment",
-        f"A {severity} finding. Patchwork only generates fixes for high "
-        "and critical findings unprompted — a draft pull request for a low "
-        "finding costs more review attention than the finding is worth.",
+        f"A {severity} finding. Patchwork generates fixes unprompted only at "
+        f"{min_severity} and above for this repository — a draft pull request "
+        "for a low finding costs more review attention than the finding is "
+        "worth.",
     )

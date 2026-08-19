@@ -14,6 +14,7 @@ from tests.conftest import (
     dependency_finding,
     finding_payload,
     issue_token,
+    later,
     post_findings,
     post_scan,
 )
@@ -975,11 +976,15 @@ class TestScanHealth:
         """spec 19 §1.2 — the adapter's own message, not just scan_status."""
         token = issue_token(client, REPO, CAPABILITY)
         auth = {"Authorization": f"Bearer {token}"}
+        # An explicit later timestamp: "most recent" is resolved by
+        # started_at, and two now() calls microseconds apart can tie, which
+        # made this pass or fail depending on how fast the suite ran.
         post_scan(
             client,
             auth,
             scan_run_id="run-2",
             scan_status="failure",
+            started_at=later(1),
             detail="3 of 10 test(s) failed (2 failure(s), 1 error(s)).",
         )
         run_compaction()
@@ -998,7 +1003,9 @@ class TestScanHealth:
         # `seeded`'s own run is scan_run_id="run-1", commit_sha defaults the
         # same across calls unless overridden — exactly the "nothing about
         # the repo changed" case this signal exists for.
-        post_scan(client, auth, scan_run_id="run-2", scan_status="failure")
+        post_scan(
+            client, auth, scan_run_id="run-2", scan_status="failure", started_at=later(1)
+        )
         run_compaction()
 
         body = client.get(f"/api/dashboard/repos/{seeded}/scan-health", headers=admin_auth).json()
@@ -1018,6 +1025,7 @@ class TestScanHealth:
             scan_run_id="run-2",
             scan_status="failure",
             commit_sha="deadbeef",
+            started_at=later(1),
         )
         run_compaction()
 

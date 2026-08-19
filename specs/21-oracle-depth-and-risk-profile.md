@@ -28,6 +28,7 @@ for a repo to opt into different scoring rules.
 | Item | Status |
 |---|---|
 | Risk profile: data model, admin-authored, per repo | Done |
+| Risk profile: editor on the Risk Decision tab | Done |
 | Risk profile: new Oracle input category | Done — policy bumped to 1.1 |
 | Portfolio-wide trend: real aggregation, not "most recent decision" | Planned |
 | Fleet analytics: which policy terms drive `no_go` across the portfolio | Planned |

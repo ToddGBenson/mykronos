@@ -139,6 +139,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    finding_routing_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "How often to file dev-ready stories for open findings Patchwork "
+            "will not fix (spec 19 §4). Daily rather than on ingestion: "
+            "`needs_human_judgment` findings are batched deliberately, since "
+            "filing one issue per medium finding the instant it lands floods "
+            "a tracker with backlog noise — the same reasoning `classify()` "
+            "already applies to not auto-fixing them."
+        ),
+    )
+    routing_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the auto-routing sweep runs (spec 19 §4). Off by "
+            "default: it opens GitHub issues unprompted, and a platform that "
+            "starts filing issues in somebody's tracker the moment it is "
+            "upgraded has made a decision that was not its to make. Turn it "
+            "on deliberately, per deployment."
+        ),
+    )
     stale_draft_sweep_interval_seconds: int = Field(
         default=21_600,
         ge=1,

@@ -138,6 +138,7 @@ class PatchworkPipeline:
         source_capabilities: tuple[str, ...] = DEFAULT_SOURCE_CAPABILITIES,
         correlation_capabilities: tuple[str, ...] = DEFAULT_CORRELATION_CAPABILITIES,
         fix_generator_url: str | None = None,
+        auto_fix_min_severity: str = "high",
     ) -> None:
         self.catalog = catalog
         self.buffer = buffer
@@ -149,6 +150,10 @@ class PatchworkPipeline:
         # Null disables LLM-assisted generation entirely (spec 08 §2). The
         # deterministic fixers are unaffected; they are the primary path.
         self.fix_generator_url = fix_generator_url
+        # The severity floor for the *unprompted* sweep (spec 19 §4.5).
+        # `classify()` hardcoded "critical or high" before this was
+        # configurable, so the default keeps every existing repo's behaviour.
+        self.auto_fix_min_severity = auto_fix_min_severity
 
     # -- stage 1: ingest -------------------------------------------------
 
@@ -206,7 +211,12 @@ class PatchworkPipeline:
         called a rule "likely false positive" on one page while generating a
         fix for it on another would be arguing with itself in public.
         """
-        return classify(finding, repo_full_name, self.store)
+        return classify(
+            finding,
+            repo_full_name,
+            self.store,
+            min_severity=self.auto_fix_min_severity,
+        )
 
     # -- the run ---------------------------------------------------------
 

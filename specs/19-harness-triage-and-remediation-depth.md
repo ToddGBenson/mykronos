@@ -37,8 +37,8 @@ correctly declined to build.
 | Remediation: auto-preview on ingestion (`fixable` badge) | Planned |
 | Remediation: toxic-combination partial fixes | Planned |
 | Remediation: cross-repo batch digest | Planned |
-| Auto-routing: fixable → PR, not-fixable → story | Planned |
-| Auto-routing: `auto_fix_min_severity` config knob | Planned |
+| Auto-routing: fixable → PR, not-fixable → story | Done — routed on Patchwork's *observed* outcome, not a prediction (see §4.3) |
+| Auto-routing: `auto_fix_min_severity` config knob | Done |
 
 ## 1. Test Harness depth
 
@@ -249,30 +249,44 @@ Run at the same point `classify()` already runs (`_group_findings`, so the Findi
 this routing pass are always looking at the identical classification — one function, three consumers,
 never three opinions):
 
-| Classification | Fixable (§3.2's `preview_only` says yes) | Not fixable |
-|---|---|---|
-| `true_positive` | Already automatic: Patchwork's batch sweep opens the PR unprompted (unchanged) | **New:** auto-groom into a story immediately, `priority: urgent` label |
-| `needs_human_judgment` | **New:** auto-groom into a story, batched (§4.4), `priority: normal`/`low` by severity | Same |
-| `toxic_combination` | Unaffected by this section — §3.3 already covers the one rule with a safe partial fix; everything else stays `needs_human_judgment` and is groomed as a combination story (already possible via `groom_combination`, just not automatic — this section makes it automatic too) | Same |
-| `likely_false_positive` | Never routed to either — dampened, per spec 11, on purpose | Same |
+**Corrected during implementation.** This section originally proposed *predicting* fixability —
+checking whether a fixer would match, and filing a story only if not. That is wrong in a way that
+fails silently: a finding predicted fixable that Patchwork then declines would never get a story on
+any later pass either, because the prediction does not change. Worse, a fixer cannot answer the
+question without the file content (`fixers.generate(finding, content)`), so a cheap prediction would
+have to approximate the very thing it is deciding.
+
+What ships instead routes on Patchwork's **observed outcome**, read from `remediation_events` — the
+record spec 08 §7 already requires it to write for every finding it touches, including the ones where
+nothing happened:
+
+| Patchwork's recorded stage | What routing does |
+|---|---|
+| `pr_opened` / `fix_generated` / `queued` | Nothing — Patchwork owns it. A story would give a reviewer two places to act on one finding. |
+| `no_fix_available` / `skipped_low_confidence` / `triaged` / `correlated` | **Story.** It looked and gave up, which is exactly the finding a person has to pick up. |
+| No event yet, `patchwork` enabled | Skipped this cycle — it has not looked. The next sweep sees whatever it decided. |
+| No event yet, `patchwork` *not* enabled | **Story, immediately.** Nothing will ever look; waiting on a capability the repo declined would mean these are never routed at all. |
+| Any stage, but `likely_false_positive` | Never routed — dampened per spec 11, and re-routing it would undo a judgement somebody recorded with a reason. |
+
+Self-correcting by construction: a finding Patchwork declines next week gets its story next week,
+with no prediction to go stale.
 
 ### 4.3 What ships
 
-- A new scheduled pass (same job shape as the Knowledge Store's retro report, `knowledge/reports.py`,
-  and the promotion-candidate scan §2.3 already adds) that walks each active repo's open,
-  `true_positive`/`needs_human_judgment`/`toxic_combination` groups, checks `fixable` (§3.2's
-  now-precomputed field, so this pass costs nothing new for `true_positive` findings — the check
-  already happened), and for anything not fixable and not already groomed, calls the same
-  `gather_finding_story`/`gather_combination_story` + `_open_or_update` path `POST
-  /api/triage/.../groom` already uses — reused directly, not reimplemented, so an auto-filed story and
-  a manually-groomed one are produced by the exact same code and are indistinguishable once filed.
+- `jobs.route_open_findings`, a scheduled pass in the same shape as the other sweeps in that module,
+  walking each active repo's open groups and applying §4.2's table. The grooming itself is the same
+  code the "groom as story" button calls — extracted to `mykronos/groom.py` so the API and the job
+  share one implementation rather than two kept in step by hand. An auto-filed story and a hand-filed
+  one are identical because they are the same call.
+- **Off by default** (`routing_enabled`, `finding_routing_interval_seconds`). This opens issues in
+  somebody's tracker unprompted; a platform that starts doing that the moment it is upgraded has made
+  a decision that was not its to make. Turned on per deployment, deliberately.
 - **Idempotent by construction, not by a new check**: `story_id()` is already deterministic
   (repo + subject), and `_open_or_update` already updates the existing issue rather than duplicating
   it (spec 17 §7.2) — running this pass on a schedule against findings it already groomed is a no-op
   update, not a growing pile of duplicate issues.
-- **Never for a repo without `patchwork`/i2i capability configured** — this pass calls the same
-  `_github_for` lookup the manual groom endpoint already uses, and a repo with no App installation
-  simply has nothing to route, same as today.
+- A repo with `patchwork` *disabled* still gets stories — grooming needs the App installation, not
+  the `patchwork` grant. Only the "wait and see what Patchwork decides" branch depends on it.
 - Each auto-filed story is labeled with a priority derived from severity (`urgent` for
   critical/high `true_positive`-not-fixable, `normal` for medium, `low` for low) — a label on the
   issue, not a new field in `TriageStory` or a change to `render_issue_body`'s existing shape.

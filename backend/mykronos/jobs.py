@@ -433,3 +433,164 @@ async def score_portfolio(db: Database, service: OracleService) -> PortfolioRunR
         f", worst {worst[0]} at {worst[1]}/100" if worst else "",
     )
     return result
+
+
+#: Patchwork stages that mean it looked and could not help (spec 08 §7). A
+#: finding sitting at one of these is exactly the finding a person has to
+#: pick up, which is what makes it a story.
+_PATCHWORK_GAVE_UP = frozenset(
+    {"triaged", "no_fix_available", "skipped_low_confidence", "correlated"}
+)
+
+#: Stages that mean Patchwork owns it — a story would give a reviewer two
+#: places to act on one finding.
+_PATCHWORK_OWNS = frozenset({"pr_opened", "fix_generated", "queued"})
+
+
+@dataclass
+class RoutingResult:
+    """What the auto-routing pass did (spec 19 §4)."""
+
+    stories_opened: int = 0
+    stories_updated: int = 0
+    left_to_patchwork: int = 0
+    #: Findings Patchwork has not looked at yet, in a repo where it will.
+    #: Skipped this cycle rather than raced — the next sweep sees whatever
+    #: Patchwork decided.
+    awaiting_patchwork: int = 0
+    failed: list[tuple[str, str]] = field(default_factory=list)
+
+    def summary(self) -> str:
+        return (
+            f"{self.stories_opened} opened, {self.stories_updated} updated, "
+            f"{self.left_to_patchwork} left to Patchwork, "
+            f"{self.awaiting_patchwork} awaiting Patchwork, "
+            f"{len(self.failed)} failed"
+        )
+
+
+def _patchwork_stages(catalog: Catalog, repo_full_name: str) -> dict[str, str]:
+    """finding_id -> the stage Patchwork last reached for it (spec 08 §7)."""
+    rows = catalog.query(
+        """
+        SELECT finding_id, pipeline_stage_reached FROM (
+            SELECT finding_id, pipeline_stage_reached,
+                   row_number() OVER (
+                       PARTITION BY finding_id ORDER BY updated_at DESC
+                   ) AS rn
+            FROM remediation_events
+            WHERE repo_full_name = ?
+        ) WHERE rn = 1
+        """,
+        [repo_full_name],
+    )
+    return {str(finding_id): str(stage) for finding_id, stage in rows}
+
+
+async def route_open_findings(
+    db: Database,
+    catalog: Catalog,
+    store: KnowledgeStore | None,
+    github_factory: GitHubClientFactory,
+) -> RoutingResult:
+    """File a story for every open finding Patchwork will not fix (spec 19 §4).
+
+    The gap this closes: classification decides what a finding *is*, and two
+    manual actions exist to act on it — Patchwork's fix and i2i grooming —
+    with nothing connecting the three. A finding the platform already knew
+    enough to act on sat inert until somebody opened it and clicked.
+
+    **Routed on observed outcome, not on a prediction.** The obvious design —
+    guess whether a fixer would match, and file a story only if not — is
+    wrong in a way that fails silently: a finding guessed fixable that
+    Patchwork then declines would never get a story on any later pass either,
+    because the guess does not change. So this reads `remediation_events`,
+    which records what Patchwork actually did:
+
+    - It opened (or queued) a PR → Patchwork owns it, no story.
+    - It looked and gave up (`no_fix_available`, `skipped_low_confidence`,
+      `triaged`) → exactly the finding a person has to pick up. Story.
+    - No event yet, and `patchwork` is enabled → it has not looked. Skipped
+      this cycle; the next sweep sees whatever it decided.
+    - No event yet, and `patchwork` is *not* enabled → nothing will ever look.
+      Story, immediately — waiting on a capability the repo declined would
+      mean these findings are never routed at all.
+
+    Self-correcting by construction, and idempotent: `story_id()` is derived,
+    so re-routing a subject updates its issue instead of opening a second one.
+    """
+    from mykronos.dashboard import DashboardQueries
+    from mykronos.groom import open_or_update_story
+    from mykronos.triage_story import gather_finding_story
+
+    queries = DashboardQueries(catalog)
+    result = RoutingResult()
+
+    with db.session() as session:
+        targets = [
+            (
+                row.github_repo_full_name,
+                row.github_installation_id,
+                "patchwork" in (row.enabled_capabilities or []),
+            )
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status == "active")
+            ).scalars()
+        ]
+
+    for repo_full_name, installation_id, patchwork_enabled in sorted(targets):
+        # Always a client — the factory returns one per installation id and
+        # never None (`github/factory.py`), the same assumption
+        # `close_superseded_fixes` above already makes.
+        github = github_factory.for_installation(installation_id)
+
+        try:
+            stages = _patchwork_stages(catalog, repo_full_name)
+            with db.session() as session:
+                page = queries.open_findings(repo_full_name, store=store, session=session)
+        except Exception as exc:  # noqa: BLE001
+            # One repo failing must not stop the sweep; the next run retries.
+            logger.warning("Could not read findings for %s: %s", repo_full_name, exc)
+            result.failed.append((repo_full_name, str(exc)))
+            continue
+
+        for group in page["groups"]:
+            if group["triage"] == "likely_false_positive":
+                # Dampened on purpose (spec 11) — routing it anywhere would
+                # undo a judgement somebody already recorded, with a reason.
+                continue
+
+            finding_id = str(group["locations"][0]["finding_id"])
+            stage = stages.get(finding_id)
+
+            if stage in _PATCHWORK_OWNS:
+                result.left_to_patchwork += 1
+                continue
+            if stage is None and patchwork_enabled:
+                result.awaiting_patchwork += 1
+                continue
+
+            try:
+                with db.session() as session:
+                    finding = queries.finding(finding_id)
+                    if finding is None:
+                        continue
+                    story = gather_finding_story(catalog, session, store, finding)
+                outcome = await open_or_update_story(
+                    db, github, "mykronos:auto-routing", story
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Could not route %s in %s: %s", group["rule_id"], repo_full_name, exc
+                )
+                result.failed.append((repo_full_name, str(exc)))
+                continue
+
+            if outcome.created:
+                result.stories_opened += 1
+            else:
+                result.stories_updated += 1
+
+    if result.stories_opened or result.failed:
+        logger.info("Auto-routing sweep: %s", result.summary())
+    return result
