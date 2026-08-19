@@ -293,3 +293,66 @@ class TestIngestion:
         response = self.post(client, {"orphaned_paths": []}, capability="atlas")
 
         assert response.status_code == 403
+
+
+class TestItRunsWhereTheScansRun:
+    def test_the_sast_template_includes_it(self) -> None:
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        rendered = TemplateLibrary(get_settings().workflow_templates_dir).render(
+            "sast",
+            repo_full_name="acme/widgets",
+            default_branch="main",
+            ingestion_api_url="https://mykronos.example",
+            token_secret_name="MYKRONOS_TOKEN",
+            upload_action_ref="ToddGBenson/mykronos@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            config={},
+        ).content
+
+        assert "python -m mykronos.reachability" in rendered
+
+    def test_it_can_be_turned_off_per_repo(self) -> None:
+        """A plugin tree loaded by name has nothing importing anything, and
+        the answer there is noise rather than a signal."""
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        rendered = TemplateLibrary(get_settings().workflow_templates_dir).render(
+            "sast",
+            repo_full_name="acme/widgets",
+            default_branch="main",
+            ingestion_api_url="https://mykronos.example",
+            token_secret_name="MYKRONOS_TOKEN",
+            upload_action_ref="ToddGBenson/mykronos@v1",
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+            config={"import_reachability": False},
+        ).content
+
+        assert "mykronos.reachability" not in rendered
+
+    def test_it_is_on_by_default(self) -> None:
+        """Unlike the outbound-call features elsewhere, this reads the
+        checkout the scan already has and sends nothing but conclusions —
+        so there is nothing to opt into."""
+        from mykronos.capabilities import SastConfig
+
+        assert SastConfig().import_reachability is True
+
+    def test_the_concourse_pipeline_runs_it_too(self) -> None:
+        """Mykronos scans itself through Concourse, not Actions. A signal
+        wired only into the workflow template would be permanently
+        unavailable for the one repository this deployment actually scans."""
+        from pathlib import Path
+
+        pipeline = (
+            Path(__file__).resolve().parents[2]
+            / "deploy"
+            / "concourse"
+            / "pipelines"
+            / "mykronos.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "python -m mykronos.reachability" in pipeline
+        assert "/api/ingest/reachability" in pipeline
