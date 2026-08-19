@@ -282,3 +282,124 @@ async def promotion_candidates(
             "(spec 11 §2)."
         ),
     }
+
+
+class PromotionApproval(BaseModel):
+    """Which candidate is being approved. Keyed the same way
+    `find_cross_project_candidates` groups them — by (source_type, subject),
+    since one subject can be observed through more than one kind of signal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: str = Field(min_length=1, max_length=64)
+
+
+class PromotionResult(BaseModel):
+    subject: str
+    from_tier: str
+    to_tier: str
+    repos: list[str]
+    reasons_carried: int
+    reasons_withheld: int
+    note: str
+
+
+@router.post("/promotion-candidates/{subject}/approve", response_model=PromotionResult)
+async def approve_promotion_candidate(
+    request: Request, subject: str, body: PromotionApproval, actor: AdminDep
+) -> PromotionResult:
+    """Generalise a pattern to the next tier (spec 11 §2, §9; spec 19 §2.3).
+
+    `promotion.py` has always found candidates and said a person decides;
+    "approved in the dashboard" was the one half never built, so a candidate
+    could be looked at and not acted on. This is that decision being recorded
+    — still a human act, now with somewhere to click.
+
+    **Adds at the higher tier rather than moving rows.** A candidate
+    aggregates N per-repo entries into one statement, so there is no row to
+    move: "this repository dismissed X, with a reason" stays true of each
+    repository, and "X is noisy across four repositories" is a different,
+    new claim that belongs to the wider tier. Deleting the evidence on
+    promotion would also make the promotion unauditable afterwards.
+
+    **Restricted reasons stay behind.** `find_cross_project_candidates`
+    already withholds them (spec 11 §3): the recurrence generalises, somebody's
+    free text about their own codebase does not. The count of what was
+    withheld travels with the result so a reviewer knows the promoted entry is
+    thinner than the evidence behind it.
+    """
+    store = request.app.state.knowledge
+    candidate = next(
+        (
+            c
+            for c in find_cross_project_candidates(store)
+            if c.subject == subject and c.source_type == body.source_type
+        ),
+        None,
+    )
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"{subject!r} is not currently a promotion candidate for "
+                f"{body.source_type!r}. Evidence changes as entries age and "
+                "confidence decays (spec 11 §5), so a candidate seen earlier "
+                "may no longer qualify — re-read the list rather than "
+                "assuming this is an error."
+            ),
+        )
+
+    from mykronos.knowledge.store import KnowledgeStore
+
+    target = KnowledgeStore(
+        store.store_dir,
+        tier=candidate.to_tier,
+        embed_fn=store.embed_fn,
+        half_life_days=store.half_life_days,
+    )
+    target.add_entry(
+        source_type=candidate.source_type,
+        subject=candidate.subject,
+        source_ref=f"promoted from {candidate.from_tier} by {actor}",
+        text=(
+            f"{candidate.subject} was independently judged the same way in "
+            f"{candidate.project_count} repositories "
+            f"({', '.join(candidate.repos)})."
+        ),
+        # No repo: the whole point is that this is no longer about one.
+        repo_full_name=None,
+        reason="; ".join(candidate.reasons) if candidate.reasons else "",
+        # The synthesised sentence above carries no repository's private
+        # prose — the restricted reasons were already withheld upstream — so
+        # it is safe at the wider tier, which is what promotion means.
+        sensitivity="public",
+        confidence=candidate.mean_confidence,
+    )
+
+    db = request.app.state.db
+    with db.session() as session:
+        db.audit(
+            session,
+            actor=actor,
+            action="knowledge.promote",
+            entity_type="knowledge_entry",
+            entity_id=f"{candidate.source_type}:{candidate.subject}",
+            from_tier=candidate.from_tier,
+            to_tier=candidate.to_tier,
+            repos=candidate.repos,
+            reasons_withheld=candidate.reasons_withheld,
+        )
+
+    return PromotionResult(
+        subject=candidate.subject,
+        from_tier=candidate.from_tier,
+        to_tier=candidate.to_tier,
+        repos=candidate.repos,
+        reasons_carried=len(candidate.reasons),
+        reasons_withheld=candidate.reasons_withheld,
+        note=(
+            "Added at the higher tier; the per-repository entries it "
+            "generalises are left in place, so the evidence for this "
+            "promotion stays auditable."
+        ),
+    )

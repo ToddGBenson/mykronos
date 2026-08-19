@@ -744,6 +744,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/knowledge/promotion-candidates/{subject}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Promotion Candidate
+         * @description Generalise a pattern to the next tier (spec 11 §2, §9; spec 19 §2.3).
+         *
+         *     `promotion.py` has always found candidates and said a person decides;
+         *     "approved in the dashboard" was the one half never built, so a candidate
+         *     could be looked at and not acted on. This is that decision being recorded
+         *     — still a human act, now with somewhere to click.
+         *
+         *     **Adds at the higher tier rather than moving rows.** A candidate
+         *     aggregates N per-repo entries into one statement, so there is no row to
+         *     move: "this repository dismissed X, with a reason" stays true of each
+         *     repository, and "X is noisy across four repositories" is a different,
+         *     new claim that belongs to the wider tier. Deleting the evidence on
+         *     promotion would also make the promotion unauditable afterwards.
+         *
+         *     **Restricted reasons stay behind.** `find_cross_project_candidates`
+         *     already withholds them (spec 11 §3): the recurrence generalises, somebody's
+         *     free text about their own codebase does not. The count of what was
+         *     withheld travels with the result so a reviewer knows the promoted entry is
+         *     thinner than the evidence behind it.
+         */
+        post: operations["approve_promotion_candidate_api_knowledge_promotion_candidates__subject__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/evaluate": {
         parameters: {
             query?: never;
@@ -2131,6 +2169,33 @@ export interface components {
              * @default 0
              */
             repos_not_assessed: number;
+        };
+        /**
+         * PromotionApproval
+         * @description Which candidate is being approved. Keyed the same way
+         *     `find_cross_project_candidates` groups them — by (source_type, subject),
+         *     since one subject can be observed through more than one kind of signal.
+         */
+        PromotionApproval: {
+            /** Source Type */
+            source_type: string;
+        };
+        /** PromotionResult */
+        PromotionResult: {
+            /** Subject */
+            subject: string;
+            /** From Tier */
+            from_tier: string;
+            /** To Tier */
+            to_tier: string;
+            /** Repos */
+            repos: string[];
+            /** Reasons Carried */
+            reasons_carried: number;
+            /** Reasons Withheld */
+            reasons_withheld: number;
+            /** Note */
+            note: string;
         };
         /** PullRequestOut */
         PullRequestOut: {
@@ -3809,6 +3874,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_promotion_candidate_api_knowledge_promotion_candidates__subject__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromotionApproval"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionResult"];
                 };
             };
             /** @description Validation Error */
