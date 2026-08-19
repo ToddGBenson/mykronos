@@ -399,23 +399,31 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
     finally:
         # Always finalise. A run that failed must still be visible in the lake
         # as a run that failed, not as a gap (spec 04 §7).
-        client.post(
-            "/api/ingest/scan-run",
-            json_body=scan_run_payload(
-                completed_at=utcnow().isoformat(),
-                scan_status=outcome.scan_status.value,
-                finding_count=outcome.findings_accepted,
-                raw_output_ref=outcome.raw_output_ref,
-                # The adapter's own warning, not just its status (spec 19
-                # §1.2) — "3 of 10 test(s) failed" used to die in the CI
-                # step summary and never reach Mykronos. Only the first: a
-                # one-line summary, not the log dump `raw_output_ref`
-                # already archives. Truncated defensively even though the
-                # schema already caps it, so a future adapter's longer
-                # warning degrades to "cut off" rather than a rejected post.
-                detail=(outcome.warnings[0][:200] if outcome.warnings else None),
-            ),
+        final = scan_run_payload(
+            completed_at=utcnow().isoformat(),
+            scan_status=outcome.scan_status.value,
+            finding_count=outcome.findings_accepted,
+            raw_output_ref=outcome.raw_output_ref,
         )
+        # The adapter's own warning, not just its status (spec 19 §1.2) —
+        # "3 of 10 test(s) failed" used to die in the CI step summary and
+        # never reach Mykronos. Only the first, and only when there is one:
+        # a one-line summary, not the log dump `raw_output_ref` archives.
+        #
+        # Added to the payload rather than always present, because the
+        # uploader and the platform are versioned independently. CI installs
+        # this module from the commit under test, while the backend it posts
+        # to is whatever was last deployed — so a *new* uploader routinely
+        # talks to an *older* backend, and `ScanRunSubmission` forbids extra
+        # keys (spec 05 §4). Sending `detail: null` to a backend that has
+        # never heard of it 422s the finalising post and loses the ScanRun
+        # entirely, which is precisely the gap spec 04 §7 exists to prevent.
+        # Omitting the key keeps every scan with nothing to say compatible
+        # in both directions, permanently.
+        if outcome.warnings:
+            final["detail"] = outcome.warnings[0][:200]
+
+        client.post("/api/ingest/scan-run", json_body=final)
 
     write_step_summary(outcome, result, args.capability, args.tool)
     return outcome
