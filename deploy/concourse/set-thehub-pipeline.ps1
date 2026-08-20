@@ -225,6 +225,78 @@ if (-not $ghToken -or -not $ghToken.StartsWith("ghs_")) {
     --team-name main | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 
+# -- PS-9: a credential manager, not ((vars)) in a file (spec 15 section 6) --
+#
+# Concourse stores pipeline configuration verbatim, so every secret written to
+# the vars file below is readable afterwards by anyone who can run
+# `fly get-pipeline`. set-pipeline.ps1 has probed Vault per credential since
+# 2026-08-20 and this script did not, so `fly get-pipeline -p thehub` returned
+# live values for the ingestion token, the gate token, both MinIO keys and the
+# deploy token - checked, and it did: zero unresolved references for all four.
+#
+# Each credential is probed first. Present means it is left out of the vars
+# file entirely and Concourse resolves it at egress; absent means it falls back
+# to the file and this script names it. Moving one is then a single
+# Import-EnvSecretsToVault.ps1 run and a re-apply, with no edit here.
+#
+# github-token is deliberately NOT a candidate: it is a GitHub App installation
+# token minted fresh on every run and dead in an hour (CNC-2). Putting a value
+# with that lifetime in Vault would mean a stale secret resolving in place of a
+# live one, which is worse than the config holding something already expiring.
+$vaultToken = Read-EnvValue $stackEnv "CONCOURSE_VAULT_TOKEN" -Optional
+
+function Test-VaultSecret {
+    param([string]$Name, [string]$SecretScope = "pipeline")
+    if (-not $vaultToken) { return $false }
+    # `concourse/<team>/<pipeline>/<name>` then `concourse/<team>/<name>` is
+    # Concourse's own lookup order, so probing the same two paths is the only
+    # honest way to answer "will the ((var)) resolve".
+    $paths = if ($SecretScope -eq "team") {
+        @("concourse/main/$Name")
+    } else {
+        @("concourse/main/$Pipeline/$Name", "concourse/main/$Name")
+    }
+    foreach ($p in $paths) {
+        # Only presence is read; the value never leaves the container.
+        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+            mykronos-vault vault read -format=json $p 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    return $false
+}
+
+$fromVault = @()
+$fromFile = @()
+$secretVars = @()
+
+function Add-Secret {
+    param([string]$Name, [scriptblock]$Fallback, [string]$SecretScope = "pipeline")
+    if (Test-VaultSecret -Name $Name -SecretScope $SecretScope) {
+        $script:fromVault += $Name
+        return
+    }
+    $script:fromFile += $Name
+    $script:secretVars += ("{0}: '{1}'" -f $Name, (& $Fallback))
+}
+
+# The MinIO pair is team-scoped: all three pipelines use the same credential,
+# and three copies of one secret is three things to rotate.
+Add-Secret -Name "thehub-ingestion-token" -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN' }
+Add-Secret -Name "mykronos-gate-token"    -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN' }
+Add-Secret -Name "hub-deploy-token"       -Fallback { $hubDeployToken }
+Add-Secret -Name "anthropic-api-key"      -Fallback { $hubAnthropicKey }
+Add-Secret -Name "minio-access-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_USER' }
+Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD' }
+
+if ($fromVault) {
+    Write-Host "Resolving from Vault: $($fromVault -join ', ')" -ForegroundColor DarkGray
+}
+if ($fromFile) {
+    Write-Host "NOT in Vault, so written into the pipeline config where" -ForegroundColor Yellow
+    Write-Host "``fly get-pipeline`` can read them back: $($fromFile -join ', ')" -ForegroundColor Yellow
+    Write-Host "  Move them:  .\Import-EnvSecretsToVault.ps1 -Pipeline $Pipeline" -ForegroundColor DarkGray
+}
+
 $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-vars-$(Get-Random).yml"
 try {
     $vars = @(
@@ -260,8 +332,6 @@ try {
         # The job announces the override on every no_go either way.
         "thehub-oracle-blocking: '$OracleBlocking'",
         "github-token: $ghToken",
-        "thehub-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN')",
-        "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')",
         "registry: $Registry",
         "prowler-version: $ProwlerVersion",
         "scan-timezone: $TimeZone",
@@ -280,13 +350,10 @@ try {
         # reporting problem, and turning it into a failed deploy would be a
         # worse one.
         "thehub-url: $TheHubUrl",
-        "hub-deploy-token: '$hubDeployToken'",
         # Host IP, not a Docker name: garden task containers resolve through the
         # public servers set in compose and have never heard of `minio`. Same
         # address, and the same reason, as the other two set-pipeline scripts.
         "minio-endpoint: http://192.168.0.14:9000",
-        "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
-        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
         "azure-client-id: $azureClientId",
         "azure-client-secret: $azureClientSecret",
         "azure-tenant-id: $azureTenantId",
@@ -308,6 +375,7 @@ try {
         "anthropic-api-key: '$hubAnthropicKey'"
     )
 
+    $vars = $vars + $secretVars
     $vars | Set-Content -Path $varsFile -Encoding UTF8
 
     # Output discarded, and this is not tidiness. `fly set-pipeline` prints the
