@@ -19,6 +19,7 @@ Three properties this module is responsible for:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections import Counter
@@ -73,6 +74,16 @@ from mykronos.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
+
+#: How long an ingest request may spend posting a GitHub Check Run before it
+#: gives up and records the row anyway.
+#:
+#: The pipelines allow this POST 60 seconds end to end. The GitHub client's own
+#: timeout is 30s per call and minting an installation token is a second call,
+#: so without a bound here a slow api.github.com consumes the caller's entire
+#: budget and the row is lost with it — which is what happened to
+#: `mykronos/insider/77` on 2026-08-19.
+CHECK_RUN_TIMEOUT = 15.0
 
 _bearer = HTTPBearer(auto_error=False, description="Per-repo ingestion token.")
 
@@ -463,35 +474,56 @@ async def ingest_aegis(
     github = _installation_client(request, token.repo_full_name)
     if github is not None:
         try:
-            check_run_id = await github.create_check_run(
-                token.repo_full_name,
-                name=AEGIS_CHECK_RUN_NAME,
-                head_sha=body.commit_sha,
-                # Advisory unless the repo opted in, same as every other
-                # capability (spec 04 §5). A red check on a heuristic about a
-                # person is the fastest way to make this capability hated.
-                conclusion=(
-                    "failure"
-                    if blocking and assessment.is_block
-                    else "neutral"
-                    if assessment.recommendation != "pass"
-                    else "success"
+            # Bounded, because this is the only thing between a caller and its
+            # row and it is a call to somebody else's API.
+            #
+            # `mykronos/insider/77` timed out on 2026-08-19 after the full 60
+            # seconds the pipeline allows this POST, and the request never
+            # reached uvicorn's access log at all — uvicorn logs when a
+            # response is sent, so a request the client abandoned mid-flight
+            # leaves no trace. Every other ingest endpoint was logging
+            # normally. The GitHub client's own timeout is 30s per call, and
+            # minting an installation token is a second call, so a slow
+            # api.github.com can consume the caller's whole budget here and
+            # nowhere else.
+            #
+            # 15s, well inside the pipeline's 60. The `except` below already
+            # says the row is the record and the Check Run is only how it is
+            # displayed — that was true for a GitHubError and not for a hang,
+            # because a hang took the row with it. Now both land here.
+            check_run_id = await asyncio.wait_for(
+                github.create_check_run(
+                    token.repo_full_name,
+                    name=AEGIS_CHECK_RUN_NAME,
+                    head_sha=body.commit_sha,
+                    # Advisory unless the repo opted in, same as every other
+                    # capability (spec 04 §5). A red check on a heuristic about
+                    # a person is the fastest way to make this capability
+                    # hated.
+                    conclusion=(
+                        "failure"
+                        if blocking and assessment.is_block
+                        else "neutral"
+                        if assessment.recommendation != "pass"
+                        else "success"
+                    ),
+                    title=(
+                        f"{assessment.recommendation.replace('_', ' ')} — "
+                        f"{assessment.insider_risk_score}/100"
+                    ),
+                    summary=render_check_run_summary(assessment, body),
                 ),
-                title=(
-                    f"{assessment.recommendation.replace('_', ' ')} — "
-                    f"{assessment.insider_risk_score}/100"
-                ),
-                summary=render_check_run_summary(assessment, body),
+                timeout=CHECK_RUN_TIMEOUT,
             )
-        except GitHubError as exc:
+        except (GitHubError, TimeoutError) as exc:
             # Same rule as Oracle: the row is the record, the Check Run is how
             # it is displayed, and losing the display must not lose the row.
-            check_run_error = str(exc)
+            check_run_error = str(exc) or type(exc).__name__
             logger.warning(
                 "Could not post the Aegis check run for %s#%s: %s",
                 scrub(token.repo_full_name),
                 scrub(body.pr_number),
-                scrub(exc),
+                scrub(check_run_error),
             )
 
     request.app.state.buffer.append(

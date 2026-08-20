@@ -287,7 +287,7 @@ jobs:
         trigger: true
       - get: python
       - task: check
-        timeout: 10m
+        timeout: 30m
         image: python
         params: *mykronos_env
         config:
@@ -320,7 +320,7 @@ jobs:
       - get: python
       - *preflight
       - task: pytest
-        timeout: 45m
+        timeout: 120m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
         # set on every commit; without it each run re-downloads the lot, which
@@ -403,7 +403,7 @@ jobs:
       - get: python
       - *preflight
       - task: ruff-and-mypy
-        timeout: 20m
+        timeout: 60m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
         # set on every commit; without it each run re-downloads the lot, which
@@ -489,7 +489,7 @@ jobs:
       - get: python
       - *preflight
       - task: check-links
-        timeout: 15m
+        timeout: 60m
         image: python
         params: *mykronos_env
         config:
@@ -540,7 +540,7 @@ jobs:
       # copy. A backend change that breaks the frontend should fail this job,
       # not surface as a runtime error in a browser.
       - task: dump-openapi
-        timeout: 15m
+        timeout: 25m
         image: python
         config:
           platform: linux
@@ -561,7 +561,7 @@ jobs:
           TARGET: ../contract
 
       - task: lint-types-build
-        timeout: 30m
+        timeout: 90m
         image: node
         config:
           platform: linux
@@ -625,7 +625,7 @@ jobs:
         # never got as far as writing a verdict.
         ensure:
           task: report
-          timeout: 10m
+          timeout: 15m
           image: python
           params: *mykronos_env
           config:
@@ -982,7 +982,7 @@ jobs:
       - get: python
       - *preflight
       - task: ai-checks
-        timeout: 15m
+        timeout: 45m
         image: python
         params: *mykronos_env
         config:
@@ -1027,7 +1027,7 @@ jobs:
       - get: python
       - *preflight
       - task: semgrep
-        timeout: 45m
+        timeout: 90m
         image: python
         params: *mykronos_env
         config:

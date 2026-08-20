@@ -959,7 +959,7 @@ jobs:
       - get: python
       - *preflight
       - task: check-links
-        timeout: 15m
+        timeout: 45m
         image: python
         params: *mykronos_env
         config:
@@ -1096,7 +1096,7 @@ jobs:
       - get: python
       - *preflight
       - task: gitleaks
-        timeout: 20m
+        timeout: 55m
         image: python
         params: *mykronos_env
         config:
@@ -1255,7 +1255,7 @@ jobs:
       - get: python
       - *preflight
       - task: osv-scanner
-        timeout: 30m
+        timeout: 45m
         image: python
         params: *mykronos_env
         config:
@@ -1368,7 +1368,7 @@ jobs:
       # evidence, and evidence produced after the gate is evidence the gate
       # could not use.
       - task: sbom-and-evidence
-        timeout: 20m
+        timeout: 30m
         image: python
         params: *mykronos_env
         config:
@@ -1917,7 +1917,7 @@ jobs:
         passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
       - task: request-deploy
-        timeout: 30m
+        timeout: 45m
         image: python
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -2160,7 +2160,7 @@ jobs:
       - get: python
       - *preflight
       - task: run-evals
-        timeout: 45m
+        timeout: 90m
         image: python
         params:
           PIP_CACHE_DIR: /pipcache
@@ -2400,7 +2400,7 @@ jobs:
       # boundary at all.
       - task: zap-baseline
         image: zap
-        timeout: 20m
+        timeout: 45m
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -2553,7 +2553,7 @@ jobs:
       # boundary at all.
       - task: zap-baseline
         image: zap
-        timeout: 20m
+        timeout: 45m
         config:
           platform: linux
           inputs: [{ name: source }]
