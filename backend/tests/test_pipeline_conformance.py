@@ -1,6 +1,6 @@
 """The pipeline standard, enforced by the quality gate (D-078).
 
-`docs/pipeline-standard.md` is ten rules, each written because something failed
+`docs/pipeline-standard.md` is eleven rules, each written because something failed
 silently for long enough that a human had to notice it by accident. Rules held
 only by a document decay exactly the way the `mykronos-ref` pin did — twice,
 D-051 and D-074 — so the checker runs here, in the suite the `unit` lane runs,

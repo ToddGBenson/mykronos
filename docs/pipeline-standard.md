@@ -233,6 +233,36 @@ So: write to `/tmp`, and check the response body — Slack answers `200` with
 `{"ok":false}` when a post is rejected, and without that check an undelivered
 alert reads exactly like a delivered one.
 
+### PS-11 — The applied pipeline is the pipeline
+
+The configuration Concourse is running must match the file in this repository.
+Not "should" — checked, by `scripts/check_applied_pipelines.py`.
+
+**What it prevents.** The pipelines that run are applied from a working copy,
+and on 2026-08-20 that copy was **eighteen commits behind `main`** with
+uncommitted edits to five files — including a disabled Oracle gate that existed
+nowhere in git (D-081). The repository said the gate blocked; the applied
+pipeline let every `no_go` through; nothing reconciled the two, and the
+divergence was found by accident while looking for a missing `.env`.
+
+That is L0004: a copy close enough to be plausible is worse than one obviously
+different, because nothing about using it feels wrong until it has already cost
+you something.
+
+**Three differences are expected and are not drift**, because Concourse
+normalises what it stores: it drops `anchors:` after expanding the aliases,
+drops falsy defaults (`public: false`, `passed: []`), returns jobs in its own
+order, and names every anonymous `image_resource`. All four looked like drift
+on the check's first run, and all four are now understood rather than
+suppressed.
+
+**It also answers PS-9 from the other end.** A `((var))` in the file is either
+still a reference in the applied config — resolved from Vault at runtime — or a
+literal, supplied through `--load-vars-from` and readable by anyone who can run
+`fly get-pipeline`. The check reports which, and names the ones that look like
+credentials. It never prints a value: the applied config holds resolved secrets,
+and a drift report that leaked them would be the worse problem.
+
 ---
 
 ## Conformance: the fifteen capabilities

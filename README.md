@@ -36,7 +36,7 @@ changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
 lessons worth carrying between projects are promoted to [`docs/lessons/`](docs/lessons/),
 and incident-scale days get a retro in [`docs/retros/`](docs/retros/).
 
-The shape every Concourse pipeline conforms to — ten numbered rules, the
+The shape every Concourse pipeline conforms to — eleven numbered rules, the
 failure each one prevents, and a per-capability conformance table for both
 pipelines — is [`docs/pipeline-standard.md`](docs/pipeline-standard.md).
 Comments in the pipeline YAML cite it by rule number (D-078).
