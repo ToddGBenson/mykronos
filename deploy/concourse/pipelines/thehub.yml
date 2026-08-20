@@ -1847,38 +1847,57 @@ jobs:
                 echo "Oracle: $(jq -r '.recommendation' decision.json) (score $(jq -r '.overall_risk_score' decision.json))"
                 jq -r '.reasoning // empty' decision.json
 
-                if [ "$(jq -r '.recommendation' decision.json)" = "no_go" ]; then
-                  SCORE=$(jq -r '.overall_risk_score' decision.json)
-                  SHORT=$(git rev-parse --short HEAD)
+                RECOMMENDATION=$(jq -r '.recommendation' decision.json)
+                SCORE=$(jq -r '.overall_risk_score' decision.json)
+                SHORT=$(git rev-parse --short HEAD)
 
-                  # -- The gate can be turned off, and it says so ------------
+                # Blocks on what this commit INTRODUCED, not on the backlog
+                # (D-048, ported from the mykronos pipeline - D-083).
+                #
+                # This gate used to block on the composite score, and D-048
+                # had already written down why that does not work: the score
+                # describes the whole estate, so a repository carrying a large
+                # accepted backlog refuses every commit regardless of content,
+                # "and a gate that refuses everything gets switched off or
+                # routed around". That is exactly what happened here. It
+                # refused everything, and on 2026-08-18 it was switched off.
+                #
+                # The lesson was learned once, for one pipeline, and left
+                # unapplied to the other. "No new criticals, no new highs"
+                # does not drift as the backlog grows, so the gate can be on
+                # permanently rather than until the next bad week.
+                #
+                # The score is still evaluated, still recorded, still drives
+                # the dashboard and still reaches Slack on a no_go. It just no
+                # longer decides whether TheHub ships.
+                INTRODUCED_BLOCKING=$(jq -r '.introduced_blocking' decision.json)
+                NEW_CRITICAL=$(jq -r '.introduced.critical // 0' decision.json)
+                NEW_HIGH=$(jq -r '.introduced.high // 0' decision.json)
+
+                if [ "$RECOMMENDATION" = "no_go" ]; then
+                  echo "::warning::Oracle scores TheHub no_go at ${SCORE}/100."
+                  echo "That is the standing backlog, not this change - see D-048."
+                fi
+
+                echo "Introduced by ${SHORT}: ${NEW_CRITICAL} critical, ${NEW_HIGH} high."
+
+                if [ "$INTRODUCED_BLOCKING" = "true" ]; then
+                  # -- The gate can still be turned off, and it says so -----
                   #
                   # `((thehub-oracle-blocking))`, set in
-                  # set-thehub-pipeline.ps1. It was `false` from 2026-08-18 on
-                  # the operator's explicit instruction: the gate was blocking
-                  # correctly on a real finding rather than malfunctioning -
-                  # score 100/100, 21 open critical findings - and TheHub still
-                  # needed to ship.
-                  #
-                  # A var rather than the commented-out `exit 1` this replaces.
-                  # That edit lived only in the deployment checkout's working
-                  # tree, so the repository said the gate blocked while the
-                  # applied pipeline let every no_go through, and nothing
-                  # anywhere reconciled the two. A disabled control that is
-                  # invisible is worse than one that is switched off loudly:
-                  # this is the same failure the notifier had (D-079) and the
-                  # same one the coverage cross-check exists to catch.
-                  #
-                  # Turning it back on is one word in one file. Do that once
-                  # the critical backlog is dispositioned.
+                  # set-thehub-pipeline.ps1, kept from the 2026-08-18 override
+                  # (D-081) rather than removed. The reason it existed - a
+                  # control switched off invisibly is worse than one switched
+                  # off loudly - is still right. What changed is that it now
+                  # guards a floor worth guarding, so it should stay "true".
                   if [ "${ORACLE_BLOCKING:-true}" != "true" ]; then
-                    printf '*TheHub / Oracle: no_go* - risk score %s on commit `%s`. Gate is NON-BLOCKING, so this deployed anyway.' \
-                      "$SCORE" "$SHORT" > ../notify/message.txt
+                    printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Gate is NON-BLOCKING, so this deployed anyway.' \
+                      "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
 
                     echo "=================================================="
-                    echo "ORACLE SAYS no_go AND THE GATE IS NON-BLOCKING."
-                    echo "Score ${SCORE}/100 on ${SHORT}. This would have"
-                    echo "stopped the deploy; it is proceeding because"
+                    echo "THIS COMMIT INTRODUCED ${NEW_CRITICAL} CRITICAL AND"
+                    echo "${NEW_HIGH} HIGH FINDING(S), AND THE GATE IS"
+                    echo "NON-BLOCKING. It is proceeding because"
                     echo "thehub-oracle-blocking is not 'true'."
                     echo ""
                     echo "This green tick is NOT a passing risk decision."
@@ -1887,13 +1906,15 @@ jobs:
                   fi
 
                   # Written for the on_failure hook, which otherwise knows
-                  # only the job name. A portfolio risk score describes the
-                  # repository, not a person, so it is safe to broadcast -
-                  # unlike anything the insider lane produces.
-                  printf '*TheHub / Oracle: no_go* - risk score %s on commit `%s`. Nothing is deployed.' \
-                    "$SCORE" "$SHORT" > ../notify/message.txt
+                  # only the job name. Counts of findings a commit introduced
+                  # describe the change, not a person, so this is safe to
+                  # broadcast - unlike anything the insider lane produces.
+                  printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Nothing is deployed.' \
+                    "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
 
-                  echo "Oracle says no_go - nothing is deployed."
+                  echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
+                  echo "The floor is no new criticals and no new highs. Fix them, or"
+                  echo "disposition them - an accepted risk with a reason does not block."
                   exit 1
                 fi
 

@@ -3113,3 +3113,47 @@ in code as well as prose — a new collision fails the `unit` lane, an old one
 does not. That is the same shape as `check_pinned_ref.py`: the rule is worth
 nothing without something that notices when it breaks, and this one broke
 silently for a week.
+
+## D-083 — TheHub's gate blocks on what a commit introduced, like the other one
+
+**Status:** Decided and shipped
+**Supersedes the override in:** D-081
+
+TheHub's Oracle gate blocked on the composite risk score. D-048 had already
+written down why that does not work, for the mykronos pipeline:
+
+> the composite score describes the whole estate […] so gating on it refused
+> every commit regardless of content, and a gate that refuses everything gets
+> switched off or routed around.
+
+TheHub's gate refused everything, and on 2026-08-18 an operator switched it
+off. The lesson had been learned once, applied to one pipeline, and left
+unapplied to the other — which is the more interesting failure than either
+gate's behaviour. A decision record is only worth what it changes.
+
+The gate now blocks on `introduced_blocking` from the same
+`/api/oracle/evaluate` response it already called, which needed no backend
+change: `introduced` has been on that response since D-048. "No new criticals,
+no new highs" does not drift as a backlog grows, so the gate can be on
+permanently rather than until the next bad week.
+
+**What did not clear it.** All 21 of TheHub's open criticals were
+dispositioned first — 16 as accepted risks with no upstream fix (Trivy reports
+`fixed_version: null`; Debian has shipped no patch) and 5 as false positives
+verified line by line against the source: three `Bearer YOUR_TOKEN`
+placeholders in documentation, one prose line in a usage string, and one local
+variable named `token`. That took the raw score from 309 to 157 and the open
+criticals to zero, and the gate still said `no_go` on 77 open highs. It would
+have refused every commit exactly as before.
+
+So dispositioning was worth doing and was not the fix. Recording that because
+the obvious reading — "clear the backlog and the gate works" — is wrong, and
+acting on it would mean grinding through 77 highs to reach the same place this
+change reaches directly.
+
+**The override stays.** `thehub-oracle-blocking` is restored to `true` rather
+than deleted. D-081 added it because the previous override existed only in a
+deployment working tree, so the repository claimed the gate blocked while the
+applied pipeline let everything through. That reasoning is untouched by this
+change: a control switched off invisibly is worse than one switched off
+loudly. What changed is that it now guards a floor worth guarding.

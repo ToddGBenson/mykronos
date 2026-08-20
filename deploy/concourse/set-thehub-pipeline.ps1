@@ -56,9 +56,12 @@ param(
     # `-Branch develop` explicitly for a one-off scan of the integration
     # branch.
     [string]$Branch = "main",
-    # "true" restores the gate. See the vars block below for why it is off.
+    # On by default again (D-083). It was "false" from 2026-08-18 because the
+    # gate blocked on the composite score and so refused every commit; it now
+    # blocks on what a commit introduced, which does not drift as the backlog
+    # grows. Pass "false" for a deliberate, loudly-announced override.
     [ValidateSet("true", "false")]
-    [string]$OracleBlocking = "false",
+    [string]$OracleBlocking = "true",
     [string]$Concourse = "http://localhost:8080",
 
     # The host both environments run on, reached by IP for the same reason
@@ -256,8 +259,17 @@ try {
         # through. A control that is switched off invisibly is worse than one
         # switched off loudly.
         #
-        # Set it back to "true" once the critical backlog is dispositioned.
-        # The job announces the override on every no_go either way.
+        # Restored to "true" on 2026-08-20 (D-083). The condition written here
+        # - "once the critical backlog is dispositioned" - was met: all 21 of
+        # TheHub's open criticals were dispositioned, 16 as accepted risks
+        # with no upstream fix and 5 as verified false positives.
+        #
+        # That alone would not have been enough, and is not why the gate is
+        # back on. The score is still 100/no_go on 77 open highs, and would
+        # have refused every commit exactly as before. What makes it safe to
+        # enable is that the gate no longer decides on the score.
+        #
+        # The job announces the override on every blocked commit either way.
         "thehub-oracle-blocking: '$OracleBlocking'",
         "github-token: $ghToken",
         "thehub-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN')",
