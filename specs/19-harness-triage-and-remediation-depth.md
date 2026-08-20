@@ -29,7 +29,7 @@ correctly declined to build.
 | Test Harness: pass-rate trend | Done |
 | Test Harness: real failure text (`scan_runs.detail`) | Done |
 | Test Harness: flaky-test flagging | Done |
-| Triage: reachability, cheap first cut (import-reachable) | Done — Python only, a discount not a penalty (D-072) |
+| Triage: reachability, cheap first cut (import-reachable) | Done — Python only, a discount not a penalty (D-072); visible on the Risk Decision tab |
 | Triage: combination-rule discovery (candidate surfacing) | Done |
 | Triage: cross-repo dampening approve action | Done — adds at the higher tier, leaves the evidence in place |
 | Triage: blast-radius signal | Done — from findings, not the SBOM (D-069) |

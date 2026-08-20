@@ -29,6 +29,7 @@ from mykronos.ci import CAPABILITY_BY_JOB, ConcourseClient, pipeline_name_for
 from mykronos.db.models import (
     CapabilityConfig,
     CapabilityGrant,
+    ReachabilityReport,
     RepoOnboarding,
     RiskProfile,
     get_or_create_organization,
@@ -191,6 +192,34 @@ class RiskProfileOut(BaseModel):
     notes: str | None = None
     updated_by: str = ""
     updated_at: datetime | None = None
+
+
+class ReachabilityOut(BaseModel):
+    """Which files nothing in the repository imports (spec 19 §2.1).
+
+    `analysed` is the field that carries the weight. False means the analysis
+    has never run for this repository, which is not the same as it having run
+    and found nothing — the second is a result, the first is a gap, and
+    Oracle reports them differently (`available: false` versus a real zero).
+    """
+
+    analysed: bool
+    language: str = "python"
+    commit_sha: str = ""
+    files_analysed: int = 0
+    files_unparseable: int = 0
+    orphaned_paths: list[str] = Field(default_factory=list)
+    updated_at: datetime | None = None
+    note: str = Field(
+        default=(
+            "Import reachability only, and Python only: whether anything in "
+            "this repository imports the file — never whether the code runs. "
+            "A file not listed here is not proven reachable, only not proven "
+            "orphaned. A finding in an orphaned file is discounted, never "
+            "dismissed (spec 19 §2.1)."
+        ),
+        description="Served with the data so a consumer cannot over-read it.",
+    )
 
 
 class RiskProfileUpdate(BaseModel):
@@ -732,6 +761,45 @@ def _profile_out(row: RiskProfile | None) -> RiskProfileOut:
         updated_by=row.updated_by,
         updated_at=row.updated_at,
     )
+
+
+@router.get("/{repo_id}/reachability", response_model=ReachabilityOut)
+async def get_reachability(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ReachabilityOut:
+    """The stored import analysis for one repository (spec 19 §2.1).
+
+    Readable by any authenticated principal, like the risk profile beside it
+    and for the same reason: somebody reading a risk decision should be able
+    to see the inputs that moved it, and this one *lowers* scores — a
+    discount nobody can inspect is worse than one nobody applies.
+
+    The absent case is a 200 with `analysed: false`, not a 404. No analysis
+    having run is a real answer about the repository, and a 404 would make a
+    caller guess between "this repo does not exist" and "nothing has looked".
+    """
+    with request.app.state.db.session() as session:
+        row = _get(session, repo_id)
+        report = (
+            session.execute(
+                select(ReachabilityReport).where(
+                    ReachabilityReport.repo_onboarding_id == row.id
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if report is None:
+            return ReachabilityOut(analysed=False)
+        return ReachabilityOut(
+            analysed=True,
+            language=report.language,
+            commit_sha=report.commit_sha,
+            files_analysed=report.files_analysed,
+            files_unparseable=report.files_unparseable,
+            orphaned_paths=list(report.orphaned_paths or []),
+            updated_at=report.updated_at,
+        )
 
 
 @router.get("/{repo_id}/risk-profile", response_model=RiskProfileOut)

@@ -388,10 +388,29 @@ class TestTheStepCannotFailTheScan:
         start = pipeline.rindex("(", 0, call)
         return pipeline[start : pipeline.index(") || true", call) + len(") || true")]
 
-    def test_it_uses_no_tool_the_image_may_not_have(self) -> None:
+    @classmethod
+    def _commands(cls) -> str:
+        """The block with comment lines stripped.
+
+        Checked against the commands rather than the raw text: the comments
+        explain which tools are absent and why, so a substring search over
+        the whole block matches its own documentation.
+        """
+        return "\n".join(
+            line
+            for line in cls._block().splitlines()
+            if not line.strip().startswith("#")
+        )
+
+    @pytest.mark.parametrize("tool", ["jq", "curl"])
+    def test_it_uses_no_tool_the_image_may_not_have(self, tool: str) -> None:
         """python is proven present — the step before this one just ran it.
-        jq is not, and that is what broke it."""
-        assert "jq" not in self._block()
+
+        Neither of these is. `jq` took the job down; `curl` was the fix for
+        that still failing to deliver, silently, because by then the wrapper
+        caught it and the job went green printing "could not report it".
+        """
+        assert tool not in self._commands()
 
     def test_the_wrapper_swallows_any_failure(self) -> None:
         """Whatever happens inside, the scan's own findings — already
@@ -406,3 +425,108 @@ class TestTheStepCannotFailTheScan:
         claiming nothing was analysed, which is worse than no report: the
         Oracle category would read `available` with nothing behind it."""
         assert "-s /tmp/reachability.json" in self._block()
+
+
+class TestReadingItBack:
+    """The half that was missing when spec 19 §2.1 was first marked done: the
+    analysis ran, was stored and scored, and no person could see it.
+
+    A discount nobody can inspect is worse than one nobody applies — this is
+    the only Oracle input that *lowers* a score, so being able to check what
+    it did is the point.
+    """
+
+    def report(self, client, auth, repo_id):
+        return client.get(f"/api/repos/{repo_id}/reachability", headers=auth).json()
+
+    def test_no_analysis_is_a_200_not_a_404(self, client, admin_auth) -> None:
+        """A 404 would make a caller guess between "no such repo" and
+        "nothing has looked". They are different and only one is about the
+        analysis."""
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.get(f"/api/repos/{repo_id}/reachability", headers=admin_auth)
+
+        assert response.status_code == 200
+        assert response.json()["analysed"] is False
+
+    def test_a_stored_report_reads_back(self, client, admin_auth) -> None:
+        from tests.conftest import REPO, issue_token
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
+        client.post(
+            "/api/ingest/reachability",
+            json={
+                "language": "python",
+                "commit_sha": "abc123def456",
+                "orphaned_paths": ["pkg/dead.py", "pkg/also_dead.py"],
+                "files_analysed": 40,
+                "files_unparseable": 1,
+            },
+            headers=auth,
+        )
+
+        body = self.report(client, admin_auth, repo_id)
+
+        assert body["analysed"] is True
+        assert body["files_analysed"] == 40
+        assert body["orphaned_paths"] == ["pkg/dead.py", "pkg/also_dead.py"]
+        assert body["files_unparseable"] == 1
+
+    def test_analysed_with_nothing_orphaned_is_distinct_from_unanalysed(
+        self, client, admin_auth
+    ) -> None:
+        """The distinction the whole category rests on. Both show no orphaned
+        files; only one of them looked."""
+        from tests.conftest import REPO, issue_token
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
+        client.post(
+            "/api/ingest/reachability",
+            json={"orphaned_paths": [], "files_analysed": 40},
+            headers=auth,
+        )
+
+        body = self.report(client, admin_auth, repo_id)
+
+        assert body["analysed"] is True
+        assert body["orphaned_paths"] == []
+
+    def test_a_viewer_can_read_it(self, client, admin_auth, viewer_auth) -> None:
+        """Same reasoning as the risk profile beside it: somebody reading a
+        decision should see the inputs that moved it."""
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        assert (
+            client.get(
+                f"/api/repos/{repo_id}/reachability", headers=viewer_auth
+            ).status_code
+            == 200
+        )
+
+    def test_it_says_what_it_is_not(self, client, admin_auth) -> None:
+        """Served with the data so a consumer cannot over-read it: a file not
+        listed is not proven reachable, only not proven orphaned."""
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        note = self.report(client, admin_auth, repo_id)["note"]
+
+        assert "not proven reachable" in note
+
+    def test_an_unknown_repo_is_a_404(self, client, admin_auth) -> None:
+        assert (
+            client.get(
+                "/api/repos/does-not-exist/reachability", headers=admin_auth
+            ).status_code
+            == 404
+        )

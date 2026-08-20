@@ -803,10 +803,20 @@ jobs:
                 # cannot propagate a failure whatever happens inside it.
                 (
                   set +e
-                  python -m mykronos.reachability .                     --commit-sha "$(git rev-parse HEAD)" > /tmp/reachability.json
+                  python -m mykronos.reachability . \
+                    --commit-sha "$(git rev-parse HEAD)" > /tmp/reachability.json
                   [ -s /tmp/reachability.json ] || exit 0
                   python -c 'import json; d = json.load(open("/tmp/reachability.json")); print("Import analysis:", d["files_analysed"], "Python file(s),", len(d["orphaned_paths"]), "orphaned.")'
-                  curl --fail --silent --show-error --max-time 60                     -X POST "$MYKRONOS_URL/api/ingest/reachability"                     -H "Authorization: Bearer $MYKRONOS_TOKEN"                     -H "Content-Type: application/json"                     -d @/tmp/reachability.json > /dev/null                     && echo "Reported to Mykronos."                     || echo "Could not report it; reachability stays unavailable."
+                  # urllib, not curl: curl is not in this image either, which
+                  # is how the fix for the jq problem still failed to deliver.
+                  # `sast` 79 ran the analysis, printed its summary, and then
+                  # went green having reported nothing -- true and useless.
+                  # Credentials are read from the environment inside python
+                  # rather than passed through the shell, so nothing has to be
+                  # quoted twice.
+                  python -c 'import os, urllib.request as u; body = open("/tmp/reachability.json", "rb").read(); req = u.Request(os.environ["MYKRONOS_URL"] + "/api/ingest/reachability", data=body, headers={"Authorization": "Bearer " + os.environ["MYKRONOS_TOKEN"], "Content-Type": "application/json"}); u.urlopen(req, timeout=60).read()' \
+                    && echo "Reported to Mykronos." \
+                    || echo "Could not report it; reachability stays unavailable."
                 ) || true
 
   # Replaces `mykronos-aegis.yml`. That workflow ran on `pull_request` and
