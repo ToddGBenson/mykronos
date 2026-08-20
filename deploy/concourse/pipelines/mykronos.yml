@@ -1220,12 +1220,28 @@ jobs:
                 # token without it must cost this one signal rather than the
                 # whole assessment. An empty ROLE means "not established",
                 # which the scorer treats as absent, not as ordinary access.
+                # `--show-error` is deliberately absent, unlike every other
+                # curl here. This call 401s on every build of this repository
+                # by design -- the App is not installed on it (D-007) and the
+                # endpoint needs push access -- and printing
+                # `curl: (22) ... error: 401` for a condition the next line
+                # handles teaches people that red text in this log means
+                # nothing. The outcome is stated plainly below instead.
                 ROLE=""
-                if curl --fail --silent --show-error --max-time 30                   -H "Accept: application/vnd.github.v3+json"                   "$API/collaborators/$AUTHOR/permission" > perm.json; then
+                if curl --fail --silent --max-time 30 \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "$API/collaborators/$AUTHOR/permission" > perm.json 2>/dev/null; then
                   # `role_name` distinguishes maintain from write; the older
                   # `permission` field collapses them, and maintain is exactly
                   # the case this signal is about.
                   ROLE=$(jq -r '.role_name // .permission // ""' perm.json)
+                fi
+                if [ -n "$ROLE" ]; then
+                  echo "Author role on this repository: $ROLE"
+                else
+                  echo "Author role not established (no push access to read it)." \
+                       "privilege_adjacent stays absent, which is not the same" \
+                       "as ordinary access."
                 fi
 
                 # The base branch is not fetched by the git resource, and the
