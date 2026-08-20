@@ -216,3 +216,103 @@ class TestRenderIssueBody:
     def test_ends_with_a_pointer_to_the_subject(self) -> None:
         body = _story().render_issue_body()
         assert "finding `finding-1`" in body
+
+
+class TestWhetherAFixExistsAtAll:
+    """"Patchwork has no fixer" and "nobody has a fix" are different, and the
+    story used to say only the first (D-076).
+
+    Sixteen critical Perl CVEs on TheHub read as a backlog for a week on that
+    ambiguity — I told the operator twice that one base-image rebase would
+    close them. Every one had `fixed_version: null`: Debian had shipped
+    nothing, and no rebuild, bump or fixer would have closed any of them.
+    """
+
+    def note(self, catalog, finding_id):
+        from mykronos.triage_story import _upstream_fix_note
+
+        return _upstream_fix_note(catalog, finding_id)
+
+    def seed(self, client, auth, run_compaction, catalog, *, fixed):
+        from tests.conftest import dependency_finding, post_findings, post_scan
+        from tests.test_onboarding import onboard
+
+        onboard(client, {"Authorization": "Bearer test-admin-token"})
+        payload = dependency_finding(rule_id="CVE-2026-13221", package_name="perl")
+        payload["package_version"] = "5.40.1-6"
+        payload["raw_finding_json"] = {"fixed_version": fixed} if fixed else {}
+        post_scan(client, auth, scan_run_id="fixnote")
+        post_findings(client, auth, [payload], scan_run_id="fixnote")
+        run_compaction()
+        return catalog.query(
+            "SELECT finding_id FROM findings WHERE rule_id = 'CVE-2026-13221'"
+        )[0][0]
+
+    def test_no_fixed_version_says_so_plainly(
+        self, client, auth, run_compaction, catalog
+    ) -> None:
+        finding_id = self.seed(client, auth, run_compaction, catalog, fixed=None)
+
+        note = self.note(catalog, finding_id)
+
+        assert "No upstream fix exists yet" in note
+        assert "perl" in note
+
+    def test_it_names_the_dispositions_that_are_actually_available(
+        self, client, auth, run_compaction, catalog
+    ) -> None:
+        """A developer handed an unfixable CVE needs to know that accepting
+        the risk *is* the action, not a way of dodging one."""
+        finding_id = self.seed(client, auth, run_compaction, catalog, fixed=None)
+
+        note = self.note(catalog, finding_id)
+
+        assert "accept the risk" in note
+        assert "cannot be remediated" in note
+
+    def test_a_real_fixed_version_is_reported_as_such(
+        self, client, auth, run_compaction, catalog
+    ) -> None:
+        finding_id = self.seed(client, auth, run_compaction, catalog, fixed="5.40.1-7")
+
+        note = self.note(catalog, finding_id)
+
+        assert "Upstream has a fix" in note
+        assert "5.40.1-7" in note
+
+    def test_it_says_nothing_when_there_is_no_package(
+        self, client, auth, run_compaction, catalog
+    ) -> None:
+        """A SAST finding has no package and no upstream. Appending "no
+        upstream fix exists" to a SQL-injection story would be false — that
+        one is entirely fixable, by the person reading it."""
+        from tests.conftest import finding_payload, post_findings, post_scan
+        from tests.test_onboarding import onboard
+
+        onboard(client, {"Authorization": "Bearer test-admin-token"})
+        post_scan(client, auth, scan_run_id="sastnote")
+        post_findings(
+            client, auth, [finding_payload(rule_id="CWE-89")], scan_run_id="sastnote"
+        )
+        run_compaction()
+        finding_id = catalog.query(
+            "SELECT finding_id FROM findings WHERE rule_id = 'CWE-89'"
+        )[0][0]
+
+        assert self.note(catalog, finding_id) == ""
+
+    def test_an_unknown_finding_says_nothing(self, catalog) -> None:
+        assert self.note(catalog, "not-a-finding") == ""
+
+    def test_it_reaches_the_story_body(
+        self, client, auth, run_compaction, catalog
+    ) -> None:
+        """The whole point: the sentence has to be in what a developer opens,
+        not only in a helper."""
+        from mykronos.triage_story import _suggested_fix
+
+        finding_id = self.seed(client, auth, run_compaction, catalog, fixed=None)
+
+        suggested = _suggested_fix(catalog, finding_id=finding_id, combination_id=None)
+
+        assert "No upstream fix exists yet" in suggested
