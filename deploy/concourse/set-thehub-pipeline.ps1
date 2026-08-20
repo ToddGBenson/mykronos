@@ -44,7 +44,21 @@
 param(
     [string]$Target = "mykronos",
     [string]$Pipeline = "thehub",
-    [string]$Branch = "develop",
+    # main, not develop: the delivery flow is PR -> merge to main -> this
+    # pipeline runs. develop is TheHub's direct-push integration branch, and
+    # watching it made every working commit race the local deploy.sh path -
+    # the dual-trigger confusion SDLC-7 #49216 flagged. Operator directive
+    # 2026-08-18.
+    #
+    # This lived only in the deployment checkout's working tree until now,
+    # which meant the repository said `develop` while the applied pipeline
+    # watched `main`, and nothing anywhere reconciled the two. Pass
+    # `-Branch develop` explicitly for a one-off scan of the integration
+    # branch.
+    [string]$Branch = "main",
+    # "true" restores the gate. See the vars block below for why it is off.
+    [ValidateSet("true", "false")]
+    [string]$OracleBlocking = "false",
     [string]$Concourse = "http://localhost:8080",
 
     # The host both environments run on, reached by IP for the same reason
@@ -231,6 +245,20 @@ try {
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
         "mykronos-ref: v4",
         "thehub-branch: $Branch",
+        # Whether Oracle's no_go stops the deploy.
+        #
+        # "false" since 2026-08-18, on the operator's explicit instruction. The
+        # gate was blocking correctly on a real finding rather than
+        # malfunctioning - score 100/100, 21 open critical findings - and
+        # TheHub still needed to ship. Until now this was a commented-out
+        # `exit 1` in the deployment checkout's working tree, so the repository
+        # said the gate blocked while the applied pipeline let every no_go
+        # through. A control that is switched off invisibly is worse than one
+        # switched off loudly.
+        #
+        # Set it back to "true" once the critical backlog is dispositioned.
+        # The job announces the override on every no_go either way.
+        "thehub-oracle-blocking: '$OracleBlocking'",
         "github-token: $ghToken",
         "thehub-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN')",
         "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')",
