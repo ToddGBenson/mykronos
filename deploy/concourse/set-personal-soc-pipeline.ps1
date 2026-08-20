@@ -83,6 +83,58 @@ if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 # Written to a temp file and deleted afterwards, matching the other two
 # set-pipeline scripts. Neither value here is secret; the shape is kept the
 # same so there is one way to do this rather than two.
+# -- PS-9: a credential manager, not ((vars)) in a file (spec 15 section 6) --
+#
+# Concourse stores pipeline configuration verbatim, so a secret written to the
+# vars file below is readable afterwards by anyone who can run
+# `fly get-pipeline`. This pipeline holds only the MinIO pair, and they are
+# team-scoped in Vault because all three pipelines use the same credential -
+# three copies of one secret is three things to rotate.
+$vaultToken = Read-EnvValue $stackEnv "CONCOURSE_VAULT_TOKEN" -Optional
+
+function Test-VaultSecret {
+    param([string]$Name, [string]$SecretScope = "pipeline")
+    if (-not $vaultToken) { return $false }
+    # Concourse's own lookup order: pipeline scope, then team scope.
+    $paths = if ($SecretScope -eq "team") {
+        @("concourse/main/$Name")
+    } else {
+        @("concourse/main/$Pipeline/$Name", "concourse/main/$Name")
+    }
+    foreach ($p in $paths) {
+        # Only presence is read; the value never leaves the container.
+        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+            mykronos-vault vault read -format=json $p 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    return $false
+}
+
+$fromVault = @()
+$fromFile = @()
+$secretVars = @()
+
+function Add-Secret {
+    param([string]$Name, [scriptblock]$Fallback, [string]$SecretScope = "pipeline")
+    if (Test-VaultSecret -Name $Name -SecretScope $SecretScope) {
+        $script:fromVault += $Name
+        return
+    }
+    $script:fromFile += $Name
+    $script:secretVars += ("{0}: '{1}'" -f $Name, (& $Fallback))
+}
+
+Add-Secret -Name "minio-access-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_USER' }
+Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD' }
+
+if ($fromVault) {
+    Write-Host "Resolving from Vault: $($fromVault -join ', ')" -ForegroundColor DarkGray
+}
+if ($fromFile) {
+    Write-Host "NOT in Vault, so written into the pipeline config where" -ForegroundColor Yellow
+    Write-Host "``fly get-pipeline`` can read them back: $($fromFile -join ', ')" -ForegroundColor Yellow
+}
+
 $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "personal-soc-vars-$(Get-Random).yml"
 try {
     @(
@@ -91,8 +143,6 @@ try {
         # the public servers set in compose and have never heard of `minio`.
         # Same reasoning, and the same address, as set-pipeline.ps1.
         "minio-endpoint: http://192.168.0.14:9000",
-        "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
-        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
         "netassess-bucket: $NetassessBucket",
         "netassess-max-age-days: $MaxScanAgeDays",
         "monitor-bucket: $MonitorBucket",
@@ -139,7 +189,7 @@ try {
         # that *references* a secret and one that *contains* it - `fly
         # get-pipeline` prints this config back to anyone on the team, and
         # everything written to $varsFile ends up in it.
-    ) | Set-Content -Path $varsFile -Encoding UTF8
+    ) + $secretVars | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan
     # Output discarded, and this is not tidiness. `fly set-pipeline` prints the

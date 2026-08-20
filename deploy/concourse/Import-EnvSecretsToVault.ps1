@@ -47,14 +47,37 @@ foreach ($file in @($stackEnv, $backendEnv)) {
     if (-not (Test-Path $file)) { throw "Missing $file" }
 }
 
-# Vault name -> which file and key holds it today. These are exactly the four
-# set-pipeline.ps1 reports as "NOT in Vault, so written into the pipeline config".
-$moves = @(
-    @{ Name = "mykronos-ingestion-token"; File = $backendEnv; Key = "MYKRONOS_CONCOURSE_TOKEN" }
-    @{ Name = "mykronos-gate-token";      File = $backendEnv; Key = "MYKRONOS_GATE_TOKEN" }
-    @{ Name = "minio-access-key";         File = $stackEnv;   Key = "MINIO_ROOT_USER" }
-    @{ Name = "minio-secret-key";         File = $stackEnv;   Key = "MINIO_ROOT_PASSWORD" }
-)
+# Vault name -> which file and key holds it, per pipeline. Keyed on the
+# pipeline because the first version was not: it hardcoded the mykronos set,
+# so `-Pipeline thehub` cheerfully wrote *mykronos's* ingestion token to
+# `concourse/main/thehub/mykronos-ingestion-token` - a credential in a scope
+# that must never resolve it, created by the tool meant to reduce exposure.
+#
+# `Scope = "team"` for anything more than one pipeline uses. Three copies of
+# one secret is three things to rotate and two chances to miss one.
+$catalogue = @{
+    "mykronos" = @(
+        @{ Name = "mykronos-ingestion-token"; File = $backendEnv; Key = "MYKRONOS_CONCOURSE_TOKEN" }
+        @{ Name = "mykronos-gate-token";      File = $backendEnv; Key = "MYKRONOS_GATE_TOKEN"; Scope = "team" }
+        @{ Name = "minio-access-key";         File = $stackEnv;   Key = "MINIO_ROOT_USER"; Scope = "team" }
+        @{ Name = "minio-secret-key";         File = $stackEnv;   Key = "MINIO_ROOT_PASSWORD"; Scope = "team" }
+    )
+    "thehub" = @(
+        @{ Name = "thehub-ingestion-token"; File = $backendEnv; Key = "MYKRONOS_THEHUB_CONCOURSE_TOKEN" }
+        @{ Name = "mykronos-gate-token";    File = $backendEnv; Key = "MYKRONOS_GATE_TOKEN"; Scope = "team" }
+        @{ Name = "minio-access-key";       File = $stackEnv;   Key = "MINIO_ROOT_USER"; Scope = "team" }
+        @{ Name = "minio-secret-key";       File = $stackEnv;   Key = "MINIO_ROOT_PASSWORD"; Scope = "team" }
+    )
+    "personal-soc" = @(
+        @{ Name = "minio-access-key"; File = $stackEnv; Key = "MINIO_ROOT_USER"; Scope = "team" }
+        @{ Name = "minio-secret-key"; File = $stackEnv; Key = "MINIO_ROOT_PASSWORD"; Scope = "team" }
+    )
+}
+
+if (-not $catalogue.ContainsKey($Pipeline)) {
+    throw "No secret catalogue for pipeline '$Pipeline'. Known: $($catalogue.Keys -join ', ')"
+}
+$moves = $catalogue[$Pipeline]
 
 function Read-EnvValue {
     param([string]$Path, [string]$Key)
@@ -119,7 +142,12 @@ if (-not $Apply) {
 }
 
 foreach ($move in $moves) {
-    $path = "concourse/$Team/$Pipeline/$($move.Name)"
+    $scope = if ($move.Scope) { $move.Scope } else { "pipeline" }
+    $path = if ($scope -eq "team") {
+        "concourse/$Team/$($move.Name)"
+    } else {
+        "concourse/$Team/$Pipeline/$($move.Name)"
+    }
     $value = Read-EnvValue $move.File $move.Key
 
     if (-not $value) {
