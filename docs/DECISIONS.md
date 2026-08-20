@@ -1399,6 +1399,8 @@ provenance the SBOM and the wheel-per-commit exist to establish.
 
 ## D-046 — The platform had ten capabilities and the pipelines ran eight
 
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
+
 **Status:** Decided, implemented
 **Spec:** [04 §3](../specs/04-scanner-workflows.md), [15 §3](../specs/15-concourse-pipeline.md), [16 §5](../specs/16-thehub-delivery-pipeline.md)
 
@@ -1443,6 +1445,8 @@ files were checked".
 
 ## D-047 — Publishing by SHA is what made the Oracle gate mean anything
 
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
+
 **Status:** Decided, implemented
 **Spec:** [15 §3](../specs/15-concourse-pipeline.md)
 
@@ -1485,6 +1489,8 @@ deploying should not have to look it up.
 ---
 
 ## D-048 — Answering a scanner made the finding count go up
+
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
 
 **Status:** Decided, implemented
 **Spec:** [04 §8](../specs/04-scanner-workflows.md), [05 §7](../specs/05-datalake.md)
@@ -1713,6 +1719,8 @@ hour at 2 CPUs starves nobody.
 
 ## D-046 — Test results are ScanRuns with no findings, not a new capability
 
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
+
 **Status:** Decided
 **Spec:** [04 §3](../specs/04-scanner-workflows.md), [05 §3](../specs/05-datalake.md)
 **Story:** PIP-1
@@ -1753,6 +1761,8 @@ risk score stays about risk.
 ---
 
 ## D-047 — "AI" is four concerns; three become a capability and one stays where it is
+
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
 
 **Status:** Decided
 **Spec:** [04 §3](../specs/04-scanner-workflows.md), [06 §2](../specs/06-aegis-integration.md)
@@ -1801,6 +1811,8 @@ tool for ever.
 ---
 
 ## D-048 — The Oracle gate is advisory, and that is a problem to solve
+
+*Two entries share this number — a numbering collision from 2026-08-13, not a supersession. Both stand. See [D-082](#d-082--two-sessions-took-the-same-decision-number).*
 
 **Status:** Resolved — option 2 chosen and implemented.
 **Spec:** [09 §6](../specs/09-oracle-risk-decision-engine.md), [15 §3](../specs/15-concourse-pipeline.md)
@@ -3059,3 +3071,45 @@ counts. The reconciliation here was manual and found by accident, while
 looking for a `.env`. Worth a check that compares the applied pipeline config
 against the committed file — `fly get-pipeline` can answer it, once CNC-2 has
 moved the last credentials into Vault so its output is safe to read.
+
+---
+
+## D-082 — Two sessions took the same decision number
+
+**Status:** Decided and shipped
+
+`D-046`, `D-047` and `D-048` each appear **twice** in this log, with entirely
+different content. Both sets are real decisions, both were implemented, and
+both are cited from live code and specs today.
+
+| | First (18:13, 2026-08-13) | Second (21:36, same day) |
+|---|---|---|
+| D-046 | The platform had ten capabilities and the pipelines ran eight | Test results are ScanRuns with no findings |
+| D-047 | Publishing by SHA is what made the Oracle gate mean anything | "AI" is four concerns; three become a capability |
+| D-048 | Answering a scanner made the finding count go up | The Oracle gate is advisory, and that is a problem |
+
+Two sessions three hours apart, each appending to the end of the file, each
+taking the next number it could see. Neither was wrong at the time it looked.
+
+**Nothing is renumbered, and that is the decision.** The obvious tidy-up —
+give one set fresh numbers — is worse than the collision. Roughly thirty
+citations exist across `backend/`, `deploy/` and `specs/`, and they do *not*
+all mean the same set: `specs/15 §3` and `specs/16 §3` cite the first D-046
+for the checkov lane, while `schemas.py`, `ci.py`, `capabilities.py`,
+`registry.py` and a dozen spec rows cite the second for the quality stages.
+Repointing them means thirty individual judgement calls against the documents
+that are this project's contract, and a citation that points confidently at
+the wrong entry is worse than one a reader has to disambiguate. This log is
+also append-only by its own header.
+
+So each of the six headings now carries a line saying the number is shared and
+linking here. A reader who lands on either entry learns immediately that there
+is another, and which is which.
+
+**What stops the next one.** `tests/test_decisions_log.py` asserts every
+`## D-nnn` heading is unique. It fails on the working tree today unless the
+three known collisions are in its allow-list, which is where they are recorded
+in code as well as prose — a new collision fails the `unit` lane, an old one
+does not. That is the same shape as `check_pinned_ref.py`: the rule is worth
+nothing without something that notices when it breaks, and this one broke
+silently for a week.
