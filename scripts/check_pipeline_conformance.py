@@ -9,7 +9,8 @@ asking a question about the parsed pipeline — does this job have a preflight
 step, does that task carry a timeout — and each maps to one numbered rule with
 the failure it prevents written out in the standard.
 
-Six of the ten rules are machine-checkable and are checked here:
+Six of the eleven rules are machine-checkable and are checked here; PS-11 needs a
+running Concourse, so it lives in check_applied_pipelines.py:
 
     PS-2   a job that talks to Mykronos probes it first
     PS-3   a scanner's exit code cannot skip the upload
