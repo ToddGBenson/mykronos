@@ -12,6 +12,7 @@ import {
   type FindingsQuery,
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
+import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { SscsTab } from "@/components/sscs";
@@ -32,6 +33,7 @@ import {
   getOpenFindings,
   getRemediation,
   getRepo,
+  getReachability,
   getRiskProfile,
   getScanHealth,
   getScanRunTrend,
@@ -427,9 +429,10 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
   // not on a settings page somewhere else. Fetched alongside rather than
   // nested, so a profile that fails to load does not take the decisions with
   // it.
-  const [result, profile] = await Promise.all([
+  const [result, profile, reachability] = await Promise.all([
     getDecisions(repoId),
     getRiskProfile(repoId),
+    getReachability(repoId),
   ]);
   if (!result.ok) {
     return <ErrorPanel title="Decisions unavailable" detail={result.error} />;
@@ -441,6 +444,17 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
       ) : (
         <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
           {profile.error}
+        </p>
+      )}
+      {/* The other Oracle input recorded outside the score itself, and the
+          only one that lowers it. Beside the profile for the same reason the
+          profile is here: an input you cannot inspect is one people stop
+          believing. A failure to load it does not take the decisions. */}
+      {reachability.ok ? (
+        <ReachabilityCard report={reachability.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+          {reachability.error}
         </p>
       )}
       <DecisionsTab

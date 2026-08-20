@@ -2797,3 +2797,31 @@ A companion test asserts the requirement list matches every `python -m
 mykronos.*` call across all three pipelines and every workflow template. It
 earned itself on its first run by finding `mykronos.ai_pin_check`, which the
 manual sweep of the same question had missed.
+
+## D-075 — "Done" needs somewhere a person can look
+
+Spec 19 §2.1 was marked Done with the analysis built, ingested, stored,
+scored, weighted in policy and tested — and no way for anyone to see the
+result. Mid-session I wrote "now surface reachability in the frontend",
+grepped, found nothing existed, and updated the status table instead of
+building it. The status was wrong and the omission was mine.
+
+`GET /api/repos/{repo_id}/reachability` and a card on the Risk Decision tab
+close it. Three details worth keeping:
+
+- **Absent is a 200, not a 404.** "No analysis has run" is a real answer about
+  the repository; a 404 makes the caller guess between that and "no such
+  repo".
+- **The card refuses to conflate the two empty states.** Never-analysed and
+  analysed-with-nothing-orphaned both show no files, and Oracle scores them
+  differently, so they get different renderings.
+- **It sits beside the risk profile**, the other Oracle input recorded outside
+  the score. This one *lowers* scores, which is exactly why it needs to be
+  inspectable: a penalty gets disputed when it is wrong, a discount never
+  does, because the finding it quietened is the one nobody looked at twice.
+
+The general lesson, and the reason this is a decision rather than a commit
+message: a capability that produces data no interface exposes is not done, and
+a status table is the easiest place in this repository to write something
+untrue. Two prior entries (D-051 on the stale pin, D-071 on the digest) were
+found the same way — by using the thing rather than by reading the code.

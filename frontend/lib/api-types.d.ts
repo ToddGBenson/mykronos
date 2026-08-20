@@ -1235,6 +1235,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/repos/{repo_id}/reachability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Reachability
+         * @description The stored import analysis for one repository (spec 19 §2.1).
+         *
+         *     Readable by any authenticated principal, like the risk profile beside it
+         *     and for the same reason: somebody reading a risk decision should be able
+         *     to see the inputs that moved it, and this one *lowers* scores — a
+         *     discount nobody can inspect is worse than one nobody applies.
+         *
+         *     The absent case is a 200 with `analysed: false`, not a 404. No analysis
+         *     having run is a real answer about the repository, and a 404 would make a
+         *     caller guess between "this repo does not exist" and "nothing has looked".
+         */
+        get: operations["get_reachability_api_repos__repo_id__reachability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/{repo_id}/risk-profile": {
         parameters: {
             query?: never;
@@ -2435,6 +2464,49 @@ export interface components {
             /**
              * Note
              * @default Import reachability for Python only, and only 'does anything import this file' — not whether a function is called (spec 19 §2.1). A file not listed here is not proven reachable; it is simply not proven orphaned.
+             */
+            note: string;
+        };
+        /**
+         * ReachabilityOut
+         * @description Which files nothing in the repository imports (spec 19 §2.1).
+         *
+         *     `analysed` is the field that carries the weight. False means the analysis
+         *     has never run for this repository, which is not the same as it having run
+         *     and found nothing — the second is a result, the first is a gap, and
+         *     Oracle reports them differently (`available: false` versus a real zero).
+         */
+        ReachabilityOut: {
+            /** Analysed */
+            analysed: boolean;
+            /**
+             * Language
+             * @default python
+             */
+            language: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Files Analysed
+             * @default 0
+             */
+            files_analysed: number;
+            /**
+             * Files Unparseable
+             * @default 0
+             */
+            files_unparseable: number;
+            /** Orphaned Paths */
+            orphaned_paths?: string[];
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Note
+             * @description Served with the data so a consumer cannot over-read it.
+             * @default Import reachability only, and Python only: whether anything in this repository imports the file — never whether the code runs. A file not listed here is not proven reachable, only not proven orphaned. A finding in an orphaned file is discounted, never dismissed (spec 19 §2.1).
              */
             note: string;
         };
@@ -4764,6 +4836,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_reachability_api_repos__repo_id__reachability_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReachabilityOut"];
                 };
             };
             /** @description Validation Error */

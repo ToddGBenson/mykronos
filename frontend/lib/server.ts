@@ -586,3 +586,26 @@ export async function getRemediationDigest(): Promise<Result<RemediationDigest>>
     return failure(error);
   }
 }
+
+export type Reachability =
+  paths["/api/repos/{repo_id}/reachability"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * The stored import analysis (spec 19 §2.1). `analysed: false` means nothing
+ * has looked — a different answer from having looked and found nothing, and
+ * the card renders them differently.
+ */
+export async function getReachability(repoId: string): Promise<Result<Reachability>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/repos/{repo_id}/reachability",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the import analysis") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
