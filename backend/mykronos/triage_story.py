@@ -296,13 +296,64 @@ def _suggested_fix(catalog: Catalog, *, finding_id: str | None, combination_id: 
             "WHERE toxic_combination_id = ? ORDER BY created_at DESC LIMIT 1",
             [combination_id],
         )
+    upstream = _upstream_fix_note(catalog, finding_id)
     if not rows:
         return (
             "no_fix_available — Patchwork has not run on this repository, "
-            "or has not reached it yet."
+            "or has not reached it yet." + upstream
         )
     rationale, stage = rows[0]
-    return str(rationale) if rationale else f"no_fix_available (pipeline stage: {stage})"
+    verdict = str(rationale) if rationale else f"no_fix_available (pipeline stage: {stage})"
+    return verdict + upstream
+
+
+def _upstream_fix_note(catalog: Catalog, finding_id: str | None) -> str:
+    """Whether a fixed version exists at all, per the scanner.
+
+    Patchwork's `no_fix_available` means *this platform* has no fixer for it,
+    and a developer reads that as unassigned work. For a distribution package
+    it usually means something else entirely: the scanner reported no fixed
+    version, so the upstream maintainer has not shipped one and nobody can
+    remediate it today at any price.
+
+    Sixteen critical Perl CVEs on TheHub read as a backlog for a week on that
+    ambiguity. All sixteen had `fixed_version: null` — no rebuild, no bump and
+    no fixer would have closed any of them.
+
+    Silent when the finding names no package or the scanner recorded a fixed
+    version: this is only here to name the case where remediation is not
+    available, never to imply one exists.
+    """
+    if finding_id is None:
+        return ""
+    rows = catalog.query(
+        "SELECT package_name, package_version, raw_finding_json FROM findings "
+        "WHERE finding_id = ? LIMIT 1",
+        [finding_id],
+    )
+    if not rows:
+        return ""
+    package, version, raw = rows[0]
+    if not package:
+        return ""
+    try:
+        fixed = (json.loads(raw) if raw else {}).get("fixed_version")
+    except (TypeError, json.JSONDecodeError):
+        return ""
+
+    if fixed:
+        return (
+            f"\n\nUpstream has a fix: `{package}` {version or '?'} → "
+            f"`{fixed}`. Rebuilding or bumping to that version closes this."
+        )
+    return (
+        f"\n\n**No upstream fix exists yet** for `{package}` {version or ''}"
+        " — the scanner reported no fixed version, so this cannot be"
+        " remediated by rebuilding, bumping, or any patch this platform could"
+        " write. The available dispositions are to accept the risk with a"
+        " reason, or to wait for the maintainer and let the next scan close"
+        " it automatically."
+    )
 
 
 def _oracle_context(catalog: Catalog, repo_full_name: str, severity: str) -> OracleContext | None:

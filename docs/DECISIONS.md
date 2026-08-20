@@ -2825,3 +2825,39 @@ message: a capability that produces data no interface exposes is not done, and
 a status table is the easiest place in this repository to write something
 untrue. Two prior entries (D-051 on the stale pin, D-071 on the digest) were
 found the same way — by using the thing rather than by reading the code.
+
+## D-076 — "No fixer for it" and "no fix exists" are different sentences
+
+I told the operator twice that TheHub's sixteen critical Perl CVEs were one
+base-image rebase away from closing, and offered to build a base-image fixer
+to do it. Both were wrong, and the data said so the moment anyone looked:
+every one of the sixteen carries `fixed_version: null`. Across all 256 of
+TheHub's open container findings, 253 have no fixed version. Debian has
+shipped no patch. No rebuild, no bump, and no fixer this platform could write
+closes any of them.
+
+The inference that misled me was reasonable and unchecked: four CVEs across
+`perl`, `perl-base`, `perl-modules-5.40` and `libperl5.40` are one source
+package, therefore one upstream bump fixes all sixteen. True, if a bump
+exists. Nobody asked whether one did.
+
+The platform made the same conflation. `_suggested_fix` reported Patchwork's
+verdict, and Patchwork's `no_fix_available` means *this platform has no
+fixer* — which a developer reads as unassigned work. For a distribution
+package it usually means the maintainer has not shipped a patch, and the
+distinction is the difference between a task and a wait.
+
+Stories now say which. When the scanner recorded a fixed version, the story
+names it and says a rebuild closes it. When it did not, the story says so
+outright and names the dispositions that actually exist — accept the risk with
+a reason, or wait and let the next scan close it automatically. Silent when
+the finding names no package, because appending "no upstream fix exists" to a
+SQL-injection story would be false; that one is entirely fixable by the person
+reading it.
+
+**The base-image fixer was not built.** With 253 of 256 findings having
+nothing to bump to, it would have been a fixer with nothing to fix. What the
+data argues for instead is scoring: sixteen unfixable criticals contribute 177
+points and pin the repository at 100/100, so the gate is currently measuring
+Debian's release schedule rather than anything the team controls. That is a
+policy change and is not made here.
