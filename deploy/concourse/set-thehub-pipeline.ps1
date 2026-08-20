@@ -215,15 +215,21 @@ $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-vars-$(Get-Rando
 try {
     $vars = @(
         "mykronos-url: http://192.168.0.14:8100",
-        # v3 cut deliberately, the second time this pin has gone stale in a
-        # way that mattered (D-051 at 53 commits, D-074 at 61). Still a chosen
-        # commit rather than a floating tag: pinning is what makes a scan
-        # reproducible, and the cost of pinning is remembering to move it.
+        # v4, cut for the pipeline standard (D-078), and the first bump made
+        # *before* anything broke: pin-check named `mykronos.junit_stage` as
+        # missing the moment the lanes started calling it. The two before it
+        # were found by a human noticing a lane behaving oddly days later
+        # (D-051 at 53 commits, D-074 at 61), which is what that check exists
+        # to replace.
+        #
+        # Still a chosen commit rather than a floating tag: pinning is what
+        # makes a scan reproducible, and the cost of pinning is remembering to
+        # move it. v3 is untouched and stays where it is.
         #
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
-        # flags the pipelines pass are not in it. When it fails, cut v4 here.
-        "mykronos-ref: v3",
+        # flags the pipelines pass are not in it. When it fails, cut the next tag here.
+        "mykronos-ref: v4",
         "thehub-branch: $Branch",
         "github-token: $ghToken",
         "thehub-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN')",
