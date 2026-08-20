@@ -84,6 +84,26 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "ai-checks": "ai",
     "functional": "functional",
     "demo-and-dast": ("functional", "dast"),
+    # PS-1. These four ran green on every build and reported nothing, so the
+    # cross-check had nothing to compare and said nothing about them. They
+    # report now, and a job that reports has to be checked or the reporting
+    # buys only half of what it should.
+    #
+    # `lint-and-types`, `frontend` and `api-inventory` all land under `qa`
+    # alongside `qa-spec-links`: the capability has one registered adapter
+    # (`adapters/registry.py`), quality stages carry no findings (D-046), and
+    # so several runs per commit is a richer answer rather than a collision.
+    "lint-and-types": "qa",
+    "frontend": "qa",
+    "api-inventory": "qa",
+    "prompt-evals": "ai",
+    # thehub's dast lanes, which were never named here. `functional-dast`
+    # runs the Playwright suite through ZAP's proxy and then scans - one
+    # build, two uploads, each answering for itself (spec 15 §4a.1).
+    "dast-demo": "dast",
+    "dast-prod": "dast",
+    "functional-dast": ("functional", "dast"),
+    "ai-models": "ai",
 }
 
 #: How far a successful build may lead its capability's newest scan run before

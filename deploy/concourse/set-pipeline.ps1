@@ -44,6 +44,84 @@ foreach ($file in @($stackEnv, $backendEnv)) {
     if (-not (Test-Path $file)) { throw "Missing $file" }
 }
 
+# -- PS-9: a credential manager, not ((vars)) in a file (spec 15 section 6) --
+#
+# Concourse stores pipeline configuration verbatim, so every secret written to
+# the vars file below is readable afterwards by anyone who can run
+# `fly get-pipeline`. Vault has been wired into this Concourse since
+# 2026-08-13 (CONCOURSE_VAULT_URL in docker-compose.yml) and thehub already
+# resolves two credentials through it; this pipeline resolved none, so its
+# ingestion token, its gate token and the MinIO keys were all in the config.
+#
+# Each credential is now probed in Vault first. Present means it is left out
+# of the vars file entirely and Concourse resolves it at egress; absent means
+# it falls back to the file and the script says so by name. That way moving a
+# credential is one `vault-secret.ps1 set` and a re-apply, with no edit here
+# and no window where the pipeline cannot be applied.
+$vaultToken = Read-EnvValue $stackEnv "CONCOURSE_VAULT_TOKEN" -Optional
+function Test-VaultSecret {
+    param([string]$Name, [string]$Scope = "pipeline")
+    if (-not $vaultToken) { return $false }
+    # `concourse/<team>/<pipeline>/<name>` then `concourse/<team>/<name>` is
+    # Concourse's own lookup order, so probing the same two paths is the only
+    # honest way to answer "will the ((var)) resolve".
+    $paths = if ($Scope -eq "team") {
+        @("concourse/main/$Name")
+    } else {
+        @("concourse/main/$Pipeline/$Name", "concourse/main/$Name")
+    }
+    foreach ($path in $paths) {
+        # Only presence is read. The value never leaves the container, never
+        # reaches this process, and therefore never reaches the terminal.
+        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+            mykronos-vault vault read -format=json $path 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    return $false
+}
+
+# name -> how to produce it if Vault does not have it. Every one of these is a
+# secret; anything non-secret stays an ordinary line in the vars file below.
+$fallbacks = [ordered]@{
+    "mykronos-ingestion-token" = { Read-EnvValue $backendEnv "MYKRONOS_CONCOURSE_TOKEN" }
+    "mykronos-gate-token"      = { Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN" }
+    "minio-access-key"         = { Read-EnvValue $stackEnv "MINIO_ROOT_USER" }
+    "minio-secret-key"         = { Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD" }
+}
+
+$fromVault = @()
+$fromFile = @()
+$secretVars = @()
+foreach ($name in $fallbacks.Keys) {
+    if (Test-VaultSecret -Name $name) {
+        $fromVault += $name
+    } else {
+        $fromFile += $name
+        $secretVars += "${name}: $(& $fallbacks[$name])"
+    }
+}
+
+if ($fromVault) {
+    Write-Host "Resolving from Vault: $($fromVault -join ', ')" -ForegroundColor DarkGray
+}
+if ($fromFile) {
+    Write-Host "NOT in Vault, so written into the pipeline config where" -ForegroundColor Yellow
+    Write-Host "``fly get-pipeline`` can read them back: $($fromFile -join ', ')" -ForegroundColor Yellow
+    Write-Host "  Move one:  .\vault-secret.ps1 set <name> -Scope pipeline -Pipeline $Pipeline" -ForegroundColor DarkGray
+    Write-Host "  Sealed?    .\vault-unseal.ps1" -ForegroundColor DarkGray
+}
+
+# Slack is a bot token plus a channel at team scope, resolved from Vault the
+# way thehub and personal-soc already resolve them - so this host has one
+# Slack identity and no config contains its credential. The notifier checks
+# for empty and skips, so a sealed Vault degrades to "no notification" rather
+# than to a second failure on top of the one it was reporting.
+if (Test-VaultSecret -Name "slack-bot-token" -Scope "team") {
+    Write-Host "Slack alerts resolve from Vault (concourse/main/slack-bot-token)." -ForegroundColor DarkGray
+} else {
+    Write-Host "Slack credential not readable in Vault: every notifier will skip." -ForegroundColor Yellow
+}
+
 $user = Read-EnvValue $stackEnv "CONCOURSE_LOCAL_USER"
 $password = Read-EnvValue $stackEnv "CONCOURSE_LOCAL_PASSWORD"
 
@@ -71,13 +149,13 @@ try {
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut v4 here.
         "mykronos-ref: v3",
-        "mykronos-ingestion-token: $(Read-EnvValue $backendEnv 'MYKRONOS_CONCOURSE_TOKEN')",
-        "mykronos-gate-token: $(Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN')",
+        # The branch the pipeline scans, which every upload now reports rather
+        # than each one naming the default branch as a literal (PS-6). One
+        # place to change if this pipeline is ever pointed somewhere else.
+        "scanned-branch: main",
         # MinIO is on the compose network, so the task container reaches it by
         # service name rather than through the host.
         "minio-endpoint: http://192.168.0.14:9000",
-        "minio-access-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_USER')",
-        "minio-secret-key: $(Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD')",
         # Host IP for the same reason MinIO uses one: garden task containers
         # cannot resolve Docker service names.
         "registry: 192.168.0.14:5000",
@@ -86,17 +164,18 @@ try {
         # inside a task on this worker. Reached by host IP for the same
         # reason MinIO and the registry are: a garden task container cannot
         # resolve a Docker service name.
-        "demo-host: 192.168.0.14",
-        # Optional, and quoted so an unset webhook parses as an empty string
-        # rather than YAML null. The notify hook checks for empty and exits 0.
+        "demo-host: 192.168.0.14"
+        # slack-webhook-url used to be written here. It is not any more: the
+        # notifier posts through chat.postMessage with a bot token in an
+        # Authorization header, which Vault can substitute, where a webhook's
+        # secret sits in the URL path and cannot be (PS-9). Both values resolve
+        # at team scope, shared with thehub and personal-soc.
         #
         # Concourse alerts on jobs that failed before they could report; the
         # alerting that matters -- Oracle refusing a commit, a scan recorded as
         # failed, a batch of criticals -- comes from Mykronos itself, which is
         # the only place that can see it whichever CI produced it (spec 16 §14).
-        # Set MYKRONOS_SLACK_WEBHOOK_URL in backend/.env for that half.
-        "slack-webhook-url: '$(Read-EnvValue $stackEnv 'SLACK_WEBHOOK_URL' -Optional)'"
-    ) | Set-Content -Path $varsFile -Encoding UTF8
+    ) + $secretVars | Set-Content -Path $varsFile -Encoding UTF8
 
     Write-Host "Applying the pipeline..." -ForegroundColor Cyan
     # Output discarded, and this is not tidiness. `fly set-pipeline` prints the
