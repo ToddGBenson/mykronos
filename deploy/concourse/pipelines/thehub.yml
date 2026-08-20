@@ -1812,6 +1812,10 @@ jobs:
           MYKRONOS_URL: ((mykronos-url))
           MYKRONOS_TOKEN: ((thehub-ingestion-token))
           MYKRONOS_GATE_TOKEN: ((mykronos-gate-token))
+          # Whether a no_go stops the deploy. Anything other than "true" lets
+          # it through and says so, loudly, in the build log and in Slack.
+          # See the gate body below for why this is a var and not an edit.
+          ORACLE_BLOCKING: ((thehub-oracle-blocking))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -1844,14 +1848,50 @@ jobs:
                 jq -r '.reasoning // empty' decision.json
 
                 if [ "$(jq -r '.recommendation' decision.json)" = "no_go" ]; then
+                  SCORE=$(jq -r '.overall_risk_score' decision.json)
+                  SHORT=$(git rev-parse --short HEAD)
+
+                  # -- The gate can be turned off, and it says so ------------
+                  #
+                  # `((thehub-oracle-blocking))`, set in
+                  # set-thehub-pipeline.ps1. It was `false` from 2026-08-18 on
+                  # the operator's explicit instruction: the gate was blocking
+                  # correctly on a real finding rather than malfunctioning -
+                  # score 100/100, 21 open critical findings - and TheHub still
+                  # needed to ship.
+                  #
+                  # A var rather than the commented-out `exit 1` this replaces.
+                  # That edit lived only in the deployment checkout's working
+                  # tree, so the repository said the gate blocked while the
+                  # applied pipeline let every no_go through, and nothing
+                  # anywhere reconciled the two. A disabled control that is
+                  # invisible is worse than one that is switched off loudly:
+                  # this is the same failure the notifier had (D-079) and the
+                  # same one the coverage cross-check exists to catch.
+                  #
+                  # Turning it back on is one word in one file. Do that once
+                  # the critical backlog is dispositioned.
+                  if [ "${ORACLE_BLOCKING:-true}" != "true" ]; then
+                    printf '*TheHub / Oracle: no_go* - risk score %s on commit `%s`. Gate is NON-BLOCKING, so this deployed anyway.' \
+                      "$SCORE" "$SHORT" > ../notify/message.txt
+
+                    echo "=================================================="
+                    echo "ORACLE SAYS no_go AND THE GATE IS NON-BLOCKING."
+                    echo "Score ${SCORE}/100 on ${SHORT}. This would have"
+                    echo "stopped the deploy; it is proceeding because"
+                    echo "thehub-oracle-blocking is not 'true'."
+                    echo ""
+                    echo "This green tick is NOT a passing risk decision."
+                    echo "=================================================="
+                    exit 0
+                  fi
+
                   # Written for the on_failure hook, which otherwise knows
                   # only the job name. A portfolio risk score describes the
                   # repository, not a person, so it is safe to broadcast -
                   # unlike anything the insider lane produces.
                   printf '*TheHub / Oracle: no_go* - risk score %s on commit `%s`. Nothing is deployed.' \
-                    "$(jq -r '.overall_risk_score' decision.json)" \
-                    "$(git rev-parse --short HEAD)" \
-                    > ../notify/message.txt
+                    "$SCORE" "$SHORT" > ../notify/message.txt
 
                   echo "Oracle says no_go - nothing is deployed."
                   exit 1

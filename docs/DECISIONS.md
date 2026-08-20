@@ -3006,3 +3006,56 @@ and never by widening what Concourse trusts.
 
 Concourse now covers more of TheHub than Actions ever did: `iac`, `cloud`,
 `dast`, `unit`, `functional`, `ai` and — as of this change — `qa`.
+
+---
+
+## D-081 — Two live overrides existed only in a working tree
+
+**Status:** Decided and shipped
+
+The pipelines that actually run are applied from a **second clone** of this
+repository — `PDSO2/`, which is where the Concourse stack's compose project
+lives. It was eighteen commits behind `main` and carried uncommitted changes
+to five files. Most were hand-copied versions of things that had since landed
+upstream. Two were not, and neither existed anywhere in git:
+
+- **TheHub's Oracle gate was disabled.** `exit 1` on a `no_go` was commented
+  out on 2026-08-18 at the operator's explicit instruction. The gate was
+  blocking correctly on a real finding rather than malfunctioning — score
+  100/100, 21 open critical findings — and TheHub still needed to ship.
+- **TheHub's pipeline watched `main`, not `develop`.** `$Branch` was changed
+  in the same session, because watching the integration branch made every
+  direct push race the local `deploy.sh` path (SDLC-7 #49216).
+
+Both are reasonable operational calls. Neither was reviewable, and that is the
+decision being recorded.
+
+**Why this is the same bug three times over.** The repository said the gate
+blocked; the applied pipeline let every `no_go` through. The repository said
+`develop`; the pipeline watched `main`. Nothing reconciled either pair, and
+the only way to find out was to run `git status` in a directory nobody would
+think to open. This is precisely what D-079 found in the notifier — a control
+that had never once fired, invisible because its failure looked like the
+failure it was reporting — and precisely what the coverage cross-check (spec
+15 §4a.1) exists to catch for scan results. A disabled security control is the
+worst thing yet to hold in an unversioned working tree.
+
+**What changed.** The branch default is now `main` in the committed script,
+with the SDLC-7 rationale next to it. The gate is now controlled by
+`((thehub-oracle-blocking))`, set from `set-thehub-pipeline.ps1`, and the job
+announces the override on every `no_go` — in the build log and in the Slack
+message, which now says the deploy proceeded rather than that nothing was
+deployed. Restoring the gate is one word in one file, or
+`-OracleBlocking true` on the command line.
+
+A var rather than a restored `exit 1`, because the override is still wanted:
+the 21 criticals are not dispositioned. What was wrong was never the decision
+to ship — it was that a person reading this repository could not learn the
+decision had been made.
+
+**The general lesson.** A deployment checkout that drifts from the repository
+is a second source of truth, and the pipeline it applies is the one that
+counts. The reconciliation here was manual and found by accident, while
+looking for a `.env`. Worth a check that compares the applied pipeline config
+against the committed file — `fly get-pipeline` can answer it, once CNC-2 has
+moved the last credentials into Vault so its output is safe to read.
