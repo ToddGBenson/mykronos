@@ -59,6 +59,30 @@
 # The git credential is a GitHub App installation token and expires after an
 # hour (CNC-2). Re-run set-thehub-pipeline.ps1 to refresh it.
 
+# The UI, grouped by the delivery stages the header describes. Twenty jobs on
+# one flat wall is not a pipeline anybody reads, and this one runs all the way
+# to production - which stage a job belongs to is the first thing a person
+# needs from it. Jobs appear in more than one group where they genuinely belong
+# to both.
+#
+# Every job is in at least one group on purpose: Concourse hides any job that
+# is in none, and a hidden lane is a lane nobody notices has gone red.
+groups:
+  - name: quality
+    jobs: [unit, qa, prompt-evals]
+  - name: security
+    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture]
+  - name: build
+    jobs: [build, containers]
+  - name: demo
+    jobs: [deploy-demo, api-inventory, dast-demo, functional-dast]
+  - name: gate
+    jobs: [oracle-gate, insider]
+  - name: prod
+    jobs: [deploy-prod, dast-prod]
+  - name: remediation
+    jobs: [remediate]
+
 resource_types:
   - name: registry-image
     type: registry-image
@@ -178,6 +202,41 @@ anchors:
     # file is rendered; asking git for what it cannot know was the mistake.
     SCANNED_BRANCH: ((thehub-branch))
 
+  # -- PS-2: fail before scanning, not after (spec 04 SS2, spec 05 SS4) ----
+  #
+  # The GitHub Actions skeleton every onboarded repository gets
+  # (`workflow-templates/_base.yml.j2`) probes the ingestion API before it runs
+  # a scanner: better to stop in ten seconds than scan for twenty minutes and
+  # find at upload time that the results have nowhere to go. Not one Concourse
+  # job did this, and this is the pipeline where it costs most - `unit` is
+  # capped at sixty minutes and `functional-dast` at a hundred and twenty.
+  #
+  # A failure here is a real failure, not a skip. A scan whose results cannot
+  # land is the `never_reported` state the coverage cross-check exists to catch
+  # (spec 15 SS4a.1), and producing one deliberately is worse than not starting.
+  preflight: &preflight
+    task: preflight
+    timeout: 2m
+    params: *mykronos_env
+    config:
+      platform: linux
+      # curlimages/curl rather than the `python` resource: python:3.14-slim
+      # ships no curl, so a probe on that image would have to apt-get first and
+      # would cost more than the scan it protects. This image is already on the
+      # worker for the notifier, and it needs no checkout, no pip and no git.
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            curl --fail --silent --show-error --max-time 20 \
+              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+              "$MYKRONOS_URL/api/ingest/health" > /dev/null
+            echo "Mykronos is reachable and this token is accepted."
+
   # -- Reporting back into TheHub (spec 16 section 13) --------------------
   #
   # TheHub is not just a repository this pipeline scans; it runs a DevSecOps
@@ -212,6 +271,9 @@ anchors:
   hub_report: &hub_report
     task: report-to-hub
     image: python
+    # PS-7. A hook that hangs holds the single worker exactly as a scan does,
+    # and this one is one curl. Five minutes is a ceiling, not a budget.
+    timeout: 5m
     config:
       platform: linux
       inputs: [{ name: source }]
@@ -259,6 +321,9 @@ anchors:
   # notification per event instead of a specific one racing a generic one.
   slack_alert: &slack_alert
     task: notify-slack
+    # PS-7. A notifier that hangs turns one failed job into a held worker,
+    # inside the hook that exists to report the first failure.
+    timeout: 5m
     config:
       platform: linux
       image_resource:
@@ -357,6 +422,7 @@ jobs:
       - get: source
         trigger: true
       - get: python
+      - *preflight
       - task: pytest
         image: python
         # 45 minutes was not a slow test suite; it was a full reinstall of
@@ -863,6 +929,73 @@ jobs:
           STAGE: integration_tests
           STATUS: success
           TARGET_ENV: prod
+  # -- QA: the capability this pipeline offered and never produced --------
+  #
+  # PS-5. `qa` is one of the fifteen capabilities in the standard set, the
+  # mykronos pipeline has produced it since D-046, and this pipeline had no
+  # lane for it at all - so the coverage cross-check reported `no_job` for
+  # TheHub: the repository believes it is covered, and no job disagrees,
+  # because no job exists (spec 15 SS4a.1).
+  #
+  # `check_links.py` fetched by raw URL at the pinned ref, which is the idiom
+  # `ai-models` already uses for `check_ai.py`: the checker lives in the
+  # mykronos repository so both pipelines run byte-identical code, and it is
+  # stdlib-only so this task installs nothing to run it. `check_pinned_ref.py`
+  # asserts the file exists at the pin, so a stale pin surfaces as a red
+  # `pin-check` rather than as a 404 inside this lane.
+  #
+  # One testcase per document, so "3 of 28 documents have a broken link" is a
+  # fact about the documentation rather than a raw link count one bad file
+  # could dominate.
+  - name: qa
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [unit]
+      - get: python
+      - *preflight
+      - task: check-links
+        timeout: 15m
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                cd source
+
+                curl -sSfL -o /tmp/check_links.py \
+                  "https://raw.githubusercontent.com/ToddGBenson/mykronos/${MYKRONOS_REF}/scripts/check_links.py"
+
+                # PS-3: the checker's verdict is captured, never allowed to
+                # skip the upload. "The links are broken" and "nothing told us
+                # anything" are different facts and the second is worse.
+                rc=0
+                python /tmp/check_links.py . --junit-xml=../results/qa.xml || rc=$?
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability qa --tool junit \
+                  --results-path ../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                  --severity-threshold low --blocking false || true
+
+                exit "$rc"
+
   - name: build
     public: true
     serial_groups: [worker]
@@ -878,6 +1011,7 @@ jobs:
       # kaniko's image is busybox with no git, so the SHA is computed here and
       # handed over as a file.
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -894,6 +1028,7 @@ jobs:
                 echo "Building $(cat meta/sha)"
 
       - task: kaniko
+        timeout: 60m
         image: kaniko
         config:
           platform: linux
@@ -951,8 +1086,17 @@ jobs:
     plan:
       - get: source
         trigger: true
+        # PS-4: behind the quality gate, like every other scanning lane in
+        # this pipeline and like the whole of the mykronos one. These five
+        # had no `passed:` at all, so they scanned commits whose own test
+        # suite had failed - spending the single worker on findings about
+        # code already known not to work. Spec 15 SS3: "there is no value
+        # in scanning a commit that does not pass its own tests."
+        passed: [unit]
       - get: python
+      - *preflight
       - task: gitleaks
+        timeout: 20m
         image: python
         params: *mykronos_env
         config:
@@ -967,15 +1111,29 @@ jobs:
                 cd source
                 mkdir -p /tmp/results
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                # Checksummed (PS-8), the way the osv-scanner binary in the
+                # `dependencies` lane already is and this was not. Pinning the
+                # version without pinning the bytes is half a control, in a
+                # lane whose whole job is to notice exactly this class of thing
+                # elsewhere.
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                echo "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb  /tmp/gitleaks.tar.gz" \
+                  | sha256sum -c -
                 tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
 
                 # `detect` reads git history, not the working tree: the claim
                 # being made is that no secret was ever committed, not that
                 # none is present at HEAD.
+                #
+                # PS-3: the exit code is captured, never allowed to skip the
+                # upload below. gitleaks runs with `--exit-code 0`, so a
+                # non-zero here is the scanner failing rather than a secret
+                # being found - and a scanner that failed before uploading
+                # reads in the lake as a capability nobody ever enabled.
+                rc=0
                 /tmp/gitleaks detect --source . --report-format json \
-                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
+                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -989,6 +1147,11 @@ jobs:
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
 
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::gitleaks exited $rc - a scan failure, not a result."
+                  exit "$rc"
+                fi
+
   - name: sast
     public: true
     serial_groups: [worker]
@@ -997,8 +1160,17 @@ jobs:
     plan:
       - get: source
         trigger: true
+        # PS-4: behind the quality gate, like every other scanning lane in
+        # this pipeline and like the whole of the mykronos one. These five
+        # had no `passed:` at all, so they scanned commits whose own test
+        # suite had failed - spending the single worker on findings about
+        # code already known not to work. Spec 15 SS3: "there is no value
+        # in scanning a commit that does not pass its own tests."
+        passed: [unit]
       - get: python313
+      - *preflight
       - task: semgrep
+        timeout: 45m
         image: python313
         params: *mykronos_env
         config:
@@ -1073,8 +1245,17 @@ jobs:
     plan:
       - get: source
         trigger: true
+        # PS-4: behind the quality gate, like every other scanning lane in
+        # this pipeline and like the whole of the mykronos one. These five
+        # had no `passed:` at all, so they scanned commits whose own test
+        # suite had failed - spending the single worker on findings about
+        # code already known not to work. Spec 15 SS3: "there is no value
+        # in scanning a commit that does not pass its own tests."
+        passed: [unit]
       - get: python
+      - *preflight
       - task: osv-scanner
+        timeout: 30m
         image: python
         params: *mykronos_env
         config:
@@ -1139,10 +1320,13 @@ jobs:
                   rc=0
                 fi
 
-                if [ "$rc" -gt 1 ]; then
-                  echo "::error::osv-scanner exited $rc - a scan failure, not a result"
-                  exit "$rc"
-                fi
+                # PS-3: the verdict is deferred to after the upload. It used
+                # to `exit "$rc"` here, so a scanner that broke skipped its own
+                # upload and `atlas` read as `never_reported` -
+                # indistinguishable from a capability nobody enabled. Whatever
+                # findings did get written are still worth having, and the
+                # ScanRun's `failure` status is what says the picture is
+                # incomplete.
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -1155,6 +1339,14 @@ jobs:
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
+
+                # 1 means vulnerabilities were found, which is a result.
+                # Anything above it is a scan failure and must not read as a
+                # clean supply chain - now that it has been reported as one.
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::osv-scanner exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
 
   # Scans the image this commit produced, out of the registry. Two tasks
   # because Trivy's image has no python and the uploader lives in the mykronos
@@ -1176,6 +1368,7 @@ jobs:
       # evidence, and evidence produced after the gate is evidence the gate
       # could not use.
       - task: sbom-and-evidence
+        timeout: 20m
         image: python
         params: *mykronos_env
         config:
@@ -1199,8 +1392,17 @@ jobs:
                 # environment` would document the interpreter this task runs
                 # in rather than the repository -- a plausible SBOM of
                 # entirely the wrong software (D-034).
-                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-                  | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
+                # The release tarball, checksummed - not
+                # `curl raw.githubusercontent.com/.../main/install.sh | sh`
+                # (PS-8). That form pinned the syft *version* while piping an
+                # unpinned installer script from a third party's `main` branch
+                # straight into a shell, inside the lane that produces this
+                # repository's supply-chain evidence.
+                curl -sSfL -o /tmp/syft.tar.gz \
+                  https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
+                echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
+                  | sha256sum -c -
+                tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
                 syft scan dir:source \
                   --exclude './**/node_modules' --exclude './**/.venv' \
                   --exclude './**/venv' --exclude './**/vendor' \
@@ -1281,10 +1483,12 @@ jobs:
       - get: python
       - get: trivy
 
+      - *preflight
       # The SHA is resolved in a task that has git, and handed over as a file.
       # Trivy's image does not, and reading `.git/HEAD` by hand works right up
       # until the ref is packed.
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -1300,6 +1504,7 @@ jobs:
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
 
       - task: scan-image
+        timeout: 45m
         image: trivy
         config:
           platform: linux
@@ -1352,31 +1557,40 @@ jobs:
                   echo "::error::Trivy wrote no report - the image scan did not run."
                   exit 1
                 }
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability containers --tool trivy \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" \
+                    --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
-                  --capability containers --tool trivy \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" \
-                  --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
 
   # Insider risk, without a pull-request event to hang it on. Spec 16 section 6
   # is the whole explanation; the short version is that Concourse sees a branch
@@ -1400,7 +1614,9 @@ jobs:
         trigger: true
         passed: [oracle-gate]
       - get: python
+      - *preflight
       - task: aegis
+        timeout: 15m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))
@@ -1588,7 +1804,9 @@ jobs:
         # when the scan has a resource budget it can live within.
         passed: [deploy-demo]
       - get: python
+      - *preflight
       - task: evaluate
+        timeout: 10m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))
@@ -1659,6 +1877,7 @@ jobs:
         passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
       - task: request-deploy
+        timeout: 30m
         image: python
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -1790,9 +2009,18 @@ jobs:
     plan:
       - get: source
         trigger: true
+        # PS-4: behind the quality gate, like every other scanning lane in
+        # this pipeline and like the whole of the mykronos one. These five
+        # had no `passed:` at all, so they scanned commits whose own test
+        # suite had failed - spending the single worker on findings about
+        # code already known not to work. Spec 15 SS3: "there is no value
+        # in scanning a commit that does not pass its own tests."
+        passed: [unit]
       - get: python
       - get: checkov
+      - *preflight
       - task: scan-iac
+        timeout: 20m
         image: checkov
         config:
           platform: linux
@@ -1840,30 +2068,39 @@ jobs:
                   exit 1
                 }
                 cp "$OUT"/*.sarif ../results/
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability iac --tool checkov \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
-                  --capability iac --tool checkov \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
 
   - name: prompt-evals
     public: true
@@ -1873,8 +2110,17 @@ jobs:
     plan:
       - get: source
         trigger: true
+        # PS-4: behind the quality gate, like every other scanning lane in
+        # this pipeline and like the whole of the mykronos one. These five
+        # had no `passed:` at all, so they scanned commits whose own test
+        # suite had failed - spending the single worker on findings about
+        # code already known not to work. Spec 15 SS3: "there is no value
+        # in scanning a commit that does not pass its own tests."
+        passed: [unit]
       - get: python
+      - *preflight
       - task: run-evals
+        timeout: 45m
         image: python
         params:
           PIP_CACHE_DIR: /pipcache
@@ -1919,11 +2165,47 @@ jobs:
                   echo "only. A narrower check, not a passing rubric run."
                 fi
 
-                rc=0
+                # `set +e` is load-bearing: this task runs under `bash -ec`,
+                # so errexit is on before the first line and `set -uo pipefail`
+                # above turns pipefail ON without turning errexit OFF. A
+                # failing `run_prompt_evals | tee` would kill the shell at the
+                # pipe, before ${PIPESTATUS} could be read - so the exit-2
+                # branch below, which exists to distinguish a broken harness
+                # from a real regression, could never be reached.
+                set +e
                 python scripts/run_prompt_evals.py --base-ref HEAD~1 2>&1 | tee /tmp/evals.log
                 rc=${PIPESTATUS[0]}
+                set -e
 
                 TAIL=$(tail -3 /tmp/evals.log | tr -s '[:space:]' ' ' | cut -c1-200)
+
+                # PS-1: reported to Mykronos, not only to TheHub's own
+                # lifecycle. Evaluation coverage is one of the three concerns
+                # D-047 puts under the `ai` capability - the other two being
+                # prompt-injection surface and model provenance, which the
+                # `ai-models` lane covers. Two `ai` ScanRuns per commit under
+                # different tool names is intended: each answers for itself,
+                # and the coverage cross-check takes the newest.
+                #
+                # Tolerated failure throughout. The eval gate is this job's
+                # product; a reporting problem must not become a second
+                # failure on top of a real one.
+                (
+                  set +e
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  mkdir -p ../results
+                  python -m mykronos.junit_stage \
+                    --out ../results/prompt-evals.xml --suite prompt-evals \
+                    --case "prompt-evals:${rc}:/tmp/evals.log"
+                  python -m mykronos.upload \
+                    --capability ai --tool mykronos-ai-checks \
+                    --results-path ../results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                    --severity-threshold low --blocking false
+                ) || echo "::warning::Could not report the eval result to Mykronos; the gate below still stands."
 
                 # deploy.sh's semantics, kept on purpose. Exit 2 is the runner
                 # failing to run - a broken harness, an unreachable judge -
@@ -1976,9 +2258,12 @@ jobs:
         trigger: true
         passed: [deploy-demo]
       - get: python
+      - *preflight
       - task: check-inventory
+        timeout: 20m
         image: python
         params:
+          <<: *mykronos_env
           TARGET_URL: ((thehub-demo-url))
         config:
           platform: linux
@@ -1989,15 +2274,46 @@ jobs:
             args:
               - -ec
               - |
-                set -euo pipefail
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
 
-                # No dependencies: the generator uses only the standard
-                # library, precisely so this job needs nothing installed and
-                # cannot fail for a reason unrelated to the API.
-                python scripts/api_inventory.py --url "$TARGET_URL" --check
+                # PS-1: this lane ran on every deploy and told Mykronos
+                # nothing. It reported its stage to TheHub's own lifecycle and
+                # stopped there, so the platform that is supposed to hold every
+                # repository's coverage had no evidence the API surface was
+                # ever checked. `qa`/`junit` for the same reason the lint lane
+                # uses it: one registered adapter for the capability
+                # (`adapters/registry.py`), and quality stages record a run and
+                # never a finding (D-046).
+                #
+                # No dependencies for the check itself: the generator uses only
+                # the standard library, precisely so this job needs nothing
+                # installed and cannot fail for a reason unrelated to the API.
+                rc=0
+                python scripts/api_inventory.py --url "$TARGET_URL" --check 2>&1 \
+                  | tee /tmp/inventory.txt
+                rc=${PIPESTATUS[0]}
 
-                echo "The committed inventory matches the deployed API."
+                if [ "$rc" -eq 0 ]; then
+                  echo "The committed inventory matches the deployed API."
+                fi
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.junit_stage \
+                  --out ../results/api-inventory.xml --suite api-inventory \
+                  --case "inventory:${rc}:/tmp/inventory.txt"
+                python -m mykronos.upload \
+                  --capability qa --tool junit \
+                  --results-path ../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                  --severity-threshold low --blocking false || true
+
+                # Reported either way, then the inventory decides the job.
+                exit "$rc"
 
       - <<: *hub_report
         params:
@@ -2031,6 +2347,7 @@ jobs:
         passed: [deploy-demo]
       - get: python
       - get: zap
+      - *preflight
       # Scan and upload in ONE task, which is not the obvious shape but is the
       # only one that works here. Concourse creates output volumes owned by
       # root:root 0755 and this image runs as the unprivileged `zap` user with
@@ -2183,6 +2500,7 @@ jobs:
         passed: [deploy-prod]
       - get: python
       - get: zap
+      - *preflight
       # Scan and upload in ONE task, which is not the obvious shape but is the
       # only one that works here. Concourse creates output volumes owned by
       # root:root 0755 and this image runs as the unprivileged `zap` user with
@@ -2338,6 +2656,7 @@ jobs:
         passed: [deploy-demo]
       - get: python
       - get: playwright
+      - *preflight
       - task: functional-and-scan
         image: playwright
         # 120m, not 90m: build #7 ran the whole chain -- ZAP up, 60 URLs
@@ -2606,43 +2925,52 @@ jobs:
 
                 zap_api "/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
                 exit 0
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 15m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability dast --tool zap \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
-                  --capability dast --tool zap \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
+                  # The one line the junit.xml was written in anticipation of:
+                  # the functional run reaches Mykronos as a ScanRun with no
+                  # findings (D-046), so "the suite passed" and "the suite never
+                  # ran" stop looking identical from the platform's side.
+                  python -m mykronos.upload \
+                    --capability functional --tool junit \
+                    --results-path functional \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false || true
 
-                # The one line the junit.xml was written in anticipation of:
-                # the functional run reaches Mykronos as a ScanRun with no
-                # findings (D-046), so "the suite passed" and "the suite never
-                # ran" stop looking identical from the platform's side.
-                python -m mykronos.upload \
-                  --capability functional --tool junit \
-                  --results-path functional \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false || true
 
       - <<: *hub_report
         params:
@@ -2680,6 +3008,7 @@ jobs:
       # regression is visible without a proxy-latency timeout stopping a
       # security scan that succeeded.
       - task: functional-report
+        timeout: 10m
         image: python
         config:
           platform: linux
@@ -2710,6 +3039,7 @@ jobs:
         passed: [insider]
       - get: python
       - task: request-deploy
+        timeout: 30m
         image: python
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -2806,7 +3136,9 @@ jobs:
       - get: python
       - get: prowler
 
+      - *preflight
       - task: prowler-azure
+        timeout: 60m
         image: prowler
         params:
           AZURE_CLIENT_ID: ((azure-client-id))
@@ -2863,36 +3195,45 @@ jobs:
                   exit 1
                 }
                 cp "$OUT"/*.json results/
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  # Cloud findings attach to a resource in a subscription, not to
+                  # a file in this checkout. The commit is recorded because every
+                  # scan run needs one; it is not a claim that this commit caused
+                  # the finding.
+                  python -m mykronos.upload \
+                    --capability cloud --tool prowler \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" \
+                    --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-                # Cloud findings attach to a resource in a subscription, not to
-                # a file in this checkout. The commit is recorded because every
-                # scan run needs one; it is not a claim that this commit caused
-                # the finding.
-                python -m mykronos.upload \
-                  --capability cloud --tool prowler \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" \
-                  --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
 
   # -- Auto-remediation (spec 08) -----------------------------------------
   #
@@ -2918,9 +3259,17 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, sast, dependencies, containers]
+        # `iac` added: Patchwork's source capabilities are sast, secrets,
+        # containers **and iac** (`patchwork/pipeline.py`,
+        # DEFAULT_SOURCE_CAPABILITIES). Without it here the job could start
+        # while the iac lane was still running, and Patchwork would remediate
+        # the *previous* commit's infrastructure findings while reporting
+        # against this one.
+        passed: [secrets, sast, dependencies, iac, containers]
       - get: python
+      - *preflight
       - task: patchwork
+        timeout: 20m
         image: python
         params: *mykronos_env
         config:
@@ -3029,7 +3378,9 @@ jobs:
         trigger: true
         passed: [unit]
       - get: python
+      - *preflight
       - task: model-inventory
+        timeout: 15m
         image: python
         params:
           <<: *mykronos_env

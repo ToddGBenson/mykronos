@@ -2899,3 +2899,110 @@ same count of fixable ones, which is the ordering a person would choose.
 Policy 1.4. Unlike every bump before it, this one changes existing scores on
 purpose: `fixed_version` has been on every dependency and container finding
 all along and nothing read it.
+
+---
+
+## D-078 — One pipeline standard, numbered, cited from the YAML
+
+**Status:** Decided and shipped
+**Doc:** [`docs/pipeline-standard.md`](pipeline-standard.md)
+
+The GitHub Actions side has had a shared skeleton since it was written:
+`workflow-templates/_base.yml.j2` factors the header, the fail-fast probe, the
+concurrency group and the upload step so that "a change to the upload contract
+is one edit rather than ten." The Concourse side never had one. Thirty-eight
+jobs across two pipelines each hand-rolled the same `apt-get` / `pip install` /
+`python -m mykronos.upload` sequence, and they had drifted in every way that
+sequence can drift: `set -uo` against `set -euo` against `set -eu`, ten uploads
+naming the default branch as a literal against `$SCANNED_BRANCH`, nine of
+thirty-eight capturing a scanner's exit code so the upload still ran and
+twenty-nine not.
+
+Ten rules, `PS-1` through `PS-10`, each stating the failure it prevents. They
+are cited by number from the YAML at the point they apply, so a comment reading
+`PS-3` has somewhere to lead.
+
+**Why numbered rules rather than a description of the current state.** Every
+one of these came from a real failure that was invisible while it was
+happening — a lane green on every build that had never reported (L0003), a
+scanner that broke and made its capability look un-enabled, a notifier that had
+never delivered. A standard that only says what the files do now cannot stop
+the next one; the cost of each rule is what makes it survive being inconvenient.
+
+**What is deliberately *not* standardised.** The two pipelines order the Oracle
+gate and the Aegis lane differently, and both orderings are spec'd: `thehub`
+puts the gate after DAST so runtime findings reach the score, and pays for it
+by dropping insider risk out of the score (spec 16 §3). That is recorded as a
+known divergence with a proposal to close it, not flattened into conformance.
+Standardising a decision somebody made on purpose is how a standard loses.
+
+---
+
+## D-079 — The alerting had never fired, in both pipelines, by construction
+
+**Status:** Decided and shipped
+
+Two bugs, one per pipeline, each of which could only ever manifest as a red job
+that was already red.
+
+TheHub's notifier wrote its JSON payload to the task working directory.
+`curlimages/curl` runs as an unprivileged user and Concourse creates that
+directory owned by root, so the write failed and the hook died before reaching
+curl. That one was found and fixed; the comment recording it is still in the
+file.
+
+The mykronos notifier was worse and had not been found. It computed `$TEXT`,
+discarded it, and posted `-d @payload.json` against a file no line in the task
+ever wrote — the escaping step that was supposed to build it had been left as a
+comment with nothing under it. curl failed on the missing file, `|| echo`
+swallowed the failure, and the hook exited 0. Every `on_failure` and `on_error`
+in that pipeline had been decorative since the day it was added.
+
+**Why neither was noticed.** A notifier only runs when something else has
+already failed, and it is required to fail open so that a missing credential
+does not become a second failure on top of the first. Failing open and failing
+silently are one line apart, and both of these were on the wrong side of it.
+
+**What changed.** Both post through `chat.postMessage` with a bot token and
+check the response body — Slack answers `200` with `{"ok":false,"error":…}`
+when a post is rejected, so the status code proves nothing and an undelivered
+alert otherwise reads exactly like a delivered one. That is `PS-10`.
+
+The bot token also made `PS-9` possible for the mykronos pipeline. A webhook's
+secret sits in the URL path of the endpoint being called, so the pipeline has
+to hold it; a bot token sits in an `Authorization:` header, which the Vault
+credential manager can substitute at egress. Moving to `chat.postMessage` was
+the prerequisite for the credential leaving the config, not a separate tidy-up
+— the same reasoning thehub already recorded when it switched.
+
+---
+
+## D-080 — TheHub's Mykronos Actions lanes are retired, as this repo's were
+
+**Status:** Decided, applied on a branch
+**Spec:** [16 §4](../specs/16-thehub-delivery-pipeline.md)
+
+D-038 named the problem and spec 16 §4 settled it for this repository: two CI
+systems scanning the same commits produce findings the ingestion upsert makes
+indistinguishable, so a repository's capability coverage is decided by whichever
+uploaded last. This repository's five Actions lanes were removed once Concourse
+ran the full capability set.
+
+TheHub's five were not, and they were worse than a straight duplicate: they
+installed the uploader at `@v1` and called the composite action at `@8b329fc5`
+while the Concourse pipeline ran `v3`. Two systems, two uploader generations,
+one commit, five shared capabilities.
+
+`codeql.yml` stays — GitHub's own analysis, not a Mykronos capability upload,
+and it never reaches the lake.
+
+**What this costs**, in the same words spec 16 §4 used: a pull request from a
+fork gets no checks. Concourse polls a branch, and running an untrusted
+contributor's code on a worker inside the LAN is what spec 14 §4 and spec 15 §7
+both refuse. If anyone other than the operator starts opening pull requests
+against TheHub, the answer is to restore these lanes **for `pull_request` only**
+— never with the `push:` and `schedule:` triggers that made them duplicates,
+and never by widening what Concourse trusts.
+
+Concourse now covers more of TheHub than Actions ever did: `iac`, `cloud`,
+`dast`, `unit`, `functional`, `ai` and — as of this change — `qa`.

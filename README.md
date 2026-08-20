@@ -36,6 +36,11 @@ changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
 lessons worth carrying between projects are promoted to [`docs/lessons/`](docs/lessons/),
 and incident-scale days get a retro in [`docs/retros/`](docs/retros/).
 
+The shape every Concourse pipeline conforms to — ten numbered rules, the
+failure each one prevents, and a per-capability conformance table for both
+pipelines — is [`docs/pipeline-standard.md`](docs/pipeline-standard.md).
+Comments in the pipeline YAML cite it by rule number (D-078).
+
 Spec changes land as their own commits before the code that depends on them. Where an
 outage forced code first, the spec sync is called out in the retro that covers it.
 

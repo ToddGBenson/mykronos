@@ -24,6 +24,25 @@
 # credential manager; with none configured, `fly set-pipeline --load-vars-from`
 # supplies them from a gitignored file. Neither puts a secret in this file.
 
+# The UI, grouped by stage. Nineteen jobs on one flat wall is not a pipeline
+# anybody reads; these are the five stages spec 15 SS3 already names. Jobs
+# appear in more than one group where they genuinely belong to both -
+# `containers` is a security lane that can only run after publish.
+#
+# Every job is in at least one group on purpose: Concourse hides any job that
+# is in none, and a hidden lane is a lane nobody notices has gone red.
+groups:
+  - name: quality
+    jobs: [pin-check, unit, lint-and-types, qa-spec-links, frontend]
+  - name: security
+    jobs: [secrets, dependencies, sast, ai, iac, insider, containers]
+  - name: gate
+    jobs: [oracle-gate, promote]
+  - name: build
+    jobs: [build, publish-backend, publish-frontend, containers]
+  - name: runtime
+    jobs: [demo-and-dast, remediate]
+
 resource_types:
   - name: registry-image
     type: registry-image
@@ -105,6 +124,9 @@ anchors:
   # notification per event instead of a specific one racing a generic one.
   slack_alert: &slack_alert
     task: notify-slack
+    # PS-7. A notifier that hangs turns one failed job into a held worker,
+    # inside the hook that exists to report the first failure.
+    timeout: 5m
     config:
       platform: linux
       image_resource:
@@ -114,18 +136,37 @@ anchors:
         - name: notify
           optional: true
       params:
-        SLACK_WEBHOOK_URL: ((slack-webhook-url))
+        SLACK_BOT_TOKEN: ((slack-bot-token))
+        SLACK_CHANNEL: ((slack-alert-channel))
       run:
         path: sh
         args:
           - -ec
           - |
-            # An unset webhook is not an error. The pipeline has to be
-            # applicable before Slack is configured, and this hook only ever
-            # runs when something has already gone wrong - a missing
-            # notification must not become a second failure on top of it.
-            if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-              echo "No Slack webhook configured - skipping notification."
+            # This anchor used to post `-d @payload.json` against a file
+            # nothing ever wrote. $TEXT was computed and discarded, curl failed
+            # on the missing file, and `|| echo` swallowed it before `exit 0`.
+            # Every on_failure and on_error hook in this pipeline has been
+            # decorative since the day it was added, and the only symptom was a
+            # red job that was already red. L0003 - a check that cannot report
+            # is a check that does not exist - applies to the alerting as much
+            # as to the scanning.
+            #
+            # chat.postMessage with a bot token, not an incoming webhook, and
+            # that is PS-9 rather than preference. A webhook's secret lives in
+            # the URL path of the endpoint being called, so the pipeline has to
+            # hold it; a bot token lives in an `Authorization:` header, which
+            # Vault can substitute at egress. Switching is the prerequisite for
+            # the credential leaving this file at all, and it is the same
+            # credential thehub and personal-soc already resolve at team scope
+            # - so this host has one Slack identity rather than three.
+            #
+            # Unset is not an error. The pipeline has to be applicable before
+            # Slack is configured, and this hook only ever runs when something
+            # has already gone wrong - a missing notification must not become
+            # a second failure on top of it.
+            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
+              echo "No Slack bot token or channel configured - skipping notification."
               exit 0
             fi
 
@@ -140,10 +181,30 @@ anchors:
             # Escaped with sed because this image has no jq. Single-line
             # messages by construction, so backslash and quote are the only
             # characters that can break the document.
+            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
 
-            curl -sS --max-time 20 -X POST -H 'Content-Type: application/json' \
-              -d @payload.json "$SLACK_WEBHOOK_URL" \
-              || echo "Slack post failed - the build result stands regardless."
+            # /tmp, not the working directory. curlimages/curl runs as an
+            # unprivileged user and Concourse creates the task's working
+            # directory owned by root, so `> payload.json` is "Permission
+            # denied" - a second way this same hook can die inside the failure
+            # it was trying to report. thehub's notifier already found this one.
+            printf '{"channel":"%s","text":"%s\\n%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+
+            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H 'Content-Type: application/json; charset=utf-8' \
+              -d @/tmp/payload.json) || RESP=""
+
+            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
+            # rejected - a wrong channel, a bot that was removed, a revoked
+            # scope. The status code proves nothing here; the body is the
+            # result, and without this check a silently undelivered alert reads
+            # exactly like a delivered one.
+            case "$RESP" in
+              *'"ok":true'*) echo "Posted to Slack." ;;
+              *) echo "Slack post failed: $RESP" ;;
+            esac
             exit 0
 
   # Every task that reports findings does this: install the package the
@@ -155,6 +216,49 @@ anchors:
     MYKRONOS_TOKEN: ((mykronos-ingestion-token))
     MYKRONOS_REF: ((mykronos-ref))
     MYKRONOS_GATE_TOKEN: ((mykronos-gate-token))
+    # PS-6. Every upload here named the default branch as a literal, which was
+    # true and would have stopped being true the first time this pipeline was pointed
+    # at a branch. The branch is known when the pipeline is applied; the git
+    # resource checks out a detached HEAD, so asking git for it returns the
+    # literal string "HEAD". thehub already learned this the expensive way and
+    # its uploads read `$SCANNED_BRANCH` for exactly this reason.
+    SCANNED_BRANCH: ((scanned-branch))
+
+  # -- PS-2: fail before scanning, not after (spec 04 SS2, spec 05 SS4) ----
+  #
+  # The GitHub Actions skeleton every onboarded repository gets
+  # (`workflow-templates/_base.yml.j2`) probes the ingestion API before it runs
+  # a scanner: better to stop in ten seconds than scan for twenty minutes and
+  # find at upload time that the results have nowhere to go. Not one Concourse
+  # job did this, in either pipeline. `containers` can spend forty-five minutes
+  # in Trivy and `unit` forty-five in pytest before finding out.
+  #
+  # A failure here is a real failure, not a skip. A scan whose results cannot
+  # land is the `never_reported` state the coverage cross-check exists to catch
+  # (spec 15 SS4a.1), and producing one deliberately is worse than not starting.
+  preflight: &preflight
+    task: preflight
+    timeout: 2m
+    params: *mykronos_env
+    config:
+      platform: linux
+      # curlimages/curl rather than the `python` resource, and that is the
+      # point: python:3.13-slim ships no curl, so a probe on that image would
+      # have to apt-get first and would cost more than the scan it protects.
+      # This image is already on the worker for the notifier, and it needs no
+      # checkout, no pip and no git.
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            curl --fail --silent --show-error --max-time 20 \
+              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+              "$MYKRONOS_URL/api/ingest/health" > /dev/null
+            echo "Mykronos is reachable and this token is accepted."
 
 jobs:
   # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
@@ -183,6 +287,7 @@ jobs:
         trigger: true
       - get: python
       - task: check
+        timeout: 10m
         image: python
         params: *mykronos_env
         config:
@@ -213,7 +318,9 @@ jobs:
       - get: source
         trigger: true
       - get: python
+      - *preflight
       - task: pytest
+        timeout: 45m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
         # set on every commit; without it each run re-downloads the lot, which
@@ -281,7 +388,7 @@ jobs:
                 # commit_sha with a 422, and `|| true` swallowed it. The
                 # stages cross-check reported unit as never_reported, which
                 # is how this was found.
-                python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 exit "$rc"
 
@@ -294,26 +401,83 @@ jobs:
         trigger: true
         passed: []
       - get: python
+      - *preflight
       - task: ruff-and-mypy
+        timeout: 20m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
         # set on every commit; without it each run re-downloads the lot, which
         # is where `unit` spent most of its 19 minutes.
         params:
+          <<: *mykronos_env
           PIP_CACHE_DIR: /pipcache
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: results }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
             args:
               - -ec
               - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet -e ".[dev]"
-                python -m ruff check .
-                python -m mypy mykronos
+
+                # PS-1: this lane ran on every commit and reported nothing.
+                # Spec 15 SS3's quality gate is "unit - functional - QA - lint
+                # - types"; three of those five reached the lake and two were
+                # green ticks nothing outside Concourse could see. A stage the
+                # coverage cross-check cannot see is a stage it cannot vouch
+                # for, and a capability with no evidence reads as one nobody
+                # enabled.
+                #
+                # Reported as `qa`/`junit` rather than under a tool of its own:
+                # the registry has exactly one adapter for this capability
+                # (`adapters/registry.py`), so `--tool ruff-mypy` would fail
+                # the upload with "No adapter for capability 'qa'". Three qa
+                # ScanRuns per commit is intended, not a collision - quality
+                # stages record a run and never a finding (D-046), so they
+                # cannot overwrite each other's results the way two scanners on
+                # one capability would.
+                #
+                # `set +e` is load-bearing. These tasks run under `bash -ec`,
+                # so errexit is on before the script's first line, and
+                # `set -uo pipefail` turns pipefail ON without turning errexit
+                # OFF. A failing `ruff | tee` would kill the shell at the pipe,
+                # before ${PIPESTATUS} could be read - which is the lane dying
+                # silently again, in a new way. `demo-and-dast` already had to
+                # learn this; it is written down here so the next one does not.
+                set +e
+                python -m ruff check . 2>&1 | tee /tmp/ruff.txt
+                rc_ruff=${PIPESTATUS[0]}
+
+                python -m mypy mykronos 2>&1 | tee /tmp/mypy.txt
+                rc_mypy=${PIPESTATUS[0]}
+                set -e
+
+                # The working tree's own module, installed editable two lines
+                # up - so this lane does not wait on a new `mykronos-ref` tag
+                # to start reporting.
+                python -m mykronos.junit_stage \
+                  --out ../../results/lint.xml --suite lint-and-types \
+                  --case "ruff:${rc_ruff}:/tmp/ruff.txt" \
+                  --case "mypy:${rc_mypy}:/tmp/mypy.txt"
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.upload \
+                  --capability qa --tool junit \
+                  --results-path ../../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git -C .. rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                  --severity-threshold low --blocking false || true
+
+                # Reported either way, then the lint decides the job.
+                [ "$rc_ruff" -eq 0 ] && [ "$rc_mypy" -eq 0 ]
 
   - name: qa-spec-links
     public: true
@@ -323,7 +487,9 @@ jobs:
       - get: source
         trigger: true
       - get: python
+      - *preflight
       - task: check-links
+        timeout: 15m
         image: python
         params: *mykronos_env
         config:
@@ -349,7 +515,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 # The QA result decides the job, and it is reported either
                 # way: "the links are broken" and "nothing told us anything"
@@ -368,11 +534,13 @@ jobs:
       - get: python
       - get: node
 
+      - *preflight
       # The generated client is derived from the backend's OpenAPI, so the
       # contract is regenerated here rather than trusted from the committed
       # copy. A backend change that breaks the frontend should fail this job,
       # not surface as a runtime error in a browser.
       - task: dump-openapi
+        timeout: 15m
         image: python
         config:
           platform: linux
@@ -393,36 +561,113 @@ jobs:
           TARGET: ../contract
 
       - task: lint-types-build
+        timeout: 30m
         image: node
         config:
           platform: linux
           inputs: [{ name: source }, { name: contract }]
+          # PS-1. Three exit codes leave this task as files, because the thing
+          # that can report them to Mykronos cannot run here: node:slim has no
+          # python and the uploader is a python package. Splitting the verdict
+          # from the reporting is what lets `ensure` below report a build that
+          # broke - which, until now, reported nothing at all.
+          outputs: [{ name: verdict }]
           run:
             path: bash
             args:
               - -ec
               - |
-                set -euo pipefail
+                set -uo pipefail
                 cp contract/openapi.json source/frontend/openapi.json
                 cd source/frontend
                 npm ci
+
+                # errexit is on from `bash -ec` and `set -uo pipefail` does not
+                # clear it, so every measured command below runs with it off
+                # deliberately - otherwise the first failure kills the shell
+                # before any exit code reaches `verdict/`.
+                set +e
 
                 # Compared as files rather than through `git diff`. node:slim
                 # has no git, and the question being asked is whether the
                 # committed types match what the schema generates - which is a
                 # question about two files, not about the index.
+                rc_contract=0
                 npx openapi-typescript openapi.json -o /tmp/api-types.d.ts
                 if ! diff -q lib/api-types.d.ts /tmp/api-types.d.ts >/dev/null; then
                   echo "::error::The committed API types are out of date."
                   echo "The backend's OpenAPI schema has changed. Regenerate with:"
                   echo "  python scripts/dump_openapi.py frontend/openapi.json"
                   echo "  cd frontend && npx openapi-typescript openapi.json -o lib/api-types.d.ts"
-                  diff lib/api-types.d.ts /tmp/api-types.d.ts | head -40
-                  exit 1
+                  diff lib/api-types.d.ts /tmp/api-types.d.ts > /tmp/contract.txt
+                  head -40 /tmp/contract.txt
+                  rc_contract=1
                 fi
 
-                npm run lint
-                npm run build
+                # The contract check no longer short-circuits the other two. A
+                # stale generated type says nothing about whether the lint
+                # passes, and reporting one result where three were available
+                # was a side effect of `exit 1` rather than a decision.
+                npm run lint 2>&1 | tee /tmp/lint.txt
+                rc_lint=${PIPESTATUS[0]}
+
+                npm run build 2>&1 | tee /tmp/build.txt
+                rc_build=${PIPESTATUS[0]}
+
+                for pair in "contract:$rc_contract" "lint:$rc_lint" "build:$rc_build"; do
+                  echo "${pair#*:}" > "../../verdict/${pair%%:*}.rc"
+                done
+                cp /tmp/contract.txt /tmp/lint.txt /tmp/build.txt ../../verdict/ 2>/dev/null || true
+
+                [ "$rc_contract" -eq 0 ] && [ "$rc_lint" -eq 0 ] && [ "$rc_build" -eq 0 ]
+
+        # PS-3: reported whether the three commands above passed, failed, or
+        # never got as far as writing a verdict.
+        ensure:
+          task: report
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: verdict }]
+            outputs: [{ name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -uo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+
+                  # 70 rather than 0 for a missing file. An absent exit code
+                  # means the task died before it could write one, and calling
+                  # that a pass is precisely the failure mode this rule exists
+                  # to stop.
+                  rc_of() { [ -s "verdict/$1.rc" ] && cat "verdict/$1.rc" || echo 70; }
+
+                  # Run from the checkout rather than the pinned package, so
+                  # this lane starts reporting without waiting on a new tag.
+                  python source/backend/mykronos/junit_stage.py \
+                    --out results/frontend.xml --suite frontend \
+                    --case "contract:$(rc_of contract):verdict/contract.txt" \
+                    --case "lint:$(rc_of lint):verdict/lint.txt" \
+                    --case "build:$(rc_of build):verdict/build.txt"
+
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -m mykronos.upload \
+                    --capability qa --tool junit \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/mykronos \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
+
+                  # The report is this task's only job. `lint-types-build`
+                  # already decided the build; failing here as well would
+                  # replace a real verdict with a reporting error.
+                  exit 0
 
   # -- Stage 2: security (spec 15 §4) -------------------------------------
   #
@@ -444,7 +689,9 @@ jobs:
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+      - *preflight
       - task: gitleaks
+        timeout: 20m
         image: python
         params: *mykronos_env
         config:
@@ -459,11 +706,29 @@ jobs:
                 cd source
                 mkdir -p /tmp/results
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+
+                # Checksummed (PS-8), the way the osv-scanner binary in the
+                # `dependencies` lane already is and this was not. A release
+                # tarball fetched over HTTPS and then executed is the supply
+                # chain risk this platform exists to find in other people's
+                # repositories; pinning the version without pinning the bytes
+                # only narrows it.
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                echo "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb  /tmp/gitleaks.tar.gz" \
+                  | sha256sum -c -
                 tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+
+                # PS-3: the scanner's exit code is captured, never allowed to
+                # skip the upload below. `mykronos.upload` registers the
+                # ScanRun before it interprets anything and finalises in a
+                # `finally`, so even a crashed adapter leaves evidence (spec 04
+                # SS7) - but only if it is called. Without this, a failed
+                # scanner reads in the lake as `never_reported`, which is what
+                # a capability nobody enabled looks like.
+                rc=0
                 /tmp/gitleaks detect --source . --report-format json \
-                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
+                  --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -473,8 +738,16 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
                   --commit-sha "$(git rev-parse HEAD)" \
-                  --branch main --workspace "$PWD" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                   --severity-threshold low --blocking false
+
+                # gitleaks runs with `--exit-code 0`, so a non-zero here is the
+                # scanner itself failing rather than a secret being found.
+                # Reported first, surfaced second.
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::gitleaks exited $rc - a scan failure, not a result."
+                  exit "$rc"
+                fi
 
   - name: dependencies
     public: true
@@ -489,7 +762,9 @@ jobs:
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+      - *preflight
       - task: osv-scanner
+        timeout: 30m
         image: python
         params: *mykronos_env
         config:
@@ -522,10 +797,14 @@ jobs:
                 rc=0
                 osv-scanner scan source --recursive --no-resolve \
                   --format sarif --output-file /tmp/results/osv.sarif . || rc=$?
-                if [ "$rc" -gt 1 ]; then
-                  echo "::error::osv-scanner exited $rc - that is a failure, not a result"
-                  exit "$rc"
-                fi
+
+                # PS-3: the verdict is deferred to the end of this task. It
+                # used to `exit "$rc"` here, so a scanner that broke skipped
+                # its own upload and `atlas` read as `never_reported` --
+                # indistinguishable from a capability nobody enabled. Whatever
+                # findings did get written are still worth having, and the
+                # ScanRun's `failure` status is what says the picture is
+                # incomplete.
 
                 # A second copy in JSON, because the counts the trust score is
                 # built from are not derivable from the SARIF. Tolerant of a
@@ -543,8 +822,16 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
                   --commit-sha "$(git rev-parse HEAD)" \
-                  --branch main --workspace "$PWD" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                   --severity-threshold low --blocking false
+
+                # 1 means vulnerabilities were found, which is a result.
+                # Anything above it is a scan failure and must not read as a
+                # clean supply chain - now that it has been reported as one.
+                if [ "$rc" -gt 1 ]; then
+                  echo "::error::osv-scanner exited $rc - that is a failure, not a result"
+                  exit "$rc"
+                fi
 
       # Supply-chain evidence (spec 07). This only ever existed in
       # `mykronos-atlas.yml`: Concourse uploaded the *findings* and never the
@@ -555,6 +842,7 @@ jobs:
       # reads Atlas evidence, and evidence produced after the gate is evidence
       # the gate could not use. It also means one syft run instead of two.
       - task: sbom-and-evidence
+        timeout: 20m
         image: python
         params: *mykronos_env
         config:
@@ -578,8 +866,18 @@ jobs:
                 # interpreter this task runs in rather than the repository --
                 # a plausible SBOM of entirely the wrong software, which is how
                 # it shipped in the Atlas workflow.
-                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-                  | sh -s -- -b /usr/local/bin v1.51.0 >/dev/null
+                # The release tarball, checksummed - not
+                # `curl raw.githubusercontent.com/.../main/install.sh | sh`
+                # (PS-8). That form pinned the syft *version* while piping an
+                # unpinned installer script from a third party's `main` branch
+                # straight into a shell, inside the one lane that produces this
+                # platform's supply-chain evidence. An SBOM is worth exactly
+                # what the thing that generated it is worth.
+                curl -sSfL -o /tmp/syft.tar.gz \
+                  https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
+                echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
+                  | sha256sum -c -
+                tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
                 syft scan dir:source \
                   --exclude './**/node_modules' --exclude './**/.venv' \
                   --exclude './**/venv' --exclude './**/vendor' \
@@ -682,7 +980,9 @@ jobs:
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+      - *preflight
       - task: ai-checks
+        timeout: 15m
         image: python
         params: *mykronos_env
         config:
@@ -699,11 +999,18 @@ jobs:
                 cd source
                 mkdir -p ../results
 
-                python scripts/check_ai.py . --sarif=../results/ai.sarif
+                # PS-3. The checker's verdict must not be able to skip the
+                # upload: a broken checker and an unenabled capability are
+                # indistinguishable in the lake otherwise.
+                rc=0
+                python scripts/check_ai.py . --sarif=../results/ai.sarif || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch main                   --workspace "$PWD"                   --severity-threshold low --blocking false
+                python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false
+
+                # Reported first, then surfaced. The AI checks decide the job.
+                exit "$rc"
 
   - name: sast
     public: true
@@ -718,7 +1025,9 @@ jobs:
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+      - *preflight
       - task: semgrep
+        timeout: 45m
         image: python
         params: *mykronos_env
         config:
@@ -773,7 +1082,7 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
                   --commit-sha "$(git rev-parse HEAD)" \
-                  --branch main --workspace "$PWD" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                   --severity-threshold low --blocking false
 
                 # Which Python files nothing here imports (spec 19 §2.1).
@@ -842,7 +1151,9 @@ jobs:
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+      - *preflight
       - task: aegis
+        timeout: 15m
         image: python
         params: *mykronos_env
         config:
@@ -982,7 +1293,9 @@ jobs:
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
       - get: checkov
+      - *preflight
       - task: scan-iac
+        timeout: 20m
         image: checkov
         config:
           platform: linux
@@ -1030,30 +1343,39 @@ jobs:
                   exit 1
                 }
                 cp "$OUT"/*.sarif ../results/
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability iac --tool checkov \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/mykronos \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
-                  --capability iac --tool checkov \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/mykronos \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch main --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
 
   # -- Stage 3: the gate (spec 15 §3, and spec 16 §3 for the ordering) ----
   #
@@ -1091,7 +1413,9 @@ jobs:
         trigger: true
         passed: [secrets, dependencies, sast, insider, containers, iac]
       - get: python
+      - *preflight
       - task: evaluate
+        timeout: 10m
         image: python
         params: *mykronos_env
         config:
@@ -1184,6 +1508,7 @@ jobs:
         passed: [oracle-gate]
       - get: python
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -1199,6 +1524,7 @@ jobs:
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
 
       - task: promote-tags
+        timeout: 10m
         config:
           platform: linux
           image_resource:
@@ -1236,6 +1562,7 @@ jobs:
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
       - task: build-backend
+        timeout: 20m
         image: python
         config:
           platform: linux
@@ -1308,6 +1635,7 @@ jobs:
         passed: [build]
       - get: python
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -1322,6 +1650,7 @@ jobs:
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
       - task: kaniko
+        timeout: 45m
         config:
           platform: linux
           image_resource:
@@ -1357,6 +1686,7 @@ jobs:
         passed: [build]
       - get: python
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -1371,6 +1701,7 @@ jobs:
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
       - task: kaniko
+        timeout: 45m
         config:
           platform: linux
           image_resource:
@@ -1416,10 +1747,12 @@ jobs:
       - get: python
       - get: trivy
 
+      - *preflight
       # The SHA is resolved in a task that has git and handed over as a file.
       # Trivy's image does not ship git, and reading `.git/HEAD` by hand works
       # right up until the ref is packed.
       - task: resolve-sha
+        timeout: 5m
         image: python
         config:
           platform: linux
@@ -1435,6 +1768,7 @@ jobs:
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
 
       - task: scan-images
+        timeout: 45m
         image: trivy
         config:
           platform: linux
@@ -1479,31 +1813,40 @@ jobs:
                     exit 1
                   }
                 done
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability containers --tool trivy \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/mykronos \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" \
+                    --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
 
-      - task: upload
-        image: python
-        params: *mykronos_env
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
-                  --capability containers --tool trivy \
-                  --results-path results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/mykronos \
-                  --commit-sha "$(git -C source rev-parse HEAD)" \
-                  --branch main \
-                  --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false
 
   # -- Auto-remediation (spec 08) -----------------------------------------
   #
@@ -1530,9 +1873,17 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [secrets, dependencies, sast, containers]
+        # `iac` added: Patchwork's source capabilities are sast, secrets,
+        # containers **and iac** (`patchwork/pipeline.py`,
+        # DEFAULT_SOURCE_CAPABILITIES). Without it in this list the job could
+        # start while the iac lane was still running, and Patchwork would
+        # remediate the *previous* commit's infrastructure findings while
+        # reporting against this one.
+        passed: [secrets, dependencies, sast, iac, containers]
       - get: python
+      - *preflight
       - task: patchwork
+        timeout: 20m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))
@@ -1635,7 +1986,9 @@ jobs:
         trigger: true
         passed: [publish-backend, publish-frontend]
       - get: python
+      - *preflight
       - task: functional-and-dast
+        timeout: 120m
         image: python
         params:
           <<: *mykronos_env
@@ -1775,7 +2128,7 @@ jobs:
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
-                  --commit-sha "$SHA" --branch main \
+                  --commit-sha "$SHA" --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false || true
 
@@ -1784,7 +2137,7 @@ jobs:
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
-                  --commit-sha "$SHA" --branch main \
+                  --commit-sha "$SHA" --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
 

@@ -40,6 +40,22 @@ REQUIRED_MODULES: tuple[str, ...] = (
     "mykronos.atlas_freshness",
     "mykronos.reachability",
     "mykronos.ai_pin_check",
+    "mykronos.junit_stage",
+)
+
+#: Repository scripts a pipeline fetches by raw URL at `${MYKRONOS_REF}`
+#: rather than through the installed package.
+#:
+#: A second, quieter way the pin goes stale, and nothing checked it.
+#: `check_ai.py` has been fetched this way by TheHub's `ai-models` lane since
+#: D-047, and `check_links.py` now is too by its `qa` lane. The tag they fetch
+#: from is this same pin, so a script added after the tag simply 404s when the
+#: lane runs — which reads as a broken job rather than as a stale pin. They are
+#: not in the package, so the import check above cannot see them; the only
+#: thing that can is asking the ref whether the file is there.
+REQUIRED_SCRIPTS: tuple[str, ...] = (
+    "scripts/check_ai.py",
+    "scripts/check_links.py",
 )
 
 #: CLI flags a pipeline or workflow template passes. A flag the pinned package
@@ -52,6 +68,7 @@ REQUIRED_FLAGS: dict[str, tuple[str, ...]] = {
     "mykronos.reachability": ("--commit-sha",),
     "mykronos.atlas_sbom": ("--banned-package", "--blocked-license", "--sarif"),
     "mykronos.ai_pin_check": ("--repo-root", "--output"),
+    "mykronos.junit_stage": ("--out", "--suite", "--case"),
 }
 
 
@@ -96,7 +113,40 @@ def _help_text(module: str) -> str | None:
     return buffer.getvalue()
 
 
-def check() -> list[str]:
+def _missing_scripts(commit: str) -> list[str]:
+    """Which of REQUIRED_SCRIPTS are absent at the pinned commit.
+
+    Fails **open** on any network or resolution problem. This exists to catch a
+    stale pin, and turning "GitHub was slow" into a red pipeline would make it
+    the thing people pause. A script that is genuinely missing 404s every time,
+    so it is caught on the next build regardless.
+    """
+    if not commit or commit in {"not installed", "local install", "unknown", "unreadable"}:
+        print(f"Cannot resolve the pinned commit ({commit}); skipping the script check.")
+        return []
+
+    import httpx2
+
+    problems: list[str] = []
+    base = f"https://raw.githubusercontent.com/ToddGBenson/mykronos/{commit}"
+    try:
+        with httpx2.Client(timeout=15.0, follow_redirects=True) as client:
+            for script in REQUIRED_SCRIPTS:
+                response = client.head(f"{base}/{script}")
+                if response.status_code == 404:
+                    problems.append(
+                        f"{script} does not exist at the pinned ref - a pipeline "
+                        f"fetches it by raw URL and will 404"
+                    )
+                elif response.status_code >= 400:
+                    print(f"Could not check {script} (HTTP {response.status_code}); skipping it.")
+    except Exception as exc:  # noqa: BLE001 - any transport failure means "cannot determine"
+        print(f"Could not reach raw.githubusercontent.com ({exc}); skipping the script check.")
+        return []
+    return problems
+
+
+def check(commit: str = "") -> list[str]:
     """Every unmet requirement, as a human-readable line."""
     problems: list[str] = []
 
@@ -117,6 +167,8 @@ def check() -> list[str]:
             f"{module} does not accept {flag}" for flag in flags if flag not in help_text
         )
 
+    problems.extend(_missing_scripts(commit))
+
     return problems
 
 
@@ -127,9 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     commit = _installed_commit()
     print(f"Pinned mykronos package resolves to commit {commit}")
 
-    problems = check()
+    problems = check(commit)
     if not problems:
-        print(f"The pin supports all {len(REQUIRED_MODULES)} runner modules and their flags.")
+        print(
+            f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
+            f"flags, and all {len(REQUIRED_SCRIPTS)} raw-fetched scripts."
+        )
         return 0
 
     print()
