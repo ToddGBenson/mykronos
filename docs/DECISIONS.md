@@ -2861,3 +2861,41 @@ data argues for instead is scoring: sixteen unfixable criticals contribute 177
 points and pin the repository at 100/100, so the gate is currently measuring
 Debian's release schedule rather than anything the team controls. That is a
 policy change and is not made here.
+
+## D-077 — An unfixable finding counts for less, not for nothing
+
+TheHub's sixteen critical Perl CVEs contributed 177 points and pinned the
+repository at 100/100. Every one had `fixed_version: null` — Debian had
+shipped no patch, so no rebuild, bump or fixer closed any of them. The gate
+therefore read `no_go` whether the team had fixed everything they could or
+nothing at all, which is the state in which a gate has stopped carrying
+information. That is what this addresses, not the backlog.
+
+`unfixable_dampening.factor` (0.5, matching `false_positive_dampening`)
+applies inside the curve to the *count*, the same mechanism dampened rules and
+in-flight fixes already use, and capped against them so a finding cannot be
+discounted twice.
+
+**Dampened, never excluded.** An unpatched critical in production is real
+risk. Scoring it at zero would say something false and would make ignoring
+upstream the cheapest way to improve a score.
+
+**Gated on `package_name`, and that guard is the whole risk in this change.**
+A SAST finding has no `fixed_version` and never will: absence there means the
+field does not apply, not that upstream has shipped nothing. An unguarded
+check would have quietened every injection finding in the fleet — the single
+worst outcome available in this file, and the reason most of
+`test_unfixable_dampening.py` is about SAST findings rather than about the
+discount.
+
+**It does not clear TheHub's gate, and was not tuned to.** Modelled against
+the live numbers, the raw score falls 346 → 310 and still clamps to 100. The
+factor was chosen for consistency with the existing dampener, not to produce a
+verdict; picking a number because of the answer it yields is scoring
+backwards. What does move is `raw_score`, which is what the portfolio ranks on
+(D-018) — a repository with unfixable findings now ranks below one with the
+same count of fixable ones, which is the ordering a person would choose.
+
+Policy 1.4. Unlike every bump before it, this one changes existing scores on
+purpose: `fixed_version` has been on every dependency and container finding
+all along and nothing read it.

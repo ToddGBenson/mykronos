@@ -63,6 +63,26 @@ class RiskProfilePolicy:
 
 
 @dataclass(frozen=True)
+class UnfixableDampening:
+    """How much less an unremediable finding counts (spec 09 §5, D-077).
+
+    A CVE the maintainer has not patched is real risk and must still score —
+    this dampens, it does not exclude. What it stops is the score measuring
+    somebody else's release schedule: sixteen unfixable criticals pinned
+    TheHub at 100/100, so the gate said the same thing whether the team fixed
+    everything they could or nothing at all, which is the state in which a
+    gate stops carrying information.
+
+    Applies only to findings that name a package. A SAST finding has no
+    `fixed_version` and never will; absence there means "no such field",
+    not "upstream has shipped nothing", and dampening every injection finding
+    on that reading would be the worst bug this file could have.
+    """
+
+    factor: float
+
+
+@dataclass(frozen=True)
 class BlastRadiusPolicy:
     """Weights for portfolio-wide package concentration (spec 19 §2.4).
 
@@ -112,6 +132,7 @@ class Policy:
     risk_profile: RiskProfilePolicy
     blast_radius: BlastRadiusPolicy
     reachability: ReachabilityPolicy
+    unfixable: UnfixableDampening
 
     no_go: float
     review_recommended: float
@@ -198,6 +219,9 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # zero, rather than refusing to load at all.
     blast_raw = modifiers.get("blast_radius") or {}
     reach_raw = modifiers.get("reachability") or {}
+    # Optional like the two above: a policy file from before this loads,
+    # with the factor at zero, and every score stays exactly as it was.
+    unfixable_raw = modifiers.get("unfixable_dampening") or {}
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -290,6 +314,11 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             discount_cap=_number(
                 reach_raw.get("discount_cap", 0), "reachability.discount_cap"
             ),
+        ),
+        unfixable=UnfixableDampening(
+            factor=_number(
+                unfixable_raw.get("factor", 0), "unfixable_dampening.factor"
+            )
         ),
         no_go=no_go,
         review_recommended=review,

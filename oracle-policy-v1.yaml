@@ -26,7 +26,13 @@
 # 1.3 — adds the reachability modifier (spec 19 §2.1), the first negative
 # weight in this file. A repository with no import analysis, or with nothing
 # orphaned, scores exactly as it did under 1.2.
-version: "1.3"
+#
+# 1.4 — adds unfixable_dampening (D-077). Unlike every bump before it, this
+# one *does* change existing scores: the data it reads (`fixed_version`) has
+# been on every dependency and container finding all along, and nothing was
+# reading it. A repository whose findings all have fixes available scores
+# exactly as it did; one carrying unpatched CVEs scores lower, on purpose.
+version: "1.4"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -160,6 +166,27 @@ modifiers:
   reachability:
     orphaned_discount_per_finding: 3
     discount_cap: 15
+
+  # Findings the maintainer has shipped no fix for (D-077).
+  #
+  # Dampens, never excludes. An unpatched CVE in production is real risk and
+  # has to keep scoring. What this stops is the score measuring somebody
+  # else's release schedule: sixteen unfixable critical Perl CVEs pinned
+  # TheHub at 100/100, so the gate read the same whether the team had fixed
+  # everything they could or nothing at all -- the state in which a gate has
+  # stopped carrying information.
+  #
+  # 0.5, matching false_positive_dampening, and chosen for consistency rather
+  # than to produce any particular verdict. It does not on its own clear a
+  # repository whose backlog is genuinely large, and it should not: accepting
+  # an unfixable risk is still a decision a person has to make and record.
+  #
+  # Only applies to findings that name a package. A SAST finding has no
+  # `fixed_version` and never will -- absence there means the field does not
+  # apply, not that upstream has shipped nothing, and reading it the other way
+  # would quieten every injection finding in the fleet.
+  unfixable_dampening:
+    factor: 0.5
 
 # ---------------------------------------------------------------------------
 # Thresholds
