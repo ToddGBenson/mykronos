@@ -516,7 +516,7 @@ class OracleEngine:
 
     def _finding_counts(
         self, repo_full_name: str, *, for_gate: bool, dampened: list[str] | None = None
-    ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
         """Open findings by severity, and the aged subset.
 
         `for_gate` excludes capabilities spec 14 §7 keeps out of PR and
@@ -548,9 +548,25 @@ class OracleEngine:
             dampened_params = list(dampened)
         params: list[Any] = [*dampened_params, repo_full_name]
 
+        # Findings the maintainer has shipped no fix for (D-077). Gated on
+        # `package_name` deliberately: a SAST finding has no `fixed_version`
+        # and never will, so an unguarded check would read "no such field" as
+        # "nobody can fix this" and quieten every injection finding in the
+        # repository. The column position is fixed rather than appended after
+        # `dampened_clause`, which is conditional -- an index that moves with
+        # configuration is how the wrong number gets read as the right one.
+        unfixable_clause = """
+            , count(*) FILTER (
+                  WHERE package_name IS NOT NULL AND trim(package_name) <> ''
+                    AND coalesce(
+                          json_extract_string(raw_finding_json, '$.fixed_version'), ''
+                        ) = ''
+              ) AS unfixable
+        """
+
         rows = self.catalog.query(
             f"""
-            SELECT severity, count(*) AS total{dampened_clause}
+            SELECT severity, count(*) AS total{unfixable_clause}{dampened_clause}
             FROM findings
             WHERE asset_id = ?
               AND status IN ({statuses})
@@ -561,8 +577,9 @@ class OracleEngine:
             params,
         )
         counts = {str(row[0]): int(row[1]) for row in rows}
+        unfixable_counts = {str(row[0]): int(row[2]) for row in rows}
         dampened_counts = (
-            {str(row[0]): int(row[2]) for row in rows} if dampened else {}
+            {str(row[0]): int(row[3]) for row in rows} if dampened else {}
         )
 
         # Age is measured against first_seen_at, which only survives because
@@ -589,7 +606,7 @@ class OracleEngine:
             ],
         )
         aged = {str(severity): int(count) for severity, count in aged_rows}
-        return counts, aged, dampened_counts
+        return counts, aged, dampened_counts, unfixable_counts
 
     def _insider_risk(
         self, repo_full_name: str, pr_number: int | None
@@ -942,7 +959,7 @@ class OracleEngine:
         # §6.1). Looked up before the counts so the query can split each
         # severity band into dampened and undampened in one pass.
         dampened = self._dampened_rules(repo_full_name)
-        counts, aged, dampened_counts = self._finding_counts(
+        counts, aged, dampened_counts, unfixable_counts = self._finding_counts(
             repo_full_name, for_gate=for_gate, dampened=sorted(dampened)
         )
         covered = self._remediation_in_flight(repo_full_name)
@@ -968,17 +985,25 @@ class OracleEngine:
             # dampened and being fixed cannot be discounted twice.
             in_flight = max(0, min(covered_counts.get(severity, 0), count - quiet))
             discount = self.policy.remediation_discount
+            # No fix exists upstream (D-077). Capped at what is left after the
+            # first two for the same reason they cap each other: a finding
+            # discounted twice would be quieter than the sum of its reasons.
+            unfixable_factor = self.policy.unfixable.factor
+            unfixable = max(
+                0, min(unfixable_counts.get(severity, 0), count - quiet - in_flight)
+            )
             effective = (
-                (count - quiet - in_flight)
+                (count - quiet - in_flight - unfixable)
                 + quiet * (1.0 - factor)
                 + in_flight * (1.0 - discount)
+                + unfixable * (1.0 - unfixable_factor)
             )
             contribution = _band_contribution(weight, effective)
 
             plural = "s" if count != 1 else ""
             detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
             label = f"{count} open {severity} finding{plural}"
-            if quiet or in_flight:
+            if quiet or in_flight or (unfixable and unfixable_factor):
                 parts = []
                 if quiet:
                     parts.append(f"{quiet} from dampened rules at {1.0 - factor:g}×")
@@ -986,6 +1011,11 @@ class OracleEngine:
                 if in_flight:
                     parts.append(f"{in_flight} being fixed at {1.0 - discount:g}×")
                     label += f", {in_flight} with a fix in flight"
+                if unfixable and unfixable_factor:
+                    parts.append(
+                        f"{unfixable} with no upstream fix at {1.0 - unfixable_factor:g}×"
+                    )
+                    label += f", {unfixable} with no upstream fix"
                 detail = (
                     f"{weight:g} × log2(1 + {effective:g}) = {contribution:.1f} "
                     f"({'; '.join(parts)})"
@@ -1002,6 +1032,7 @@ class OracleEngine:
                         "weight": weight,
                         "dampened": quiet,
                         "remediation_in_flight": in_flight,
+                        "no_upstream_fix": unfixable,
                         "effective_count": round(effective, 2),
                     },
                 )
