@@ -51,6 +51,18 @@ services:
       MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
       MYKRONOS_CONCOURSE_TEAM: ${MYKRONOS_CONCOURSE_TEAM:-main}
 
+      # Auto-routing (spec 19 §4). Same lesson as the Slack block below, met
+      # again: `MYKRONOS_ROUTING_ENABLED=true` was set in backend/.env, the
+      # stack was redeployed, and the setting read `False` in the container
+      # because nothing passed it. Compose interpolates only the names listed
+      # here — an env file is not an environment.
+      #
+      # Defaulted to the code default rather than to `true`: turning this on
+      # is a per-deployment decision (it opens issues in somebody's tracker),
+      # and a compose file that flips it for everyone who pulls would be
+      # making that decision on their behalf.
+      MYKRONOS_ROUTING_ENABLED: ${MYKRONOS_ROUTING_ENABLED:-false}
+
       # Alerting (spec 16 §12). Empty by default and nothing is posted -- but
       # it has to be *passed* to be settable at all, and without these two
       # lines `mykronos.notify` could never fire in the deployed stack no
