@@ -64,6 +64,22 @@ def pipeline_name_for(repo_full_name: str) -> str:
 #: exactly the case Aegis exists to notice. Cross-checking it reported every
 #: green insider job as a silent failure, which was this check being wrong
 #: about what the job is for.
+def jobs_for_capability(capability: str) -> set[str]:
+    """Which Concourse job(s) plausibly produce this capability.
+
+    The reverse of `CAPABILITY_BY_JOB`, and a heuristic in the same spirit and
+    for the same reason as the mapping it derives from: a pipeline that names
+    its job differently is simply not reached, which is the safe direction to
+    be wrong in — a 404 from Concourse, not a crash.
+
+    Lives here rather than in a caller because two of them now need it: the
+    "scan now" button (spec 17 §2.5) and fix verification (spec 25 §1). A
+    second private copy would be a second thing to update when a job is
+    renamed, and the first one to be forgotten.
+    """
+    return _JOBS_BY_CAPABILITY.get(capability, {capability})
+
+
 CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "sast": "sast",
     "secrets": "secrets",
@@ -111,6 +127,12 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
 #: after its upload, but compaction is asynchronous and a run started before a
 #: deploy can land minutes later. Anything under an hour is not evidence.
 REPORTING_GRACE_SECONDS = 3600
+
+
+_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
+for _job_name, _caps in CAPABILITY_BY_JOB.items():
+    for _cap in _caps if isinstance(_caps, tuple) else (_caps,):
+        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
 
 
 def _utc(moment: datetime | None) -> datetime | None:

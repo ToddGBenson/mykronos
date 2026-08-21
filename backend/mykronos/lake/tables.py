@@ -207,6 +207,34 @@ REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
     # verdicts a human ever gives this platform.
     ("pr_status", "VARCHAR"),
     ("rationale", "VARCHAR"),
+    # Which fixer produced this (spec 25 §3.1). Held in memory since spec 08
+    # and never stored, so "does this fixer work" could not be asked. It is
+    # the name only — the generated file content stays out of the lake, which
+    # is what `StageOutcome.fix_files`'s comment is actually about.
+    ("fixer_name", "VARCHAR"),
+    # Why somebody closed this fix without merging it (spec 25 §3.3).
+    # `fix_was_wrong` stops this fixer offering the same change for the same
+    # rule here; `fix_was_unwanted` dampens nothing at all, because a correct
+    # fix nobody wanted is a scheduling disagreement rather than a defect.
+    # `unstated` is recorded as itself rather than guessed at.
+    ("rejection_reason_code", "VARCHAR"),
+    ("rejection_reason", "VARCHAR"),
+    # Did the fix work? (spec 25 §1, §2). Written across three moments by
+    # three different writers — the webhook records the merge commit, the
+    # verification job records the dispatch, and the resolver records the
+    # verdict — so every one of them coalesces rather than overwrites.
+    #
+    # `verification_outcome` is pending | verified_fixed | still_open |
+    # not_scanned | inconclusive. `inconclusive` is a real answer and is
+    # reported as one: folding a failed verifying scan into `still_open`
+    # would slander a fix that may well have worked, and folding it into
+    # `verified_fixed` would flatter one that may not have.
+    ("verification_commit_sha", "VARCHAR"),
+    ("verification_dispatched_at", "TIMESTAMP"),
+    ("verification_scan_run_id", "VARCHAR"),
+    ("verification_outcome", "VARCHAR"),
+    ("verified_at", "TIMESTAMP"),
+    ("time_to_verified_seconds", "INTEGER"),
     ("created_at", "TIMESTAMP"),
     ("updated_at", "TIMESTAMP"),
 ]
@@ -279,7 +307,23 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     "sscs_evidence": ("tag_or_release", "sbom_ref"),
     # The webhook sets pr_status long after the pipeline set everything else,
     # and a later pipeline run must not blank the PR it already opened.
-    "remediation_events": ("pr_status", "fix_pr_number", "fix_pr_url"),
+    "remediation_events": (
+        "pr_status",
+        "fix_pr_number",
+        "fix_pr_url",
+        # Spec 25 §2 — see the compaction update set for why each of these
+        # coalesces. Declared here too so a dispatch and a verdict landing in
+        # one five-minute compaction window do not cost the earlier one.
+        "fixer_name",
+        "rejection_reason_code",
+        "rejection_reason",
+        "verification_commit_sha",
+        "verification_dispatched_at",
+        "verification_scan_run_id",
+        "verification_outcome",
+        "verified_at",
+        "time_to_verified_seconds",
+    ),
 }
 
 

@@ -137,9 +137,38 @@ _UPDATE_SETS: dict[str, str] = {
         contributing_finding_ids = i.contributing_finding_ids,
         toxic_combination_id     = coalesce(i.toxic_combination_id, part.toxic_combination_id),
         rationale                = i.rationale,
+        -- Coalesced, not refreshed: the webhook and the verification job both
+        -- write this row and neither of them knows which fixer produced it
+        -- (spec 25 §3.1).
+        fixer_name               = coalesce(i.fixer_name, part.fixer_name),
+        -- Written once, by the webhook, and unknown to every other writer.
+        rejection_reason_code    = coalesce(
+            i.rejection_reason_code, part.rejection_reason_code
+        ),
+        rejection_reason         = coalesce(i.rejection_reason, part.rejection_reason),
         fix_pr_number            = coalesce(i.fix_pr_number, part.fix_pr_number),
         fix_pr_url               = coalesce(i.fix_pr_url, part.fix_pr_url),
         pr_status                = coalesce(i.pr_status, part.pr_status),
+        -- Three writers, three moments (spec 25 §2): the webhook knows the
+        -- merge commit, the job knows it dispatched, the resolver knows the
+        -- verdict. None of them holds the other two's values, so each
+        -- coalesces rather than blanking what it does not know.
+        verification_commit_sha    = coalesce(
+            i.verification_commit_sha, part.verification_commit_sha
+        ),
+        verification_dispatched_at = coalesce(
+            i.verification_dispatched_at, part.verification_dispatched_at
+        ),
+        verification_scan_run_id   = coalesce(
+            i.verification_scan_run_id, part.verification_scan_run_id
+        ),
+        verification_outcome       = coalesce(
+            i.verification_outcome, part.verification_outcome
+        ),
+        verified_at                = coalesce(i.verified_at, part.verified_at),
+        time_to_verified_seconds   = coalesce(
+            i.time_to_verified_seconds, part.time_to_verified_seconds
+        ),
         updated_at               = i.updated_at
     """,
     "scan_runs": """

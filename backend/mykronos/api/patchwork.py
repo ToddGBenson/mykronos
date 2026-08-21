@@ -124,6 +124,50 @@ class DigestPage(BaseModel):
     )
 
 
+class EfficacyRowOut(BaseModel):
+    """One fixer's — or one rule's — record (spec 25 §3.1)."""
+
+    key: str = Field(description="The fixer name, or the rule_id, depending on the list.")
+    attempts: int = Field(description="Fixes generated.")
+    prs_opened: int = Field(description="Reached a draft pull request.")
+    merged: int = Field(description="A person merged it.")
+    rejected: int = Field(description="Closed unmerged.")
+    verified: int = Field(
+        description=(
+            "The finding was gone from the verifying scan of the merge commit "
+            "(spec 25 §2). This is the only column that says risk was removed."
+        )
+    )
+    still_open: int = Field(
+        description="Merged, re-scanned, and the finding was reported again."
+    )
+    unverified: int = Field(
+        description=(
+            "Merged but never established either way — inconclusive, not "
+            "scanned, or still waiting. Deliberately not counted as a failure: "
+            "the scan did not answer, which is not the same as the fix not "
+            "working."
+        )
+    )
+    median_seconds_to_verified: int | None = Field(
+        default=None, description="Merge to verification. Null with nothing verified."
+    )
+
+
+class EfficacyPage(BaseModel):
+    """Whether Patchwork removes risk, or only opens pull requests.
+
+    Two breakdowns because they answer different questions: `by_fixer` says
+    which fixers work, `by_rule` says which rules are fixable here. A fixer
+    that works everywhere except one rule is a different problem from a fixer
+    nobody trusts, and one axis cannot tell them apart.
+    """
+
+    by_fixer: list[EfficacyRowOut]
+    by_rule: list[EfficacyRowOut]
+    note: str
+
+
 class RemediationPreviewOut(BaseModel):
     """"Auto remediation identified" (spec 18 §7.2) — nothing written yet."""
 
@@ -342,12 +386,11 @@ async def cross_repo_digest(
     change. This groups them for the reviewer.
 
     Grouped by `rule_id`, which is not on `remediation_events` — it is on the
-    finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
-    column exists on the events table, and `fixer_name` is not recorded
-    anywhere, so the grouping is by rule alone. That is the coarser key, and
-    coarser is the safe direction: two fixers for one rule would land in one
-    card, which a reviewer can see, rather than one fixer's work being split
-    across two cards, which they cannot.
+    finding, so this joins. The spec expected `(rule_id, fixer_name)`, and
+    `fixer_name` is now recorded (spec 25 §3.1) — but the grouping stays by
+    rule alone, for the reason D-071 gave: coarser is the safe direction here,
+    because two fixers for one rule land in one card a reviewer can see,
+    rather than one fixer's work being split across two cards they cannot.
 
     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
     by the parameterised one.
@@ -400,6 +443,90 @@ async def cross_repo_digest(
     return DigestPage(
         groups=groups[:limit],
         total_open_prs=sum(group.count for group in groups),
+    )
+
+
+_EFFICACY_SELECT = """
+    SELECT
+        {key} AS key,
+        count(*) AS attempts,
+        count(*) FILTER (WHERE e.fix_pr_number IS NOT NULL) AS prs_opened,
+        count(*) FILTER (WHERE e.pr_status = 'merged') AS merged,
+        count(*) FILTER (WHERE e.pr_status = 'closed_unmerged') AS rejected,
+        count(*) FILTER (WHERE e.verification_outcome = 'verified_fixed') AS verified,
+        count(*) FILTER (WHERE e.verification_outcome = 'still_open') AS still_open,
+        count(*) FILTER (
+            WHERE e.pr_status = 'merged'
+              AND coalesce(e.verification_outcome, 'pending') NOT IN
+                  ('verified_fixed', 'still_open')
+        ) AS unverified,
+        median(e.time_to_verified_seconds) FILTER (
+            WHERE e.verification_outcome = 'verified_fixed'
+        ) AS median_seconds
+    FROM remediation_events e
+    {join}
+    WHERE {filter}
+    GROUP BY {key}
+    ORDER BY verified DESC, attempts DESC
+"""
+
+
+def _efficacy_rows(catalog: Any, *, key: str, join: str, filter_: str) -> list[EfficacyRowOut]:
+    rows = catalog.query(_EFFICACY_SELECT.format(key=key, join=join, filter=filter_))
+    return [
+        EfficacyRowOut(
+            key=str(row[0]),
+            attempts=int(row[1]),
+            prs_opened=int(row[2]),
+            merged=int(row[3]),
+            rejected=int(row[4]),
+            verified=int(row[5]),
+            still_open=int(row[6]),
+            unverified=int(row[7]),
+            median_seconds_to_verified=int(row[8]) if row[8] is not None else None,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/efficacy", response_model=EfficacyPage)
+async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
+    """Does Patchwork actually remove risk? (spec 25 §3)
+
+    Until the verification loop shipped, a fixer that opened pull requests
+    nobody merged was indistinguishable from one that silently removed real
+    risk every week: both showed as `pr_opened` rows. The first is a machine
+    generating review load, and that load is paid by exactly the people this
+    platform exists to help.
+
+    Ordered before `/repos/{repo_id}` — a literal path must not be shadowed by
+    the parameterised one.
+    """
+    catalog = request.app.state.catalog
+    if not catalog.all_files("remediation_events"):
+        return EfficacyPage(by_fixer=[], by_rule=[], note="Patchwork has not run yet.")
+
+    by_fixer = _efficacy_rows(
+        catalog,
+        key="e.fixer_name",
+        join="",
+        filter_="e.fixer_name IS NOT NULL",
+    )
+    by_rule = _efficacy_rows(
+        catalog,
+        key="f.rule_id",
+        join="JOIN findings f ON f.finding_id = e.finding_id",
+        filter_="e.fixer_name IS NOT NULL",
+    )
+    return EfficacyPage(
+        by_fixer=by_fixer,
+        by_rule=by_rule,
+        note=(
+            "`verified` means the finding was gone from a scan of the merge "
+            "commit — the only column here that says risk was removed. "
+            "`unverified` is merged-but-not-established, which is not a "
+            "failure: the scan did not answer."
+        ),
     )
 
 

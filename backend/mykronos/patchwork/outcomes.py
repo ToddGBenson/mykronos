@@ -25,6 +25,7 @@ from mykronos.knowledge.capture import safe_capture
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
+from mykronos.patchwork.rejection import UNSTATED, capture_reason, parse_rejection
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ def record_pr_outcome(
     *,
     merged: bool,
     store: KnowledgeStore | None = None,
+    merge_commit_sha: str | None = None,
+    pr_body: str = "",
 ) -> str | None:
     """Update the event for a closed Patchwork pull request.
 
@@ -47,7 +50,7 @@ def record_pr_outcome(
     """
     rows = catalog.query(
         """
-        SELECT event_id, finding_id, rationale
+        SELECT event_id, finding_id, rationale, fixer_name
         FROM remediation_events
         WHERE repo_full_name = ? AND fix_pr_number = ?
         LIMIT 1
@@ -57,8 +60,12 @@ def record_pr_outcome(
     if not rows:
         return None
 
-    event_id, finding_id, rationale = (str(v) for v in rows[0])
+    event_id, finding_id, rationale = (str(v) for v in rows[0][:3])
+    fixer_name = str(rows[0][3]) if rows[0][3] else None
     status = "merged" if merged else "closed_unmerged"
+
+    # Only a close asks a question; a merge answers it by itself.
+    code, reason_text = parse_rejection(pr_body) if not merged else (None, "")
 
     buffer.append(
         "remediation_events",
@@ -75,11 +82,35 @@ def record_pr_outcome(
                 "fix_pr_url": None,
                 "pr_status": status,
                 "rationale": rationale,
+                # A merged fix earns a verification (spec 25 §1). `pending` is
+                # a stored state rather than a null so "waiting for evidence"
+                # and "nobody ever asked" stay distinguishable — an abandoned
+                # fix is never verified and must not look like one that is
+                # still being checked.
+                "verification_commit_sha": merge_commit_sha if merged else None,
+                "verification_outcome": "pending" if merged else None,
+                "fixer_name": fixer_name,
+                "rejection_reason_code": code,
+                "rejection_reason": reason_text or None,
                 "created_at": utcnow(),
                 "updated_at": utcnow(),
             }
         ],
     )
+
+    if store is not None and code and code != UNSTATED:
+        rule_rows = catalog.query(
+            "SELECT rule_id FROM findings WHERE finding_id = ? LIMIT 1", [finding_id]
+        )
+        safe_capture(
+            capture_reason,
+            store,
+            repo_full_name=repo_full_name,
+            rule_id=str(rule_rows[0][0]) if rule_rows else "",
+            fixer_name=fixer_name,
+            code=code,
+            reason=reason_text,
+        )
 
     if store is not None:
         safe_capture(

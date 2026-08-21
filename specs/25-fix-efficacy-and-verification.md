@@ -35,10 +35,10 @@ This spec closes the first three. The fourth is named, scoped, and gated in §4 
 
 | Item | Status |
 |---|---|
-| Verification scan on fix-PR merge (§1) | Not started |
-| Attribution: which change closed which finding (§2) | Not started |
-| Per-fixer efficacy, published (§3) | Not started |
-| Rejected-fix reasons into the Knowledge Store (§3.3) | Not started |
+| Verification scan on fix-PR merge (§1) | **Built** |
+| Attribution: which change closed which finding (§2) | **Built** |
+| Per-fixer efficacy, published (§3) | **Built** — `fixer_name` is now persisted, which §3 needs and spec 08 never stored |
+| Rejected-fix reasons into the Knowledge Store (§3.3) | **Built** |
 | A fixer for SAST-shaped findings (§4) | Deliberately gated — see §4 |
 
 ## 1. Verification
@@ -84,12 +84,24 @@ rewrote it" is a materially different claim from "our fix worked".
 - **`time_to_verified_seconds`** — merge to verification, the only fix-latency number in this
   platform that will be attributable to a route.
 
-`verified_fixed` requires the specific `finding_id` to have transitioned to `fixed` in the verifying
-run. Not "the count went down" — the identity has to be gone, which is precisely what the
-code-anchored fingerprint (D-001) exists to make possible.
+`verified_fixed` requires the specific `finding_id` to be absent from the verifying run. Not "the
+count went down" — the identity has to be gone, which is precisely what the code-anchored
+fingerprint (D-001) exists to make possible.
 
-`inconclusive` is a real outcome and is reported as one: the verifying run failed, or returned
-`no_applicable_targets`, or the finding's file no longer exists so identity cannot be evaluated.
+**Read from the run, not from the finding's status** — a correction to this section's first draft,
+made while building it. A finding is not marked `fixed` until it has been absent from *two*
+consecutive scans (`reconcile.REQUIRED_ABSENCES`): flap protection, which exists to stop
+`resolved_at` churning and answers a different question from this one. Waiting on it would leave a
+working fix unverified until an unrelated second scan happened to run. So the evidence is the
+verifying run itself — it succeeded, and it either re-reported the finding
+(`last_seen_scan_run_id` points at it) or it did not. The finding's status stays the platform's own
+conservative business; this column reports what one scan of one commit observed.
+
+**Only a `success` run gives a verdict.** A `partial_failure` may not have scanned the file the
+finding lives in, so an absence proves nothing there.
+
+`inconclusive` is a real outcome and is reported as one: the verifying run failed or partly failed,
+or returned `no_applicable_targets`, or the finding is no longer in the lake at all.
 Folding any of those into `still_open` would slander a fix that may well have worked; folding them
 into `verified_fixed` would flatter one that may not have.
 
@@ -129,8 +141,11 @@ load, and the review load is paid by exactly the people this platform is meant t
 - Closing a Patchwork PR unmerged prompts for a one-line reason — via the PR itself (a comment
   template the platform posts when it opens the draft, which the closer fills in), not via a form in
   this dashboard nobody will visit at that moment.
-- The reason is captured into the Knowledge Store with a new source type, `rejected_fix`, alongside
-  the existing dismissal capture. Two codes matter and are offered explicitly: `fix_was_wrong` and
+- The reason is captured into the Knowledge Store under the existing `remediation_outcome` source
+  type rather than a new `rejected_fix` one. That is the safer wiring, not merely the smaller one:
+  `dampening.dampened_rules` reads `finding_dismissal` and nothing else, so an outcome entry cannot
+  reach a finding's standing by any path — which is exactly the property the next paragraph asks
+  for, enforced by the existing filter instead of by a new one. Two codes matter and are offered explicitly: `fix_was_wrong` and
   `fix_was_unwanted`. They pull in opposite directions — the first should dampen the *fixer*, the
   second should not dampen anything at all, because a correct fix nobody wanted is a scheduling
   disagreement, not a defect.
