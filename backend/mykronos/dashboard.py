@@ -341,7 +341,7 @@ class DashboardQueries:
             statement = statement.where(RepoOnboarding.status != "removed")
         onboardings = list(session.execute(statement).scalars())
 
-        severity_by_repo = self._open_severity_counts()
+        severity_by_repo, overdue_findings = self._open_severity_counts()
         scans_by_repo = self._capability_scan_state()
         decisions_by_repo = self._latest_portfolio_decisions()
 
@@ -408,25 +408,9 @@ class DashboardQueries:
             repos_with_stale_scans=sum(1 for r in rows if r.is_stale),
             repos_no_go=sum(1 for r in rows if r.recommendation == "no_go"),
             repos_not_assessed=sum(1 for r in rows if r.recommendation is None),
-            overdue_findings=self._overdue_count(),
+            overdue_findings=overdue_findings,
         )
         return rows, summary
-
-    def _overdue_count(self) -> int:
-        """Open findings past their due date, across the portfolio.
-
-        One query over the whole table rather than a per-repo sum: the tile is
-        a single number and the row-level counts it would otherwise need are
-        not rendered anywhere.
-        """
-        if not self.catalog.all_files("findings"):
-            return 0
-        rows = self.catalog.query(
-            "SELECT count(*) FROM findings "
-            "WHERE status = 'open' AND due_at IS NOT NULL AND due_at <= ?",
-            [utcnow()],
-        )
-        return int(rows[0][0]) if rows else 0
 
     def _latest_portfolio_decisions(self) -> dict[str, tuple[Any, ...]]:
         """Most recent portfolio decision per repo.
@@ -464,7 +448,7 @@ class DashboardQueries:
             "raw_risk_score": float(raw) if raw is not None else float(score),
         }
 
-    def _open_severity_counts(self) -> dict[str, dict[str, int]]:
+    def _open_severity_counts(self) -> tuple[dict[str, dict[str, int]], int]:
         # `asset_id`, not `repo_full_name` (spec 18 §1, D-061): every other
         # repo-scoped query in this file already keys on asset_id
         # (`_status_clause`) because it is the canonical column (spec 14 §5).
@@ -472,18 +456,29 @@ class DashboardQueries:
         # (see migrate_assets.py) was counted here and invisible to
         # open_findings() below it — the portfolio and the Findings tab
         # disagreeing about the same repo's open count.
+        #
+        # The overdue count (spec 24 §2.4) rides along here rather than in a
+        # query of its own. It had one, and it cost the portfolio endpoint its
+        # two-second budget: 2.74s for 200 repos against a 2.0s ceiling, caught
+        # by `test_portfolio_endpoint_stays_within_budget` — which exists
+        # precisely so that a second full scan of `findings` cannot be added
+        # without somebody noticing. One scan answers both questions.
         rows = self.catalog.query(
             """
-            SELECT asset_id, severity, count(*)
+            SELECT asset_id, severity, count(*),
+                   count(*) FILTER (WHERE due_at IS NOT NULL AND due_at <= ?)
             FROM findings
             WHERE status = 'open'
             GROUP BY 1, 2
-            """
+            """,
+            [utcnow()],
         )
         counts: dict[str, dict[str, int]] = {}
-        for repo, severity, count in rows:
+        overdue = 0
+        for repo, severity, count, overdue_count in rows:
             counts.setdefault(str(repo), {})[str(severity)] = int(count)
-        return counts
+            overdue += int(overdue_count or 0)
+        return counts, overdue
 
     def _capability_scan_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Latest scan per (repo, capability), plus its open finding count."""
