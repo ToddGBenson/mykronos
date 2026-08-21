@@ -3066,6 +3066,22 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Accepted Until
+             * @description Review date for an accepted risk (spec 24 §3.2). Required unless `indefinite` is set: an acceptance with no end is a decision nobody revisits, and this platform is currently carrying 243 of them that each said no vendor fix exists.
+             */
+            accepted_until?: string | null;
+            /**
+             * Indefinite
+             * @description Accept with no review date. Deliberately an explicit choice rather than the default — it is rarer than people expect once a date is the easy option.
+             * @default false
+             */
+            indefinite: boolean;
+            /**
+             * Accepted Reason Code
+             * @description Required when accepting a risk. See `AcceptanceReason`.
+             */
+            accepted_reason_code?: ("no_vendor_fix" | "not_exploitable_here" | "compensating_control" | "cost_exceeds_risk" | "other") | null;
         };
         /** StatusChangeResult */
         StatusChangeResult: {

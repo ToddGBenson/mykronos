@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import select
 
@@ -34,7 +34,7 @@ from mykronos.knowledge import KnowledgeStore
 from mykronos.knowledge import PurgeResult as KnowledgePurgeResult
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
-from mykronos.lake.mutate import purge_rows
+from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
 from mykronos.oracle.service import OracleService
 from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.schemas import utcnow
@@ -593,4 +593,95 @@ async def route_open_findings(
 
     if result.stories_opened or result.failed:
         logger.info("Auto-routing sweep: %s", result.summary())
+    return result
+
+
+@dataclass
+class AcceptanceSweepResult:
+    """What one pass over the accepted-risk backlog changed."""
+
+    expired: int = 0
+    reopened_by_fix: int = 0
+    still_accepted: int = 0
+
+    def summary(self) -> str:
+        return (
+            f"{self.expired} expired, {self.reopened_by_fix} re-opened because a "
+            f"fix shipped, {self.still_accepted} still accepted"
+        )
+
+
+def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> AcceptanceSweepResult:
+    """Return acceptances to `open` when their premise runs out (spec 24 §3).
+
+    Two triggers, and they are deliberately different in kind.
+
+    **A date passed.** `accepted_until` is a review date somebody set, and the
+    sweep enforces it. Nothing is judged here — the finding goes back on the
+    queue so a person can accept it again with fresh eyes, which is the whole
+    point of asking for a date instead of a permanent dismissal.
+
+    **A fix shipped.** Only for `no_vendor_fix`, and only that code. It is the
+    one premise a scan can contradict: the acceptance said no patch exists,
+    and `raw_finding_json.fixed_version` now names one. Every other code rests
+    on something no scanner can see — a compensating control that may have
+    been removed, a cost judgement that may have changed — and re-opening
+    those on machine evidence would be inventing a verdict.
+
+    `first_seen_at` is preserved in both cases. An acceptance that ran out is
+    not a new discovery, and letting it reset the clock would hand every
+    ageing finding a way to look young — which is exactly what the age term,
+    the due date, and mean-time-to-fix would then be measuring.
+    """
+    result = AcceptanceSweepResult()
+    if not catalog.all_files("findings"):
+        return result
+
+    now = today or utcnow().date()
+
+    rows = catalog.query(
+        """
+        SELECT finding_id,
+               accepted_until,
+               accepted_reason_code,
+               coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), '')
+        FROM findings
+        WHERE status = 'accepted_risk'
+        """
+    )
+    if not rows:
+        return result
+
+    expired: list[str] = []
+    fixed: list[str] = []
+    for finding_id, accepted_until, reason_code, fixed_version in rows:
+        if accepted_until is not None and accepted_until <= now:
+            expired.append(str(finding_id))
+        elif reason_code == "no_vendor_fix" and str(fixed_version).strip():
+            fixed.append(str(finding_id))
+        else:
+            result.still_accepted += 1
+
+    for finding_ids, bucket in ((expired, "expired"), (fixed, "fixed")):
+        if not finding_ids:
+            continue
+        outcome = update_findings(
+            catalog,
+            locate_findings(catalog, finding_ids),
+            # `resolved_at` back to null and the acceptance fields cleared: a
+            # finding that is open again must not carry the paperwork of the
+            # decision that has just lapsed, or the next sweep would expire it
+            # a second time and the UI would show a review date on an open row.
+            "status = 'open', resolved_at = NULL, accepted_until = NULL, "
+            "accepted_reason_code = NULL",
+            [],
+            only_if_status="accepted_risk",
+        )
+        if bucket == "expired":
+            result.expired += outcome.count
+        else:
+            result.reopened_by_fix += outcome.count
+
+    if result.expired or result.reopened_by_fix:
+        logger.info("Acceptance sweep: %s", result.summary())
     return result

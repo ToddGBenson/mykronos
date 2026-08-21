@@ -74,6 +74,14 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     # kev | policy | manual.
     ("due_at", "TIMESTAMP"),
     ("due_source", "VARCHAR"),
+    # An acceptance with a review date, and the premise it rests on
+    # (spec 24 §3). Written only by the disposition endpoint, never by
+    # ingest, and absent from the compaction update set so a re-scan cannot
+    # clear them. `accepted_reason_code` is what makes an acceptance
+    # revisitable by a machine: "no vendor fix" as prose is a sentence, and
+    # as a code it is a claim a later scan can contradict.
+    ("accepted_until", "DATE"),
+    ("accepted_reason_code", "VARCHAR"),
     ("raw_finding_json", "VARCHAR"),
 ]
 

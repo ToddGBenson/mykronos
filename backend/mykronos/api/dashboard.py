@@ -465,6 +465,21 @@ class ThreatModelOut(BaseModel):
     supply_chain: ThreatModelSupplyChainOut | None = None
 
 
+#: What an acceptance rests on (spec 24 §3.2).
+#:
+#: The free text stays and is still what a person reads. The code is what
+#: makes an acceptance machine-revisitable — and only one of these is a
+#: premise a scan can contradict, which is why the sweep re-opens
+#: `no_vendor_fix` and nothing else.
+AcceptanceReason = Literal[
+    "no_vendor_fix",
+    "not_exploitable_here",
+    "compensating_control",
+    "cost_exceeds_risk",
+    "other",
+]
+
+
 class StatusChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -477,6 +492,27 @@ class StatusChange(BaseModel):
             "flagged low-confidence and barred from promotion, because reasons "
             "are what make a learning actionable rather than a statistic."
         ),
+    )
+    accepted_until: date | None = Field(
+        default=None,
+        description=(
+            "Review date for an accepted risk (spec 24 §3.2). Required unless "
+            "`indefinite` is set: an acceptance with no end is a decision "
+            "nobody revisits, and this platform is currently carrying 243 of "
+            "them that each said no vendor fix exists."
+        ),
+    )
+    indefinite: bool = Field(
+        default=False,
+        description=(
+            "Accept with no review date. Deliberately an explicit choice "
+            "rather than the default — it is rarer than people expect once a "
+            "date is the easy option."
+        ),
+    )
+    accepted_reason_code: AcceptanceReason | None = Field(
+        default=None,
+        description="Required when accepting a risk. See `AcceptanceReason`.",
     )
 
 
@@ -1304,11 +1340,55 @@ async def set_finding_status(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
 
+    accepting = body.status is FindingStatus.ACCEPTED_RISK
+    if accepting:
+        if body.accepted_reason_code is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Accepting a risk requires `accepted_reason_code`. The free "
+                    "text is what a person reads; the code is what lets a later "
+                    "scan contradict the premise — 'no vendor fix' stops being "
+                    "true the day a vendor ships one."
+                ),
+            )
+        if body.accepted_until is None and not body.indefinite:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Accepting a risk requires either `accepted_until` or an "
+                    "explicit `indefinite: true`. An acceptance with no end is "
+                    "a decision nobody revisits."
+                ),
+            )
+        if body.accepted_until is not None and body.accepted_until <= utcnow().date():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"`accepted_until` is {body.accepted_until.isoformat()}, which "
+                    "is not in the future. The next sweep would expire this "
+                    "acceptance immediately."
+                ),
+            )
+    elif body.accepted_until is not None or body.accepted_reason_code is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "`accepted_until` and `accepted_reason_code` only apply to "
+                f"`accepted_risk`, not to '{body.status.value}'."
+            ),
+        )
+
     outcome = update_findings(
         catalog,
         locate_findings(catalog, [finding_id]),
-        "status = ?, resolved_at = ?",
-        [body.status.value, utcnow()],
+        "status = ?, resolved_at = ?, accepted_until = ?, accepted_reason_code = ?",
+        [
+            body.status.value,
+            utcnow(),
+            body.accepted_until if accepting else None,
+            body.accepted_reason_code if accepting else None,
+        ],
     )
     if not outcome.count:
         raise HTTPException(
