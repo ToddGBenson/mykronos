@@ -176,6 +176,10 @@ class FindingOut(BaseModel):
     #: are behaviourally different, and a bare null owner could be any of them.
     owner: str | None = None
     owner_source: str | None = None
+    #: When this is due and who set that date (spec 24 §2). `due_source` is
+    #: kev | policy | manual; null means no target applies to this severity.
+    due_at: datetime | None = None
+    due_source: str | None = None
     fingerprint_version: str | None = None
     #: Set only when `status == "superseded"` (spec 05 §5a) — the finding_id
     #: that replaced this record. Previously not selected at all, so a
@@ -219,6 +223,10 @@ class FindingLocationOut(BaseModel):
 #: group-level `toxic_combination` `_group_findings` adds on top of it — the
 #: same four values `FindingGroupOut.triage` already renders, now also a
 #: filter (spec 18 §5.1).
+#: The `due` query filter (spec 24 §2.4). A Literal so a typo is a 422 with
+#: the allowed values in it, rather than a silently empty list.
+DueFilter = Literal["overdue", "due_soon", "on_track", "no_target"]
+
 TriageFilter = Literal[
     "true_positive", "likely_false_positive", "needs_human_judgment", "toxic_combination"
 ]
@@ -276,6 +284,26 @@ class FindingGroupOut(BaseModel):
             "file content, and a prediction would never self-correct. Null "
             "means nobody has looked yet, which is distinct from `false`: "
             "looked, and there is no mechanical fix."
+        ),
+    )
+    due_at: datetime | None = Field(
+        default=None,
+        description=(
+            "The soonest deadline among this group's occurrences (spec 24 §2). "
+            "Null means no target applies — `info` findings, or a deployment "
+            "with no remediation targets configured."
+        ),
+    )
+    due_source: str | None = Field(
+        default=None,
+        description="kev | policy | manual. A KEV date on any occurrence wins.",
+    )
+    due_state: str = Field(
+        default="no_target",
+        description=(
+            "overdue | due_soon | on_track | no_target. `no_target` is not "
+            "'on track': it is unmeasured, and showing it as on track would "
+            "report compliance nobody assessed."
         ),
     )
 
@@ -1141,6 +1169,7 @@ async def repo_open_findings(
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     triage: Annotated[TriageFilter | None, Query()] = None,
     fixable: Annotated[bool | None, Query()] = None,
+    due: Annotated[DueFilter | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -1171,6 +1200,7 @@ async def repo_open_findings(
             min_epss=min_epss,
             triage=triage,
             fixable=fixable,
+            due=due,
         )
     return OpenFindingsPage.model_validate(page)
 

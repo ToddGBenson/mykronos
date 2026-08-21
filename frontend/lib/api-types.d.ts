@@ -1907,6 +1907,22 @@ export interface components {
              * @description Whether Patchwork produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
              */
             fixable?: boolean | null;
+            /**
+             * Due At
+             * @description The soonest deadline among this group's occurrences (spec 24 §2). Null means no target applies — `info` findings, or a deployment with no remediation targets configured.
+             */
+            due_at?: string | null;
+            /**
+             * Due Source
+             * @description kev | policy | manual. A KEV date on any occurrence wins.
+             */
+            due_source?: string | null;
+            /**
+             * Due State
+             * @description overdue | due_soon | on_track | no_target. `no_target` is not 'on track': it is unmeasured, and showing it as on track would report compliance nobody assessed.
+             * @default no_target
+             */
+            due_state: string;
         };
         /**
          * FindingLocationOut
@@ -1980,6 +1996,10 @@ export interface components {
             owner?: string | null;
             /** Owner Source */
             owner_source?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Due Source */
+            due_source?: string | null;
             /** Fingerprint Version */
             fingerprint_version?: string | null;
             /** Superseded By */
@@ -3925,6 +3945,7 @@ export interface operations {
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 fixable?: boolean | null;
+                due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
                 limit?: number;
             };
             header?: never;

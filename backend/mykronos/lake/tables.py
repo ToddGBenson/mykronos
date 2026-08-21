@@ -67,6 +67,13 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     # `owner_source` is codeowners | profile | manual | unresolved.
     ("owner", "VARCHAR"),
     ("owner_source", "VARCHAR"),
+    # When this is due, and who set that date (spec 24 §2). Absent from the
+    # compaction update set on purpose: like first_seen_at, a due date is
+    # fixed at first sight, so re-running a scanner does not hand a
+    # sixty-day-old finding a fresh thirty days. `due_source` is
+    # kev | policy | manual.
+    ("due_at", "TIMESTAMP"),
+    ("due_source", "VARCHAR"),
     ("raw_finding_json", "VARCHAR"),
 ]
 

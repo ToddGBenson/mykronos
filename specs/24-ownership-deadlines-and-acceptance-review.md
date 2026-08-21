@@ -37,8 +37,8 @@ overdue escalation — is undefined until a finding can be addressed to a person
 | Item | Status |
 |---|---|
 | `owner` on `Finding`, resolved from CODEOWNERS at ingest (§1) | **Built** |
-| `due_at` on `Finding`, from KEV or from policy (§2) | Not started |
-| Overdue as a filter, a portfolio tile, and an Oracle term (§2.4) | Not started |
+| `due_at` on `Finding`, from KEV or from policy (§2) | **Built** |
+| Overdue as a filter, a portfolio tile, and an Oracle term (§2.4) | Filter built; tile and Oracle term not started |
 | Acceptance expiry and automatic re-open (§3) | Not started |
 | "Mine" across Findings and Triage (§4) | Not started |
 

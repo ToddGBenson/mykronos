@@ -28,9 +28,10 @@ import csv
 import gzip
 import logging
 import re
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 import httpx2
@@ -40,6 +41,7 @@ from sqlalchemy.orm import Session
 from mykronos.db.models import ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
 from mykronos.schemas import utcnow
 
@@ -302,4 +304,66 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
         [{"rule_id": r, "title": t} for r, t in rows]
     )
     with db.session() as session:
-        return refresh(session, relevant)
+        result = refresh(session, relevant)
+        apply_kev_due_dates(session, catalog)
+    return result
+
+
+def apply_kev_due_dates(session: Session, catalog: Catalog) -> int:
+    """Stamp CISA's due date onto every open finding whose CVE is in KEV.
+
+    Spec 24 §2.2: KEV wins over the policy target. That date is authored
+    outside this organisation and is the only externally-committed deadline
+    this platform holds — a locally-computed one that disagreed with it would
+    be the platform quietly negotiating with CISA.
+
+    Runs here rather than at ingest because the CVE-to-KEV mapping is not
+    known when a finding arrives: `refresh` is what learns it, and it runs on
+    its own schedule. Ingest sets the policy date; this replaces it the first
+    time the intel says it should.
+
+    Returns the number of findings restamped, for the caller's log. A finding
+    already carrying the same KEV date is left alone — a no-op update would
+    rewrite a Parquet partition for nothing.
+    """
+    kev_due: dict[str, date] = {
+        row.cve_id: row.kev_due_date
+        for row in session.execute(
+            select(ThreatIntelMatch).where(
+                ThreatIntelMatch.in_kev.is_(True),
+                ThreatIntelMatch.kev_due_date.is_not(None),
+            )
+        ).scalars()
+        if row.kev_due_date is not None
+    }
+    if not kev_due:
+        return 0
+
+    rows = catalog.query(
+        "SELECT finding_id, rule_id, title, due_at, due_source "
+        "FROM findings WHERE status = 'open'"
+    )
+    wanted: dict[date, list[str]] = defaultdict(list)
+    for finding_id, rule_id, title, due_at, due_source in rows:
+        cve = extract_cve(rule_id, title)
+        if cve is None:
+            continue
+        due = kev_due.get(cve.upper())
+        if due is None:
+            continue
+        if due_source == "kev" and due_at is not None and due_at.date() == due:
+            continue
+        wanted[due].append(str(finding_id))
+
+    restamped = 0
+    for due, finding_ids in wanted.items():
+        outcome = update_findings(
+            catalog,
+            locate_findings(catalog, finding_ids),
+            "due_at = ?, due_source = ?",
+            [datetime.combine(due, time.min), "kev"],
+        )
+        restamped += outcome.count
+    if restamped:
+        logger.info("KEV due dates applied to %d finding(s).", restamped)
+    return restamped

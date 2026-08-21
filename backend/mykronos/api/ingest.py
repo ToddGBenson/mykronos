@@ -301,6 +301,7 @@ async def ingest_findings(
         _installation_client(request, token.repo_full_name), token.repo_full_name
     )
     profile_owner = _profile_owner(request, token.repo_full_name)
+    targets = request.app.state.oracle_policy.remediation_targets
 
     for finding in batch.findings:
         finding_id, fingerprint_version = compute_finding_id(
@@ -319,6 +320,11 @@ async def ingest_findings(
         owner, owner_source = owner_for_finding(
             file_path=finding.file_path, rules=rules, profile_owner=profile_owner
         )
+        # From `now` because this is first sight; compaction keeps the stored
+        # value for a finding that already exists, which is what makes the
+        # date stable across re-scans (spec 24 §2.2). A KEV due date, when one
+        # exists, replaces this on the next threat-intel refresh.
+        due_at = targets.due_at(finding.severity.value, now)
         rows.append(
             {
                 "finding_id": finding_id,
@@ -356,6 +362,8 @@ async def ingest_findings(
                 "resolved_at": None,
                 "owner": owner,
                 "owner_source": owner_source,
+                "due_at": due_at,
+                "due_source": "policy" if due_at else None,
                 "raw_finding_json": json.dumps(finding.raw_finding_json, ensure_ascii=False),
             }
         )
