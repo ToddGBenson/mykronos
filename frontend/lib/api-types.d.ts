@@ -1918,6 +1918,17 @@ export interface components {
              */
             due_source?: string | null;
             /**
+             * Owner
+             * @description The owner, when every occurrence in this group has the same one (spec 24 §1). Null when they disagree — see `owner_split` — or when no CODEOWNERS rule matched.
+             */
+            owner?: string | null;
+            /**
+             * Owner Split
+             * @description True when occurrences have different owners. One rule firing across two teams' files is one decision with two people answerable for it, and naming either would misroute half of it.
+             * @default false
+             */
+            owner_split: boolean;
+            /**
              * Due State
              * @description overdue | due_soon | on_track | no_target. `no_target` is not 'on track': it is unmeasured, and showing it as on track would report compliance nobody assessed.
              * @default no_target
@@ -2449,6 +2460,11 @@ export interface components {
              * @default 0
              */
             repos_not_assessed: number;
+            /**
+             * Overdue Findings
+             * @default 0
+             */
+            overdue_findings: number;
         };
         /**
          * PromotionApproval
@@ -3962,6 +3978,7 @@ export interface operations {
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 fixable?: boolean | null;
                 due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
+                owner?: string | null;
                 limit?: number;
             };
             header?: never;

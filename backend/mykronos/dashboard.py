@@ -242,6 +242,10 @@ class PortfolioSummary:
     #: number, not an error. It belongs next to repos_no_go so the portfolio
     #: cannot be read as "three at risk" when forty were never looked at.
     repos_not_assessed: int = 0
+    #: Findings past a deadline set by policy or by CISA KEV (spec 24 §2.4).
+    #: Portfolio-wide, because a missed commitment is not a per-repo curiosity
+    #: — it is the number a security lead is answerable for.
+    overdue_findings: int = 0
 
 
 class DashboardQueries:
@@ -325,8 +329,25 @@ class DashboardQueries:
             repos_with_stale_scans=sum(1 for r in rows if r.is_stale),
             repos_no_go=sum(1 for r in rows if r.recommendation == "no_go"),
             repos_not_assessed=sum(1 for r in rows if r.recommendation is None),
+            overdue_findings=self._overdue_count(),
         )
         return rows, summary
+
+    def _overdue_count(self) -> int:
+        """Open findings past their due date, across the portfolio.
+
+        One query over the whole table rather than a per-repo sum: the tile is
+        a single number and the row-level counts it would otherwise need are
+        not rendered anywhere.
+        """
+        if not self.catalog.all_files("findings"):
+            return 0
+        rows = self.catalog.query(
+            "SELECT count(*) FROM findings "
+            "WHERE status = 'open' AND due_at IS NOT NULL AND due_at <= ?",
+            [utcnow()],
+        )
+        return int(rows[0][0]) if rows else 0
 
     def _latest_portfolio_decisions(self) -> dict[str, tuple[Any, ...]]:
         """Most recent portfolio decision per repo.
@@ -539,6 +560,7 @@ class DashboardQueries:
         triage: str | None = None,
         fixable: bool | None = None,
         due: str | None = None,
+        owner: str | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -590,6 +612,7 @@ class DashboardQueries:
             "last_seen_at",
             "due_at",
             "due_source",
+            "owner",
         ]
 
         counts = self._severity_counts(repo_full_name, finding_status)
@@ -646,6 +669,7 @@ class DashboardQueries:
                 capability=capability,
                 severity=severity,
                 rule_id=rule_id,
+                owner=owner,
                 limit=CORRELATION_CEILING,
             )
             pool_truncated = len(rows) >= CORRELATION_CEILING
@@ -657,6 +681,7 @@ class DashboardQueries:
                 capability=capability,
                 severity=severity,
                 rule_id=rule_id,
+                owner=owner,
                 limit=limit + 1,
             )
             pool_truncated = len(rows) > limit
@@ -839,6 +864,7 @@ class DashboardQueries:
         capability: str | None = None,
         severity: str | None = None,
         rule_id: str | None = None,
+        owner: str | None = None,
     ) -> tuple[str, list[Any]]:
         # asset_id, not repo_full_name (spec 14 §5): for a repository asset the
         # two hold the same string, so this is a rename rather than a change.
@@ -848,6 +874,17 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if owner:
+            # Exact match, not a substring: `@org/payments` and
+            # `@org/payments-legacy` are different teams, and a "mine" filter
+            # that quietly included a neighbouring team's work would be worse
+            # than no filter. `unresolved` is a legitimate value to ask for —
+            # it is the queue of work nobody is answerable for yet.
+            if owner == "unresolved":
+                where.append("(owner IS NULL OR owner = '')")
+            else:
+                where.append("owner = ?")
+                params.append(owner)
         if rule_id:
             # Free-text, not a category filter with a count on a button
             # (spec 17 §3) — matched against rule_id and title, since Trivy's
@@ -902,6 +939,7 @@ class DashboardQueries:
         capability: str | None = None,
         severity: str | None = None,
         rule_id: str | None = None,
+        owner: str | None = None,
         capabilities: frozenset[str] | None = None,
         limit: int = CORRELATION_CEILING,
     ) -> list[dict[str, Any]]:
@@ -923,6 +961,7 @@ class DashboardQueries:
             capability=capability,
             severity=severity,
             rule_id=rule_id,
+            owner=owner,
         )
         if capabilities is not None:
             placeholders = ", ".join("?" for _ in capabilities)
@@ -980,6 +1019,8 @@ class DashboardQueries:
                     "cvss_score": finding.get("cvss_score"),
                     "due_at": None,
                     "due_source": None,
+                    "owner": finding.get("owner"),
+                    "owner_split": False,
                     "toxic_combination_ids": [],
                 }
                 order.append(key)
@@ -1005,6 +1046,15 @@ class DashboardQueries:
             # safe number to display.
             if _worse(str(finding["severity"]), str(group["severity"])):
                 group["severity"] = str(finding["severity"])
+            # An owner only when every occurrence agrees. One rule firing
+            # across two teams' files is one decision with two people
+            # answerable for it, and picking either would send the work to
+            # somebody who does not own half of it. `owner_split` says so
+            # rather than the row rendering as unowned.
+            if finding.get("owner") != group["owner"]:
+                group["owner_split"] = True
+                group["owner"] = None
+
             # The soonest deadline among the occurrences, not the latest: a
             # group is one decision, and the date that matters is the first
             # one the team is answerable for. A KEV date on any occurrence

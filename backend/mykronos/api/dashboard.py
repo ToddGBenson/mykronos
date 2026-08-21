@@ -298,6 +298,22 @@ class FindingGroupOut(BaseModel):
         default=None,
         description="kev | policy | manual. A KEV date on any occurrence wins.",
     )
+    owner: str | None = Field(
+        default=None,
+        description=(
+            "The owner, when every occurrence in this group has the same one "
+            "(spec 24 §1). Null when they disagree — see `owner_split` — or "
+            "when no CODEOWNERS rule matched."
+        ),
+    )
+    owner_split: bool = Field(
+        default=False,
+        description=(
+            "True when occurrences have different owners. One rule firing "
+            "across two teams' files is one decision with two people "
+            "answerable for it, and naming either would misroute half of it."
+        ),
+    )
     due_state: str = Field(
         default="no_target",
         description=(
@@ -1206,6 +1222,7 @@ async def repo_open_findings(
     triage: Annotated[TriageFilter | None, Query()] = None,
     fixable: Annotated[bool | None, Query()] = None,
     due: Annotated[DueFilter | None, Query()] = None,
+    owner: Annotated[str | None, Query(max_length=255)] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -1237,6 +1254,7 @@ async def repo_open_findings(
             triage=triage,
             fixable=fixable,
             due=due,
+            owner=owner,
         )
     return OpenFindingsPage.model_validate(page)
 

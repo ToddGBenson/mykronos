@@ -120,6 +120,20 @@ class ReachabilityPolicy:
 
 
 @dataclass(frozen=True)
+class OverduePolicy:
+    """What a missed deadline costs (spec 24 §2.4).
+
+    Small and capped, like every additive term here. The point is not to
+    punish a backlog twice — `finding_age` already escalates on drift — but to
+    make a date the organisation committed to visible in the number the gate
+    reads. A repository inside its windows pays nothing.
+    """
+
+    per_finding: float
+    cap: float
+
+
+@dataclass(frozen=True)
 class RemediationTargets:
     """How long a finding of each severity may stay open (spec 24 §2.2).
 
@@ -170,6 +184,7 @@ class Policy:
     reachability: ReachabilityPolicy
     unfixable: UnfixableDampening
     remediation_targets: RemediationTargets
+    overdue: OverduePolicy
 
     no_go: float
     review_recommended: float
@@ -259,6 +274,9 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # Optional like the two above: a policy file from before this loads,
     # with the factor at zero, and every score stays exactly as it was.
     unfixable_raw = modifiers.get("unfixable_dampening") or {}
+    # Optional like the rest: with no block the term is worth zero, and with
+    # no `remediation_targets` the category reports unavailable regardless.
+    overdue_raw = modifiers.get("overdue_findings") or {}
 
     # Optional, on the same principle as the modifier blocks above: a policy
     # file from before spec 24 loads, with no targets, and nothing is overdue
@@ -378,6 +396,12 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
         ),
         remediation_targets=RemediationTargets(days=target_days),
+        overdue=OverduePolicy(
+            per_finding=_number(
+                overdue_raw.get("per_finding", 0), "modifiers.overdue_findings.per_finding"
+            ),
+            cap=_number(overdue_raw.get("cap", 0), "modifiers.overdue_findings.cap"),
+        ),
         unfixable=UnfixableDampening(
             factor=_number(
                 unfixable_raw.get("factor", 0), "unfixable_dampening.factor"

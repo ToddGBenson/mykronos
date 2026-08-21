@@ -17,7 +17,13 @@ export async function PATCH(
 ) {
   const { findingId } = await context.params;
 
-  let body: { status?: string; reason?: string };
+  let body: {
+    status?: string;
+    reason?: string;
+    accepted_until?: string;
+    indefinite?: boolean;
+    accepted_reason_code?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -33,7 +39,18 @@ export async function PATCH(
       "/api/dashboard/findings/{finding_id}/status",
       {
         params: { path: { finding_id: findingId } },
-        body: { status: body.status as never, reason: body.reason ?? "" },
+        body: {
+          status: body.status as never,
+          reason: body.reason ?? "",
+          // Forwarded rather than defaulted here: the backend decides what an
+          // acceptance requires (spec 24 §3.2), and a proxy that filled in
+          // `indefinite: true` would be quietly answering for the user.
+          indefinite: body.indefinite ?? false,
+          ...(body.accepted_until ? { accepted_until: body.accepted_until } : {}),
+          ...(body.accepted_reason_code
+            ? { accepted_reason_code: body.accepted_reason_code as never }
+            : {}),
+        },
       },
     );
 

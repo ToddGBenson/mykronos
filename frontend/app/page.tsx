@@ -49,7 +49,7 @@ export default async function PortfolioPage({
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
         <StatTile
           label="Open critical"
           value={summary.open_critical}
@@ -75,6 +75,15 @@ export default async function PortfolioPage({
           label="Stale > 7d"
           value={summary.repos_with_stale_scans}
           sub="repos"
+        />
+        {/* A deadline this organisation set, or one CISA set in KEV, that has
+            passed. Distinct from age: a large backlog inside its windows shows
+            zero here, which is the whole point of having targets. */}
+        <StatTile
+          label="Overdue"
+          value={summary.overdue_findings}
+          sub="past their target"
+          alert={summary.overdue_findings > 0}
         />
       </div>
 

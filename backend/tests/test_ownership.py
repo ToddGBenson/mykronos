@@ -397,3 +397,127 @@ class TestManualAssignment:
         with client.app.state.db.session() as session:  # type: ignore[attr-defined]
             actions = [row[0] for row in session.execute(text("SELECT action FROM audit_log"))]
         assert "finding.owner" in actions
+
+
+class TestTheOwnerFilter:
+    """spec 24 §4 — "mine", which is what an owner column is for."""
+
+    def _page(self, client: TestClient, auth: dict[str, str], repo_id: str, **params: str) -> Any:
+        return client.get(
+            f"/api/dashboard/repos/{repo_id}/open-findings", params=params, headers=auth
+        ).json()
+
+    def _seed_two_teams(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        github: FakeGitHubClient,
+        run_compaction: Any,
+    ) -> str:
+        repo_id = client.post(
+            "/api/repos",
+            json={"github_repo_full_name": REPO, "github_installation_id": 4242},
+            headers=admin_auth,
+        ).json()["id"]
+        github.add_repo(
+            REPO,
+            files={".github/CODEOWNERS": "orders/ @org/payments\nweb/ @org/frontend\n"},
+        )
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(),  # orders/query.py
+                finding_payload(rule_id="XSS", file_path="web/page.tsx", symbol="render"),
+                finding_payload(rule_id="CFG", file_path="deploy.yaml", symbol="cfg"),
+            ],
+        )
+        run_compaction()
+        return str(repo_id)
+
+    def test_filtering_by_owner_selects_that_team(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        viewer_auth: dict[str, str],
+        github: FakeGitHubClient,
+        run_compaction: Any,
+    ) -> None:
+        repo_id = self._seed_two_teams(client, auth, admin_auth, github, run_compaction)
+
+        page = self._page(client, viewer_auth, repo_id, owner="@org/payments")
+
+        assert [g["rule_id"] for g in page["groups"]] == ["CWE-89"]
+
+    def test_unresolved_is_a_queue_you_can_ask_for(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        viewer_auth: dict[str, str],
+        github: FakeGitHubClient,
+        run_compaction: Any,
+    ) -> None:
+        """Work nobody is answerable for yet is the most important list here."""
+        repo_id = self._seed_two_teams(client, auth, admin_auth, github, run_compaction)
+
+        page = self._page(client, viewer_auth, repo_id, owner="unresolved")
+
+        assert [g["rule_id"] for g in page["groups"]] == ["CFG"]
+
+    def test_a_neighbouring_team_is_not_included(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        viewer_auth: dict[str, str],
+        github: FakeGitHubClient,
+        run_compaction: Any,
+    ) -> None:
+        """Exact match, not substring: @org/payments and @org/payments-legacy
+        are different teams."""
+        repo_id = self._seed_two_teams(client, auth, admin_auth, github, run_compaction)
+
+        page = self._page(client, viewer_auth, repo_id, owner="@org/pay")
+
+        assert page["groups"] == []
+
+    def test_a_group_split_across_teams_names_neither(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        viewer_auth: dict[str, str],
+        github: FakeGitHubClient,
+        run_compaction: Any,
+    ) -> None:
+        """One rule, two teams' files: one decision with two people
+        answerable for it, and naming either would misroute half of it."""
+        repo_id = client.post(
+            "/api/repos",
+            json={"github_repo_full_name": REPO, "github_installation_id": 4242},
+            headers=admin_auth,
+        ).json()["id"]
+        github.add_repo(
+            REPO,
+            files={".github/CODEOWNERS": "orders/ @org/payments\nweb/ @org/frontend\n"},
+        )
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(),
+                finding_payload(file_path="web/page.tsx", symbol="render"),
+            ],
+        )
+        run_compaction()
+
+        group = self._page(client, viewer_auth, str(repo_id))["groups"][0]
+
+        assert group["occurrences"] == 2
+        assert group["owner"] is None
+        assert group["owner_split"] is True
