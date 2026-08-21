@@ -35,8 +35,8 @@ This spec closes the first three. The fourth is named, scoped, and gated in §4 
 
 | Item | Status |
 |---|---|
-| Verification scan on fix-PR merge (§1) | Not started |
-| Attribution: which change closed which finding (§2) | Not started |
+| Verification scan on fix-PR merge (§1) | **Built** |
+| Attribution: which change closed which finding (§2) | **Built** |
 | Per-fixer efficacy, published (§3) | Not started |
 | Rejected-fix reasons into the Knowledge Store (§3.3) | Not started |
 | A fixer for SAST-shaped findings (§4) | Deliberately gated — see §4 |
@@ -84,12 +84,24 @@ rewrote it" is a materially different claim from "our fix worked".
 - **`time_to_verified_seconds`** — merge to verification, the only fix-latency number in this
   platform that will be attributable to a route.
 
-`verified_fixed` requires the specific `finding_id` to have transitioned to `fixed` in the verifying
-run. Not "the count went down" — the identity has to be gone, which is precisely what the
-code-anchored fingerprint (D-001) exists to make possible.
+`verified_fixed` requires the specific `finding_id` to be absent from the verifying run. Not "the
+count went down" — the identity has to be gone, which is precisely what the code-anchored
+fingerprint (D-001) exists to make possible.
 
-`inconclusive` is a real outcome and is reported as one: the verifying run failed, or returned
-`no_applicable_targets`, or the finding's file no longer exists so identity cannot be evaluated.
+**Read from the run, not from the finding's status** — a correction to this section's first draft,
+made while building it. A finding is not marked `fixed` until it has been absent from *two*
+consecutive scans (`reconcile.REQUIRED_ABSENCES`): flap protection, which exists to stop
+`resolved_at` churning and answers a different question from this one. Waiting on it would leave a
+working fix unverified until an unrelated second scan happened to run. So the evidence is the
+verifying run itself — it succeeded, and it either re-reported the finding
+(`last_seen_scan_run_id` points at it) or it did not. The finding's status stays the platform's own
+conservative business; this column reports what one scan of one commit observed.
+
+**Only a `success` run gives a verdict.** A `partial_failure` may not have scanned the file the
+finding lives in, so an absence proves nothing there.
+
+`inconclusive` is a real outcome and is reported as one: the verifying run failed or partly failed,
+or returned `no_applicable_targets`, or the finding is no longer in the lake at all.
 Folding any of those into `still_open` would slander a fix that may well have worked; folding them
 into `verified_fixed` would flatter one that may not have.
 
