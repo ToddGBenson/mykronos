@@ -25,6 +25,7 @@ from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate, fixers
+from mykronos.patchwork.rejection import is_dampened, rejection_prompt
 from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
 from mykronos.patchwork.triage import classify
 from mykronos.schemas import utcnow
@@ -544,6 +545,31 @@ class PatchworkPipeline:
             )
 
         fixer_name, fix = generated
+
+        # Two people here have already said this fixer gets this rule wrong
+        # (spec 25 §3.3). Offering it a third time is asking them to review
+        # the same wrong diff again, which is how a fix pipeline gets muted.
+        skip, rejections = is_dampened(
+            self.catalog,
+            repo_full_name=repo_full_name,
+            rule_id=str(finding.get("rule_id") or ""),
+            fixer_name=fixer_name,
+        )
+        if skip:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="skipped_low_confidence",
+                classification="true_positive",
+                rationale=(
+                    f"{triage_rationale} {fixer_name} produced a fix, but its "
+                    f"fixes for this rule have been closed as wrong "
+                    f"{rejections} time(s) in this repository. Not offered "
+                    "again here until somebody merges one by hand."
+                ),
+                fixer_name=fixer_name,
+                fix_confidence=fix.confidence,
+            )
+
         if fix.confidence < self.min_confidence:
             return StageOutcome(
                 finding_id=finding_id,
@@ -689,6 +715,8 @@ def render_pr_body(
     lines += [f"- `{path}`" for path in fix.touched]
 
     lines += [
+        "",
+        rejection_prompt(),
         "",
         "---",
         "",

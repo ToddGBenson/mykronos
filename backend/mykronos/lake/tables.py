@@ -212,6 +212,13 @@ REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
     # the name only — the generated file content stays out of the lake, which
     # is what `StageOutcome.fix_files`'s comment is actually about.
     ("fixer_name", "VARCHAR"),
+    # Why somebody closed this fix without merging it (spec 25 §3.3).
+    # `fix_was_wrong` stops this fixer offering the same change for the same
+    # rule here; `fix_was_unwanted` dampens nothing at all, because a correct
+    # fix nobody wanted is a scheduling disagreement rather than a defect.
+    # `unstated` is recorded as itself rather than guessed at.
+    ("rejection_reason_code", "VARCHAR"),
+    ("rejection_reason", "VARCHAR"),
     # Did the fix work? (spec 25 §1, §2). Written across three moments by
     # three different writers — the webhook records the merge commit, the
     # verification job records the dispatch, and the resolver records the
@@ -308,6 +315,8 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
         # coalesces. Declared here too so a dispatch and a verdict landing in
         # one five-minute compaction window do not cost the earlier one.
         "fixer_name",
+        "rejection_reason_code",
+        "rejection_reason",
         "verification_commit_sha",
         "verification_dispatched_at",
         "verification_scan_run_id",

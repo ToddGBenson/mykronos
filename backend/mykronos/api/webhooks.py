@@ -242,6 +242,7 @@ def handle_pull_request(
             number,
             merged,
             merge_commit_sha=str(pull_request.get("merge_commit_sha") or ""),
+            pr_body=str(pull_request.get("body") or ""),
         )
         if event_id:
             result["remediation_outcome_recorded_for"] = event_id
@@ -283,6 +284,7 @@ def _record_remediation_outcome(
     merged: bool,
     *,
     merge_commit_sha: str = "",
+    pr_body: str = "",
 ) -> str | None:
     """Same failure posture as the gate outcome: never break the webhook.
 
@@ -303,6 +305,10 @@ def _record_remediation_outcome(
             # (spec 25 §1): the webhook must stay fast and must not fail, and
             # a GitHub or Concourse call in this path is one that can do both.
             merge_commit_sha=merge_commit_sha,
+            # The body as GitHub reports it at close. Whatever the closer
+            # wrote on the line Patchwork put there is the only reason this
+            # platform will ever get (spec 25 §3.3).
+            pr_body=pr_body,
         )
     except Exception as exc:  # noqa: BLE001 — see docstring
         logger.warning(

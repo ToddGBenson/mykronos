@@ -141,6 +141,11 @@ _UPDATE_SETS: dict[str, str] = {
         -- write this row and neither of them knows which fixer produced it
         -- (spec 25 §3.1).
         fixer_name               = coalesce(i.fixer_name, part.fixer_name),
+        -- Written once, by the webhook, and unknown to every other writer.
+        rejection_reason_code    = coalesce(
+            i.rejection_reason_code, part.rejection_reason_code
+        ),
+        rejection_reason         = coalesce(i.rejection_reason, part.rejection_reason),
         fix_pr_number            = coalesce(i.fix_pr_number, part.fix_pr_number),
         fix_pr_url               = coalesce(i.fix_pr_url, part.fix_pr_url),
         pr_status                = coalesce(i.pr_status, part.pr_status),

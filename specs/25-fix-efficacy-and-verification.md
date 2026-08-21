@@ -38,7 +38,7 @@ This spec closes the first three. The fourth is named, scoped, and gated in §4 
 | Verification scan on fix-PR merge (§1) | **Built** |
 | Attribution: which change closed which finding (§2) | **Built** |
 | Per-fixer efficacy, published (§3) | **Built** — `fixer_name` is now persisted, which §3 needs and spec 08 never stored |
-| Rejected-fix reasons into the Knowledge Store (§3.3) | Not started |
+| Rejected-fix reasons into the Knowledge Store (§3.3) | **Built** |
 | A fixer for SAST-shaped findings (§4) | Deliberately gated — see §4 |
 
 ## 1. Verification
@@ -141,8 +141,11 @@ load, and the review load is paid by exactly the people this platform is meant t
 - Closing a Patchwork PR unmerged prompts for a one-line reason — via the PR itself (a comment
   template the platform posts when it opens the draft, which the closer fills in), not via a form in
   this dashboard nobody will visit at that moment.
-- The reason is captured into the Knowledge Store with a new source type, `rejected_fix`, alongside
-  the existing dismissal capture. Two codes matter and are offered explicitly: `fix_was_wrong` and
+- The reason is captured into the Knowledge Store under the existing `remediation_outcome` source
+  type rather than a new `rejected_fix` one. That is the safer wiring, not merely the smaller one:
+  `dampening.dampened_rules` reads `finding_dismissal` and nothing else, so an outcome entry cannot
+  reach a finding's standing by any path — which is exactly the property the next paragraph asks
+  for, enforced by the existing filter instead of by a new one. Two codes matter and are offered explicitly: `fix_was_wrong` and
   `fix_was_unwanted`. They pull in opposite directions — the first should dampen the *fixer*, the
   second should not dampen anything at all, because a correct fix nobody wanted is a scheduling
   disagreement, not a defect.
