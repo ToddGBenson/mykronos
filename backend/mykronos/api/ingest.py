@@ -47,12 +47,14 @@ from mykronos.auth import Resolution, TokenRegistry
 from mykronos.db.models import (
     ReachabilityReport,
     RepoOnboarding,
+    RiskProfile,
     capability_config_for,
 )
 from mykronos.fingerprint import compute_finding_id
 from mykronos.github.client import GitHubError
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
+from mykronos.ownership import owner_for_finding
 from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
@@ -291,6 +293,15 @@ async def ingest_findings(
     now = utcnow()
     rows: list[dict[str, Any]] = []
 
+    # One CODEOWNERS read per batch, cached for fifteen minutes across batches
+    # (spec 24 §1.2). Never per finding: a four-hundred-finding upload would
+    # otherwise be four hundred GitHub requests for one answer.
+    ownership = request.app.state.ownership
+    rules = await ownership.rules_for(
+        _installation_client(request, token.repo_full_name), token.repo_full_name
+    )
+    profile_owner = _profile_owner(request, token.repo_full_name)
+
     for finding in batch.findings:
         finding_id, fingerprint_version = compute_finding_id(
             repo_full_name=token.repo_full_name,
@@ -304,6 +315,9 @@ async def ingest_findings(
             address=finding.address,
             port=finding.port,
             title=finding.title,
+        )
+        owner, owner_source = owner_for_finding(
+            file_path=finding.file_path, rules=rules, profile_owner=profile_owner
         )
         rows.append(
             {
@@ -340,6 +354,8 @@ async def ingest_findings(
                 "first_seen_at": now,
                 "last_seen_at": now,
                 "resolved_at": None,
+                "owner": owner,
+                "owner_source": owner_source,
                 "raw_finding_json": json.dumps(finding.raw_finding_json, ensure_ascii=False),
             }
         )
@@ -665,6 +681,26 @@ async def ingest_capability_payload(
             "Patchwork arrives in Phase 6 (specs/13-build-roadmap.md §3)."
         ),
     )
+
+
+def _profile_owner(request: Request, repo_full_name: str) -> str | None:
+    """The repository owner recorded on the risk profile (spec 21 §1).
+
+    Used only for findings with no path — a dependency CVE names a package,
+    not the file that declares it. Weaker than a CODEOWNERS answer and stored
+    under its own `owner_source` so nobody mistakes it for one.
+    """
+    with request.app.state.db.session() as session:
+        profile = (
+            session.execute(
+                select(RiskProfile)
+                .join(RepoOnboarding, RepoOnboarding.id == RiskProfile.repo_onboarding_id)
+                .where(RepoOnboarding.github_repo_full_name == repo_full_name)
+            )
+            .scalars()
+            .first()
+        )
+    return profile.owner if profile is not None else None
 
 
 def _installation_client(request: Request, repo_full_name: str) -> Any:

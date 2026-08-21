@@ -77,7 +77,18 @@ _UPDATE_SETS: dict[str, str] = {
         -- suppressed -- are decisions, not observations, so a rescan does not
         -- overturn them.
         status      = CASE WHEN part.status = 'fixed' THEN 'open' ELSE part.status END,
-        resolved_at = CASE WHEN part.status = 'fixed' THEN NULL ELSE part.resolved_at END
+        resolved_at = CASE WHEN part.status = 'fixed' THEN NULL ELSE part.resolved_at END,
+        -- A person who reassigned a finding made a decision; a re-scan is not
+        -- new information about who should fix it, so ingest's CODEOWNERS
+        -- answer does not overwrite one (spec 24 §1.2). Same shape as the
+        -- disposition rule directly above: observations refresh, decisions
+        -- stand.
+        owner = CASE
+            WHEN part.owner_source = 'manual' THEN part.owner ELSE i.owner
+        END,
+        owner_source = CASE
+            WHEN part.owner_source = 'manual' THEN 'manual' ELSE i.owner_source
+        END
     """,
     # A decision is immutable once made -- re-evaluating produces a *new*
     # decision, because spec 09 §10 requires past decisions to stay

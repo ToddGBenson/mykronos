@@ -1607,6 +1607,8 @@ class DashboardQueries:
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
+            "owner",
+            "owner_source",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]

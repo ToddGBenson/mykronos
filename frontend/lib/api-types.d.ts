@@ -631,6 +631,35 @@ export interface paths {
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set Finding Owner
+         * @description Reassign a finding (spec 24 §1.2).
+         *
+         *     Admin-only, like the disposition endpoint next to it and for the same
+         *     reason: it changes who is answerable for a piece of work, which is a write.
+         *
+         *     A manual assignment survives re-scans — the compaction upsert refuses to
+         *     overwrite `owner_source = 'manual'`. Clearing the owner is therefore not
+         *     "nobody owns this" but "go back to asking CODEOWNERS", which is why the
+         *     null case restores `unresolved` rather than writing a manual null that
+         *     would freeze the finding out of resolution for ever.
+         */
+        patch: operations["set_finding_owner_api_dashboard_findings__finding_id__owner_patch"];
+        trace?: never;
+    };
     "/api/dashboard/threat-intel": {
         parameters: {
             query?: never;
@@ -1947,6 +1976,10 @@ export interface components {
             package_version?: string | null;
             /** Status */
             status: string;
+            /** Owner */
+            owner?: string | null;
+            /** Owner Source */
+            owner_source?: string | null;
             /** Fingerprint Version */
             fingerprint_version?: string | null;
             /** Superseded By */
@@ -2281,6 +2314,26 @@ export interface components {
              * Format: date-time
              */
             overridden_at: string;
+        };
+        /**
+         * OwnerChange
+         * @description Reassign a finding by hand (spec 24 §1.2).
+         */
+        OwnerChange: {
+            /**
+             * Owner
+             * @description A GitHub handle or team slug. Null hands the finding back to CODEOWNERS — the next scan re-resolves it, rather than the finding staying permanently unowned because somebody cleared the field.
+             */
+            owner?: string | null;
+        };
+        /** OwnerChangeResult */
+        OwnerChangeResult: {
+            /** Finding Id */
+            finding_id: string;
+            /** Owner */
+            owner: string | null;
+            /** Owner Source */
+            owner_source: string;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -4025,6 +4078,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusChangeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_finding_owner_api_dashboard_findings__finding_id__owner_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerChangeResult"];
                 };
             };
             /** @description Validation Error */

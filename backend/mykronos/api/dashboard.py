@@ -171,6 +171,11 @@ class FindingOut(BaseModel):
     package_name: str | None = None
     package_version: str | None = None
     status: str
+    #: Who this is addressed to, and where that answer came from (spec 24 §1).
+    #: `owner_source` is codeowners | profile | manual | unresolved — the four
+    #: are behaviourally different, and a bare null owner could be any of them.
+    owner: str | None = None
+    owner_source: str | None = None
     fingerprint_version: str | None = None
     #: Set only when `status == "superseded"` (spec 05 §5a) — the finding_id
     #: that replaced this record. Previously not selected at all, so a
@@ -452,6 +457,29 @@ class StatusChangeResult(BaseModel):
     status: str
     reason_supplied: bool
     retro_signal: str
+
+
+class OwnerChange(BaseModel):
+    """Reassign a finding by hand (spec 24 §1.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "A GitHub handle or team slug. Null hands the finding back to "
+            "CODEOWNERS — the next scan re-resolves it, rather than the "
+            "finding staying permanently unowned because somebody cleared "
+            "the field."
+        ),
+    )
+
+
+class OwnerChangeResult(BaseModel):
+    finding_id: str
+    owner: str | None
+    owner_source: str
 
 
 class ChecksOut(BaseModel):
@@ -1323,6 +1351,75 @@ async def set_finding_status(
         reason_supplied=bool(body.reason.strip()),
         retro_signal=signal,
     )
+
+
+@router.patch("/findings/{finding_id}/owner", response_model=OwnerChangeResult)
+async def set_finding_owner(
+    request: Request, finding_id: str, body: OwnerChange, principal: PrincipalDep
+) -> OwnerChangeResult:
+    """Reassign a finding (spec 24 §1.2).
+
+    Admin-only, like the disposition endpoint next to it and for the same
+    reason: it changes who is answerable for a piece of work, which is a write.
+
+    A manual assignment survives re-scans — the compaction upsert refuses to
+    overwrite `owner_source = 'manual'`. Clearing the owner is therefore not
+    "nobody owns this" but "go back to asking CODEOWNERS", which is why the
+    null case restores `unresolved` rather than writing a manual null that
+    would freeze the finding out of resolution for ever.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Reassigning a finding requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+
+    catalog = request.app.state.catalog
+    existing = DashboardQueries(catalog).finding(finding_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    owner = (body.owner or "").strip() or None
+    source = "manual" if owner else "unresolved"
+
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, [finding_id]),
+        "owner = ?, owner_source = ?",
+        [owner, source],
+    )
+    if not outcome.count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The finding could not be updated; it may have just been compacted.",
+        )
+
+    with request.app.state.db.session() as session:
+        request.app.state.db.audit(
+            session,
+            actor=principal.actor,
+            action="finding.owner",
+            entity_type="finding",
+            entity_id=finding_id,
+            repo=existing.get("repo_full_name"),
+            capability=existing.get("capability"),
+            new_status=owner or "unassigned",
+            reason="",
+        )
+
+    logger.info(
+        "Finding %s owner -> %s by %s",
+        scrub(finding_id),
+        scrub(owner or "unassigned"),
+        scrub(principal.actor),
+    )
+
+    return OwnerChangeResult(finding_id=finding_id, owner=owner, owner_source=source)
 
 
 class ThreatIntelEntryOut(BaseModel):
