@@ -73,6 +73,15 @@ Read the specs in this order:
 | 20 | [Aegis Depth](specs/20-aegis-depth.md) | The AI-authorship classifier call, `privilege_adjacent`, and stating whether Aegis blocks |
 | 21 | [Oracle Depth & Risk Profile](specs/21-oracle-depth-and-risk-profile.md) | Asset context as an input, real portfolio aggregation, fleet term analytics, the override button |
 | 22 | [Atlas (SCA) Depth](specs/22-atlas-sca-depth.md) | License compliance, a real freshness signal, package/license denylists |
+| 23 | [Agentic Source Code Review](specs/23-agentic-source-code-review.md) | A detector benchmark, an attack-surface inventory, and why the bug-finding agents come last |
+| 24 | [Ownership, Deadlines & Acceptance Review](specs/24-ownership-deadlines-and-acceptance-review.md) | An owner and a due date on every finding, and acceptances that expire |
+| 25 | [Fix Efficacy & Verification](specs/25-fix-efficacy-and-verification.md) | Re-scan on merge, attribute the closure, and learn from a rejected fix |
+| 26 | [Oracle as Adviser](specs/26-oracle-as-adviser.md) | Path to green, terms that reward, and a shadow report before the gate goes on |
+| 27 | [The Worklist](specs/27-the-worklist.md) | Ranked triage, claimable rows, and a weekly digest per owner |
+| 28 | [Threat Model Resolution](specs/28-threat-model-resolution.md) | CWE out of SARIF, a controls register, and clean vs unscanned vs unmitigated |
+| 29 | [Component Inventory & Incident Mode](specs/29-component-inventory-and-incident-mode.md) | Who uses this package, answered in one screen — plus provenance signals |
+| 30 | [Change-Governance Posture](specs/30-change-governance-posture.md) | The review controls that would catch a bad change, not just the changes that looked odd |
+| 31 | [Regression Coverage](specs/31-regression-coverage.md) | Pin a test to every finding you fix, so a regression is noticed |
 
 Specs 18–22 close a round of depth work: each began as a full read of a
 subsystem, and each is a list of things that were *named* in an earlier spec —
