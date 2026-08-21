@@ -587,6 +587,23 @@ export async function getRemediationDigest(): Promise<Result<RemediationDigest>>
   }
 }
 
+export type FixEfficacy =
+  paths["/api/patchwork/efficacy"]["get"]["responses"]["200"]["content"]["application/json"];
+
+export async function getFixEfficacy(): Promise<Result<FixEfficacy>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/patchwork/efficacy", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load fix efficacy") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type Reachability =
   paths["/api/repos/{repo_id}/reachability"]["get"]["responses"]["200"]["content"]["application/json"];
 

@@ -207,6 +207,11 @@ REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
     # verdicts a human ever gives this platform.
     ("pr_status", "VARCHAR"),
     ("rationale", "VARCHAR"),
+    # Which fixer produced this (spec 25 §3.1). Held in memory since spec 08
+    # and never stored, so "does this fixer work" could not be asked. It is
+    # the name only — the generated file content stays out of the lake, which
+    # is what `StageOutcome.fix_files`'s comment is actually about.
+    ("fixer_name", "VARCHAR"),
     # Did the fix work? (spec 25 §1, §2). Written across three moments by
     # three different writers — the webhook records the merge commit, the
     # verification job records the dispatch, and the resolver records the
@@ -302,6 +307,7 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
         # Spec 25 §2 — see the compaction update set for why each of these
         # coalesces. Declared here too so a dispatch and a verdict landing in
         # one five-minute compaction window do not cost the earlier one.
+        "fixer_name",
         "verification_commit_sha",
         "verification_dispatched_at",
         "verification_scan_run_id",

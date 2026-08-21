@@ -1100,17 +1100,45 @@ export interface paths {
          *     change. This groups them for the reviewer.
          *
          *     Grouped by `rule_id`, which is not on `remediation_events` — it is on the
-         *     finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
-         *     column exists on the events table, and `fixer_name` is not recorded
-         *     anywhere, so the grouping is by rule alone. That is the coarser key, and
-         *     coarser is the safe direction: two fixers for one rule would land in one
-         *     card, which a reviewer can see, rather than one fixer's work being split
-         *     across two cards, which they cannot.
+         *     finding, so this joins. The spec expected `(rule_id, fixer_name)`, and
+         *     `fixer_name` is now recorded (spec 25 §3.1) — but the grouping stays by
+         *     rule alone, for the reason D-071 gave: coarser is the safe direction here,
+         *     because two fixers for one rule land in one card a reviewer can see,
+         *     rather than one fixer's work being split across two cards they cannot.
          *
          *     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
          *     by the parameterised one.
          */
         get: operations["cross_repo_digest_api_patchwork_digest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/patchwork/efficacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Efficacy
+         * @description Does Patchwork actually remove risk? (spec 25 §3)
+         *
+         *     Until the verification loop shipped, a fixer that opened pull requests
+         *     nobody merged was indistinguishable from one that silently removed real
+         *     risk every week: both showed as `pr_opened` rows. The first is a machine
+         *     generating review load, and that load is paid by exactly the people this
+         *     platform exists to help.
+         *
+         *     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed by
+         *     the parameterised one.
+         */
+        get: operations["efficacy_api_patchwork_efficacy_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1719,6 +1747,74 @@ export interface components {
             licenses_seen?: {
                 [key: string]: number;
             };
+        };
+        /**
+         * EfficacyPage
+         * @description Whether Patchwork removes risk, or only opens pull requests.
+         *
+         *     Two breakdowns because they answer different questions: `by_fixer` says
+         *     which fixers work, `by_rule` says which rules are fixable here. A fixer
+         *     that works everywhere except one rule is a different problem from a fixer
+         *     nobody trusts, and one axis cannot tell them apart.
+         */
+        EfficacyPage: {
+            /** By Fixer */
+            by_fixer: components["schemas"]["EfficacyRowOut"][];
+            /** By Rule */
+            by_rule: components["schemas"]["EfficacyRowOut"][];
+            /** Note */
+            note: string;
+        };
+        /**
+         * EfficacyRowOut
+         * @description One fixer's — or one rule's — record (spec 25 §3.1).
+         */
+        EfficacyRowOut: {
+            /**
+             * Key
+             * @description The fixer name, or the rule_id, depending on the list.
+             */
+            key: string;
+            /**
+             * Attempts
+             * @description Fixes generated.
+             */
+            attempts: number;
+            /**
+             * Prs Opened
+             * @description Reached a draft pull request.
+             */
+            prs_opened: number;
+            /**
+             * Merged
+             * @description A person merged it.
+             */
+            merged: number;
+            /**
+             * Rejected
+             * @description Closed unmerged.
+             */
+            rejected: number;
+            /**
+             * Verified
+             * @description The finding was gone from the verifying scan of the merge commit (spec 25 §2). This is the only column that says risk was removed.
+             */
+            verified: number;
+            /**
+             * Still Open
+             * @description Merged, re-scanned, and the finding was reported again.
+             */
+            still_open: number;
+            /**
+             * Unverified
+             * @description Merged but never established either way — inconclusive, not scanned, or still waiting. Deliberately not counted as a failure: the scan did not answer, which is not the same as the fix not working.
+             */
+            unverified: number;
+            /**
+             * Median Seconds To Verified
+             * @description Merge to verification. Null with nothing verified.
+             */
+            median_seconds_to_verified?: number | null;
         };
         /** EntriesPage */
         EntriesPage: {
@@ -4736,6 +4832,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    efficacy_api_patchwork_efficacy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EfficacyPage"];
                 };
             };
         };

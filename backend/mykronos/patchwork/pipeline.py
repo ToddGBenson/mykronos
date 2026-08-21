@@ -85,10 +85,10 @@ class StageOutcome:
     fix_pr_number: int | None = None
     fix_pr_url: str | None = None
     pr_status: str | None = None
-    #: Populated only by a `preview_only` `_attempt_fix` call (spec 18 §7.2) —
-    #: "auto remediation identified" without opening anything. Not persisted
-    #: by `to_row`: generated file content belongs in the response to the
-    #: person who asked for it, not in the lake's outcome history.
+    #: Which fixer produced this. Persisted since spec 25 §3.1 — the per-fixer
+    #: efficacy scoreboard cannot be computed without it. Also set by a
+    #: `preview_only` `_attempt_fix` call (spec 18 §7.2), which reports
+    #: "auto remediation identified" without opening anything.
     fixer_name: str | None = None
     fix_confidence: float | None = None
     fix_files: dict[str, str] | None = None
@@ -107,6 +107,11 @@ class StageOutcome:
             "fix_pr_url": self.fix_pr_url,
             "pr_status": self.pr_status,
             "rationale": self.rationale,
+            # Spec 25 §3.1. The name, never the content: a per-fixer verified
+            # rate is unanswerable without it, and a fixer that opens pull
+            # requests nobody merges is indistinguishable from one that
+            # silently removes real risk every week.
+            "fixer_name": self.fixer_name,
             "created_at": stamp,
             "updated_at": stamp,
         }

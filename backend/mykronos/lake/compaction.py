@@ -137,6 +137,10 @@ _UPDATE_SETS: dict[str, str] = {
         contributing_finding_ids = i.contributing_finding_ids,
         toxic_combination_id     = coalesce(i.toxic_combination_id, part.toxic_combination_id),
         rationale                = i.rationale,
+        -- Coalesced, not refreshed: the webhook and the verification job both
+        -- write this row and neither of them knows which fixer produced it
+        -- (spec 25 §3.1).
+        fixer_name               = coalesce(i.fixer_name, part.fixer_name),
         fix_pr_number            = coalesce(i.fix_pr_number, part.fix_pr_number),
         fix_pr_url               = coalesce(i.fix_pr_url, part.fix_pr_url),
         pr_status                = coalesce(i.pr_status, part.pr_status),

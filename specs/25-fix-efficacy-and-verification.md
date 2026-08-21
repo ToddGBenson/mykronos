@@ -37,7 +37,7 @@ This spec closes the first three. The fourth is named, scoped, and gated in §4 
 |---|---|
 | Verification scan on fix-PR merge (§1) | **Built** |
 | Attribution: which change closed which finding (§2) | **Built** |
-| Per-fixer efficacy, published (§3) | Not started |
+| Per-fixer efficacy, published (§3) | **Built** — `fixer_name` is now persisted, which §3 needs and spec 08 never stored |
 | Rejected-fix reasons into the Knowledge Store (§3.3) | Not started |
 | A fixer for SAST-shaped findings (§4) | Deliberately gated — see §4 |
 

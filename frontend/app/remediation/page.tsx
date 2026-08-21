@@ -1,7 +1,8 @@
 import Link from "next/link";
 
+import { FixEfficacyPanel } from "@/components/fix-efficacy";
 import { ErrorPanel, Label, Pill } from "@/components/primitives";
-import { getRemediationDigest } from "@/lib/server";
+import { getFixEfficacy, getRemediationDigest } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,12 @@ const SEVERITY_TONE: Record<string, "critical" | "warn" | "muted"> = {
  * PR an acceptable thing for a bot to open at all.
  */
 export default async function RemediationPage() {
-  const digest = await getRemediationDigest();
+  // Fetched alongside rather than nested: an efficacy query that fails should
+  // not take the digest with it, and vice versa.
+  const [digest, efficacy] = await Promise.all([
+    getRemediationDigest(),
+    getFixEfficacy(),
+  ]);
 
   if (!digest.ok) {
     return <ErrorPanel title="Remediation digest unavailable" detail={digest.error} />;
@@ -46,6 +52,14 @@ export default async function RemediationPage() {
       <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
         {note}
       </p>
+
+      {efficacy.ok ? (
+        <FixEfficacyPanel efficacy={efficacy.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+          {efficacy.error}
+        </p>
+      )}
 
       {groups.length === 0 ? (
         <p className="border border-dashed border-rule bg-paper-2 px-3 py-3 text-[11px] leading-relaxed text-ink-3">
