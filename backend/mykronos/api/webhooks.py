@@ -236,7 +236,13 @@ def handle_pull_request(
         # A Patchwork draft closing is the clearest verdict a human ever gives
         # this platform (spec 11 §9), and it is also what stops Oracle
         # discounting a finding for a fix that is no longer in flight.
-        event_id = _record_remediation_outcome(state, repo_full_name, number, merged)
+        event_id = _record_remediation_outcome(
+            state,
+            repo_full_name,
+            number,
+            merged,
+            merge_commit_sha=str(pull_request.get("merge_commit_sha") or ""),
+        )
         if event_id:
             result["remediation_outcome_recorded_for"] = event_id
 
@@ -271,7 +277,12 @@ def handle_pull_request(
 
 
 def _record_remediation_outcome(
-    state: Any, repo_full_name: str, pr_number: int, merged: bool
+    state: Any,
+    repo_full_name: str,
+    pr_number: int,
+    merged: bool,
+    *,
+    merge_commit_sha: str = "",
 ) -> str | None:
     """Same failure posture as the gate outcome: never break the webhook.
 
@@ -288,6 +299,10 @@ def _record_remediation_outcome(
             pr_number,
             merged=merged,
             store=state.knowledge,
+            # Recorded here, dispatched later by the verification job
+            # (spec 25 §1): the webhook must stay fast and must not fail, and
+            # a GitHub or Concourse call in this path is one that can do both.
+            merge_commit_sha=merge_commit_sha,
         )
     except Exception as exc:  # noqa: BLE001 — see docstring
         logger.warning(

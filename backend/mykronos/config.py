@@ -117,6 +117,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    fix_verification_interval_seconds: int = Field(
+        default=1_800,
+        ge=1,
+        description=(
+            "Dispatches a scan of each landed fix's merge commit and reads "
+            "the verdict (spec 25 §1). Half-hourly: the dispatch should follow "
+            "the merge closely enough to be about that change, and the "
+            "resolver needs to run often enough to catch a scan that lands "
+            "minutes later."
+        ),
+    )
+
     acceptance_sweep_interval_seconds: int = Field(
         default=86_400,
         ge=1,

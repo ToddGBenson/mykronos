@@ -38,6 +38,7 @@ def record_pr_outcome(
     *,
     merged: bool,
     store: KnowledgeStore | None = None,
+    merge_commit_sha: str | None = None,
 ) -> str | None:
     """Update the event for a closed Patchwork pull request.
 
@@ -75,6 +76,13 @@ def record_pr_outcome(
                 "fix_pr_url": None,
                 "pr_status": status,
                 "rationale": rationale,
+                # A merged fix earns a verification (spec 25 §1). `pending` is
+                # a stored state rather than a null so "waiting for evidence"
+                # and "nobody ever asked" stay distinguishable — an abandoned
+                # fix is never verified and must not look like one that is
+                # still being checked.
+                "verification_commit_sha": merge_commit_sha if merged else None,
+                "verification_outcome": "pending" if merged else None,
                 "created_at": utcnow(),
                 "updated_at": utcnow(),
             }

@@ -25,7 +25,7 @@ from mykronos.capabilities import (
     configurable_capabilities,
     validate_config,
 )
-from mykronos.ci import CAPABILITY_BY_JOB, ConcourseClient, pipeline_name_for
+from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db.models import (
     CapabilityConfig,
     CapabilityGrant,
@@ -71,17 +71,6 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 DISPATCHABLE_CAPABILITIES = frozenset(
     {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )
-
-#: The reverse of `ci.py`'s `CAPABILITY_BY_JOB` — which Concourse job
-#: name(s) plausibly produce a given capability. A heuristic in the same
-#: spirit and for the same reason as the mapping it's derived from: a
-#: pipeline that names its job differently is simply not reached, which is
-#: the safe direction to be wrong in (a 404 from Concourse, not a crash).
-_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
-for _job_name, _caps in CAPABILITY_BY_JOB.items():
-    for _cap in (_caps if isinstance(_caps, tuple) else (_caps,)):
-        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
-
 
 # ---------------------------------------------------------------------------
 # Wire models
@@ -718,7 +707,7 @@ async def scan_now(
             )
         pipeline = pipeline_name_for(repo_full_name)
         for capability in scanning:
-            candidates = sorted(_JOBS_BY_CAPABILITY.get(capability, {capability}))
+            candidates = sorted(jobs_for_capability(capability))
             if any(
                 client.trigger_job(pipeline, job, token=settings.concourse_api_token)
                 for job in candidates

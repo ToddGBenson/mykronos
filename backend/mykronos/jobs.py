@@ -20,10 +20,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import PurePosixPath
+from typing import Any
 
 from sqlalchemy import select
 
 from mykronos.auth import TokenRegistry
+from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
 from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.github.client import GitHubError
@@ -37,6 +40,11 @@ from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
 from mykronos.oracle.service import OracleService
 from mykronos.patchwork.stewardship import close_superseded_drafts
+from mykronos.patchwork.verification import (
+    VerificationResult,
+    dispatch_pending,
+    resolve_pending,
+)
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -685,3 +693,74 @@ def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> Accepta
     if result.expired or result.reopened_by_fix:
         logger.info("Acceptance sweep: %s", result.summary())
     return result
+
+
+async def verify_merged_fixes(
+    db: Database,
+    catalog: Catalog,
+    buffer: WriteAheadBuffer,
+    factory: GitHubClientFactory,
+    templates: Any,
+    settings: Any,
+) -> VerificationResult:
+    """Scan the merge commit of every landed fix, then read the verdict
+    (spec 25 §1, §2).
+
+    Dispatch follows `scanned_by`, the same split `scan_now` uses and for the
+    same reason: a repository is scanned by Actions or by Concourse, and the
+    verification of a fix has to run wherever the scan that found it runs.
+
+    Nothing here raises. A fix whose verification cannot be dispatched stays
+    `pending` and is retried on the next pass — the deadline in
+    `verification.py` is what eventually calls it `not_scanned`, so a broken
+    dispatcher degrades into "we never checked" rather than into a wrong
+    verdict.
+    """
+    onboardings: dict[str, Any] = {}
+    with db.session() as session:
+        for row in session.execute(select(RepoOnboarding)).scalars():
+            onboardings[row.github_repo_full_name] = {
+                "scanned_by": row.scanned_by,
+                "installation_id": row.github_installation_id,
+                "default_branch": row.default_branch,
+            }
+
+    concourse = ConcourseClient(
+        settings.concourse_url,
+        team=settings.concourse_team,
+        external_url=settings.concourse_external_url,
+    )
+
+    async def dispatch(repo_full_name: str, capability: str) -> bool:
+        onboarding = onboardings.get(repo_full_name)
+        if onboarding is None:
+            return False
+        if onboarding["scanned_by"] == "github_actions":
+            try:
+                workflow_file = PurePosixPath(templates.target_path(capability)).name
+            except Exception:  # noqa: BLE001 — no template is "cannot dispatch"
+                return False
+            try:
+                github = factory.for_installation(onboarding["installation_id"])
+                await github.dispatch_workflow(
+                    repo_full_name, workflow_file, onboarding["default_branch"]
+                )
+                return True
+            except Exception:  # noqa: BLE001 — see the docstring
+                logger.warning(
+                    "Verification dispatch failed for %s/%s",
+                    repo_full_name,
+                    capability,
+                    exc_info=True,
+                )
+                return False
+        if not concourse.configured or not settings.concourse_api_token:
+            return False
+        pipeline = pipeline_name_for(repo_full_name)
+        return any(
+            concourse.trigger_job(pipeline, job, token=settings.concourse_api_token)
+            for job in sorted(jobs_for_capability(capability))
+        )
+
+    result = await dispatch_pending(catalog, buffer, dispatch=dispatch)
+    return resolve_pending(catalog, buffer, result=result)

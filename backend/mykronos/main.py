@@ -42,6 +42,7 @@ from mykronos.jobs import (
     route_open_findings,
     score_portfolio,
     sweep_acceptances,
+    verify_merged_fixes,
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
@@ -240,6 +241,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 purge_orphaned_learnings, app.state.db, app.state.knowledge
             )
 
+        async def _verify_fixes() -> None:
+            await verify_merged_fixes(
+                app.state.db,
+                app.state.catalog,
+                app.state.buffer,
+                app.state.github_factory,
+                app.state.templates,
+                settings,
+            )
+
         async def _acceptances() -> None:
             # In a thread: it rewrites partitions, same as the other sweeps.
             await asyncio.to_thread(sweep_acceptances, app.state.catalog)
@@ -283,6 +294,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
+            ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             # Off unless a deployment opts in (`routing_enabled`): this
             # one opens issues in somebody's tracker, and doing that the
             # moment the platform is upgraded is not its decision to make.
