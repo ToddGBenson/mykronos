@@ -32,7 +32,7 @@
 # been on every dependency and container finding all along, and nothing was
 # reading it. A repository whose findings all have fixes available scores
 # exactly as it did; one carrying unpatched CVEs scores lower, on purpose.
-version: "1.5"
+version: "1.6"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -185,6 +185,19 @@ modifiers:
   # `fixed_version` and never will -- absence there means the field does not
   # apply, not that upstream has shipped nothing, and reading it the other way
   # would quieten every injection finding in the fleet.
+  # Spec 24 §2.4. A deadline this organisation set for itself, or one CISA
+  # set in KEV, that has passed. Deliberately *not* a second age term:
+  # `finding_age` escalates continuously and describes drift, while this fires
+  # once, on a date. A repository whose findings are all inside their windows
+  # pays nothing here however old they are — which is the behaviour the age
+  # curve alone cannot express, and the reason targets are policy.
+  #
+  # Small and capped: the intent is to make a missed commitment visible in the
+  # number the gate reads, not to punish the same backlog twice.
+  overdue_findings:
+    per_finding: 1.5
+    cap: 12
+
   unfixable_dampening:
     factor: 0.5
 

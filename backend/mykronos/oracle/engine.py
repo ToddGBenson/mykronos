@@ -57,6 +57,7 @@ MODIFIER_CATEGORIES = (
     "reachability",
     "risk_profile",
     "blast_radius",
+    "overdue_findings",
 )
 
 #: One band up (spec 17 §5.4). `critical` has nowhere further to go — a
@@ -332,6 +333,73 @@ def _reachability_snapshot(
                     "Python only — not whether the code is called."
                 ),
                 inputs={"orphaned_files": len(orphaned)},
+            )
+        ],
+    )
+
+
+def _overdue_snapshot(
+    overdue: int, in_scope: int, policy: Policy
+) -> tuple[dict[str, Any], list[Term]]:
+    """Findings past a deadline this organisation set (spec 24 §2.4).
+
+    Deliberately not a second age term. `finding_age` escalates continuously
+    and describes drift; this fires once, on a date, and a repository whose
+    findings are all inside their windows scores nothing here however old they
+    are. That is the behaviour the age curve alone cannot express, and it is
+    the whole reason targets exist as policy rather than as a dashboard label.
+
+    Unavailable — never a zero — when no targets are configured. A deployment
+    that has not adopted them has not achieved compliance, and reporting
+    "0 overdue" would read as though it had.
+    """
+    if not policy.remediation_targets.configured:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "reason": (
+                    "No remediation targets are configured in the policy "
+                    "(spec 24 §2.2), so no finding has a deadline to be past."
+                ),
+            },
+            [],
+        )
+
+    snapshot = {
+        "available": True,
+        "overdue_findings": overdue,
+        "findings_with_a_target": in_scope,
+        "targets": dict(policy.remediation_targets.days),
+        "contribution": 0.0,
+        "reason": (
+            f"{overdue} of {in_scope} in-scope finding(s) with a deadline are "
+            "past it. A finding inside its window contributes nothing here, "
+            "however old it is."
+        ),
+    }
+
+    points = min(
+        policy.overdue.per_finding * overdue,
+        policy.overdue.cap,
+    )
+    if not points:
+        return (snapshot, [])
+
+    snapshot["contribution"] = round(points, 2)
+    return (
+        snapshot,
+        [
+            Term(
+                key="overdue_findings",
+                label="Findings past their remediation target",
+                contribution=points,
+                detail=(
+                    f"{overdue} finding(s) past a deadline set by policy or by "
+                    f"CISA KEV, adding {points:g} points. Distinct from age: a "
+                    "finding inside its window adds nothing here."
+                ),
+                inputs={"overdue": overdue},
             )
         ],
     )
@@ -738,6 +806,42 @@ class OracleEngine:
             min_observations=self.policy.dampening.min_observations,
             as_of=self._as_of,
         )
+
+    def _overdue(self, repo_full_name: str, for_gate: bool) -> tuple[int, int]:
+        """`(overdue, with_a_target)` over this decision's in-scope findings.
+
+        Counts findings, not groups: the score is built from finding counts
+        everywhere else, and switching unit here would make the term
+        incomparable with the band weights it is added to.
+
+        `due_at` is compared against the engine's own `_as_of`, not against
+        wall-clock time, so re-evaluating a past decision reproduces it
+        (spec 09 §10).
+        """
+        statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
+        severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
+        excluded = ""
+        if for_gate and self.policy.capabilities_excluded_from_gates:
+            names = ", ".join(
+                f"'{c}'" for c in self.policy.capabilities_excluded_from_gates
+            )
+            excluded = f"AND capability NOT IN ({names})"
+        rows = self.catalog.query(
+            f"""
+            SELECT count(*) FILTER (WHERE due_at <= ?) AS overdue,
+                   count(*) AS with_target
+            FROM findings
+            WHERE repo_full_name = ?
+              AND status IN ({statuses})
+              AND severity IN ({severities})
+              AND due_at IS NOT NULL
+              {excluded}
+            """,
+            [self._as_of, repo_full_name],
+        )
+        if not rows:
+            return (0, 0)
+        return (int(rows[0][0] or 0), int(rows[0][1] or 0))
 
     def _reachability(self, repo_full_name: str) -> tuple[dict[str, Any] | None, int]:
         """The stored import analysis, and how many findings sit in dead files.
@@ -1183,6 +1287,15 @@ class OracleEngine:
         )
         terms.extend(reach_terms)
 
+        # 9. Overdue (spec 24 §2.4). A date, not a curve: this fires once,
+        #    when a deadline set by policy or by CISA has passed, and stays
+        #    silent for a repository whose backlog is inside its windows.
+        overdue_count, with_target = self._overdue(repo_full_name, for_gate)
+        overdue_snapshot, overdue_terms = _overdue_snapshot(
+            overdue_count, with_target, self.policy
+        )
+        terms.extend(overdue_terms)
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -1201,6 +1314,7 @@ class OracleEngine:
             risk_profile=risk_profile,
             blast_radius_snapshot=radius_snapshot,
             reachability_snapshot=reach_snapshot,
+            overdue_snapshot=overdue_snapshot,
         )
 
         decision = Decision(
@@ -1242,6 +1356,7 @@ class OracleEngine:
         risk_profile: dict[str, Any] | None = None,
         blast_radius_snapshot: dict[str, Any] | None = None,
         reachability_snapshot: dict[str, Any] | None = None,
+        overdue_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -1290,6 +1405,8 @@ class OracleEngine:
             ),
             "reachability": reachability_snapshot
             or _reachability_snapshot(None, 0, self.policy)[0],
+            "overdue_findings": overdue_snapshot
+            or _overdue_snapshot(0, 0, self.policy)[0],
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "blast_radius": blast_radius_snapshot
             or blast_radius.snapshot([], None)[0],

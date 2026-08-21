@@ -338,3 +338,94 @@ class TestTheApi:
             headers=admin_auth,
         )
         assert self._open(client, viewer_auth, due="whenever").status_code == 422
+
+
+class TestTheOracleTerm:
+    """spec 24 §2.4 — a date, not a second age curve."""
+
+    @pytest.fixture
+    def engine(self, catalog: Catalog) -> Any:
+        from mykronos.config import get_settings
+        from mykronos.oracle import OracleEngine, load_policy
+
+        return OracleEngine(catalog, load_policy(get_settings().oracle_policy_path))
+
+    def test_a_finding_inside_its_window_contributes_nothing(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        engine: Any,
+        run_compaction: Any,
+    ) -> None:
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload()])
+        run_compaction()
+
+        overdue = engine.evaluate(REPO).inputs_snapshot["overdue_findings"]
+
+        assert overdue["available"] is True
+        assert overdue["overdue_findings"] == 0
+        assert overdue["findings_with_a_target"] == 1
+        assert overdue["contribution"] == 0.0
+
+    def test_an_overdue_finding_adds_points(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        engine: Any,
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        from mykronos.lake.mutate import locate_findings, update_findings
+
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload()])
+        run_compaction()
+
+        # Backdated, the way thirty days of not fixing it would.
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+        update_findings(
+            catalog,
+            locate_findings(catalog, [finding_id]),
+            "due_at = ?",
+            [datetime(2020, 1, 1)],
+        )
+
+        overdue = engine.evaluate(REPO).inputs_snapshot["overdue_findings"]
+
+        assert overdue["overdue_findings"] == 1
+        assert overdue["contribution"] > 0
+
+    def test_the_term_is_capped(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        engine: Any,
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """Twenty overdue findings must not outweigh the findings themselves."""
+        from mykronos.lake.mutate import locate_findings, update_findings
+
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id=f"R-{n}", symbol=f"fn_{n}") for n in range(20)],
+        )
+        run_compaction()
+        ids = [str(row[0]) for row in catalog.query("SELECT finding_id FROM findings")]
+        update_findings(
+            catalog, locate_findings(catalog, ids), "due_at = ?", [datetime(2020, 1, 1)]
+        )
+
+        overdue = engine.evaluate(REPO).inputs_snapshot["overdue_findings"]
+
+        assert overdue["overdue_findings"] == 20
+        assert overdue["contribution"] == 12.0  # the policy cap
+
+    def test_the_category_is_present_with_no_findings(
+        self, engine: Any
+    ) -> None:
+        """spec 09 §9: a category with nothing to say still appears."""
+        assert "overdue_findings" in engine.evaluate(REPO).inputs_snapshot

@@ -100,9 +100,20 @@ const PILL: Record<PillTone, string> = {
   accent: "text-accent border-accent bg-accent-wash",
 };
 
-export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }) {
+export function Pill({
+  tone,
+  children,
+  title,
+}: {
+  tone: PillTone;
+  children: ReactNode;
+  /** Hover text. A tone-coded pill carries meaning in its colour, and a
+   *  reader who cannot see colour needs somewhere to read it. */
+  title?: string;
+}) {
   return (
     <span
+      title={title}
       className={`inline-block whitespace-nowrap border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.08em] ${PILL[tone]}`}
     >
       {children}

@@ -98,11 +98,49 @@ export type FindingsQuery = {
   triage?: string;
   /** "1" when set — only groups Patchwork produced a fix for (spec 19 §3.2). */
   fixable?: string;
+  /** A CODEOWNERS handle or team, or "unresolved" (spec 24 §1). */
+  owner?: string;
+  /** overdue | due_soon | on_track | no_target (spec 24 §2.4). */
+  due?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
   finding?: string;
 };
+
+/** A deadline, shown as its state first and its date second.
+ *
+ *  `no_target` renders as an em dash rather than as "on track": a finding with
+ *  no deadline is unmeasured, and this column must not imply otherwise. */
+function DueCell({
+  state,
+  at,
+  source,
+}: {
+  state?: string;
+  at?: string | null;
+  source?: string | null;
+}) {
+  if (!state || state === "no_target" || !at) {
+    return <span className="text-ink-3" title="No remediation target applies">—</span>;
+  }
+  const tone =
+    state === "overdue" ? "critical" : state === "due_soon" ? "warn" : "muted";
+  const when = new Date(at).toISOString().slice(0, 10);
+  return (
+    <Pill
+      tone={tone}
+      title={
+        source === "kev"
+          ? `CISA KEV due date: ${when}`
+          : `Remediation target from policy: ${when}`
+      }
+    >
+      {state === "overdue" ? "overdue" : when}
+      {source === "kev" ? " · KEV" : ""}
+    </Pill>
+  );
+}
 
 export function OpenFindings({
   repoId,
@@ -482,7 +520,7 @@ function GroupTable({
       <table className="w-full min-w-[680px] border-collapse bg-paper-2 font-mono text-[11px]">
         <thead>
           <tr className="border-b-2 border-ink-2 text-left">
-            {["Sev", "Problem", "Where", "Found by", "Triage", "Age"].map((heading) => (
+            {["Sev", "Problem", "Where", "Found by", "Owner", "Due", "Triage", "Age"].map((heading) => (
               <th
                 key={heading}
                 className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
@@ -563,6 +601,29 @@ function GroupTable({
                     </Link>
                   ))}
                   <span className="ml-1 text-[9px]">{group.capabilities.join(", ")}</span>
+                </td>
+                <td className="whitespace-nowrap px-2 py-2 text-ink-3">
+                  {group.owner ? (
+                    <Link
+                      href={href({ owner: query.owner === group.owner ? undefined : group.owner })}
+                      className={
+                        query.owner === group.owner
+                          ? "underline decoration-accent"
+                          : "hover:text-accent"
+                      }
+                    >
+                      {group.owner}
+                    </Link>
+                  ) : (
+                    <span title="No CODEOWNERS rule matches this path">unowned</span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap px-2 py-2">
+                  <DueCell
+                    state={group.due_state}
+                    at={group.due_at}
+                    source={group.due_source}
+                  />
                 </td>
                 <td className="whitespace-nowrap px-2 py-2">
                   <Pill tone={triage.tone}>{triage.label}</Pill>
