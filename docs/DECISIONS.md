@@ -3157,3 +3157,130 @@ deployment working tree, so the repository claimed the gate blocked while the
 applied pipeline let everything through. That reasoning is untouched by this
 change: a control switched off invisibly is worse than one switched off
 loudly. What changed is that it now guards a floor worth guarding.
+
+## D-084 — The benchmark ships before the reviewer, and the corpus is its own repository
+
+**Status:** Decided — spec 23 drafted, nothing built
+**Spec:** [23](../specs/23-agentic-source-code-review.md)
+
+Mandiant published its Agentic Vulnerability Discovery Harness — a six-phase
+agentic code-review pipeline — and the question was what of it to build here.
+Most of the answer is an ordering decision rather than an architecture one,
+which is why it is a decision record and not only a spec.
+
+**The order is benchmark, surface, threat model, finder — and the finder is
+last.** The obvious reading of that article is "build the bug-finding agents";
+they are its centrepiece and its headline number. Building them first here
+would produce findings nobody can size. This platform runs fifteen checks and
+has never measured recall for any of them, so a sixteenth detector's output
+would arrive into a triage queue with no baseline to compare against and no way
+to tell an improvement from a model change upstream. Spec 04 §7 has asked for a
+seeded corpus since the beginning and the bar it set — "at least one `Finding`"
+— cannot tell nine-of-ten from one-of-ten. The benchmark is worth building even
+if nothing agentic is ever built, and nothing agentic is worth trusting until it
+exists.
+
+D-053 is the other half of the argument. DAST is paused platform-wide for want
+of a resource budget. Agentic review over a whole tree costs more than DAST,
+recurs weekly rather than once, and would be paused the same way — after the
+money was spent rather than before.
+
+**The corpus is a separate repository, and repositories get a `synthetic`
+flag.** The tempting shortcut is a `bench/` directory in this repo. It cannot
+be one: the corpus has to be scanned by the real pipelines to measure anything,
+and scanning deliberately vulnerable code under this repo's `repo_full_name`
+puts real findings in this repo's lake, raises its risk score, and reaches its
+own Oracle gate. A separate repository fixes that and creates the second
+problem — spec 21's portfolio aggregation would count it, permanently, as the
+fleet's worst repo. Hence a flag on `Repository` rather than a hardcoded name
+somewhere: the platform needs a concept for "real code, not real risk", and
+one exclusion list per aggregate would drift apart.
+
+**The entry-point inventory is an inventory, and reachability stays
+`available: False`.** The surface is the one agentic phase worth building
+early, because an entry point is verifiable — it exists at that `file:line` or
+it does not — and a wrong one dies at approval instead of in triage. What it
+must not do is answer the Oracle category it looks like it answers. An
+inventory establishes that a file *is* on an entry path; it establishes nothing
+about a file that failed to appear in it, and the only use Oracle has for a
+partial answer is discounting the findings that did not appear. That is the
+exact direction `reachability.py` was written to refuse — *"a false 'this is
+orphaned' tells somebody a live request handler is dead code"* — and an agent's
+recall is a much weaker guarantee than an import graph's. The category earns
+`available: True` when a number from §1's corpus says it can, in a later spec.
+
+**Two smaller things worth writing down before they are rediscovered.** The
+article's "low temperature to generate, high temperature to validate" does not
+port: `temperature` is removed on Opus 5, Sonnet 5 and Opus 4.7/4.8 and returns
+a 400. Validator diversity has to come from distinct prompts instead, which is
+the better mechanism anyway — identical validators agree on identical mistakes.
+And AVDH's grading agent solves a problem this platform will not have: its
+findings land on client code with no ground truth, while a seeded corpus has a
+manifest, so grading is a diff and not a judgement. Skipping it removes an LLM
+from the one component whose whole job is to be trusted.
+
+**What this does not decide.** Whether §5 gets built at all. The gate in spec
+23 §5.1 is four conditions, and if the reviewer's measured recall on the corpus
+does not beat the scanners already running, the honest outcome is a spec status
+row saying so and no fifth workstream.
+
+## D-085 — One platform review became eight specs, and the ordering is the argument
+
+**Status:** Decided — specs 24–31 drafted, nothing built
+**Specs:** [24](../specs/24-ownership-deadlines-and-acceptance-review.md),
+[25](../specs/25-fix-efficacy-and-verification.md), [26](../specs/26-oracle-as-adviser.md),
+[27](../specs/27-the-worklist.md), [28](../specs/28-threat-model-resolution.md),
+[29](../specs/29-component-inventory-and-incident-mode.md),
+[30](../specs/30-change-governance-posture.md), [31](../specs/31-regression-coverage.md)
+
+A full read of the eight repo-page subsystems — Findings, Harness, Threat
+Model, Supply chain, Insider Threat, Risk Decision, Triage, Remediation —
+turned up twenty-two gaps. Three choices about what to do with them are worth
+recording, because each was a fork where the obvious option was worse.
+
+**Eight specs, not one and not twenty-two.** One spec would have been a
+three-thousand-line document nobody reviews in a sitting; one per gap would
+have produced twenty-two specs whose dependencies could not be read off their
+numbers. Eight follows the shape specs 18–22 already set — a spec is a depth
+pass over a subsystem — and it makes the sequencing legible: 24 before
+everything because ownership is what the rest attaches to, 26 after 24, 25 and
+31 because its scoring credits are worthless until something produces the
+evidence, 27 after 26 because the worklist consumes `path_to_green` rather
+than recomputing it.
+
+**Six of the twenty-two gaps are one gap.** A finding with no owner never
+closes; a fix with no verification never proves it worked; a test with no link
+to a finding never protects it; an acceptance with no expiry never gets
+re-decided; a gate with no shadow report never gets switched on; a detector
+with no benchmark never gets trusted (spec 23). The platform is built for the
+forward pass and missing the return path. Naming that as one problem is what
+made the ordering obvious — and it is why the first three specs are all
+plumbing rather than features.
+
+**Two claims in these specs contradict things this repository has written
+down, and both were checked against the code rather than the prose.**
+
+Spec 18 §6 and `dashboard.threat_model()` both explain the capability-level
+STRIDE mapping by saying no `Finding` carries a structured CWE. That is true of
+the schema and not of the data: SARIF carries `properties.tags`, CodeQL and
+Semgrep both populate it with CWE identifiers, and `adapters/sarif.py` reads
+exactly one property — `security-severity` — and discards the rest. The
+reasoning was right when it was written about what the lake stores, and it has
+been quietly wrong about what arrives ever since. Spec 28 §1 corrects it.
+
+D-069 chose to compute blast radius from findings because
+`sscs_evidence.ecosystems_json` holds counts rather than package names. Also
+correct, and it recorded the alternative — add a package list to the
+submission — as the option not taken. Spec 29 §1 takes it, because the same
+missing table is what makes "who uses this package" unanswerable on an incident
+day, and that is a much larger cost than one approximated signal.
+
+**What none of these specs do.** Nothing here lets an agent guess reachability,
+aggregates an insider signal per person, gives Patchwork a merge operation, or
+introduces a number that cannot be traced to a lake row. Those four refusals
+are the most valuable thing this codebase has and every spec in this set was
+written to inherit them rather than to spend them. Spec 30 §3 is the sharpest
+case: the useful aggregate of Aegis's signals is a fact about a repository's
+controls, and the same data grouped by author is a fact about colleagues that
+spec 06 §9 already refused — so the repository framing is not a compromise, it
+is the more actionable of the two.

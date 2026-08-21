@@ -32,7 +32,7 @@
 # been on every dependency and container finding all along, and nothing was
 # reading it. A repository whose findings all have fixes available scores
 # exactly as it did; one carrying unpatched CVEs scores lower, on purpose.
-version: "1.4"
+version: "1.5"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -193,6 +193,32 @@ modifiers:
 # ---------------------------------------------------------------------------
 #
 # Applied to the clamped 0-100 score.
+# ---------------------------------------------------------------------------
+# Remediation targets (spec 24 §2)
+# ---------------------------------------------------------------------------
+#
+# Days from `first_seen_at` that a finding of each severity may stay open.
+# Deliberately separate from `modifiers.finding_age`: age escalates
+# continuously and describes drift, while a target is a date this organisation
+# set for itself. A finding inside its window is not late however old it is,
+# and the age term alone could never say so.
+#
+# Computed from first_seen_at rather than from the latest scan, so re-running
+# a scanner does not hand a sixty-day-old finding a fresh thirty days.
+#
+# A CISA KEV due date always wins over these (spec 24 §2.2). That date is
+# authored outside this organisation, and a locally-computed one that
+# disagreed with it would be the platform quietly negotiating with CISA.
+#
+# `info: null` means "not work", not "due immediately" — zero days would make
+# every repository permanently overdue on findings nobody intends to fix.
+remediation_targets:
+  critical: 7
+  high: 30
+  medium: 90
+  low: 180
+  info: null
+
 thresholds:
   no_go: 70                  # >= 70
   review_recommended: 30     # >= 30 and < 70

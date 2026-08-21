@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,41 @@ class ReachabilityPolicy:
 
 
 @dataclass(frozen=True)
+class RemediationTargets:
+    """How long a finding of each severity may stay open (spec 24 §2.2).
+
+    A target is not the age curve. Age escalates continuously and describes
+    drift; a target is a date this organisation set for itself, and a finding
+    inside its window is not late however old it is. Keeping them separate is
+    what lets a repository with a large but in-policy backlog score better
+    than one with three findings nobody looked at.
+
+    A null for a severity means "not work" rather than "due immediately" —
+    `info` is the expected case, and defaulting it to zero days would make
+    every repository permanently overdue on findings nobody intends to fix.
+    """
+
+    #: severity -> days from first_seen_at, or None for "no target".
+    days: dict[str, int | None]
+
+    @property
+    def configured(self) -> bool:
+        """Whether any target is set at all.
+
+        Drives `available` in Oracle's snapshot: a deployment that has not
+        adopted targets reports the category as unavailable rather than
+        reporting every finding on track, which would read as compliance.
+        """
+        return any(value is not None for value in self.days.values())
+
+    def due_at(self, severity: str, first_seen_at: datetime) -> datetime | None:
+        target = self.days.get(severity)
+        if target is None:
+            return None
+        return first_seen_at + timedelta(days=target)
+
+
+@dataclass(frozen=True)
 class Policy:
     version: str
     curve: str
@@ -133,6 +169,7 @@ class Policy:
     blast_radius: BlastRadiusPolicy
     reachability: ReachabilityPolicy
     unfixable: UnfixableDampening
+    remediation_targets: RemediationTargets
 
     no_go: float
     review_recommended: float
@@ -222,6 +259,31 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # Optional like the two above: a policy file from before this loads,
     # with the factor at zero, and every score stays exactly as it was.
     unfixable_raw = modifiers.get("unfixable_dampening") or {}
+
+    # Optional, on the same principle as the modifier blocks above: a policy
+    # file from before spec 24 loads, with no targets, and nothing is overdue
+    # until somebody sets one.
+    targets_raw = document.get("remediation_targets") or {}
+    unknown_targets = set(targets_raw) - known
+    if unknown_targets:
+        raise PolicyError(
+            f"remediation_targets names unknown severities: "
+            f"{', '.join(sorted(unknown_targets))}. Known: {', '.join(sorted(known))}."
+        )
+    target_days: dict[str, int | None] = {}
+    for name in known:
+        value = targets_raw.get(name)
+        if value is None:
+            target_days[name] = None
+            continue
+        number = _number(value, f"remediation_targets.{name}")
+        if number <= 0:
+            raise PolicyError(
+                f"remediation_targets.{name} must be a positive number of days, "
+                f"got {number:g}. Use null for 'no target' — zero would make "
+                "every finding of this severity overdue the moment it is found."
+            )
+        target_days[name] = int(number)
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -315,6 +377,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 reach_raw.get("discount_cap", 0), "reachability.discount_cap"
             ),
         ),
+        remediation_targets=RemediationTargets(days=target_days),
         unfixable=UnfixableDampening(
             factor=_number(
                 unfixable_raw.get("factor", 0), "unfixable_dampening.factor"

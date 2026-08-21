@@ -151,6 +151,35 @@ def _age_days(first_seen_at: Any) -> int | None:
     return max(0, (utcnow() - seen).days)
 
 
+#: How close to its deadline a finding is (spec 24 §2.4).
+#:
+#: `no_target` is a fourth state rather than a null, and it is the one that
+#: matters: a finding with no target is not on track, it is unmeasured, and a
+#: queue that showed it as on track would report compliance it never assessed.
+DUE_STATES = ("overdue", "due_soon", "on_track", "no_target")
+
+#: How long before a deadline counts as "soon". A week, matching the shortest
+#: target in the shipped policy — long enough to schedule the work, short
+#: enough that it means something.
+DUE_SOON_DAYS = 7
+
+
+def due_state(due_at: datetime | None, *, now: datetime | None = None) -> str:
+    """Bucket a deadline. Pure, so the queue and the tile cannot disagree."""
+    if due_at is None:
+        return "no_target"
+    moment = now or utcnow()
+    if due_at.tzinfo is not None:
+        due_at = due_at.replace(tzinfo=None)
+    if moment.tzinfo is not None:
+        moment = moment.replace(tzinfo=None)
+    if due_at <= moment:
+        return "overdue"
+    if (due_at - moment).days < DUE_SOON_DAYS:
+        return "due_soon"
+    return "on_track"
+
+
 @dataclass
 class CapabilityState:
     """Per-capability scan state for one repo.
@@ -509,6 +538,7 @@ class DashboardQueries:
         min_epss: float | None = None,
         triage: str | None = None,
         fixable: bool | None = None,
+        due: str | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -558,6 +588,8 @@ class DashboardQueries:
             "status",
             "first_seen_at",
             "last_seen_at",
+            "due_at",
+            "due_source",
         ]
 
         counts = self._severity_counts(repo_full_name, finding_status)
@@ -600,7 +632,10 @@ class DashboardQueries:
         # session, so it is kept a separate flag from the threat-intel one
         # rather than folded into it and made to look like it does.
         wants_group_filter = (
-            wants_threat_intel_filter or triage is not None or fixable is not None
+            wants_threat_intel_filter
+            or triage is not None
+            or fixable is not None
+            or due is not None
         )
 
         if wants_group_filter:
@@ -655,6 +690,8 @@ class DashboardQueries:
             groups = [g for g in groups if g["triage"] == triage]
         if fixable is not None:
             groups = [g for g in groups if g["fixable"] is fixable]
+        if due is not None:
+            groups = [g for g in groups if g["due_state"] == due]
 
         if wants_group_filter:
             truncated = pool_truncated or len(groups) > limit
@@ -941,6 +978,8 @@ class DashboardQueries:
                     "first_seen_at": finding.get("first_seen_at"),
                     "last_seen_at": finding.get("last_seen_at"),
                     "cvss_score": finding.get("cvss_score"),
+                    "due_at": None,
+                    "due_source": None,
                     "toxic_combination_ids": [],
                 }
                 order.append(key)
@@ -966,6 +1005,20 @@ class DashboardQueries:
             # safe number to display.
             if _worse(str(finding["severity"]), str(group["severity"])):
                 group["severity"] = str(finding["severity"])
+            # The soonest deadline among the occurrences, not the latest: a
+            # group is one decision, and the date that matters is the first
+            # one the team is answerable for. A KEV date on any occurrence
+            # makes the group's date a KEV date, because that is the one with
+            # an authority behind it.
+            incoming_due = finding.get("due_at")
+            if incoming_due is not None:
+                current_due = group.get("due_at")
+                if current_due is None or incoming_due < current_due:
+                    group["due_at"] = incoming_due
+                    group["due_source"] = finding.get("due_source")
+                elif finding.get("due_source") == "kev" and group["due_source"] != "kev":
+                    group["due_source"] = "kev"
+
             for field_name, better in (("first_seen_at", min), ("last_seen_at", max)):
                 current, incoming = group.get(field_name), finding.get(field_name)
                 if incoming is not None:
@@ -984,6 +1037,7 @@ class DashboardQueries:
         result = []
         for key in order:
             group = grouped[key]
+            group["due_state"] = due_state(group["due_at"])
             classification, rationale = classify(
                 {
                     "rule_id": group["rule_id"],
@@ -1607,6 +1661,10 @@ class DashboardQueries:
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
+            "owner",
+            "owner_source",
+            "due_at",
+            "due_source",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]

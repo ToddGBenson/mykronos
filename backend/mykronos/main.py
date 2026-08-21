@@ -48,6 +48,7 @@ from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
+from mykronos.ownership import OwnershipResolver
 from mykronos.ratelimit import SlidingWindowLimiter
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
@@ -180,6 +181,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.notifier = SlackNotifier(settings.slack_webhook_url)
     if app.state.notifier.enabled:
         logger.info("Slack notification is enabled.")
+
+    # Always constructed, for the reason the notifier above is: an ingest
+    # handler that has to guard `hasattr(state, "ownership")` is one that will
+    # forget. With no GitHub client reachable it resolves everything to
+    # `unresolved`, which is a correct answer rather than a failure.
+    app.state.ownership = OwnershipResolver()
 
     tasks: list[asyncio.Task[None]] = []
 
