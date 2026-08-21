@@ -120,6 +120,44 @@ class ReachabilityPolicy:
 
 
 @dataclass(frozen=True)
+class TriageRankPolicy:
+    """What to look at first (spec 27 §1.1).
+
+    An ordering that decides what a team opens on Monday is policy, not a
+    constant in a module — it is reviewed in a pull request and versioned with
+    everything else here.
+
+    Deliberately a documented weighted sum a person can recompute on paper, for
+    the same reason the risk score is one. A rank nobody can argue with is a
+    rank people route around.
+
+    `fixable_bonus` is the interesting term and is not a claim about danger: a
+    fixable finding is *cheaper*, and a worklist's job is risk removed per unit
+    of work. That makes the ordering explicitly economic, which is what a
+    worklist is.
+
+    `orphaned_discount` is negative, and is the same discount the risk model
+    applies for the same reason (D-072) — never a promotion, only ever a
+    reduction, because the analysis behind it can be wrong about dead code and
+    must not be able to bury live work.
+    """
+
+    severity: dict[str, float]
+    in_kev: float
+    epss_at_1_0: float
+    overdue: float
+    due_soon: float
+    blast_radius_at_max: float
+    repo_is_no_go: float
+    orphaned_discount: float
+    fixable_bonus: float
+
+    @property
+    def configured(self) -> bool:
+        return any(self.severity.values()) or bool(self.in_kev or self.epss_at_1_0)
+
+
+@dataclass(frozen=True)
 class OverduePolicy:
     """What a missed deadline costs (spec 24 §2.4).
 
@@ -185,6 +223,7 @@ class Policy:
     unfixable: UnfixableDampening
     remediation_targets: RemediationTargets
     overdue: OverduePolicy
+    triage_rank: TriageRankPolicy
 
     no_go: float
     review_recommended: float
@@ -277,6 +316,17 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # Optional like the rest: with no block the term is worth zero, and with
     # no `remediation_targets` the category reports unavailable regardless.
     overdue_raw = modifiers.get("overdue_findings") or {}
+    # Top-level, not a modifier: it changes what a person looks at first and
+    # contributes nothing to any score. Optional like the rest, so a policy
+    # file from before spec 27 loads and the queue keeps its severity order.
+    rank_raw = document.get("triage_rank") or {}
+    rank_severity_raw = rank_raw.get("severity") or {}
+    unknown_rank = set(rank_severity_raw) - known
+    if unknown_rank:
+        raise PolicyError(
+            f"triage_rank.severity names unknown severities: "
+            f"{', '.join(sorted(unknown_rank))}. Known: {', '.join(sorted(known))}."
+        )
 
     # Optional, on the same principle as the modifier blocks above: a policy
     # file from before spec 24 loads, with no targets, and nothing is overdue
@@ -396,6 +446,28 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
         ),
         remediation_targets=RemediationTargets(days=target_days),
+        triage_rank=TriageRankPolicy(
+            severity={
+                name: _number(value, f"triage_rank.severity.{name}")
+                for name, value in rank_severity_raw.items()
+            },
+            in_kev=_number(rank_raw.get("in_kev", 0), "triage_rank.in_kev"),
+            epss_at_1_0=_number(rank_raw.get("epss_at_1_0", 0), "triage_rank.epss_at_1_0"),
+            overdue=_number(rank_raw.get("overdue", 0), "triage_rank.overdue"),
+            due_soon=_number(rank_raw.get("due_soon", 0), "triage_rank.due_soon"),
+            blast_radius_at_max=_number(
+                rank_raw.get("blast_radius_at_max", 0), "triage_rank.blast_radius_at_max"
+            ),
+            repo_is_no_go=_number(
+                rank_raw.get("repo_is_no_go", 0), "triage_rank.repo_is_no_go"
+            ),
+            orphaned_discount=_number(
+                rank_raw.get("orphaned_discount", 0), "triage_rank.orphaned_discount"
+            ),
+            fixable_bonus=_number(
+                rank_raw.get("fixable_bonus", 0), "triage_rank.fixable_bonus"
+            ),
+        ),
         overdue=OverduePolicy(
             per_finding=_number(
                 overdue_raw.get("per_finding", 0), "modifiers.overdue_findings.per_finding"

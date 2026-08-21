@@ -275,6 +275,12 @@ export interface paths {
          *     The portfolio table answers "which repo is worst". This answers "what do I
          *     do next" — the question somebody actually has on a Monday morning, and one
          *     a per-repo view makes you visit forty pages to answer.
+         *
+         *     `order=rank` applies spec 27 §1's weighted sum: severity describes the
+         *     vulnerability class, and everything else on the row describes this
+         *     instance of it. Severity ordering is kept and is still the default —
+         *     "show me every critical" remains a legitimate question, and a queue that
+         *     refuses to answer it is a worse queue.
          */
         get: operations["triage_api_dashboard_triage_get"];
         put?: never;
@@ -2629,6 +2635,23 @@ export interface components {
             unreachable: components["schemas"]["UnreachableRepoOut"][];
         };
         /**
+         * RankTermOut
+         * @description One contribution to a queue row's rank (spec 27 §1.1).
+         *
+         *     Modelled rather than a bare dict for the reason `FindingOut`'s docstring
+         *     gives: a `dict[str, Any]` types the whole frontend as `unknown` and pushes
+         *     the guessing into a cast — and this is the field whose entire purpose is
+         *     to be read.
+         */
+        RankTermOut: {
+            /** Key */
+            key: string;
+            /** Points */
+            points: number;
+            /** Detail */
+            detail: string;
+        };
+        /**
          * RawAccepted
          * @description Archived raw tool output (spec 05 §7).
          */
@@ -3373,6 +3396,36 @@ export interface components {
              * @description 0-1, null if not scored yet.
              */
             epss_score?: number | null;
+            /**
+             * Owner
+             * @description From CODEOWNERS or the risk profile (spec 24 §1).
+             */
+            owner?: string | null;
+            /**
+             * Due State
+             * @description overdue | due_soon | on_track | no_target (spec 24 §2.4).
+             */
+            due_state?: string | null;
+            /**
+             * Effort
+             * @description one_click | small | investigation (spec 27 §2). Three bands, not an hour estimate: an estimate this platform cannot verify is a number nobody should plan against.
+             */
+            effort?: string | null;
+            /**
+             * Blast Radius Repos
+             * @description Repositories carrying a finding on this package.
+             */
+            blast_radius_repos?: number | null;
+            /**
+             * Rank
+             * @description Only when ordering by rank (spec 27 §1).
+             */
+            rank?: number | null;
+            /**
+             * Rank Terms
+             * @description Every term that produced `rank`, with its points and a sentence. A rank a person cannot argue with is a rank they will ignore.
+             */
+            rank_terms?: components["schemas"]["RankTermOut"][];
         };
         /** TriageQueue */
         TriageQueue: {
@@ -3732,6 +3785,8 @@ export interface operations {
                 rule_id?: string | null;
                 kev_only?: boolean;
                 min_epss?: number | null;
+                owner?: string | null;
+                order?: "severity" | "rank";
                 limit?: number;
             };
             header?: never;

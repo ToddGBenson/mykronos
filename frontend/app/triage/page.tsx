@@ -41,6 +41,8 @@ export default async function TriagePage({
     rule_id?: string;
     kev_only?: string;
     min_epss?: string;
+    owner?: string;
+    order?: string;
   }>;
 }) {
   const query = await searchParams;
@@ -50,6 +52,8 @@ export default async function TriagePage({
     rule_id: query.rule_id,
     kev_only: query.kev_only === "1",
     min_epss: query.min_epss ? Number(query.min_epss) : undefined,
+    owner: query.owner,
+    order: query.order === "rank" ? "rank" : undefined,
   });
 
   if (!result.ok) {
@@ -158,6 +162,31 @@ export default async function TriagePage({
       </form>
 
       <div className="flex flex-wrap items-center gap-1.5">
+        {/* Severity stays the default and stays available: "show me every
+            critical" is a legitimate question, and a queue that refuses to
+            answer it is a worse queue (spec 27 §1.1). */}
+        <Label>Order</Label>
+        {(["severity", "rank"] as const).map((mode) => (
+          <Link
+            key={mode}
+            href={filterHref({ order: mode === "severity" ? undefined : mode })}
+            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+              (query.order === "rank" ? "rank" : "severity") === mode
+                ? "border-accent bg-accent-wash text-accent"
+                : "border-rule text-ink-3 hover:border-accent"
+            }`}
+            title={
+              mode === "rank"
+                ? "Risk removed per unit of work: severity, plus exploitation, deadline, blast radius and whether a fix already exists"
+                : "Worst first, then oldest"
+            }
+          >
+            {mode === "rank" ? "by rank" : "by severity"}
+          </Link>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
         <Label>Threat intel</Label>
         <Link
           href={filterHref({ kev_only: query.kev_only === "1" ? undefined : "1" })}
@@ -205,7 +234,17 @@ export default async function TriagePage({
           <table className="w-full min-w-[880px] border-collapse bg-paper-2 font-mono text-[11px]">
             <thead>
               <tr className="border-b-2 border-ink-2 text-left">
-                {["Sev", "Repository", "Verdict", "Rule", "Location", "Cap", "Age"].map(
+                {[
+                  "Sev",
+                  "Repository",
+                  "Verdict",
+                  "Rule",
+                  "Location",
+                  "Cap",
+                  "Effort",
+                  ...(query.order === "rank" ? ["Rank"] : []),
+                  "Age",
+                ].map(
                   (heading) => (
                     <th
                       key={heading}
@@ -259,6 +298,25 @@ export default async function TriagePage({
                     {item.line_start ? `:${item.line_start}` : ""}
                   </td>
                   <td className="px-2 py-2 text-ink-3">{item.capability}</td>
+                  <td className="whitespace-nowrap px-2 py-2">
+                    {item.effort ? (
+                      <Pill tone={item.effort === "one_click" ? "pass" : "muted"}>
+                        {item.effort.replace(/_/g, " ")}
+                      </Pill>
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
+                  </td>
+                  {query.order === "rank" ? (
+                    <td
+                      className="tabular whitespace-nowrap px-2 py-2 font-bold text-ink"
+                      title={(item.rank_terms ?? [])
+                        .map((term) => `${term.points > 0 ? "+" : ""}${term.points} ${term.detail}`)
+                        .join(String.fromCharCode(10))}
+                    >
+                      {item.rank?.toFixed(0) ?? "—"}
+                    </td>
+                  ) : null}
                   <td className="whitespace-nowrap px-2 py-2 text-ink-2">
                     <RelativeTime value={item.first_seen_at} />
                   </td>

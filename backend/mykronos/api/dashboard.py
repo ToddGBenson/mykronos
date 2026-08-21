@@ -97,6 +97,20 @@ class PortfolioOut(BaseModel):
     repos: list[PortfolioRowOut]
 
 
+class RankTermOut(BaseModel):
+    """One contribution to a queue row's rank (spec 27 §1.1).
+
+    Modelled rather than a bare dict for the reason `FindingOut`'s docstring
+    gives: a `dict[str, Any]` types the whole frontend as `unknown` and pushes
+    the guessing into a cast — and this is the field whose entire purpose is
+    to be read.
+    """
+
+    key: str
+    points: float
+    detail: str
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -129,6 +143,33 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    owner: str | None = Field(
+        default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
+    )
+    due_state: str | None = Field(
+        default=None, description="overdue | due_soon | on_track | no_target (spec 24 §2.4)."
+    )
+    effort: str | None = Field(
+        default=None,
+        description=(
+            "one_click | small | investigation (spec 27 §2). Three bands, not "
+            "an hour estimate: an estimate this platform cannot verify is a "
+            "number nobody should plan against."
+        ),
+    )
+    blast_radius_repos: int | None = Field(
+        default=None, description="Repositories carrying a finding on this package."
+    )
+    rank: float | None = Field(
+        default=None, description="Only when ordering by rank (spec 27 §1)."
+    )
+    rank_terms: list[RankTermOut] = Field(
+        default_factory=list,
+        description=(
+            "Every term that produced `rank`, with its points and a sentence. "
+            "A rank a person cannot argue with is a rank they will ignore."
+        ),
+    )
 
 
 class TriageQueue(BaseModel):
@@ -707,6 +748,8 @@ async def triage(
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     kev_only: Annotated[bool, Query()] = False,
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    owner: Annotated[str | None, Query(max_length=255)] = None,
+    order: Annotated[Literal["severity", "rank"], Query()] = "severity",
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -714,6 +757,12 @@ async def triage(
     The portfolio table answers "which repo is worst". This answers "what do I
     do next" — the question somebody actually has on a Monday morning, and one
     a per-repo view makes you visit forty pages to answer.
+
+    `order=rank` applies spec 27 §1's weighted sum: severity describes the
+    vulnerability class, and everything else on the row describes this
+    instance of it. Severity ordering is kept and is still the default —
+    "show me every critical" remains a legitimate question, and a queue that
+    refuses to answer it is a worse queue.
     """
     with request.app.state.db.session() as session:
         items, counts = _queries(request).triage_queue(
@@ -724,6 +773,9 @@ async def triage(
             limit=limit,
             kev_only=kev_only,
             min_epss=min_epss,
+            owner=owner,
+            order=order,
+            policy=request.app.state.oracle_policy,
         )
 
     return TriageQueue(

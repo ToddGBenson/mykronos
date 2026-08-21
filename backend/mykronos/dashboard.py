@@ -33,6 +33,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import blast_radius
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
@@ -178,6 +179,84 @@ def due_state(due_at: datetime | None, *, now: datetime | None = None) -> str:
     if (due_at - moment).days < DUE_SOON_DAYS:
         return "due_soon"
     return "on_track"
+
+
+#: Effort bands (spec 27 §2). Three, not an hour estimate: an estimate this
+#: platform cannot verify is a number nobody should plan against.
+EFFORT_BANDS = ("one_click", "small", "investigation")
+
+
+def effort_band(*, fixable: bool | None, package_name: str | None) -> str:
+    """How much work this looks like, from what has been observed.
+
+    `one_click` means Patchwork has actually produced a fix for it — the
+    existing `fixable` badge, which spec 19 derives from observed outcome
+    rather than prediction.
+
+    `investigation` is a finding with no package: the deterministic fixers are
+    all dependency-shaped, so a code finding has no mechanical path and saying
+    "small" would be optimistic about somebody else's afternoon.
+    """
+    if fixable:
+        return "one_click"
+    if not package_name:
+        return "investigation"
+    return "small"
+
+
+def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str, Any]]]:
+    """`(score, contributing terms)` for one queue row (spec 27 §1).
+
+    Every term is returned, not just the total. A rank a person cannot argue
+    with is a rank they will ignore, and this platform's standing rule is that
+    a derived number carries its working (spec 10 §6).
+    """
+    rank = policy.triage_rank
+    terms: list[dict[str, Any]] = []
+
+    def add(key: str, points: float, detail: str) -> None:
+        if points:
+            terms.append({"key": key, "points": round(points, 2), "detail": detail})
+
+    severity = str(item.get("severity") or "")
+    add(
+        "severity",
+        rank.severity.get(severity, 0.0),
+        f"{severity} finding",
+    )
+    if item.get("in_kev"):
+        add("in_kev", rank.in_kev, "listed in CISA KEV — exploited in the wild")
+    epss = item.get("epss_score")
+    if epss:
+        add(
+            "epss",
+            rank.epss_at_1_0 * float(epss),
+            f"EPSS {float(epss):.2f} — probability of exploitation in 30 days",
+        )
+    due = item.get("due_state")
+    if due == "overdue":
+        add("overdue", rank.overdue, "past its remediation target")
+    elif due == "due_soon":
+        add("due_soon", rank.due_soon, "due within a week")
+    radius = float(item.get("blast_radius_ratio") or 0.0)
+    if radius:
+        add(
+            "blast_radius",
+            rank.blast_radius_at_max * radius,
+            f"affects {item.get('blast_radius_repos')} repositories",
+        )
+    if item.get("repo_recommendation") == "no_go":
+        add("repo_is_no_go", rank.repo_is_no_go, "in a repository Oracle already refuses")
+    if item.get("orphaned"):
+        add(
+            "orphaned",
+            rank.orphaned_discount,
+            "in a file nothing in the repository imports (Python only)",
+        )
+    if item.get("effort") == "one_click":
+        add("fixable", rank.fixable_bonus, "Patchwork has produced a fix for this")
+
+    return (sum(term["points"] for term in terms), terms)
 
 
 @dataclass
@@ -1171,6 +1250,9 @@ class DashboardQueries:
         limit: int = 100,
         kev_only: bool = False,
         min_epss: float | None = None,
+        order: str = "severity",
+        owner: str | None = None,
+        policy: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
 
@@ -1203,6 +1285,12 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if owner:
+            if owner == "unresolved":
+                where.append("(owner IS NULL OR owner = '')")
+            else:
+                where.append("owner = ?")
+                params.append(owner)
         if rule_id:
             where.append("(rule_id ILIKE ? OR title ILIKE ?)")
             needle = f"%{rule_id}%"
@@ -1229,13 +1317,24 @@ class DashboardQueries:
             "package_name",
             "package_version",
             "first_seen_at",
+            "due_at",
+            "due_source",
+            "owner",
         ]
         # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
         # is applied in Python against a different database, so the SQL
         # fetch has to stay generous enough that LIMIT doesn't cut candidates
         # before the filter ever sees them.
         wants_threat_intel_filter = kev_only or min_epss is not None
-        fetch_limit = CORRELATION_CEILING if wants_threat_intel_filter else limit
+        # Ranking reorders in Python, so the SQL fetch has to be generous for
+        # the same reason a KEV filter makes it generous: a severity-ordered
+        # LIMIT would cut exactly the fixable, exploited medium the ranking
+        # exists to surface, before the ranking ever saw it.
+        fetch_limit = (
+            CORRELATION_CEILING
+            if wants_threat_intel_filter or order == "rank"
+            else limit
+        )
         rows = self.catalog.query(
             f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
             "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
@@ -1262,6 +1361,13 @@ class DashboardQueries:
         # not conditional on the filter being active, so a caller can render
         # the badge whether or not they're also filtering by it.
         self._attach_threat_intel(session, queue)
+
+        if order == "rank" and policy is not None:
+            self._attach_rank_inputs(queue)
+            for item in queue:
+                item["rank"], item["rank_terms"] = rank_terms(item, policy)
+            queue.sort(key=lambda item: (-float(item["rank"]), item["first_seen_at"]))
+
         if kev_only:
             queue = [item for item in queue if item["in_kev"]]
         if min_epss is not None:
@@ -1273,6 +1379,41 @@ class DashboardQueries:
         queue = queue[:limit]
 
         return queue, counts
+
+    def _attach_rank_inputs(self, queue: list[dict[str, Any]]) -> None:
+        """Stamp the signals ranking needs but the queue did not carry.
+
+        Three lookups for the whole page rather than per row: the fix stages
+        for every repository represented, the package blast-radius map, and
+        each repository's orphaned-file list. A per-row query here would be
+        the portfolio's two-second budget spent on a list of a hundred.
+        """
+        repos = {str(item["repo_full_name"]) for item in queue}
+        stages: dict[str, str] = {}
+        for repo in repos:
+            stages.update(self._fix_stages(repo))
+
+        radius = blast_radius.build(self.catalog)
+        widest = max(radius.values(), default=0)
+
+        for item in queue:
+            stage = stages.get(str(item["finding_id"]))
+            fixable = None if stage is None else stage in _FIX_PRODUCED
+            item["effort"] = effort_band(
+                fixable=fixable, package_name=item.get("package_name")
+            )
+            item["due_state"] = due_state(item.get("due_at"))
+            repos_affected = radius.get(str(item.get("package_name") or ""), 0)
+            item["blast_radius_repos"] = repos_affected
+            item["blast_radius_ratio"] = (
+                repos_affected / widest if widest > 1 and repos_affected > 1 else 0.0
+            )
+            # Orphaned-file reachability is per repository and lives in the
+            # operational store; the queue is cross-repo and has no session
+            # for it here. Left absent rather than assumed false — the
+            # discount simply does not apply until spec 19's report is joined
+            # in, and absent is the direction that cannot bury live work.
+            item["orphaned"] = False
 
     # -- Aegis and Atlas ------------------------------------------------
 
