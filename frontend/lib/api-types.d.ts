@@ -4577,6 +4577,7 @@ export interface operations {
         parameters: {
             query?: {
                 days?: number;
+                repo_id?: string | null;
             };
             header?: never;
             path?: never;

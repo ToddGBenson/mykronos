@@ -251,3 +251,72 @@ class TestShadowModeReport:
 
     def test_it_needs_authentication(self, client) -> None:
         assert client.get("/api/oracle/shadow-mode").status_code == 401
+
+
+class TestTheGateThatActuallyRuns:
+    """spec 26 §3 — the composite-score gate D-048/D-083 retired is not the
+    gate anyone is deciding whether to switch on."""
+
+    def test_the_retired_model_is_labelled_not_deleted(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        body = client.get("/api/oracle/shadow-mode", headers=admin_auth).json()
+
+        assert "would_have_blocked" in body
+        assert "would_have_blocked_on_introduced" in body
+        assert "D-048" in body["retired_model_note"]
+
+    def test_a_commit_that_introduced_a_critical_would_be_refused(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        oracle_auth: dict[str, str],
+        run_compaction,
+    ) -> None:
+        from tests.conftest import finding_payload, post_findings, post_scan
+
+        post_scan(client, oracle_auth, scan_run_id="run-1", commit_sha="deadbee")
+        post_findings(
+            client,
+            oracle_auth,
+            [finding_payload(severity="critical")],
+            scan_run_id="run-1",
+        )
+        run_compaction()
+        client.post(
+            "/api/oracle/evaluate",
+            json={"decision_type": "pr_gate", "commit_sha": "deadbee", "pr_number": 5},
+            headers=oracle_auth,
+        )
+        run_compaction()
+        close_pr(client, 5, merged=True)
+        run_compaction()
+
+        body = client.get("/api/oracle/shadow-mode", headers=admin_auth).json()
+
+        assert body["would_have_blocked_on_introduced"] == 1
+        assert body["refused_on_introduced"][0]["commit_sha"] == "deadbee"
+
+    def test_a_clean_commit_would_not_be(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        oracle_auth: dict[str, str],
+        run_compaction,
+    ) -> None:
+        from tests.conftest import post_scan
+
+        post_scan(client, oracle_auth, scan_run_id="run-1", commit_sha="c0ffee")
+        run_compaction()
+        client.post(
+            "/api/oracle/evaluate",
+            json={"decision_type": "pr_gate", "commit_sha": "c0ffee", "pr_number": 6},
+            headers=oracle_auth,
+        )
+        run_compaction()
+        close_pr(client, 6, merged=True)
+        run_compaction()
+
+        body = client.get("/api/oracle/shadow-mode", headers=admin_auth).json()
+
+        assert body["would_have_blocked_on_introduced"] == 0

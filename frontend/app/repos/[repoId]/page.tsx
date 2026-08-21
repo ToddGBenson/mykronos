@@ -12,6 +12,7 @@ import {
   type FindingsQuery,
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
+import { PathToGreen } from "@/components/path-to-green";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
@@ -437,8 +438,17 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
   if (!result.ok) {
     return <ErrorPanel title="Decisions unavailable" detail={result.error} />;
   }
+  // The newest decision carries the inverse of its own score (spec 26 §1).
+  // Read from the decision rather than fetched separately: a path computed by
+  // a second call could disagree with the score it is supposed to explain.
+  const latest = result.data.decisions[0];
+  const path =
+    (latest?.inputs_snapshot as { path_to_green?: Parameters<typeof PathToGreen>[0]["path"] })
+      ?.path_to_green ?? null;
+
   return (
     <div className="flex flex-col gap-4">
+      <PathToGreen repoId={repoId} path={path} />
       {profile.ok ? (
         <RiskProfileCard repoId={repoId} profile={profile.data} />
       ) : (

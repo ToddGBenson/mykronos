@@ -32,9 +32,9 @@ It is also, still, only a scorer. Three consequences:
 
 | Item | Status |
 |---|---|
-| Path to green: the minimal action set (§1) | Not started |
+| Path to green: the minimal action set (§1) | **Built** |
 | Terms that reward, capped and evidence-backed (§2) | Not started |
-| 30-day shadow report of what the gate would have refused (§3) | Not started |
+| 30-day shadow report of what the gate would have refused (§3) | **Built** — as an extension of spec 09 §6's existing report, which measured the retired gate |
 | Forecast: when this repository turns no-go on ageing alone (§4) | Not started |
 
 ## 1. Path to green
@@ -128,21 +128,35 @@ expressiveness, and every term here is additive like the ones already there.
 
 ## 3. The shadow report
 
-### 3.1 Current state
+### 3.1 Current state — corrected while building
 
-Gate outcomes are recorded — `_record_gate_outcome` on the webhook path, `gate_outcome` on the
-decision. Nothing aggregates them into the question a team actually has: *if we turned blocking on,
-what would have happened last month?*
+This section as drafted was wrong: a shadow-mode report *does* exist (spec 09 §6,
+`/api/oracle/shadow-mode`), and it is rendered on the portfolio decisions page.
+
+What is true is worse and more specific. That report counts `no_go` decisions that merged — the
+**composite-score gate**, which D-048 and D-083 retired after it refused every commit in both
+pipelines. No gate has worked that way since. So the platform's evidence for "should we switch
+blocking on" has been measuring a gate that no longer exists, and would have argued against
+switching on a gate that is now safe to switch on.
+
+The work is therefore to extend it, not to build it: report what the *current* gate would refuse — a
+commit that introduced a critical or a high — beside the retired number, with the retired one
+labelled rather than deleted so evidence gathered under the old model stays readable.
 
 ### 3.2 What ships
 
-A panel on the Risk Decision tab: over the last 30 days, every commit the gate would have refused,
-with its date, its author-facing reason, and what it introduced. Plus the headline the decision turns
-on — *"blocking would have refused 3 of 47 commits; all 3 introduced a new critical"* versus
-*"blocking would have refused 31 of 47"*, which are opposite answers and currently look identical
-from here.
+`shadow_mode_report` gains `would_have_blocked_on_introduced` and the list of commits behind it, and
+takes an optional repository filter so the same report can be read per repo. The headline the
+decision turns on — *"blocking would have refused 3 of 47 commits"* versus *"31 of 47"* — is now
+about the gate that runs.
 
-It is a query over `risk_decisions` rows that already exist. No new recording, no new evaluation.
+It is a query over `risk_decisions` rows that already exist, plus one `introduced_by` call per
+merged commit in the window. No new recording, no new evaluation, no new column.
+
+**Judged now, not then.** `introduced_by` reads current status, so a finding introduced then and
+dispositioned since does not count. That is the honest direction for this question: it reports what
+the gate would refuse *today*, given what is known today, which is what somebody deciding whether to
+switch it on needs.
 
 ### 3.3 Why on this tab and not in a report somewhere
 

@@ -144,6 +144,18 @@ def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
     return "\n".join(lines)
 
 
+def _dashboard_queries(catalog: Any) -> Any:
+    """Imported at call time, not at module load.
+
+    `dashboard` imports Oracle's policy for its portfolio rendering; importing
+    it back at module level here would make that a cycle. One call per merged
+    commit in a 30-day window is not a hot path.
+    """
+    from mykronos.dashboard import DashboardQueries
+
+    return DashboardQueries(catalog)
+
+
 class OracleService:
     def __init__(
         self,
@@ -286,19 +298,40 @@ class OracleService:
 
     # -- reads ----------------------------------------------------------
 
-    def shadow_mode_report(self, *, since: datetime | None = None) -> dict[str, Any]:
+    def shadow_mode_report(
+        self, *, since: datetime | None = None, repo_full_name: str | None = None
+    ) -> dict[str, Any]:
         """What blocking mode would have done, had it been on (spec 09 §6).
 
         Deliberately reports the counter-evidence in the same shape as the
         supporting evidence: `would_have_blocked` next to `overridden`, so the
         cost of turning blocking on is as visible as the benefit. A report that
         only counted caught issues would be an argument, not a measurement.
+
+        **Two gates, and only one of them still exists.** `would_have_blocked`
+        counts `no_go` decisions that merged — the composite-score gate, which
+        D-048 and D-083 retired after it refused every commit in both
+        pipelines. `would_have_blocked_on_introduced` counts what the *current*
+        gate would refuse: a commit that introduced a critical or a high. The
+        retired number is kept and labelled rather than deleted, so evidence
+        gathered under the old model is still readable and is not mistaken for
+        evidence about the new one.
+
+        **The introduced count is judged now, not then.** It re-asks
+        `introduced_by` for each decision's commit, and that reads current
+        status — so a finding introduced then and dispositioned since does not
+        count. That is the honest direction for a "should we switch this on"
+        question: it reports what the gate would refuse *today*, given what is
+        known today.
         """
         where = ["decision_type = 'pr_gate'", "gate_outcome IS NOT NULL"]
         params: list[Any] = []
         if since is not None:
             where.append("evaluated_at >= ?")
             params.append(since)
+        if repo_full_name is not None:
+            where.append("repo_full_name = ?")
+            params.append(repo_full_name)
         clause = " AND ".join(where)
 
         rows = self.catalog.query(
@@ -320,6 +353,7 @@ class OracleService:
                 # mode would have stopped.
                 "would_have_blocked",
                 "would_have_blocked_and_overridden",
+                "would_have_blocked_on_introduced",
             ),
             0,
         )
@@ -339,9 +373,45 @@ class OracleService:
                 if overridden:
                     totals["would_have_blocked_and_overridden"] += count
 
+        # The gate that actually runs (D-083). One `introduced_by` per merged
+        # commit, not per decision: the same commit re-judged on three pushes
+        # is one commit a gate would refuse once.
+        merged_commits = {
+            str(commit)
+            for (commit,) in self.catalog.query(
+                f"""
+                SELECT DISTINCT commit_sha FROM risk_decisions
+                WHERE {clause} AND gate_outcome = 'merged'
+                  AND commit_sha IS NOT NULL AND commit_sha <> ''
+                """,
+                params,
+            )
+        }
+        refused: list[dict[str, Any]] = []
+        for commit in sorted(merged_commits):
+            for repo in self._repos_for_commit(commit, repo_full_name):
+                introduced = _dashboard_queries(self.catalog).introduced_by(repo, commit)
+                if introduced.get("critical", 0) or introduced.get("high", 0):
+                    refused.append(
+                        {
+                            "repo_full_name": repo,
+                            "commit_sha": commit,
+                            "introduced": introduced,
+                        }
+                    )
+        totals["would_have_blocked_on_introduced"] = len(refused)
+
         return {
             **totals,
+            "merged_commits_judged": len(merged_commits),
+            "refused_on_introduced": refused,
             "by_recommendation": by_recommendation,
+            "retired_model_note": (
+                "`would_have_blocked` describes the composite-score gate that "
+                "D-048 and D-083 retired — it refused every commit once a "
+                "backlog existed. `would_have_blocked_on_introduced` is the "
+                "gate that runs now: no new critical, no new high."
+            ),
             "interpretation": (
                 "Every 'would_have_blocked' is a merge that blocking mode "
                 "would have stopped. Whether that was the right call is not "
@@ -351,6 +421,19 @@ class OracleService:
             ),
         }
 
+
+    def _repos_for_commit(
+        self, commit_sha: str, repo_full_name: str | None
+    ) -> list[str]:
+        if repo_full_name is not None:
+            return [repo_full_name]
+        return [
+            str(repo)
+            for (repo,) in self.catalog.query(
+                "SELECT DISTINCT repo_full_name FROM risk_decisions WHERE commit_sha = ?",
+                [commit_sha],
+            )
+        ]
 
     def recent_decisions(
         self,
