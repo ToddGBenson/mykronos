@@ -32,7 +32,7 @@
 # been on every dependency and container finding all along, and nothing was
 # reading it. A repository whose findings all have fixes available scores
 # exactly as it did; one carrying unpatched CVEs scores lower, on purpose.
-version: "1.6"
+version: "1.7"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -231,6 +231,40 @@ remediation_targets:
   medium: 90
   low: 180
   info: null
+
+# ---------------------------------------------------------------------------
+# Triage ranking (spec 27 §1)
+# ---------------------------------------------------------------------------
+#
+# What to look at first. This contributes nothing to any risk score — it
+# orders a queue — and it lives here because an ordering that decides what a
+# team opens on Monday is policy, reviewed in a pull request, not a constant
+# in a module.
+#
+# A documented weighted sum a person can recompute on paper, deliberately.
+# Severity describes the vulnerability class; everything below it describes
+# this instance of it, and those are the terms that make the order differ from
+# a severity sort.
+triage_rank:
+  severity:
+    critical: 40
+    high: 25
+    medium: 12
+    low: 4
+    info: 0
+  in_kev: 25                # actively exploited, right now, in the world
+  epss_at_1_0: 20           # scaled by the score itself
+  overdue: 15               # past due_at (spec 24 §2)
+  due_soon: 5
+  blast_radius_at_max: 10   # scaled by dependent-repo count
+  repo_is_no_go: 8          # the same finding matters more in a failing repo
+  # Negative, and the same discount the risk model applies for the same reason
+  # (D-072): never a promotion, only ever a reduction. The analysis can be
+  # wrong about dead code and must not be able to bury live work.
+  orphaned_discount: -10
+  # Not a claim that a fixable finding is more dangerous — a claim that it is
+  # cheaper. A worklist's job is risk removed per unit of work.
+  fixable_bonus: 6
 
 thresholds:
   no_go: 70                  # >= 70

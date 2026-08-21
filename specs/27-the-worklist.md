@@ -31,8 +31,8 @@ clear last week".
 
 | Item | Status |
 |---|---|
-| Ranked ordering with visible inputs (§1) | Not started |
-| Effort estimate from observed outcomes (§2) | Not started |
+| Ranked ordering with visible inputs (§1) | **Built** |
+| Effort estimate from observed outcomes (§2) | **Built** |
 | Claim, snooze, and batch actions (§3) | Not started |
 | Weekly per-owner digest (§4) | Not started |
 | Throughput and burn-down (§5) | Not started |
@@ -45,6 +45,11 @@ A `rank` ordering alongside the existing severity ordering — not replacing it,
 critical" remains a legitimate question and a queue that refuses to answer it is a worse queue.
 
 The score is a small, explainable, additive expression over signals the row already carries:
+
+The `orphaned_discount` term ships with a weight and **does not fire yet**: import reachability is a
+per-repository report in the operational store, and this queue is cross-repo with no session for it
+at the point the rank is computed. Absent rather than assumed false, which is the direction that
+cannot bury live work — the same rule D-072 applies to the risk model.
 
 ```yaml
 # New block in oracle-policy-v1.yaml. Reviewed in a pull request like every
