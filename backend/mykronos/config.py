@@ -117,6 +117,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    acceptance_sweep_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "Expires acceptances past their review date and re-opens any "
+            "accepted as 'no vendor fix' once a scan reports one (spec 24 §3). "
+            "Daily, because `accepted_until` is a date — a shorter interval "
+            "would re-read the same day repeatedly."
+        ),
+    )
+
     insider_risk_default_retention_days: int = Field(
         default=90,
         ge=1,

@@ -391,7 +391,12 @@ class TestStatusWriteBack:
         finding_id = self._first_finding(client, admin_auth, seeded)
         client.patch(
             f"/api/dashboard/findings/{finding_id}/status",
-            json={"status": "accepted_risk", "reason": "staging only"},
+            json={
+                "status": "accepted_risk",
+                "reason": "staging only",
+                "accepted_reason_code": "not_exploitable_here",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
@@ -564,7 +569,12 @@ class TestOpenFindings:
 
         client.patch(
             f"/api/dashboard/findings/{accepted}/status",
-            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            json={
+                "status": "accepted_risk",
+                "reason": "behind the VPN",
+                "accepted_reason_code": "compensating_control",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
@@ -582,7 +592,12 @@ class TestOpenFindings:
         accepted = self._group(page, "CWE-79")["locations"][0]["finding_id"]
         client.patch(
             f"/api/dashboard/findings/{accepted}/status",
-            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            json={
+                "status": "accepted_risk",
+                "reason": "behind the VPN",
+                "accepted_reason_code": "compensating_control",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
