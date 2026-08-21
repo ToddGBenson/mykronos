@@ -405,6 +405,104 @@ def _overdue_snapshot(
     )
 
 
+#: How many actions a path may name before it stops being an instruction and
+#: starts being the findings list again. The value of this is the *prefix*.
+PATH_STEPS_MAX = 12
+
+
+def _path_to_green(
+    *,
+    effective: dict[str, float],
+    candidates: dict[str, list[dict[str, Any]]],
+    raw_score: float,
+    policy: Policy,
+) -> dict[str, Any]:
+    """The minimal set of closures that moves this repository down a band
+    (spec 26 §1).
+
+    The engine already holds every term, its weight and the exact distance to
+    the threshold, and then reports a verdict and leaves the reader to solve
+    the inverse by hand. This is that inverse, and it is arithmetic on values
+    already computed rather than a second model.
+
+    **Recomputed at every step, not summed.** The band curve is
+    `weight × log2(1 + n)`, so removing the second finding from a band is
+    worth less than removing the first. Independent deltas would publish
+    arithmetic that does not match what happens when somebody actually does
+    it.
+
+    **The projection counts the band curve only.** Removing a finding also
+    removes any KEV boost and any overdue points attached to it, so the real
+    drop is *at least* the projected one. Under-promising is the safe
+    direction for a number people plan against, and the response says so.
+
+    **Actions, never outcomes.** Each step names a finding somebody can close.
+    "Reduce criticals by two" is an instruction nobody can act on directly,
+    and this platform does not publish those.
+    """
+    order = list(reversed(policy.severities_in_scope()))
+    remaining = {severity: list(candidates.get(severity, [])) for severity in order}
+    working = dict(effective)
+    projected = raw_score
+    steps: list[dict[str, Any]] = []
+
+    def band_at(severity: str, count: float) -> float:
+        return _band_contribution(policy.severity_weights.get(severity, 0.0), count)
+
+    while len(steps) < PATH_STEPS_MAX and projected >= policy.review_recommended:
+        best: tuple[float, str] | None = None
+        for severity in order:
+            if not remaining[severity]:
+                continue
+            current = working.get(severity, 0.0)
+            if current <= 0:
+                continue
+            saving = band_at(severity, current) - band_at(severity, max(0.0, current - 1))
+            if saving <= 0:
+                continue
+            if best is None or saving > best[0]:
+                best = (saving, severity)
+
+        if best is None:
+            break
+
+        saving, severity = best
+        finding = remaining[severity].pop(0)
+        working[severity] = max(0.0, working.get(severity, 0.0) - 1)
+        projected -= saving
+        steps.append(
+            {
+                "finding_id": finding["finding_id"],
+                "rule_id": finding["rule_id"],
+                "title": finding["title"],
+                "severity": severity,
+                "file_path": finding.get("file_path"),
+                "points_removed": round(saving, 2),
+                "score_after": max(0, min(100, round(projected))),
+                "recommendation_after": policy.recommendation_for(
+                    max(0.0, min(100.0, projected))
+                ),
+            }
+        )
+
+    left = sum(len(rows) for rows in remaining.values())
+    reached = policy.recommendation_for(max(0.0, min(100.0, projected)))
+    return {
+        "available": True,
+        "steps": steps,
+        "findings_not_listed": left,
+        "reaches": reached,
+        "reachable": reached != "no_go" or not steps,
+        "note": (
+            "Each step is recomputed, not summed: the band curve means the "
+            "second finding out of a band is worth less than the first. The "
+            "projection counts the finding bands only, so closing these "
+            "removes at least this much — any KEV boost or overdue points on "
+            "the same findings come off as well."
+        ),
+    }
+
+
 def _risk_profile_snapshot(
     profile: dict[str, Any] | None, policy: Policy
 ) -> tuple[dict[str, Any], list[Term]]:
@@ -807,6 +905,67 @@ class OracleEngine:
             as_of=self._as_of,
         )
 
+    def _path_candidates(
+        self, repo_full_name: str, *, for_gate: bool, covered: set[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Findings a person could close, worst and oldest first.
+
+        Three exclusions, and each is about the instruction being actionable
+        rather than about the arithmetic:
+
+        - a finding with a fix already in flight is not something to go and do;
+        - a finding with no upstream fix cannot be closed by this team at all
+          (D-077), and telling them to close it would be advice they cannot
+          take;
+        - a dampened finding contributes a fraction of a finding to the score,
+          so closing one saves less than the projection assumes.
+
+        All three also happen to be the findings whose removal saves less than
+        a whole unit, so excluding them keeps the published number
+        conservative — the safe direction.
+        """
+        statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
+        severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
+        excluded = ""
+        if for_gate and self.policy.capabilities_excluded_from_gates:
+            names = ", ".join(
+                f"'{c}'" for c in self.policy.capabilities_excluded_from_gates
+            )
+            excluded = f"AND capability NOT IN ({names})"
+
+        rows = self.catalog.query(
+            f"""
+            SELECT finding_id, rule_id, title, severity, file_path
+            FROM findings
+            WHERE repo_full_name = ?
+              AND status IN ({statuses})
+              AND severity IN ({severities})
+              AND NOT (
+                  package_name IS NOT NULL AND trim(package_name) <> ''
+                  AND coalesce(
+                        json_extract_string(raw_finding_json, '$.fixed_version'), ''
+                      ) = ''
+              )
+              {excluded}
+            ORDER BY first_seen_at
+            """,
+            [repo_full_name],
+        )
+        dampened = self._dampened_rules(repo_full_name)
+        candidates: dict[str, list[dict[str, Any]]] = {}
+        for finding_id, rule_id, title, severity, file_path in rows:
+            if str(rule_id) in dampened or str(finding_id) in covered:
+                continue
+            candidates.setdefault(str(severity), []).append(
+                {
+                    "finding_id": str(finding_id),
+                    "rule_id": str(rule_id),
+                    "title": str(title or rule_id),
+                    "file_path": str(file_path) if file_path else None,
+                }
+            )
+        return candidates
+
     def _overdue(self, repo_full_name: str, for_gate: bool) -> tuple[int, int]:
         """`(overdue, with_a_target)` over this decision's in-scope findings.
 
@@ -1073,6 +1232,10 @@ class OracleEngine:
         # 1. Findings, worst band first so the reasoning reads in the order a
         #    person would care about.
         factor = self.policy.dampening.dampening_factor
+        # Kept for the path-to-green projection (spec 26 §1): it has to start
+        # from the same effective counts the score was built from, not from
+        # the raw ones, or the arithmetic it publishes will not match.
+        effective_by_severity: dict[str, float] = {}
         for severity in reversed(self.policy.severities_in_scope()):
             count = counts.get(severity, 0)
             weight = self.policy.severity_weights.get(severity, 0.0)
@@ -1103,6 +1266,7 @@ class OracleEngine:
                 + unfixable * (1.0 - unfixable_factor)
             )
             contribution = _band_contribution(weight, effective)
+            effective_by_severity[severity] = effective
 
             plural = "s" if count != 1 else ""
             detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
@@ -1299,6 +1463,28 @@ class OracleEngine:
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
+        # 10. What would make this go (spec 26 §1). Computed only when it has
+        #     something to say: a repository already at `go` gets an empty
+        #     path that says so, rather than a list of work with no purpose.
+        if raw_score >= self.policy.review_recommended:
+            path = _path_to_green(
+                effective=effective_by_severity,
+                candidates=self._path_candidates(
+                    repo_full_name, for_gate=for_gate, covered=covered
+                ),
+                raw_score=raw_score,
+                policy=self.policy,
+            )
+        else:
+            path = {
+                "available": True,
+                "steps": [],
+                "findings_not_listed": 0,
+                "reaches": self.policy.recommendation_for(raw_score),
+                "reachable": True,
+                "note": "Already below the review threshold — nothing to clear.",
+            }
+
         snapshot = self._build_snapshot(
             terms=terms,
             counts=counts,
@@ -1315,6 +1501,7 @@ class OracleEngine:
             blast_radius_snapshot=radius_snapshot,
             reachability_snapshot=reach_snapshot,
             overdue_snapshot=overdue_snapshot,
+            path_to_green=path,
         )
 
         decision = Decision(
@@ -1357,6 +1544,7 @@ class OracleEngine:
         blast_radius_snapshot: dict[str, Any] | None = None,
         reachability_snapshot: dict[str, Any] | None = None,
         overdue_snapshot: dict[str, Any] | None = None,
+        path_to_green: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -1407,6 +1595,12 @@ class OracleEngine:
             or _reachability_snapshot(None, 0, self.policy)[0],
             "overdue_findings": overdue_snapshot
             or _overdue_snapshot(0, 0, self.policy)[0],
+            # Not a modifier category — it contributes nothing to the score.
+            # It is the inverse of the score, and it lives in the snapshot so
+            # a decision carries its own answer to "what now" rather than
+            # making a caller recompute one that could disagree.
+            "path_to_green": path_to_green
+            or {"available": False, "steps": [], "reason": "Not computed."},
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "blast_radius": blast_radius_snapshot
             or blast_radius.snapshot([], None)[0],

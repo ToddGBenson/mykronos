@@ -279,6 +279,7 @@ async def shadow_mode(
     request: Request,
     principal: PrincipalDep,
     days: Annotated[int, Query(ge=1, le=730)] = 90,
+    repo_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """What blocking mode would have done, had it been on (spec 09 §6).
 
@@ -291,8 +292,20 @@ async def shadow_mode(
     shadowed by the parameterised one.
     """
     since = utcnow() - timedelta(days=days)
-    report = _service(request).shadow_mode_report(since=since)
-    return {"window_days": days, "since": since.isoformat(), **report}
+    # Imported at call time: `api.dashboard` imports Oracle's models, so a
+    # module-level import here would close the loop.
+    from mykronos.api.dashboard import _resolve_repo
+
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    report = _service(request).shadow_mode_report(
+        since=since, repo_full_name=repo_full_name
+    )
+    return {
+        "window_days": days,
+        "since": since.isoformat(),
+        "repo_full_name": repo_full_name,
+        **report,
+    }
 
 
 @router.get("/term-analytics")
