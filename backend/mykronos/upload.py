@@ -113,7 +113,18 @@ class IngestionClient:
             )
             return
 
-        remaining = deadline - datetime.now(deadline.tzinfo or UTC)
+        # The server sends a naive UTC timestamp — every lake and operational
+        # timestamp in this platform is naive UTC (spec 01 §6) — so
+        # `deadline.tzinfo` is None and `datetime.now(None or UTC)` produced an
+        # *aware* now to subtract from a *naive* deadline. That is a TypeError,
+        # raised inside the warning that exists to prevent a token outage, on
+        # exactly the uploads that are inside the overlap window it warns
+        # about: the failure mode was that rotation broke every upload rather
+        # than warning about them. Normalised here rather than at the header,
+        # because an older server may legitimately send an aware one.
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        remaining = deadline - datetime.now(UTC)
         hours = remaining.total_seconds() / 3600
         if hours <= 6:
             print(
