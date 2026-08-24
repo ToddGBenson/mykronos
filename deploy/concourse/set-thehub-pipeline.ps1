@@ -318,7 +318,15 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v4",
+        # v4.1, not v4. v4 crashes on upload for every lane that reports:
+        #   upload.py:116 _warn_rotated
+        #   TypeError: can't subtract offset-naive and offset-aware datetimes
+        # The code that warns you a token was rotated was itself the code
+        # that crashed, so the warning never arrived and three jobs -
+        # secrets, sast, containers - died on 2026-08-22 with no signal.
+        # v4.1 is v4 plus that fix. The server was moved to v4.1 the same
+        # day; this file was not, so applying it would have put v4 back.
+        "mykronos-ref: v4.1",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #
