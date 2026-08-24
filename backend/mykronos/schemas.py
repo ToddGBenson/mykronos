@@ -205,6 +205,19 @@ class FindingSubmission(BaseModel):
     address: str | None = Field(default=None, max_length=100)
     port: int | None = Field(default=None, ge=0, le=65535)
 
+    cwe_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "CWE identifiers the *tool* declared, normalised to `CWE-89` form "
+            "(spec 28 §1). A list, not a field: a rule legitimately maps to "
+            "several, and picking one would be the adapter inventing "
+            "precision. Empty means the tool said nothing — which is absent, "
+            "not 'no CWE applies', and the STRIDE mapping depends on that "
+            "distinction."
+        ),
+    )
+
     raw_finding_json: dict[str, Any] = Field(
         default_factory=dict,
         description="Original tool record, preserved verbatim (spec 05 §3).",

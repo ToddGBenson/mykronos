@@ -1,0 +1,108 @@
+# CWE → STRIDE (spec 28 §2).
+#
+# A file, not a dict in a module, for the same reason `oracle-policy-v1.yaml`
+# and `maturity-model-v1.yaml` are files: this is a taxonomy judgement — that
+# CWE-89 is Tampering and Information Disclosure, that CWE-306 is Elevation of
+# Privilege — and a judgement belongs where it can be argued with in a pull
+# request rather than changed in a commit nobody reviews as policy.
+#
+# ---------------------------------------------------------------------------
+# What this is for, and what it is not
+# ---------------------------------------------------------------------------
+#
+# Spec 18 §6 places a finding by the *capability* that reported it, because no
+# finding carried a CWE. The consequence it names in its own prose: a
+# SQL-injection SAST finding and a hardcoded-credential SAST finding land in
+# the same two categories. This map is what separates them.
+#
+# It is deliberately incomplete. A CWE absent from here falls back to the
+# capability mapping and is counted in an "unmapped" line on the tab, so the
+# gap is visible and gets closed by somebody adding a row — rather than
+# silently resolving to whatever category looked closest.
+#
+# Several CWEs map to more than one category, and that is not hedging: a SQL
+# injection genuinely both tampers with a query and discloses data. A model
+# that forced one category per weakness would be tidier and wrong.
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# The map
+# ---------------------------------------------------------------------------
+#
+# Keyed on the normalised `CWE-nn` form the SARIF adapter produces. Ordered by
+# CWE number so a reviewer can find one.
+map:
+  # Injection: the input changes the meaning of a statement, and usually reads
+  # something back.
+  CWE-20: [tampering]                       # Improper input validation
+  CWE-22: [information_disclosure, tampering]  # Path traversal
+  CWE-77: [tampering, elevation_of_privilege]  # Command injection
+  CWE-78: [tampering, elevation_of_privilege]  # OS command injection
+  CWE-79: [tampering, spoofing]             # Cross-site scripting
+  CWE-89: [tampering, information_disclosure]  # SQL injection
+  CWE-90: [tampering, information_disclosure]  # LDAP injection
+  CWE-91: [tampering]                       # XML injection
+  CWE-94: [tampering, elevation_of_privilege]  # Code injection
+  CWE-611: [information_disclosure]         # XXE
+  CWE-643: [tampering, information_disclosure]  # XPath injection
+  CWE-917: [tampering, elevation_of_privilege]  # Expression language injection
+
+  # Authentication and session: who the request claims to be.
+  CWE-287: [spoofing]                       # Improper authentication
+  CWE-290: [spoofing]                       # Authentication bypass by spoofing
+  CWE-294: [spoofing]                       # Capture-replay
+  CWE-306: [elevation_of_privilege, spoofing]  # Missing authentication
+  CWE-307: [spoofing]                       # Improper restriction of auth attempts
+  CWE-384: [spoofing]                       # Session fixation
+  CWE-613: [spoofing]                       # Insufficient session expiration
+
+  # Authorisation: what an authenticated principal may do.
+  CWE-269: [elevation_of_privilege]         # Improper privilege management
+  CWE-276: [elevation_of_privilege]         # Incorrect default permissions
+  CWE-284: [elevation_of_privilege]         # Improper access control
+  CWE-285: [elevation_of_privilege]         # Improper authorization
+  CWE-352: [tampering, elevation_of_privilege]  # CSRF
+  CWE-425: [elevation_of_privilege]         # Forced browsing
+  CWE-639: [elevation_of_privilege]         # Authorization bypass via user-controlled key
+  CWE-732: [elevation_of_privilege]         # Incorrect permission assignment
+  CWE-862: [elevation_of_privilege]         # Missing authorization
+  CWE-863: [elevation_of_privilege]         # Incorrect authorization
+
+  # Secrets and crypto: what leaks, and what fails to protect it.
+  CWE-200: [information_disclosure]         # Exposure of sensitive information
+  CWE-209: [information_disclosure]         # Error message reveals information
+  CWE-256: [information_disclosure]         # Unprotected credential storage
+  CWE-295: [spoofing, tampering]            # Improper certificate validation
+  CWE-311: [information_disclosure]         # Missing encryption
+  CWE-319: [information_disclosure, tampering]  # Cleartext transmission
+  CWE-321: [information_disclosure]         # Hardcoded cryptographic key
+  CWE-326: [information_disclosure]         # Inadequate encryption strength
+  CWE-327: [information_disclosure]         # Broken crypto algorithm
+  CWE-330: [spoofing, tampering]            # Insufficiently random values
+  CWE-338: [spoofing]                       # Cryptographically weak PRNG
+  CWE-522: [information_disclosure, spoofing]  # Insufficiently protected credentials
+  CWE-532: [information_disclosure]         # Information exposure through logs
+  CWE-798: [spoofing, information_disclosure]  # Hardcoded credentials
+
+  # Integrity of what runs, and of what is recorded.
+  CWE-345: [tampering, spoofing]            # Insufficient verification of data authenticity
+  CWE-347: [tampering, spoofing]            # Improper verification of signature
+  CWE-434: [tampering, elevation_of_privilege]  # Unrestricted file upload
+  CWE-494: [tampering]                      # Download of code without integrity check
+  CWE-502: [tampering, elevation_of_privilege]  # Deserialization of untrusted data
+  CWE-829: [tampering]                      # Inclusion of functionality from untrusted control sphere
+  CWE-915: [tampering]                      # Improperly controlled modification of attributes
+
+  # Repudiation: whether an action can be denied afterwards. Thin on purpose —
+  # most logging weaknesses are reported as information disclosure instead,
+  # and inventing repudiation rows to fill the category would misrepresent
+  # what the tools actually said.
+  CWE-117: [repudiation]                    # Improper output neutralization for logs
+  CWE-778: [repudiation]                    # Insufficient logging
+
+  # Availability.
+  CWE-400: [denial_of_service]              # Uncontrolled resource consumption
+  CWE-405: [denial_of_service]              # Asymmetric resource consumption
+  CWE-770: [denial_of_service]              # Allocation without limits
+  CWE-1333: [denial_of_service]             # Inefficient regular expression complexity

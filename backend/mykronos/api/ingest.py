@@ -360,6 +360,12 @@ async def ingest_findings(
                 "first_seen_at": now,
                 "last_seen_at": now,
                 "resolved_at": None,
+                # What the tool said this weakness is (spec 28 §1). JSON text
+                # like the other list-shaped columns: read whole and mapped,
+                # never filtered on in SQL. Null rather than "[]" when the
+                # tool said nothing — absent is not "no CWE applies", and the
+                # STRIDE mapping depends on the distinction.
+                "cwe_ids_json": json.dumps(finding.cwe_ids) if finding.cwe_ids else None,
                 "owner": owner,
                 "owner_source": owner_source,
                 "due_at": due_at,

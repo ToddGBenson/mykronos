@@ -32,8 +32,8 @@ data that separates them is already fetched on the same page, one tab away.
 
 | Item | Status |
 |---|---|
-| CWE extraction from SARIF `properties.tags` (§1) | Not started |
-| STRIDE from CWE where present, capability where absent (§2) | Not started |
+| CWE extraction from SARIF `properties.tags` (§1) | **Built** |
+| STRIDE from CWE where present, capability where absent (§2) | **Built** — `stride-map-v1.yaml`, 56 entries |
 | Controls register, admin-authored (§3) | Not started |
 | Three-state categories: clean / unscanned / unmitigated (§4) | Not started |
 
