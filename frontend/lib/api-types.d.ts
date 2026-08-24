@@ -2191,6 +2191,16 @@ export interface components {
              */
             owner_split: boolean;
             /**
+             * Cwe Ids
+             * @description What the reporting tool declared, normalised (spec 28 §1).
+             */
+            cwe_ids?: string[];
+            /**
+             * Mapping Resolution
+             * @description How this row was placed in its STRIDE categories: `cwe` when the tool named one this platform maps, `capability` otherwise. Per row, because a repository is routinely mixed.
+             */
+            mapping_resolution?: string | null;
+            /**
              * Due State
              * @description overdue | due_soon | on_track | no_target. `no_target` is not 'on track': it is unmeasured, and showing it as on track would report compliance nobody assessed.
              * @default no_target
@@ -2338,6 +2348,11 @@ export interface components {
             address?: string | null;
             /** Port */
             port?: number | null;
+            /**
+             * Cwe Ids
+             * @description CWE identifiers the *tool* declared, normalised to `CWE-89` form (spec 28 §1). A list, not a field: a rule legitimately maps to several, and picking one would be the adapter inventing precision. Empty means the tool said nothing — which is absent, not 'no CWE applies', and the STRIDE mapping depends on that distinction.
+             */
+            cwe_ids?: string[];
             /**
              * Raw Finding Json
              * @description Original tool record, preserved verbatim (spec 05 §3).
@@ -3466,9 +3481,14 @@ export interface components {
             repo_full_name: string;
             /**
              * Mapping Resolution
-             * @description Always 'capability' today — no Finding carries a structured CWE, so this is the finest resolution the data honestly supports. A future CWE-aware pass would report 'cwe' here instead, distinguishing the two rather than letting the frontend assume one silently became the other.
+             * @description `cwe`, `capability`, or `mixed` (spec 28 §2). Until CWEs were read out of SARIF this was always `capability` — the finest resolution the data then supported. `mixed` is the common case now and is why every row carries its own: CodeQL tags its rules, Trivy does not, and a page-level label would be wrong for half of a real repository.
              */
             mapping_resolution: string;
+            /**
+             * Unmapped Cwes
+             * @description CWEs the tools declared and `stride-map-v1.yaml` does not know. Those rows fall back to capability mapping and are named here so the gap gets closed by somebody adding a row, rather than resolving to whatever category looked closest.
+             */
+            unmapped_cwes?: string[];
             /** Categories */
             categories: components["schemas"]["ThreatModelCategoryOut"][];
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;

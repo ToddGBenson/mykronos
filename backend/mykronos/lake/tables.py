@@ -65,6 +65,13 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     # this" are different problems with different fixes, and a reader of a
     # single blank column cannot tell which they are looking at.
     # `owner_source` is codeowners | profile | manual | unresolved.
+    # What the reporting tool said this is, taxonomically (spec 28 §1). JSON
+    # array of `CWE-89`-shaped strings. Spec 18 §6 explained the Threat Model
+    # tab's capability-level mapping by saying no finding carries a structured
+    # CWE — true of this schema until now, and never true of the SARIF at the
+    # door, which `adapters/sarif.py` was reading one property from and
+    # discarding the rest of.
+    ("cwe_ids_json", "VARCHAR"),
     ("owner", "VARCHAR"),
     ("owner_source", "VARCHAR"),
     # When this is due, and who set that date (spec 24 §2). Absent from the

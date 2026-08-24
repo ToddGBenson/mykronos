@@ -424,6 +424,18 @@ class FindingGroupOut(BaseModel):
             "answerable for it, and naming either would misroute half of it."
         ),
     )
+    cwe_ids: list[str] = Field(
+        default_factory=list,
+        description="What the reporting tool declared, normalised (spec 28 §1).",
+    )
+    mapping_resolution: str | None = Field(
+        default=None,
+        description=(
+            "How this row was placed in its STRIDE categories: `cwe` when the "
+            "tool named one this platform maps, `capability` otherwise. Per "
+            "row, because a repository is routinely mixed."
+        ),
+    )
     due_state: str = Field(
         default="no_target",
         description=(
@@ -581,11 +593,23 @@ class ThreatModelOut(BaseModel):
 
     repo_full_name: str
     mapping_resolution: str = Field(
-        description="Always 'capability' today — no Finding carries a "
-        "structured CWE, so this is the finest resolution the data "
-        "honestly supports. A future CWE-aware pass would report 'cwe' "
-        "here instead, distinguishing the two rather than letting the "
-        "frontend assume one silently became the other."
+        description=(
+            "`cwe`, `capability`, or `mixed` (spec 28 §2). Until CWEs were "
+            "read out of SARIF this was always `capability` — the finest "
+            "resolution the data then supported. `mixed` is the common case "
+            "now and is why every row carries its own: CodeQL tags its rules, "
+            "Trivy does not, and a page-level label would be wrong for half "
+            "of a real repository."
+        )
+    )
+    unmapped_cwes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CWEs the tools declared and `stride-map-v1.yaml` does not know. "
+            "Those rows fall back to capability mapping and are named here so "
+            "the gap gets closed by somebody adding a row, rather than "
+            "resolving to whatever category looked closest."
+        ),
     )
     categories: list[ThreatModelCategoryOut]
     supply_chain: ThreatModelSupplyChainOut | None = None

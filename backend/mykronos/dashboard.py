@@ -28,8 +28,11 @@ import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -110,6 +113,35 @@ STRIDE_BY_CAPABILITY: dict[str, tuple[str, ...]] = {
     "containers": ("tampering", "elevation_of_privilege"),
     "atlas": ("tampering", "information_disclosure"),
 }
+
+
+#: CWE -> STRIDE, loaded from a reviewed file (spec 28 §2). Cached: the map is
+#: read on every threat-model render and does not change between deploys.
+@lru_cache(maxsize=1)
+def stride_by_cwe(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """The CWE map, or an empty one if the file is absent.
+
+    Absent is a real state and not an error: a deployment that has not taken
+    `stride-map-v1.yaml` keeps the capability-level behaviour it had before,
+    with `mapping_resolution` saying so per row. Refusing to start would make
+    a taxonomy file a hard dependency of a tab that worked without one.
+    """
+    source = path or Path(__file__).resolve().parents[2] / "stride-map-v1.yaml"
+    try:
+        document = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.warning("CWE-to-STRIDE map unreadable at %s; falling back to capability", source)
+        return {}
+    raw = document.get("map") or {}
+    known = set(STRIDE_CATEGORIES)
+    out: dict[str, tuple[str, ...]] = {}
+    for cwe, categories in raw.items():
+        if not isinstance(categories, list):
+            continue
+        kept = tuple(c for c in categories if c in known)
+        if kept:
+            out[str(cwe).upper()] = kept
+    return out
 
 
 def _worse(candidate: str, current: str) -> bool:
@@ -864,6 +896,7 @@ class DashboardQueries:
             "status",
             "first_seen_at",
             "last_seen_at",
+            "cwe_ids_json",
         ]
         rows = self._finding_rows(
             repo_full_name,
@@ -874,11 +907,42 @@ class DashboardQueries:
         )
         groups = self._group_findings(rows, repo_full_name, store=None, combination_of={})
 
+        # CWE per group, from the occurrences the grouping already carries.
+        cwe_map = stride_by_cwe()
+        cwes_by_group: dict[str, list[str]] = {}
+        for row in rows:
+            raw = row.get("cwe_ids_json")
+            if not raw:
+                continue
+            with suppress(json.JSONDecodeError, TypeError):
+                key = f"{row['rule_id']}::{row.get('package_name') or ''}"
+                for cwe in json.loads(str(raw)):
+                    cwes_by_group.setdefault(key, [])
+                    if str(cwe).upper() not in cwes_by_group[key]:
+                        cwes_by_group[key].append(str(cwe).upper())
+
         by_category: dict[str, list[dict[str, Any]]] = {c: [] for c in STRIDE_CATEGORIES}
+        unmapped: set[str] = set()
+        resolutions: set[str] = set()
         for group in groups:
-            categories: set[str] = set()
-            for capability in group["capabilities"]:
-                categories.update(STRIDE_BY_CAPABILITY.get(capability, ()))
+            cwes = cwes_by_group.get(group["group_key"], [])
+            mapped = {c for cwe in cwes for c in cwe_map.get(cwe, ())}
+            # A CWE the map does not know falls back rather than resolving to
+            # whatever looked closest, and is counted so the gap is visible
+            # and gets closed by somebody adding a row (spec 28 §2).
+            unmapped.update(cwe for cwe in cwes if cwe not in cwe_map)
+
+            if mapped:
+                categories = mapped
+                group["mapping_resolution"] = "cwe"
+                group["cwe_ids"] = cwes
+            else:
+                categories = set()
+                for capability in group["capabilities"]:
+                    categories.update(STRIDE_BY_CAPABILITY.get(capability, ()))
+                group["mapping_resolution"] = "capability"
+                group["cwe_ids"] = cwes
+            resolutions.add(group["mapping_resolution"])
             for category in categories:
                 by_category[category].append(group)
 
@@ -887,7 +951,15 @@ class DashboardQueries:
 
         return {
             "repo_full_name": repo_full_name,
-            "mapping_resolution": "capability",
+            # Per page *and* per row: a repository will routinely be mixed —
+            # CodeQL tags its rules, Trivy does not — and a page-level label
+            # would be wrong for half of it. "mixed" says look at the rows.
+            "mapping_resolution": (
+                resolutions.pop()
+                if len(resolutions) == 1
+                else ("mixed" if resolutions else "capability")
+            ),
+            "unmapped_cwes": sorted(unmapped),
             "categories": [
                 {"stride": category, "findings": by_category[category]}
                 for category in STRIDE_CATEGORIES
