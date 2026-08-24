@@ -289,8 +289,8 @@ anchors:
             fi
             apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null 2>&1
 
-            SHA=$(git -C source rev-parse HEAD)
-            MSG=$(git -C source log -1 --pretty=%s)
+            SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
+            MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo "(source unavailable)")
 
             BODY=$(jq -nc \
               --arg d "$SHA" --arg s "$STAGE" --arg st "$STATUS" \
@@ -416,8 +416,38 @@ jobs:
   - name: unit
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: integration_tests
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: integration_tests
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: integration_tests
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -950,8 +980,48 @@ jobs:
   - name: qa
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: qa
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: qa
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: qa
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: qa
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -999,8 +1069,38 @@ jobs:
   - name: build
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: package_artifact
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: package_artifact
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: package_artifact
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1081,8 +1181,48 @@ jobs:
   - name: secrets
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: secrets
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: secrets
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: secrets
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: secrets
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1155,8 +1295,48 @@ jobs:
   - name: sast
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: sast
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: sast
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: sast
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: sast
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1240,8 +1420,48 @@ jobs:
   - name: dependencies
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dependencies
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dependencies
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dependencies
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dependencies
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1385,7 +1605,7 @@ jobs:
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 SHORT=$(git -C source rev-parse --short HEAD)
 
                 # Syft, pinned, scanning the checkout. `cyclonedx-py
@@ -1474,8 +1694,38 @@ jobs:
   - name: containers
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: trivy
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: trivy
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: trivy
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1607,12 +1857,65 @@ jobs:
   - name: insider
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: insider_risk
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: insider_risk
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: insider_risk
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
-        passed: [oracle-gate]
+        # [#55167] The verification jobs gate promotion.
+        #
+        # ALREADY LIVE ON THE SERVER and missing here, so applying this file
+        # without it would have reverted the gate. Ported back rather than
+        # re-decided.
+        #
+        # oracle-gate, api-inventory, functional-dast and dast-demo are all
+        # SIBLINGS hanging off deploy-demo, and only oracle-gate was on the
+        # promotion path (oracle-gate -> insider -> deploy-prod). So a red
+        # api-inventory or dast-demo could not stop a deploy to prod:
+        # api-inventory failed six consecutive builds (#14-#19) and blocked
+        # nothing.
+        #
+        # The constraint goes on `insider`, the step immediately before
+        # deploy-prod, rather than on oracle-gate itself - oracle-gate is an
+        # AI-review gate, and the promotion decision belongs on the promotion
+        # step. That keeps each job's meaning intact.
+        #
+        # functional-dast is deliberately NOT listed. It is PAUSED on the
+        # server and last failed 2026-08-16; a `passed:` constraint on a paused
+        # job can never be satisfied, so adding it would deadlock promotion
+        # permanently rather than tighten it. Un-pause it, get it green, then
+        # add it here.
+        passed: [oracle-gate, api-inventory, dast-demo]
       - get: python
       - *preflight
       - task: aegis
@@ -1790,8 +2093,38 @@ jobs:
           TARGET_ENV: prod
   - name: oracle-gate
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: oracle_gate
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: oracle_gate
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: oracle_gate
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -1930,8 +2263,38 @@ jobs:
           TARGET_ENV: prod
   - name: deploy-demo
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: deploy_staging
+            STATUS: failed
+            TARGET_ENV: staging
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: deploy_staging
+            STATUS: errored
+            TARGET_ENV: staging
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: deploy_staging
+            STATUS: aborted
+            TARGET_ENV: staging
     plan:
       - get: source
         trigger: true
@@ -1964,7 +2327,7 @@ jobs:
                 HOSTPORT=${MINIO_ENDPOINT#*://}
                 export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 echo "Requesting $ENVIRONMENT deploy of $SHA"
 
                 # Concourse publishes a pointer. It does not connect to the
@@ -2065,8 +2428,48 @@ jobs:
   - name: iac
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: iac
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: iac
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: iac
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: iac
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -2166,8 +2569,38 @@ jobs:
   - name: prompt-evals
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: prompt_evals
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: prompt_evals
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: prompt_evals
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -2312,8 +2745,38 @@ jobs:
   - name: api-inventory
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: api_inventory
+            STATUS: failed
+            TARGET_ENV: demo
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: api_inventory
+            STATUS: errored
+            TARGET_ENV: demo
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: api_inventory
+            STATUS: aborted
+            TARGET_ENV: demo
     plan:
       - get: source
         trigger: true
@@ -2400,8 +2863,38 @@ jobs:
   - name: dast-demo
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: failed
+            TARGET_ENV: demo
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: errored
+            TARGET_ENV: demo
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: aborted
+            TARGET_ENV: demo
     plan:
       - get: source
         trigger: true
@@ -2505,7 +2998,7 @@ jobs:
                 # one. Marking it safe is correct here: the repository was
                 # placed there by the git resource in this same build.
                 git config --global --add safe.directory "$PWD/source"
-                COMMIT_SHA=$(git -C source rev-parse HEAD)
+                COMMIT_SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
 
                 # A scan that cannot say what it scanned is not a result (L0001,
                 # the same rule the reachability check above enforces).
@@ -2553,8 +3046,38 @@ jobs:
   - name: dast-prod
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -2658,7 +3181,7 @@ jobs:
                 # one. Marking it safe is correct here: the repository was
                 # placed there by the git resource in this same build.
                 git config --global --add safe.directory "$PWD/source"
-                COMMIT_SHA=$(git -C source rev-parse HEAD)
+                COMMIT_SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
 
                 # A scan that cannot say what it scanned is not a result (L0001,
                 # the same rule the reachability check above enforces).
@@ -2709,8 +3232,62 @@ jobs:
   - name: functional-dast
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: functional
+            STATUS: failed
+            TARGET_ENV: demo
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: failed
+            TARGET_ENV: demo
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: functional
+            STATUS: errored
+            TARGET_ENV: demo
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: errored
+            TARGET_ENV: demo
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: functional
+            STATUS: aborted
+            TARGET_ENV: demo
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: dast_headers
+            STATUS: aborted
+            TARGET_ENV: demo
     plan:
       - get: source
         trigger: true
@@ -3093,8 +3670,38 @@ jobs:
 
   - name: deploy-prod
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: finish
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: finish
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: finish
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         passed: [insider]
@@ -3126,7 +3733,7 @@ jobs:
                 HOSTPORT=${MINIO_ENDPOINT#*://}
                 export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 echo "Requesting $ENVIRONMENT deploy of $SHA"
 
                 # Concourse publishes a pointer. It does not connect to the
@@ -3188,8 +3795,48 @@ jobs:
           TARGET_ENV: prod
   - name: cloud-posture
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: cloud_posture
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: cloud_posture
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: cloud_posture
+            STATUS: aborted
+            TARGET_ENV: prod
+    on_success:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: cloud_posture
+            STATUS: success
+            TARGET_ENV: prod
     plan:
       - get: daily
         trigger: true
@@ -3315,8 +3962,38 @@ jobs:
   - name: remediate
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: auto_remediation
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: auto_remediation
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: auto_remediation
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
@@ -3432,8 +4109,38 @@ jobs:
   - name: ai-models
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_failure:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: model_inventory
+            STATUS: failed
+            TARGET_ENV: prod
+    on_error:
+      in_parallel:
+        - *slack_alert
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: model_inventory
+            STATUS: errored
+            TARGET_ENV: prod
+    on_abort:
+      in_parallel:
+        - <<: *hub_report
+          params:
+            HUB_URL: ((thehub-url))
+            HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+            SCANNED_BRANCH: ((thehub-branch))
+            STAGE: model_inventory
+            STATUS: aborted
+            TARGET_ENV: prod
     plan:
       - get: source
         trigger: true
