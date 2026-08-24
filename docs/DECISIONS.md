@@ -3284,3 +3284,52 @@ case: the useful aggregate of Aegis's signals is a fact about a repository's
 controls, and the same data grouped by author is a fact about colleagues that
 spec 06 §9 already refused — so the repository framing is not a compromise, it
 is the more actionable of the two.
+
+## D-086 — Rotation wrote the new token where nothing reads it, and reported green
+
+**Status:** Decided and shipped
+
+`rotate_ingestion_tokens` rotates any token past its 90-day mark and then
+writes the new value as a **GitHub Actions secret** — unconditionally, whatever
+`scanned_by` says. For a Concourse-scanned repository that write *succeeds*:
+GitHub accepts a secret for a repository whose Actions lanes were retired
+(D-080). The job then called `mark_secret_synced` and reported a successful
+rotation.
+
+Meanwhile the pipeline goes on reading `((mykronos-ingestion-token))` from
+Vault, which still holds the old value. So every scheduled rotation quietly
+desynchronised every Concourse repo, and the repository broke when the
+24-hour overlap expired — a failure whose only warning was the uploader's
+`X-Mykronos-Token-Rotated` header, which is exactly the warning that was
+crashing (#87).
+
+This is D-051 and D-083's shape a third time: a lesson applied to one lane and
+not the other. Spec 15 and 16 moved this estate to Concourse; the rotation job
+never followed.
+
+**Deferred, not performed.** For anything not scanned by Actions the job now
+logs what an operator has to do and moves on, counting the repo as `deferred`.
+The alternative — rotate and hope somebody notices — is strictly worse: an
+un-rotated token keeps working, while a rotated-and-undelivered one breaks the
+repository as soon as the overlap ends. Doing nothing loudly beats doing the
+wrong thing quietly.
+
+**What this costs, stated plainly.** Concourse-scanned repositories no longer
+rotate automatically. That is a real regression against the intent of a 90-day
+rotation, and it is honest about a capability this platform does not have: it
+cannot write to Vault. The delivery path — giving the backend a Vault client
+and the credentials to use it — is the actual fix and is deliberately not
+smuggled in here, because it means the platform reaching into the
+infrastructure that runs it, which spec 15 §7 treats as a boundary worth
+arguing about rather than crossing quietly.
+
+**What the tests were doing.** All four rotation tests asserted the Actions
+write succeeded — against repositories whose `scanned_by` was `concourse`, the
+model default, because the test helper never set it. They tested a
+configuration this estate does not run and passed. The helper now defaults to
+`github_actions` and says why, so the assumption is stated rather than
+inherited.
+
+Found while repairing the live token by hand on 2026-08-23, after a manual
+rotation expired the value Vault was serving. The manual repair is now: rotate,
+write to `backend/.env`, write to Vault, verify against `:8100`.

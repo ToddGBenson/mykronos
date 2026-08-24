@@ -47,7 +47,22 @@ def factory(github: FakeGitHubClient) -> FakeGitHubClientFactory:
     return FakeGitHubClientFactory(github)
 
 
-def onboard(db: Database, repo: str = REPO, status: str = "active") -> str:
+def onboard(
+    db: Database,
+    repo: str = REPO,
+    status: str = "active",
+    scanned_by: str = "github_actions",
+) -> str:
+    """Onboard a repository for a job test.
+
+    `scanned_by` defaults to `github_actions` here, and the default is the
+    point: the rotation job's only delivery path is a GitHub Actions secret
+    (D-086), so a test of that path has to be about a repository that uses it.
+    The *model* defaults to `concourse`, which is what this estate actually
+    runs — so before this parameter existed, every rotation test asserted the
+    Actions write succeeded against a Concourse repo and passed. Saying so per
+    test beats every test inheriting an assumption it does not state.
+    """
     owner = repo.split("/")[0]
     with db.session() as session:
         # Reuse the org: github_org_login is unique, and two repos under one
@@ -66,6 +81,7 @@ def onboard(db: Database, repo: str = REPO, status: str = "active") -> str:
             github_repo_full_name=repo,
             github_installation_id=INSTALLATION,
             status=status,
+            scanned_by=scanned_by,
             enabled_capabilities=["sast"],
             default_branch="main",
             onboarded_by="test",
@@ -101,6 +117,56 @@ class TestRotation:
 
         assert result.rotated == [REPO]
         assert DEFAULT_SECRET_NAME in github.repos[REPO].secrets
+
+    async def test_a_concourse_repo_is_deferred_not_rotated(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """D-086. The job cannot deliver to Vault, and GitHub would happily
+        accept a secret for a repo whose Actions lanes were retired — so the
+        rotation is deferred rather than performed and abandoned. An
+        un-rotated token keeps working; a rotated, undelivered one breaks the
+        repository when its overlap expires."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(db, factory)
+
+        assert result.deferred == [REPO]
+        assert result.rotated == []
+        assert DEFAULT_SECRET_NAME not in github.repos[REPO].secrets
+
+    async def test_a_deferred_repo_keeps_a_working_token(
+        self, db: Database, factory
+    ) -> None:
+        """The whole reason for deferring: nothing is superseded, so the
+        credential the pipeline holds goes on working."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            plaintext = TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        await rotate_ingestion_tokens(db, factory)
+
+        with db.session() as session:
+            assert TokenRegistry(session).resolve(plaintext) is not None
+
+    async def test_the_deferral_is_reported_in_the_summary(
+        self, db: Database, factory
+    ) -> None:
+        """A silent skip is the failure mode this replaces."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(db, factory)
+
+        assert "deferred 1" in result.summary()
 
     async def test_leaves_a_fresh_token_alone(self, db: Database, factory) -> None:
         onboard(db)
