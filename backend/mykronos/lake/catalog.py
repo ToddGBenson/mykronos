@@ -117,9 +117,23 @@ class Catalog:
             files = self.all_files(table)
             if files:
                 pattern = sql_path(self.table_dir(table) / "dt=*" / "*.parquet")
+                # `union_by_name` reconciles columns *across* files and cannot
+                # invent one that no file has, so a column added to the schema
+                # is absent from the view until every partition has been
+                # rewritten — and any query naming it fails with
+                # "Referenced column not found in FROM clause", which points at
+                # the column rather than at the cause.
+                #
+                # `add_missing_columns` already fixes this for the temp table
+                # compaction builds; this is the same fix for the read path,
+                # which is the one a dashboard hits. Unioning against the
+                # declared zero-row shape costs nothing at runtime — DuckDB
+                # prunes the `WHERE 1=0` side — and needs no round trip to
+                # discover what the files contain.
                 body = (
                     f"SELECT * FROM read_parquet('{pattern}', "
-                    "hive_partitioning = 1, union_by_name = 1)"
+                    "hive_partitioning = 1, union_by_name = 1) "
+                    f"UNION ALL BY NAME {empty_select(table)}"
                 )
             else:
                 body = empty_select(table)
