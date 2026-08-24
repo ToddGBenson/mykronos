@@ -341,6 +341,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/triage/throughput": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Triage Throughput
+         * @description What moved this week, against last (spec 27 §5).
+         *
+         *     A queue with no memory of itself cannot tell a team clearing its backlog
+         *     from one treading water: both look like a list of open findings. Every
+         *     number is a query over `first_seen_at`, `resolved_at` and the verification
+         *     outcomes — no rollup table, for the reason `trend_series` gives.
+         *
+         *     Ordered before `/triage/{finding_id}/...` so the literal path is not
+         *     shadowed by the parameterised one.
+         */
+        get: operations["triage_throughput_api_dashboard_triage_throughput_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/triage/{finding_id}/claim": {
         parameters: {
             query?: never;
@@ -4020,6 +4048,39 @@ export interface operations {
         };
     };
     maturity_api_dashboard_maturity_get: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_throughput_api_dashboard_triage_throughput_get: {
         parameters: {
             query?: {
                 repo_id?: string | null;
