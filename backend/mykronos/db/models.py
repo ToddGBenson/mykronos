@@ -401,3 +401,62 @@ class AuditLogEntry(Base):
             f"{self.action} {self.entity_type}:{self.entity_id} "
             f"{json.dumps(self.detail, default=str)}>"
         )
+
+
+class TriageState(Base):
+    """Who is working on a finding, and what they have put off (spec 27 §3).
+
+    **Operational, not lake, and the distinction is the design.** Every other
+    observation in this platform is append-only in the lake because its history
+    is evidence. A claim is not evidence about a finding — it is a fact about
+    who is working on it this week, it changes many times a day, and the lake's
+    compaction and partitioning model is built for scan results (spec 05 §2).
+    The same reasoning `RiskProfile` and `ReachabilityReport` already follow.
+
+    **A snooze is not a disposition, and must never become one.** It hides a
+    row from the default queue until its date; it does not touch
+    `Finding.status`. A snoozed finding is still open, still scores in Oracle,
+    still goes overdue if it goes overdue (spec 24 §2). `accepted_risk` is a
+    decision about the vulnerability; this is a decision about the week, and
+    collapsing the two would let "not now" quietly become "not ever" — which
+    is precisely the state spec 24 §3 exists to stop acceptances drifting into.
+
+    One row per finding, created on first claim or snooze. Absence means
+    nobody has touched it, which is the common case and costs nothing to
+    store.
+    """
+
+    __tablename__ = "triage_state"
+
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Denormalised from the finding so the queue can scope without a lake
+    #: read, and so a repository being offboarded can purge its rows.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+
+    #: A handle, matching `Finding.owner`'s vocabulary. Null once released or
+    #: expired — the row stays, because a snooze may still be live on it.
+    claimed_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: When an unreleased claim lapses. Visible in the UI as it approaches
+    #: rather than released silently: an abandoned claim that vanishes without
+    #: a trace is indistinguishable from work nobody ever started.
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    #: A date, not a timestamp. "Come back to this on Tuesday" is the actual
+    #: intent, and an hour-precise snooze invites arguments about timezones
+    #: that nobody wants to have about a queue.
+    snoozed_until: Mapped[date | None] = mapped_column(Date, default=None)
+    #: Required when snoozing. A row that reappears with no reason recorded is
+    #: one whose deferral nobody can review, which is the failure mode spec 11
+    #: §4 keeps naming.
+    snooze_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<TriageState {self.finding_id[:12]} claimed_by={self.claimed_by} "
+            f"snoozed_until={self.snoozed_until}>"
+        )

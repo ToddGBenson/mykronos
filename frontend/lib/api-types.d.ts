@@ -341,6 +341,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/triage/{finding_id}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Finding
+         * @description Take a row (spec 27 §3.1).
+         *
+         *     Distinct from `owner` (spec 24 §1): ownership says who is *answerable*,
+         *     copied from CODEOWNERS; a claim says who is *doing it now*. Conflating
+         *     them would mean either nobody can pick up a neighbouring team's work
+         *     without rewriting ownership, or ownership drifts every time somebody
+         *     helps out.
+         *
+         *     First write wins. A silent overwrite here is two people fixing the same
+         *     finding.
+         */
+        post: operations["claim_finding_api_dashboard_triage__finding_id__claim_post"];
+        /**
+         * Release Finding
+         * @description Hand a row back. The snooze, if any, is a separate decision and stays.
+         */
+        delete: operations["release_finding_api_dashboard_triage__finding_id__claim_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/{finding_id}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snooze Finding
+         * @description Put a row down until a date, deciding nothing about it (spec 27 §3.1).
+         *
+         *     Deliberately not a `Finding.status`: a snoozed finding is still open,
+         *     still scores in Oracle, and still goes overdue if it goes overdue. That
+         *     separation is what stops "not now" becoming "not ever".
+         */
+        post: operations["snooze_finding_api_dashboard_triage__finding_id__snooze_post"];
+        /**
+         * Wake Finding
+         * @description Bring a snoozed row back early. The claim, if any, stays.
+         */
+        delete: operations["wake_finding_api_dashboard_triage__finding_id__snooze_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Triage Batch
+         * @description One action over a selection (spec 27 §3.1).
+         *
+         *     Reports per row rather than failing whole: one row somebody else claimed
+         *     must not stop the other ninety-nine.
+         *
+         *     Batching does not relax what a single action requires. A snooze still
+         *     needs a reason and a future date — spec 11 §4's reasons are what make the
+         *     Knowledge Store worth anything, and a bulk path that skipped them would be
+         *     the obvious way to stop having any.
+         */
+        post: operations["triage_batch_api_dashboard_triage_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/insider-risk": {
         parameters: {
             query?: never;
@@ -1506,6 +1595,41 @@ export interface components {
             detail: string;
         };
         /**
+         * BatchRequest
+         * @description One action over a selection (spec 27 §3.1).
+         */
+        BatchRequest: {
+            /** Finding Ids */
+            finding_ids: string[];
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "claim" | "release" | "snooze" | "wake";
+            /** By */
+            by?: string | null;
+            /** Until */
+            until?: string | null;
+            /**
+             * Reason
+             * @description Applied to every finding in the batch. Batching must not become a way to skip the reason field — see the endpoint.
+             * @default
+             */
+            reason: string;
+        };
+        /** BatchResult */
+        BatchResult: {
+            /** Applied */
+            applied: string[];
+            /**
+             * Refused
+             * @description finding_id -> why. A batch reports per-row outcomes rather than failing whole: one claimed row must not stop the other ninety-nine.
+             */
+            refused?: {
+                [key: string]: string;
+            };
+        };
+        /**
          * Capability
          * @enum {string}
          */
@@ -1643,6 +1767,14 @@ export interface components {
              * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. not_run: no successful build to compare against.
              */
             state: string;
+        };
+        /** ClaimRequest */
+        ClaimRequest: {
+            /**
+             * By
+             * @description A handle. An anonymous claim tells nobody anything.
+             */
+            by: string;
         };
         /**
          * DigestGroupOut
@@ -3107,6 +3239,20 @@ export interface components {
          * @enum {string}
          */
         Severity: "info" | "low" | "medium" | "high" | "critical";
+        /** SnoozeRequest */
+        SnoozeRequest: {
+            /**
+             * Until
+             * Format: date
+             * @description A date, not a timestamp — 'come back on Tuesday'.
+             */
+            until: string;
+            /**
+             * Reason
+             * @description Required. A row that reappears with no reason recorded is a deferral nobody can review.
+             */
+            reason: string;
+        };
         /** SscsEvidenceOut */
         SscsEvidenceOut: {
             /** Evidence Id */
@@ -3421,6 +3567,8 @@ export interface components {
              * @description Only when ordering by rank (spec 27 §1).
              */
             rank?: number | null;
+            /** @description Claim and snooze, from the operational store (spec 27 §3.2). */
+            state?: components["schemas"]["TriageStateOut"];
             /**
              * Rank Terms
              * @description Every term that produced `rank`, with its points and a sentence. A rank a person cannot argue with is a rank they will ignore.
@@ -3442,6 +3590,25 @@ export interface components {
              * @description Whether the limit cut the list short. A queue that silently stops at 100 reads as 'that is all of it'.
              */
             truncated: boolean;
+        };
+        /**
+         * TriageStateOut
+         * @description Who holds this row, and until when (spec 27 §3).
+         */
+        TriageStateOut: {
+            /** Claimed By */
+            claimed_by?: string | null;
+            /** Claim Expires At */
+            claim_expires_at?: string | null;
+            /**
+             * Claim Lapsing
+             * @default false
+             */
+            claim_lapsing: boolean;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /** Snooze Reason */
+            snooze_reason?: string | null;
         };
         /**
          * TriggeredBy
@@ -3787,6 +3954,8 @@ export interface operations {
                 min_epss?: number | null;
                 owner?: string | null;
                 order?: "severity" | "rank";
+                include_snoozed?: boolean;
+                claimed_by?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -3870,6 +4039,171 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_finding_api_dashboard_triage__finding_id__claim_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_finding_api_dashboard_triage__finding_id__claim_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    snooze_finding_api_dashboard_triage__finding_id__snooze_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    wake_finding_api_dashboard_triage__finding_id__snooze_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_batch_api_dashboard_triage_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResult"];
                 };
             };
             /** @description Validation Error */

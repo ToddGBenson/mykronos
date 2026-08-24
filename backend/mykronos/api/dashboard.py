@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
@@ -97,6 +98,70 @@ class PortfolioOut(BaseModel):
     repos: list[PortfolioRowOut]
 
 
+class ClaimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    by: str = Field(
+        min_length=1,
+        max_length=255,
+        description="A handle. An anonymous claim tells nobody anything.",
+    )
+
+
+class SnoozeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    until: date = Field(description="A date, not a timestamp — 'come back on Tuesday'.")
+    reason: str = Field(
+        min_length=1,
+        max_length=2000,
+        description=(
+            "Required. A row that reappears with no reason recorded is a "
+            "deferral nobody can review."
+        ),
+    )
+
+
+class BatchRequest(BaseModel):
+    """One action over a selection (spec 27 §3.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_ids: list[str] = Field(min_length=1, max_length=100)
+    action: Literal["claim", "release", "snooze", "wake"]
+    by: str | None = None
+    until: date | None = None
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Applied to every finding in the batch. Batching must not become "
+            "a way to skip the reason field — see the endpoint."
+        ),
+    )
+
+
+class BatchResult(BaseModel):
+    applied: list[str]
+    refused: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "finding_id -> why. A batch reports per-row outcomes rather than "
+            "failing whole: one claimed row must not stop the other ninety-nine."
+        ),
+    )
+
+
+class TriageStateOut(BaseModel):
+    """Who holds this row, and until when (spec 27 §3)."""
+
+    claimed_by: str | None = None
+    claim_expires_at: datetime | None = None
+    claim_lapsing: bool = False
+    snoozed_until: date | None = None
+    snooze_reason: str | None = None
+
+
 class RankTermOut(BaseModel):
     """One contribution to a queue row's rank (spec 27 §1.1).
 
@@ -162,6 +227,10 @@ class TriageItem(BaseModel):
     )
     rank: float | None = Field(
         default=None, description="Only when ordering by rank (spec 27 §1)."
+    )
+    state: TriageStateOut = Field(
+        default_factory=TriageStateOut,
+        description="Claim and snooze, from the operational store (spec 27 §3.2).",
     )
     rank_terms: list[RankTermOut] = Field(
         default_factory=list,
@@ -750,6 +819,8 @@ async def triage(
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     owner: Annotated[str | None, Query(max_length=255)] = None,
     order: Annotated[Literal["severity", "rank"], Query()] = "severity",
+    include_snoozed: Annotated[bool, Query()] = False,
+    claimed_by: Annotated[str | None, Query(max_length=255)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -776,6 +847,8 @@ async def triage(
             owner=owner,
             order=order,
             policy=request.app.state.oracle_policy,
+            include_snoozed=include_snoozed,
+            claimed_by=claimed_by,
         )
 
     return TriageQueue(
@@ -900,6 +973,153 @@ async def maturity(
             for a in assessments
         ],
     }
+
+
+def _finding_repo(request: Request, finding_id: str) -> str:
+    record = DashboardQueries(request.app.state.catalog).finding(finding_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+    return str(record.get("repo_full_name") or "")
+
+
+def _require_writer(principal: Any, verb: str) -> None:
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"{verb} requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+
+
+@router.post("/triage/{finding_id}/claim", response_model=TriageStateOut)
+async def claim_finding(
+    request: Request, finding_id: str, body: ClaimRequest, principal: PrincipalDep
+) -> TriageStateOut:
+    """Take a row (spec 27 §3.1).
+
+    Distinct from `owner` (spec 24 §1): ownership says who is *answerable*,
+    copied from CODEOWNERS; a claim says who is *doing it now*. Conflating
+    them would mean either nobody can pick up a neighbouring team's work
+    without rewriting ownership, or ownership drifts every time somebody
+    helps out.
+
+    First write wins. A silent overwrite here is two people fixing the same
+    finding.
+    """
+    _require_writer(principal, "Claiming a finding")
+    repo = _finding_repo(request, finding_id)
+    with request.app.state.db.session() as session:
+        try:
+            state = worklist.claim(session, finding_id, repo, by=body.by.strip())
+        except worklist.WorklistError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.delete("/triage/{finding_id}/claim", response_model=TriageStateOut)
+async def release_finding(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> TriageStateOut:
+    """Hand a row back. The snooze, if any, is a separate decision and stays."""
+    _require_writer(principal, "Releasing a finding")
+    with request.app.state.db.session() as session:
+        state = worklist.release(session, finding_id)
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.post("/triage/{finding_id}/snooze", response_model=TriageStateOut)
+async def snooze_finding(
+    request: Request, finding_id: str, body: SnoozeRequest, principal: PrincipalDep
+) -> TriageStateOut:
+    """Put a row down until a date, deciding nothing about it (spec 27 §3.1).
+
+    Deliberately not a `Finding.status`: a snoozed finding is still open,
+    still scores in Oracle, and still goes overdue if it goes overdue. That
+    separation is what stops "not now" becoming "not ever".
+    """
+    _require_writer(principal, "Snoozing a finding")
+    repo = _finding_repo(request, finding_id)
+    with request.app.state.db.session() as session:
+        try:
+            state = worklist.snooze(
+                session, finding_id, repo, until=body.until, reason=body.reason
+            )
+        except worklist.WorklistError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.delete("/triage/{finding_id}/snooze", response_model=TriageStateOut)
+async def wake_finding(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> TriageStateOut:
+    """Bring a snoozed row back early. The claim, if any, stays."""
+    _require_writer(principal, "Waking a finding")
+    with request.app.state.db.session() as session:
+        state = worklist.wake(session, finding_id)
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.post("/triage/batch", response_model=BatchResult)
+async def triage_batch(
+    request: Request, body: BatchRequest, principal: PrincipalDep
+) -> BatchResult:
+    """One action over a selection (spec 27 §3.1).
+
+    Reports per row rather than failing whole: one row somebody else claimed
+    must not stop the other ninety-nine.
+
+    Batching does not relax what a single action requires. A snooze still
+    needs a reason and a future date — spec 11 §4's reasons are what make the
+    Knowledge Store worth anything, and a bulk path that skipped them would be
+    the obvious way to stop having any.
+    """
+    _require_writer(principal, "Batch triage")
+
+    applied: list[str] = []
+    refused: dict[str, str] = {}
+    with request.app.state.db.session() as session:
+        for finding_id in body.finding_ids:
+            try:
+                if body.action == "claim":
+                    if not (body.by or "").strip():
+                        raise worklist.WorklistError("`by` is required to claim.")
+                    repo = _finding_repo(request, finding_id)
+                    worklist.claim(session, finding_id, repo, by=str(body.by).strip())
+                elif body.action == "release":
+                    worklist.release(session, finding_id)
+                elif body.action == "snooze":
+                    if body.until is None:
+                        raise worklist.WorklistError("`until` is required to snooze.")
+                    repo = _finding_repo(request, finding_id)
+                    worklist.snooze(
+                        session, finding_id, repo, until=body.until, reason=body.reason
+                    )
+                else:
+                    worklist.wake(session, finding_id)
+                applied.append(finding_id)
+            except worklist.WorklistError as exc:
+                refused[finding_id] = str(exc)
+            except HTTPException as exc:
+                refused[finding_id] = str(exc.detail)
+
+    logger.info(
+        "Batch %s over %d finding(s) by %s: %d applied, %d refused",
+        body.action,
+        len(body.finding_ids),
+        scrub(principal.actor),
+        len(applied),
+        len(refused),
+    )
+    return BatchResult(applied=applied, refused=refused)
 
 
 @router.get("/repos/{repo_id}/insider-risk", response_model=InsiderRiskPage)

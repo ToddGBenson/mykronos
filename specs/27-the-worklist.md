@@ -33,7 +33,7 @@ clear last week".
 |---|---|
 | Ranked ordering with visible inputs (§1) | **Built** |
 | Effort estimate from observed outcomes (§2) | **Built** |
-| Claim, snooze, and batch actions (§3) | Not started |
+| Claim, snooze, and batch actions (§3) | **Built** |
 | Weekly per-owner digest (§4) | Not started |
 | Throughput and burn-down (§5) | Not started |
 
