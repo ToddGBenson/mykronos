@@ -33,7 +33,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius
+from mykronos import blast_radius, worklist
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
@@ -1248,6 +1248,8 @@ class DashboardQueries:
         order: str = "severity",
         owner: str | None = None,
         policy: Any = None,
+        include_snoozed: bool = False,
+        claimed_by: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
 
@@ -1356,6 +1358,22 @@ class DashboardQueries:
         # not conditional on the filter being active, so a caller can render
         # the badge whether or not they're also filtering by it.
         self._attach_threat_intel(session, queue)
+
+        # Claim and snooze live in the operational store (spec 27 §3.2), so
+        # they are stamped here rather than joined in SQL. One query for the
+        # page, not one per row.
+        states = worklist.states_for(session, [str(i["finding_id"]) for i in queue])
+        for item in queue:
+            item["state"] = worklist.as_dict(
+                states.get(str(item["finding_id"]), worklist.RowState())
+            )
+        if not include_snoozed:
+            # Hidden, not dispositioned: the finding is still open and still
+            # scores. `include_snoozed` is how somebody reviews what the team
+            # has put off, which is the point of recording a reason.
+            queue = [item for item in queue if not item["state"]["snoozed_until"]]
+        if claimed_by:
+            queue = [item for item in queue if item["state"]["claimed_by"] == claimed_by]
 
         if order == "rank" and policy is not None:
             self._attach_rank_inputs(queue)
