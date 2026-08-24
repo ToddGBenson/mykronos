@@ -25,6 +25,7 @@ from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
+from mykronos.digest import send_all as send_digests
 from mykronos.gate import PerimeterGate
 from mykronos.github.auth import AppCredentials
 from mykronos.github.factory import (
@@ -251,6 +252,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings,
             )
 
+        async def _digest() -> None:
+            # In a thread: it queries the lake and posts to Slack, and the
+            # notifier's HTTP call would otherwise stall the event loop.
+            await asyncio.to_thread(
+                send_digests, app.state.catalog, app.state.notifier
+            )
+
         async def _acceptances() -> None:
             # In a thread: it rewrites partitions, same as the other sweeps.
             await asyncio.to_thread(sweep_acceptances, app.state.catalog)
@@ -295,6 +303,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
+            # Off unless opted in: this job messages people.
+            *(
+                [("digest", settings.weekly_digest_interval_seconds, _digest)]
+                if settings.digest_enabled
+                else []
+            ),
             # Off unless a deployment opts in (`routing_enabled`): this
             # one opens issues in somebody's tracker, and doing that the
             # moment the platform is upgraded is not its decision to make.

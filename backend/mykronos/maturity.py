@@ -622,6 +622,96 @@ def trend_series(
     return series
 
 
+@dataclass(frozen=True)
+class ThroughputWindow:
+    """What moved in one week (spec 27 §5)."""
+
+    opened: int = 0
+    closed: int = 0
+    verified: int = 0
+    median_days_to_close: float | None = None
+
+
+def throughput(
+    catalog: Catalog,
+    repo_full_name: str | None = None,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
+    """This week against last week, and what verified (spec 27 §5).
+
+    Reconstructed from `first_seen_at`, `resolved_at` and the verification
+    outcomes, exactly as `trend_series` reconstructs its series: a rollup
+    table would be a second copy of the truth, able to disagree with the
+    first.
+
+    `closed` counts findings that reached `fixed`. A dismissal is not a
+    closure and is deliberately excluded, for the reason `mean_time_to_fix`
+    gives about the same temptation: letting dismissals count would make the
+    fastest way to improve this number a click.
+
+    `verified` is narrower still — a fix whose merge commit was re-scanned and
+    the finding was gone (spec 25 §2). It is the only number here that says
+    risk was removed rather than that a row changed.
+    """
+    now = as_of or utcnow()
+    scope = "AND asset_id = ?" if repo_full_name else ""
+    windows: dict[str, ThroughputWindow] = {}
+
+    for label, start_days, end_days in (("this_week", 7, 0), ("last_week", 14, 7)):
+        start = now - timedelta(days=start_days)
+        end = now - timedelta(days=end_days)
+        params: list[Any] = [start, end]
+        if repo_full_name:
+            params.append(repo_full_name)
+
+        opened = catalog.query(
+            f"SELECT count(*) FROM findings WHERE first_seen_at >= ? "
+            f"AND first_seen_at < ? {scope}",
+            list(params),
+        )
+        closed = catalog.query(
+            f"SELECT count(*), median(date_diff('day', first_seen_at, resolved_at)) "
+            f"FROM findings WHERE status = 'fixed' AND resolved_at >= ? "
+            f"AND resolved_at < ? {scope}",
+            list(params),
+        )
+        verified = 0
+        if catalog.all_files("remediation_events"):
+            repo_scope = "AND repo_full_name = ?" if repo_full_name else ""
+            verified_rows = catalog.query(
+                f"SELECT count(*) FROM remediation_events "
+                f"WHERE verification_outcome = 'verified_fixed' "
+                f"AND verified_at >= ? AND verified_at < ? {repo_scope}",
+                list(params),
+            )
+            verified = int(verified_rows[0][0]) if verified_rows else 0
+
+        median = closed[0][1] if closed and closed[0][1] is not None else None
+        windows[label] = ThroughputWindow(
+            opened=int(opened[0][0]) if opened else 0,
+            closed=int(closed[0][0]) if closed else 0,
+            verified=verified,
+            median_days_to_close=round(float(median), 1) if median is not None else None,
+        )
+
+    this, last = windows["this_week"], windows["last_week"]
+    return {
+        "this_week": this.__dict__,
+        "last_week": last.__dict__,
+        # Net is stated rather than left to the reader: a week that closed
+        # forty and opened forty-five did not have a good week, and two
+        # numbers side by side invite reading only the flattering one.
+        "net": this.opened - this.closed,
+        "note": (
+            "`closed` counts findings that reached `fixed`; a dismissal is not "
+            "a closure. `verified` is narrower — a fix whose merge commit was "
+            "re-scanned and the finding was gone — and is the only number here "
+            "that says risk was removed rather than that a row changed."
+        ),
+    }
+
+
 def mean_time_to_fix(
     catalog: Catalog, repo_full_name: str | None = None, *, days: int = 180
 ) -> float | None:

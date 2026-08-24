@@ -117,6 +117,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    weekly_digest_interval_seconds: int = Field(
+        default=604_800,
+        ge=1,
+        description=(
+            "The per-owner worklist digest (spec 27 §4). Weekly, matching what "
+            "it is: a digest that arrived daily would be a notification, and a "
+            "notification people receive daily about work that moves weekly is "
+            "one they filter."
+        ),
+    )
+
+    digest_enabled: bool = Field(
+        default=False,
+        description=(
+            "Off unless a deployment opts in, on the same principle as "
+            "`routing_enabled`: this one messages people, and doing that the "
+            "moment the platform is upgraded is not its decision to make."
+        ),
+    )
+
     fix_verification_interval_seconds: int = Field(
         default=1_800,
         ge=1,

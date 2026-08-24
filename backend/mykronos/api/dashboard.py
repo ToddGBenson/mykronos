@@ -26,7 +26,7 @@ from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
-from mykronos.maturity import mean_time_to_fix, trend_series
+from mykronos.maturity import mean_time_to_fix, throughput, trend_series
 from mykronos.pull_requests import open_pull_requests
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
@@ -993,6 +993,26 @@ def _require_writer(principal: Any, verb: str) -> None:
                 f"'{principal.role.value}'."
             ),
         )
+
+
+@router.get("/triage/throughput")
+async def triage_throughput(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """What moved this week, against last (spec 27 §5).
+
+    A queue with no memory of itself cannot tell a team clearing its backlog
+    from one treading water: both look like a list of open findings. Every
+    number is a query over `first_seen_at`, `resolved_at` and the verification
+    outcomes — no rollup table, for the reason `trend_series` gives.
+
+    Ordered before `/triage/{finding_id}/...` so the literal path is not
+    shadowed by the parameterised one.
+    """
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    return throughput(request.app.state.catalog, repo_full_name)
 
 
 @router.post("/triage/{finding_id}/claim", response_model=TriageStateOut)
