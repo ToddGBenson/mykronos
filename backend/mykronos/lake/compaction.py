@@ -171,6 +171,20 @@ _UPDATE_SETS: dict[str, str] = {
         ),
         updated_at               = i.updated_at
     """,
+    # A link is written once and then only ever refreshed by evidence: the
+    # lane's last green run, and a promotion from `asserted` to
+    # `demonstrated`. `evidence` coalesces so a later `asserted` write cannot
+    # demote a link the platform has actually watched work (spec 31 §1).
+    "finding_tests": """
+        test_identifier    = i.test_identifier,
+        capability         = i.capability,
+        evidence           = CASE
+            WHEN part.evidence = 'demonstrated' THEN 'demonstrated'
+            ELSE coalesce(i.evidence, part.evidence)
+        END,
+        lane_last_green_at = coalesce(i.lane_last_green_at, part.lane_last_green_at),
+        updated_at         = i.updated_at
+    """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,
         capability             = i.capability,

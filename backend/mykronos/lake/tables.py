@@ -246,6 +246,35 @@ REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
     ("updated_at", "TIMESTAMP"),
 ]
 
+#: A test that exists because of a finding (spec 31 §1).
+#:
+#: The one link in this platform that points from a vulnerability to the thing
+#: that would notice it coming back. Everything else records what was found;
+#: this records what was learned.
+FINDING_TESTS_COLUMNS: Final[list[Column]] = [
+    ("link_id", "VARCHAR"),
+    ("finding_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    #: The JUnit `classname.name`, as the runner reports it.
+    ("test_identifier", "VARCHAR"),
+    #: unit | functional | qa — which lane runs it.
+    ("capability", "VARCHAR"),
+    #: `asserted` = somebody said this test covers that finding.
+    #: `demonstrated` = the platform watched it fail against the vulnerable
+    #: code and pass against the fixed code. Both are useful; they are not the
+    #: same claim and are never displayed as one.
+    ("evidence", "VARCHAR"),
+    ("linked_by", "VARCHAR"),
+    ("linked_at", "TIMESTAMP"),
+    #: When the lane that runs this test last completed successfully. Not
+    #: per-test: the JUnit adapter records suite totals, not case names
+    #: (D-046), so this catches "the suite stopped running" and cannot catch
+    #: "this one test was deleted". Said here because a coverage number that
+    #: only ever goes up is the failure mode this column exists to limit.
+    ("lane_last_green_at", "TIMESTAMP"),
+    ("updated_at", "TIMESTAMP"),
+]
+
 TABLES: Final[dict[str, list[Column]]] = {
     "findings": FINDINGS_COLUMNS,
     "scan_runs": SCAN_RUNS_COLUMNS,
@@ -253,6 +282,7 @@ TABLES: Final[dict[str, list[Column]]] = {
     "insider_risk_signals": INSIDER_RISK_SIGNALS_COLUMNS,
     "sscs_evidence": SSCS_EVIDENCE_COLUMNS,
     "remediation_events": REMEDIATION_EVENTS_COLUMNS,
+    "finding_tests": FINDING_TESTS_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
@@ -263,6 +293,7 @@ PRIMARY_KEY: Final[dict[str, str]] = {
     "insider_risk_signals": "signal_id",
     "sscs_evidence": "evidence_id",
     "remediation_events": "event_id",
+    "finding_tests": "link_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -275,6 +306,7 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
     "remediation_events": "created_at",
+    "finding_tests": "linked_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -287,6 +319,7 @@ MUTATION_TS: Final[dict[str, str]] = {
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
     "remediation_events": "updated_at",
+    "finding_tests": "updated_at",
 }
 
 
@@ -314,6 +347,7 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     "sscs_evidence": ("tag_or_release", "sbom_ref"),
     # The webhook sets pr_status long after the pipeline set everything else,
     # and a later pipeline run must not blank the PR it already opened.
+    "finding_tests": ("lane_last_green_at", "evidence"),
     "remediation_events": (
         "pr_status",
         "fix_pr_number",

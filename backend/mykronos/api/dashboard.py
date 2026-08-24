@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import worklist
+from mykronos import regression, worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import DashboardQueries, PortfolioSummary
@@ -664,6 +664,7 @@ class StatusChange(BaseModel):
         default=None,
         description="Required when accepting a risk. See `AcceptanceReason`.",
     )
+
 
 
 class StatusChangeResult(BaseModel):
@@ -1470,6 +1471,100 @@ async def repo_sbom(
         )
 
     return FileResponse(path, filename=path.name, media_type="application/json")
+
+
+class RegressionLinkRequest(BaseModel):
+    """Pin a test to a finding (spec 31 §2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    test_identifier: str = Field(
+        min_length=1,
+        max_length=500,
+        description="A JUnit `classname.name`, as the runner reports it.",
+    )
+    capability: Literal["unit", "functional", "qa"] = Field(
+        default="unit", description="Which lane runs it."
+    )
+
+
+class RegressionLinkResult(BaseModel):
+    link_id: str
+    finding_id: str
+    test_identifier: str
+    evidence: str
+
+
+@router.post(
+    "/findings/{finding_id}/regression-test", response_model=RegressionLinkResult
+)
+async def link_regression_test(
+    request: Request,
+    finding_id: str,
+    body: RegressionLinkRequest,
+    principal: PrincipalDep,
+) -> RegressionLinkResult:
+    """Record the test that would fail if this came back (spec 31 §2).
+
+    Its own endpoint rather than a field on the disposition form, and the
+    reason is a rule this platform already holds: `fixed` is not a disposition
+    a person may set -- it is an observation the scanners and the reconciler
+    own (`HUMAN_DISPOSITIONS`). Spec 31 §2 assumed somebody marks a finding
+    fixed by hand and is offered the field there; nobody can, so the moment
+    the spec described does not exist. What does exist is a person who has
+    just written the test, and this is where they say so.
+
+    Recorded as `asserted`. `demonstrated` is earned by watching the test fail
+    against the vulnerable code and pass against the fixed code, never claimed
+    through this route: the whole point of the distinction is that one is
+    somebody's word and the other is evidence.
+    """
+    _require_writer(principal, "Linking a regression test")
+    found = DashboardQueries(request.app.state.catalog).finding(finding_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    try:
+        identifier = regression.record(
+            request.app.state.buffer,
+            repo_full_name=str(found.get("repo_full_name") or ""),
+            finding_id=finding_id,
+            test_identifier=body.test_identifier,
+            capability=body.capability,
+            linked_by=principal.actor,
+        )
+    except regression.RegressionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    return RegressionLinkResult(
+        link_id=identifier,
+        finding_id=finding_id,
+        test_identifier=body.test_identifier.strip(),
+        evidence=regression.ASSERTED,
+    )
+
+
+@router.get("/repos/{repo_id}/regression-coverage")
+async def regression_coverage(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    """Which fixed vulnerabilities would we notice coming back? (spec 31 §3)
+
+    The first number in this platform that measures a repository getting
+    structurally safer rather than temporarily cleaner. Everything else counts
+    what is open; this counts what was learned.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return {
+        "repo_full_name": repo_full_name,
+        **regression.as_dict(
+            regression.coverage(request.app.state.catalog, repo_full_name)
+        ),
+    }
 
 
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)
