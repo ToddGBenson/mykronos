@@ -56,11 +56,16 @@ class RotationResult:
     resynced: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     purged: int = 0
+    #: Due, and deliberately left alone: this platform has no way to deliver a
+    #: rotated token to a Concourse-scanned repository (D-086). Named rather
+    #: than counted, because the operator has to act on each one.
+    deferred: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"rotated {len(self.rotated)}, resynced {len(self.resynced)}, "
-            f"failed {len(self.failed)}, purged {self.purged}"
+            f"deferred {len(self.deferred)}, failed {len(self.failed)}, "
+            f"purged {self.purged}"
         )
 
 
@@ -104,6 +109,29 @@ async def rotate_ingestion_tokens(
         if onboarding is None:
             # Offboarded or suspended. Its token is revoked or dormant; there
             # is no repo to write a secret to.
+            continue
+
+        # A rotated token is only useful where the scanner can read it, and
+        # the only delivery path this job has is a GitHub Actions secret
+        # (D-086). For a Concourse-scanned repository that write *succeeds* --
+        # GitHub accepts a secret for a repo whose Actions lanes were retired
+        # (D-080) -- and the pipeline goes on reading the old value from Vault
+        # until a human runs set-pipeline. The job then marked the repo synced
+        # and reported green.
+        #
+        # So the rotation is deferred rather than performed: an un-rotated
+        # token keeps working, while a rotated-and-undelivered one breaks the
+        # repository as soon as its overlap expires. Doing nothing loudly beats
+        # doing the wrong thing quietly.
+        if onboarding.scanned_by != "github_actions":
+            logger.warning(
+                "%s is due for token rotation and is scanned by %s, which this "
+                "job cannot deliver to. Rotate it by hand and re-run "
+                "set-pipeline (or Import-EnvSecretsToVault.ps1 -Apply).",
+                repo,
+                onboarding.scanned_by,
+            )
+            result.deferred.append(repo)
             continue
 
         github = github_factory.for_installation(onboarding.github_installation_id)
