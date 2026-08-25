@@ -116,6 +116,21 @@ class RepoOnboarding(Base):
     #: default that installs Actions workflows into a repository whose
     #: Actions were deliberately removed is a default that undoes a decision.
     scanned_by: Mapped[str] = mapped_column(String(32), default="concourse")
+    #: A deliberately-vulnerable corpus, scanned by the real pipelines so the
+    #: detectors can be graded against known ground truth (spec 23 §1.2).
+    #:
+    #: **Excluded from every aggregate, and that is the whole reason the flag
+    #: exists.** Seeded vulnerabilities are real findings in the lake — they
+    #: have to be, or grading them would test a different code path from the
+    #: one that runs — so without this the corpus becomes, permanently, the
+    #: fleet's worst repository, and deliberately vulnerable code is counted
+    #: as estate risk. The portfolio summary, the trend series and the
+    #: maturity model all skip it.
+    #:
+    #: Its own findings, decisions and scans are untouched: the bench repo has
+    #: a page like any other, because a benchmark whose results nobody can
+    #: open is a benchmark nobody trusts.
+    synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
 
     #: Capabilities whose workflow-install PR has actually merged. This is the
     #: live set; `pending_capabilities` is what has been requested but not yet

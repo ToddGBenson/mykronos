@@ -3649,3 +3649,71 @@ plan-gated and it would be a permanently empty column for most installations.
 `enforced_for_admins` answers the question that actually matters — whether the
 rules bind administrators at all — and is weighted alongside the two entry
 controls for that reason.
+
+## D-092 — The detectors get a ground truth, and the corpus is counted in nothing
+
+**2026-08-25. Spec 23 §1.**
+
+Spec 04 §7's acceptance criterion has never been implementable. Its bar — "at
+least one `Finding`" — cannot distinguish a scanner catching nine of ten seeded
+injections from one catching one, and there was no seeded corpus to try it
+against. A search for precision, recall, false negatives or ground truth across
+this repository returns prose about the concepts and no measurement of any of
+them.
+
+So the platform runs fifteen checks and cannot say how well any of them works
+on code like its own. That is worth fixing before anything agentic is built and
+independently of whether anything agentic is ever built, which is why spec 23
+gates its other four workstreams behind this one.
+
+**`synthetic` exists so the corpus is counted in nothing.** Seeded
+vulnerabilities are real findings in the lake — they have to be, or grading
+them would exercise a different code path from the one that runs — so without
+the flag the corpus becomes, permanently, the fleet's worst repository, and
+deliberately vulnerable code is counted as estate risk. The portfolio summary,
+the trend series and the fleet risk mean all skip it.
+
+Only the *aggregates* skip it. The bench repository is listed, opened and
+scanned like any other, because a benchmark whose results nobody can inspect is
+a benchmark nobody trusts.
+
+**Stated at onboarding, never inferred.** Guessing from a repository name is how
+a *real* repository silently stops being counted, which is a worse failure than
+a corpus that is counted until somebody notices.
+
+**Which repositories are synthetic is passed into the lake queries, never
+looked up by them.** That fact lives in the operational store, and a lake query
+reaching into the database to find it out would couple the two in the one
+direction this codebase has kept clear.
+
+**Matching is by file and line window, never by rule id.** A rule identifier is
+a free-form string the reporting tool chose (spec 18 §6), so pinning a grade to
+one would grade the tool's *naming* rather than its detection, and every
+scanner rename would need a manifest rewrite. Five lines of drift are allowed,
+because the finding fingerprint already assumes that much (spec 05 §5) — a
+grader stricter than the platform's own identity model would report regressions
+the platform does not believe in.
+
+**The grade reads the lake, not the scanner's output file.** What is graded is
+what the platform *ingested*, so an adapter dropping a finding on the way in is
+a detection failure this notices. Grading raw tool output would measure the
+tools and quietly exempt the platform.
+
+**No precision figure, and `unmatched` fails nothing.** The corpus is seeded,
+not *clean*: an unmatched finding may be a genuine flaw somebody wrote by
+accident while writing a fixture. Calling it a false positive would manufacture
+a quality number out of an assumption. It is a property on the report for a
+human to investigate, and a lane whose green depended on nobody having written
+an extra bug into a fixture would be green for the wrong reason.
+
+A capability with nothing seeded has **no** recall rather than zero — spec 31
+§3's empty-denominator rule applied to a second number, for the identical
+reason. And `--fail-under` is off by default: the first runs of a new corpus
+establish a baseline, and a threshold picked before there is one is a number
+somebody invented.
+
+**What is not built, and cannot be from here.** Creating `mykronos-bench`,
+writing deliberately vulnerable fixtures into it, and installing the App on it
+is an operator action — and one that should be taken deliberately rather than
+automated by a security platform. The platform side is ready; the corpus is a
+person's decision.

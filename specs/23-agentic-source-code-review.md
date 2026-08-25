@@ -39,11 +39,11 @@ with no resource budget: DAST is paused platform-wide, and it is cheaper than th
 
 ## 0a. Implementation status
 
-Nothing here is built. The order is the point, and each row is gated on the one above it.
+The order is the point, and each row is gated on the one above it.
 
 | # | Workstream | Status | Gate to start |
 |---|---|---|---|
-| 1 | Detector benchmark corpus and grading lane (§1) — no LLM anywhere in it | Not started | — |
+| 1 | Detector benchmark corpus and grading lane (§1) — no LLM anywhere in it | **Built, platform side** — one operator step remains; see §1.5 | — |
 | 2 | `review` capability: attack-surface inventory, discovery only (§2) | Not started | §1 lane green |
 | 3 | Threat model at entry-point resolution (§3) | Not started | §2 surface approved for one repo |
 | 4 | Rule pack and Knowledge Store at prompt time (§4) | Not started | §2 shipped |
@@ -99,6 +99,39 @@ test report. `unmatched` is a count a human reads and investigates.
 A grading agent. AVDH needs one because its findings land on real client code with no ground truth; a
 seeded corpus has a manifest, so grading is a diff. No public benchmark dataset is used, for the reason
 the article gives: modern models may have memorised the solutions.
+
+### 1.5 Built, and the one step a person still has to take
+
+**Built:** `RepoOnboarding.synthetic`, its exclusion from every portfolio aggregate,
+`scripts/bench_grade.py`, and `bench-manifest.example.yaml` — the schema and worked example, with the
+real manifest belonging in the corpus repository.
+
+**Not built, and it cannot be from here:** creating and onboarding `mykronos-bench` itself. That is
+creating a GitHub repository, writing deliberately vulnerable fixtures into it, and installing the App
+on it — an operator action, and one that has to be taken deliberately rather than automated by a
+security platform. Onboard it with `synthetic: true`, point the manifest at the fixtures, and the lane
+runs.
+
+**`synthetic` is stated at onboarding and never inferred.** Guessing from a repository name — anything
+matching `*-bench`, say — is how a real repository silently stops being counted, which is a worse
+failure than a corpus that is counted until somebody notices.
+
+**The corpus is listed and browsable like any other repository.** Only the *aggregates* skip it: the
+portfolio summary, the trend series, and the fleet risk mean. A benchmark whose results nobody can
+open is a benchmark nobody trusts, and the per-repository page is where a person goes to see what a
+detector actually said about a seed it missed.
+
+**Matching allows five lines of drift**, because the finding fingerprint already assumes that much
+(spec 05 §5). A grader stricter than the platform's own identity model would report regressions the
+platform itself does not believe in.
+
+**The grade reads the lake, not the scanner's output file.** What is being graded is what the platform
+*ingested*, so an adapter that drops a finding on the way in is a detection failure this notices.
+Grading raw tool output would measure the tools and quietly exempt the platform.
+
+**`--fail-under` is off by default.** The first runs of a new corpus establish a baseline, and a
+threshold picked before there is one is a number somebody invented. It is a flag an operator sets once
+the recall figures have stopped moving.
 
 ## 2. The `review` capability — an attack-surface inventory, and nothing else
 

@@ -83,6 +83,18 @@ class OnboardRequest(BaseModel):
     github_installation_id: int
     default_branch: str = "main"
     org_login: str = ""
+    synthetic: bool = Field(
+        default=False,
+        description=(
+            "A deliberately-vulnerable benchmark corpus (spec 23 §1.2). "
+            "Scanned by the real pipelines — a benchmark run through a "
+            "different code path measures a different platform — and counted "
+            "in no portfolio aggregate, because seeded vulnerabilities are "
+            "not estate risk. Stated at onboarding and never inferred: "
+            "guessing from a repository name is how a real repository "
+            "silently stops being counted."
+        ),
+    )
     scanned_by: Literal["concourse", "github_actions", "none"] = Field(
         default="concourse",
         description=(
@@ -128,6 +140,10 @@ class RepoSummary(BaseModel):
     #: "enabled" means: the installer's ledger for Actions, the grants for
     #: everything else.
     scanned_by: str = "concourse"
+    #: A seeded benchmark corpus (spec 23 §1.2). Listed and opened like any
+    #: other repository, and counted in no portfolio aggregate: deliberately
+    #: vulnerable code is not estate risk.
+    synthetic: bool = False
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     pending_pr_number: int | None
@@ -250,6 +266,7 @@ def _summary(row: RepoOnboarding) -> RepoSummary:
         github_repo_full_name=row.github_repo_full_name,
         status=row.status,
         scanned_by=row.scanned_by,
+        synthetic=bool(row.synthetic),
         enabled_capabilities=list(row.enabled_capabilities or []),
         pending_capabilities=(list(row.pending_capabilities) if row.pending_capabilities else None),
         pending_pr_number=row.pending_pr_number,
@@ -318,6 +335,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
                 enabled_capabilities=[],
                 default_branch=body.default_branch,
                 scanned_by=body.scanned_by,
+                synthetic=body.synthetic,
                 onboarded_by=actor,
             )
             session.add(row)
@@ -325,6 +343,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
         else:
             row.github_installation_id = body.github_installation_id
             row.default_branch = body.default_branch
+            row.synthetic = body.synthetic
             if row.status == "removed":
                 row.status = "pending_install"
 
