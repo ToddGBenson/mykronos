@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Read, write and list secrets — for Concourse pipelines and for personal use.
+  Read, write and list secrets - for Concourse pipelines and for personal use.
 
 .DESCRIPTION
   Two mounts, deliberately different:
@@ -10,13 +10,13 @@
                    concourse/<team>/<pipeline>/<name>   pipeline-specific
                    concourse/<team>/<name>              shared across a team
                  A pipeline then refers to it as ((name)) and the VALUE NEVER
-                 ENTERS the pipeline config — which is the entire point, because
+                 ENTERS the pipeline config - which is the entire point, because
                  `fly get-pipeline` prints config back to anyone on the team.
 
     personal/    KV v2, for everything else on this host: API keys, licence
                  keys, recovery codes, the things that otherwise end up in a
                  note or a shell profile. v2 keeps version history, so
-                 overwriting a secret does not destroy the previous value —
+                 overwriting a secret does not destroy the previous value -
                  `-Undo` brings it back.
 
   Values are never echoed unless you ask for them with -Reveal, so this is safe
@@ -111,7 +111,7 @@ switch ($Action) {
     # never appears on a command line where `ps` could see it.
     $secure = Read-Host -Prompt "Value for $path" -AsSecureString
     $plain = [System.Net.NetworkCredential]::new('', $secure).Password
-    if (-not $plain) { Write-Error "Empty value refused — use 'delete' to remove a secret." }
+    if (-not $plain) { Write-Error "Empty value refused - use 'delete' to remove a secret." }
 
     # Piped on stdin (`value=-`) rather than passed as an argument, for the same
     # reason: an argument is visible in the container's process list.
@@ -170,7 +170,7 @@ switch ($Action) {
     }
     $meta = Invoke-Vault @('kv', 'metadata', 'get', '-format=json', $path) | Out-String
     $current = ($meta | ConvertFrom-Json).data.current_version
-    if ($current -lt 2) { Write-Error "$path has only one version — nothing to roll back to." }
+    if ($current -lt 2) { Write-Error "$path has only one version - nothing to roll back to." }
     Invoke-Vault @('kv', 'rollback', "-version=$($current - 1)", $path) | Out-Null
     Write-Host "Rolled $path back to version $($current - 1)." -ForegroundColor Green
   }
@@ -179,7 +179,7 @@ switch ($Action) {
     Invoke-Vault @('kv', 'delete', $path) | Out-Null
     Write-Host "Deleted $path" -ForegroundColor Green
     if ($Scope -eq 'personal') {
-      Write-Host "Soft delete — 'undo' can still recover it. Use 'vault kv metadata delete' to destroy." -ForegroundColor DarkGray
+      Write-Host "Soft delete - 'undo' can still recover it. Use 'vault kv metadata delete' to destroy." -ForegroundColor DarkGray
     }
   }
 }
