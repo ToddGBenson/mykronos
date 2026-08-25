@@ -34,8 +34,8 @@ data that separates them is already fetched on the same page, one tab away.
 |---|---|
 | CWE extraction from SARIF `properties.tags` (§1) | **Built** |
 | STRIDE from CWE where present, capability where absent (§2) | **Built** — `stride-map-v1.yaml`, 56 entries |
-| Controls register, admin-authored (§3) | Not started |
-| Three-state categories: clean / unscanned / unmitigated (§4) | Not started |
+| Controls register, admin-authored (§3) | **Built** — in the operational store rather than the lake; see §3.4 |
+| Three-state categories: clean / unscanned / unmitigated (§4) | **Built** — four states, not three; §4 already listed four |
 
 ## 1. CWE at the door
 
@@ -115,6 +115,35 @@ No control framework mapping — no ASVS, no SSDF, no CIS. Those are worth doing
 compliance surface, not a threat model, and bolting one on before the register has any rows would
 produce a coverage report over an empty set.
 
+### 3.4 Corrected while building
+
+**Operational store, not a lake table.** §3.2 above says "a lake table `repo_controls`". That was
+wrong, and by this platform's own stated rule: everything in the lake is append-only because its
+history is evidence — you have to be able to say what a finding looked like in March. A declared
+control is not an observation. It is an editable statement about the present, corrected in place when
+it turns out to be wrong, and the lake's compaction and partitioning model is built for scan results
+(spec 05 §2). `RiskProfile`, `ReachabilityReport` and `TriageState` all already follow that
+distinction; this now does too, and D-089 records the deviation rather than leaving the spec and the
+code disagreeing.
+
+**`verified_by_capability` is derived, never declared.** §3.2 lists it as a column somebody fills in.
+It is a property of the *kind* — `authentication` can be contradicted by DAST, `secrets_management`
+by the secrets lane, `logging` by nothing this platform runs — so accepting it from the caller would
+let a control name a capability that cannot see it and thereby look checked. The API refuses the
+field outright, and a kind nothing can check reports `checkable: false` rather than staying silent.
+
+**One STRIDE category per control, not a list.** A control claiming to mitigate four categories is a
+description of a subsystem rather than a control. Declaring it four times is both more honest and
+individually verifiable, and it keeps the contradiction check per-category, which is where it has to
+be to mean anything.
+
+**Withdrawing deletes.** Unlike almost everything else in this platform, which flags rather than
+removes. A control is a claim about the present; a withdrawn one is not evidence of anything, and
+nobody needs to know that somebody once believed authentication was enforced. The audit entry records
+who removed it, which is the part that matters. Offboarding a repository does the same to its whole
+register, for the same reason — and while wiring that up it turned out `worklist.purge_for_repo`
+(spec 27 §3) had been written and never called, so triage claims were surviving offboarding too.
+
 ## 4. Three states per category
 
 A STRIDE category renders as exactly one of:
@@ -133,6 +162,21 @@ A category can be both — findings open *and* a declared control — and that c
 prominently rather than resolved: a control that exists while findings accumulate underneath it is
 either wrong, bypassed, or narrower than its description, and each of those is worth somebody's
 attention.
+
+### 4.1 Built
+
+The heading says three states and the table under it lists four; four is right and four shipped. The
+order the states are tested in is the design: `unscanned` is checked before anything else, because
+whatever else is true of a category nothing has ever looked at, `clean` is not it.
+
+`scanned` is computed from capabilities that have actually *reported*, not from capabilities that are
+enabled. A lane switched on last week and never run is exactly the gap this exists for: the
+repository believes it is covered, and no failing run disagrees, because there is no run. It reuses
+`last_successful_scan_at`, which already refuses to count a lane whose every run failed.
+
+`unmitigated` renders in the muted tone rather than green. Scanned, clean and nothing declared is a
+fine place to be and is not an achievement; colouring it like `mitigated` would put it level with a
+category somebody actually built a control for.
 
 ## 5. Acceptance criteria
 

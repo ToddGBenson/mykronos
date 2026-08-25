@@ -17,11 +17,16 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import regression, worklist
+from mykronos import controls, regression, worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
-from mykronos.dashboard import DashboardQueries, PortfolioSummary
-from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
+from mykronos.dashboard import STRIDE_CATEGORIES, DashboardQueries, PortfolioSummary
+from mykronos.db.models import (
+    CapabilityGrant,
+    RepoControl,
+    RepoOnboarding,
+    capability_config_for,
+)
 from mykronos.knowledge.capture import capture_dismissal, safe_capture
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
@@ -583,9 +588,66 @@ class ThreatModelSupplyChainOut(BaseModel):
     vulnerable_dependency_count: int = 0
 
 
+class ControlOut(BaseModel):
+    """A declared mitigation (spec 28 §3)."""
+
+    control_id: str
+    stride: str
+    kind: str
+    description: str = ""
+    evidence_ref: str = ""
+    evidence: str = Field(
+        description=(
+            "`referenced` when the control names a file, route, policy or "
+            "test; `asserted` when it does not. Both are allowed — refusing "
+            "the second would mean the register only ever holds the controls "
+            "somebody had time to document — and the tab renders the second "
+            "as the weaker claim it is."
+        )
+    )
+    verified_by_capability: str = ""
+    checkable: bool = Field(
+        description=(
+            "Whether any capability in this platform could contradict this "
+            "control. False is stated rather than left implied: a control "
+            "nothing can check is not a verified control."
+        )
+    )
+    last_verified_at: datetime | None = None
+    stale: bool = Field(
+        description=(
+            "Nobody has re-confirmed this in 90 days. A mitigation nobody has "
+            "checked since last quarter is a belief, and the tab says which "
+            "of the two it is showing."
+        )
+    )
+    declared_by: str = ""
+    declared_at: datetime
+
+
 class ThreatModelCategoryOut(BaseModel):
     stride: str = Field(description="One of STRIDE_CATEGORIES (dashboard.py).")
     findings: list[FindingGroupOut]
+    state: str = Field(
+        default="findings_open",
+        description=(
+            "`findings_open` | `unmitigated` | `mitigated` | `unscanned` "
+            "(spec 28 §4). `unscanned` is the one that matters: a category "
+            "nothing has ever reported into used to render identically to a "
+            "clean one, which made an absence of looking read as good news."
+        ),
+    )
+    controls: list[ControlOut] = Field(default_factory=list)
+    contradicted: bool = Field(
+        default=False,
+        description=(
+            "Findings open *and* a control declared here. Shown rather than "
+            "resolved: a control that exists while findings accumulate under "
+            "it is either wrong, bypassed, or narrower than its description, "
+            "and the platform has no basis to decide which."
+        ),
+    )
+    reason: str = Field(default="", description="Why this category is in this state.")
 
 
 class ThreatModelOut(BaseModel):
@@ -612,6 +674,15 @@ class ThreatModelOut(BaseModel):
         ),
     )
     categories: list[ThreatModelCategoryOut]
+    nothing_scanned: bool = Field(
+        default=False,
+        description=(
+            "No capability that feeds any STRIDE category has ever reported "
+            "here. Said once at the top rather than six times (spec 28 §6): "
+            "it is one fact about the repository, not six about its "
+            "categories."
+        ),
+    )
     supply_chain: ThreatModelSupplyChainOut | None = None
 
 
@@ -1588,9 +1659,155 @@ async def repo_threat_model(
     Composed from `open_findings`' own building blocks — `_finding_rows` and
     `_group_findings` — not a second grouping implementation reading the same
     table differently.
+
+    Now also carries what *stops* the things it lists (spec 28 §3, §4). A
+    threat model is made of four things and this had one; the declared
+    controls are read here rather than fetched separately because a category's
+    state is a fact about its findings and its controls together, and two
+    calls could disagree about it.
     """
     repo_full_name = _resolve_repo(request, repo_id)
-    return ThreatModelOut.model_validate(_queries(request).threat_model(repo_full_name))
+    with request.app.state.db.session() as session:
+        declared = controls.for_repo(session, repo_full_name)
+        page = _queries(request).threat_model(repo_full_name, controls=declared)
+    return ThreatModelOut.model_validate(page)
+
+
+class ControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stride: str = Field(max_length=32)
+    kind: str = Field(max_length=32)
+    description: str = Field(default="", max_length=2_000)
+    evidence_ref: str = Field(
+        default="",
+        max_length=512,
+        description=(
+            "A file path, a route, a policy document, a test id. Optional: a "
+            "control without one is the weaker claim and is still worth "
+            "having, because requiring it would mean the register only ever "
+            "holds the controls somebody had time to document."
+        ),
+    )
+
+
+@router.post("/repos/{repo_id}/controls", response_model=ControlOut)
+async def declare_control(
+    request: Request, repo_id: str, body: ControlRequest, principal: PrincipalDep
+) -> ControlOut:
+    """Declare a mitigation (spec 28 §3).
+
+    Admin-authored, and the response never dresses that up as more. A declared
+    control says *a person asserted this*, which is a weaker and clearer claim
+    than a machine implying it — and it is useful the day it ships, where a
+    register waiting on spec 23 §2's entry-point inventory stays unbuilt for a
+    year.
+
+    `verified_by_capability` is derived from the kind rather than accepted
+    here: it says which capability could *contradict* this control, which is a
+    property of what the control is, not something a declarer may choose. A
+    control naming a capability that cannot see it would look checked and be
+    nothing of the kind.
+    """
+    _require_writer(principal, "Declaring a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            control = controls.declare(
+                session,
+                repo_full_name=repo_full_name,
+                stride=body.stride,
+                kind=body.kind,
+                description=body.description,
+                evidence_ref=body.evidence_ref,
+                declared_by=principal.actor,
+                known_categories=STRIDE_CATEGORIES,
+            )
+        except controls.ControlError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.declare",
+            entity_type="repo_control",
+            entity_id=control.id,
+            repo_full_name=repo_full_name,
+            stride=control.stride,
+            kind=control.kind,
+        )
+        return ControlOut.model_validate(controls.as_dict(control))
+
+
+@router.post("/repos/{repo_id}/controls/{control_id}/confirm", response_model=ControlOut)
+async def confirm_control(
+    request: Request, repo_id: str, control_id: str, principal: PrincipalDep
+) -> ControlOut:
+    """Somebody re-read it and it is still true.
+
+    Its own action rather than an edit, because the thing being recorded is
+    that a person looked — a mitigation nobody has checked since last quarter
+    is a belief, and the tab has to be able to say which of the two it is
+    showing.
+    """
+    _require_writer(principal, "Confirming a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            control = controls.confirm(session, control_id)
+        except controls.ControlError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+            ) from exc
+        if control.repo_full_name != repo_full_name:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That control belongs to another repository.",
+            )
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.confirm",
+            entity_type="repo_control",
+            entity_id=control.id,
+            repo_full_name=repo_full_name,
+        )
+        return ControlOut.model_validate(controls.as_dict(control))
+
+
+@router.delete("/repos/{repo_id}/controls/{control_id}", status_code=204)
+async def withdraw_control(
+    request: Request, repo_id: str, control_id: str, principal: PrincipalDep
+) -> None:
+    """Remove a control that is no longer true.
+
+    Deleted rather than flagged withdrawn, unlike almost everything else here.
+    A control is a claim about the present; a withdrawn one is not evidence of
+    anything, and nobody needs to know that somebody once believed
+    authentication was enforced. The audit entry records who removed it, which
+    is the part that matters.
+    """
+    _require_writer(principal, "Withdrawing a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        existing = session.get(RepoControl, control_id)
+        if existing is None or existing.repo_full_name != repo_full_name:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No such control."
+            )
+        controls.withdraw(session, control_id)
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.withdraw",
+            entity_type="repo_control",
+            entity_id=control_id,
+            repo_full_name=repo_full_name,
+        )
 
 
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)

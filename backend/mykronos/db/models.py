@@ -460,3 +460,75 @@ class TriageState(Base):
             f"<TriageState {self.finding_id[:12]} claimed_by={self.claimed_by} "
             f"snoozed_until={self.snoozed_until}>"
         )
+
+
+class RepoControl(Base):
+    """A mitigation somebody declared for this repository (spec 28 §3).
+
+    **A threat model is made of four things and this platform had one.**
+    Assets, entry points, trust boundaries, mitigations. The Threat Model tab
+    had findings, grouped six ways: it could say what was found and not what
+    stops it. As scanning improves that tab can only ever grow more red, and a
+    team that spends a quarter adding controls sees no change at all. This is
+    the row that changes it.
+
+    **Operational, not lake, and for the reason `TriageState` gives.** Every
+    observation in the lake is append-only because its history is evidence —
+    you have to be able to say what a finding looked like in March. A declared
+    control is not an observation: it is an editable statement about the
+    present, corrected in place when it turns out to be wrong, and the lake's
+    compaction and partitioning model is built for scan results (spec 05 §2).
+    Spec 28 §3.2 named a lake table; that was written before the distinction
+    `RiskProfile`, `ReachabilityReport` and `TriageState` all already follow,
+    and D-089 records the deviation rather than leaving the spec and the code
+    disagreeing.
+
+    **A declared control says "a person asserted this", which is a weaker and
+    clearer claim than a machine implying it.** Admin-authored first,
+    discovered later: spec 23 §2's entry-point inventory is what eventually
+    populates this from the codebase, and a register that waits for it stays
+    unbuilt for a year. `verified_by_capability` is where it stops being a
+    wiki — a control claiming `authentication` on a route DAST reports as
+    unauthenticated is a contradiction the platform can detect, and the tab
+    renders it as one rather than resolving it.
+    """
+
+    __tablename__ = "repo_controls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: Denormalised rather than a foreign key to `repo_onboardings`, so the
+    #: threat-model query can scope without a join and an offboarded
+    #: repository's rows can be purged by name — the same call `TriageState`
+    #: makes, for the same two reasons.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    #: Which STRIDE category this mitigates. One, not a list: a control that
+    #: claims to mitigate four categories is a description of a subsystem
+    #: rather than a control, and declaring it four times is both honest and
+    #: individually verifiable.
+    stride: Mapped[str] = mapped_column(String(32), index=True)
+    #: authentication | authorization | input_validation | output_encoding |
+    #: secrets_management | logging | rate_limiting | encryption
+    kind: Mapped[str] = mapped_column(String(32))
+    description: Mapped[str] = mapped_column(Text, default="")
+    #: A file path, a route, a policy document, a test id. Optional on
+    #: purpose: refusing a control without one would mean the register only
+    #: ever holds the controls somebody had time to document, and the tab
+    #: renders an evidence-free control as the weaker claim it is.
+    evidence_ref: Mapped[str] = mapped_column(String(512), default="")
+    #: The capability that could contradict this control if it found something
+    #: — `dast` for an authentication claim, `secrets` for a secrets-management
+    #: one. Empty means nothing in the platform can check it, which the tab
+    #: says rather than implying the control is verified.
+    verified_by_capability: Mapped[str] = mapped_column(String(32), default="")
+    #: When a person last confirmed this is still true. A mitigation nobody has
+    #: checked since last year is a belief, and the tab should say which of the
+    #: two it is showing.
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    declared_by: Mapped[str] = mapped_column(String(255), default="")
+    declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<RepoControl {self.repo_full_name} {self.stride}/{self.kind}>"
