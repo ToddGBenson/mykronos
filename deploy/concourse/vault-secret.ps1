@@ -1,3 +1,13 @@
+#Requires -Version 7
+# ^ pwsh only. These scripts build their docker invocation with
+# ProcessStartInfo.ArgumentList, which .NET Framework 4.x (Windows
+# PowerShell 5.1) does not have - there it is $null and .Add() fails with
+# "You cannot call a method on a null-valued expression", naming neither
+# the shell nor the cause. ArgumentList keeps each argument separate, and
+# the single-string alternative would put a Vault token on the command
+# line, so this requires the newer shell rather than working around it.
+#
+# Run with:  pwsh -File .\<script>.ps1 ...
 <#
 .SYNOPSIS
   Read, write and list secrets - for Concourse pipelines and for personal use.
