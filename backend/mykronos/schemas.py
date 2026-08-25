@@ -147,6 +147,11 @@ class ScanRunSubmission(BaseModel):
     #: already archived via `raw_output_ref` for anyone who needs it. Null
     #: for the common case of nothing specific to add beyond `scan_status`.
     detail: str | None = Field(default=None, max_length=200)
+    #: Coverage the runner reported, 0..1 (spec 31 §4). Null means the report
+    #: did not carry it — a different fact from 0.0, which means the runner
+    #: measured and found none, and the tab distinguishes them.
+    line_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    branch_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("started_at", "completed_at")
     @classmethod

@@ -10,9 +10,12 @@
 #   1. Bump `version`. Historical decisions keep the version they were scored
 #      with, so a past decision stays reproducible after a policy change
 #      (spec 09 §10).
-#   2. Re-baseline the golden files. `tests/test_oracle_golden.py` pins exact
-#      scores; a policy edit that does not update them fails the build, which
-#      is the point — nobody should change how risk is scored by accident.
+#   2. Re-baseline the golden values. `tests/test_oracle.py` pins exact scores
+#      for fixed inputs; a policy edit that does not update them fails the
+#      build, which is the point — nobody should change how risk is scored by
+#      accident. (This line named `tests/test_oracle_golden.py` until 1.8, a
+#      file that has never existed. A pointer to nothing is worse than none:
+#      somebody following it concludes there is no such guard.)
 
 # 1.1 — adds the risk_profile modifier (spec 21). Every existing weight is
 # unchanged, so a repo with no recorded profile scores exactly as it did
@@ -32,7 +35,34 @@
 # been on every dependency and container finding all along, and nothing was
 # reading it. A repository whose findings all have fixes available scores
 # exactly as it did; one carrying unpatched CVEs scores lower, on purpose.
-version: "1.7"
+#
+# The three entries below were reconstructed after the fact: 1.5, 1.6 and 1.7
+# were bumped correctly in the file and never written down here, which made
+# this log the one place a reader could not see what had changed. Recorded
+# now from the commits, and the omission named rather than quietly patched.
+#
+# 1.5 — adds remediation_targets (spec 24 §2), the per-severity windows a
+# finding's due_at is derived from. Scores nothing on its own: it supplies a
+# date, and nothing read that date until 1.6.
+#
+# 1.6 — adds the overdue_findings modifier (spec 24 §2.4). Changes existing
+# scores wherever a deadline has already passed, which is the intent: a
+# missed commitment should be visible in the number the gate reads. Distinct
+# from finding_age, which escalates on how old a finding is rather than on
+# whether anybody promised to fix it by a date.
+#
+# 1.7 — adds triage_rank (spec 27 §1). Contributes nothing to any risk score;
+# it orders a queue. It lives in this file because an ordering that decides
+# what a team looks at first is policy, and belongs where policy is argued
+# with. Every score under 1.7 is identical to the same score under 1.6.
+#
+# 1.8 — adds posture_credits (spec 26 §2), the first terms here that lower a
+# score for something a team *did*. Changes existing scores only where the
+# evidence exists: a repository with no regression links, fewer than ten
+# merged fixes and nothing closed inside a window scores exactly as it did
+# under 1.7. The cap and the open-critical floor are what keep it from
+# buying a verdict.
+version: "1.8"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -197,6 +227,38 @@ modifiers:
   overdue_findings:
     per_finding: 1.5
     cap: 12
+
+  # Spec 26 §2. The first terms in this policy that *reward* rather than
+  # punish. Until they existed the model could only ever raise a score, so a
+  # team that spent a quarter adding regression tests, verifying its fixes and
+  # clearing its backlog inside target saw the number not move — and a model
+  # that can only punish is one people argue with rather than act on.
+  #
+  # Every credit requires something to have *happened*: a test pinned to a
+  # fixed finding (spec 31), a fix verified by a re-scan of its merge commit
+  # (spec 25 §2), a finding closed inside its window (spec 24 §2). None can be
+  # earned by changing a setting, which is the rule maturity-model-v1.yaml
+  # states for its own criteria and for the same reason.
+  #
+  # `total_cap` bounds the sum. `floor_with_open_critical` is the harder rule
+  # and the important one: credits may not take a repository below the review
+  # threshold while a critical is open. Without it the arithmetic lets a team
+  # test its way out of an exploited critical, which is the single outcome
+  # this idea must not produce.
+  posture_credits:
+    total_cap: 12
+    floor_with_open_critical: true
+    regression_coverage:
+      points_per_covered_finding: 0.5
+      cap: 8
+    verified_fix_rate:
+      points_at_full_rate: 6
+      # Below this the rate is noise, and the category reports unavailable
+      # rather than scoring a team that has fixed three things well as though
+      # it had failed seven.
+      minimum_sample: 10
+    within_target:
+      points_at_full_compliance: 6
 
   unfixable_dampening:
     factor: 0.5

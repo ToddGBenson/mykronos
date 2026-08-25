@@ -268,6 +268,39 @@ class TestPlanning:
         with pytest.raises(InstallerError, match="No workflow template"):
             await installer.plan(onboarding, {"telepathy"})
 
+    @pytest.mark.parametrize("capability", ["unit", "functional", "qa"])
+    async def test_a_test_lane_without_a_command_is_refused(
+        self,
+        installer: WorkflowInstaller,
+        onboarding: RepoOnboarding,
+        capability: str,
+    ) -> None:
+        """spec 31 §5. The alternative is a workflow that checks out the code,
+        runs nothing and uploads an empty results directory — green on every
+        run and meaningless. A repository's test runner is decided by its
+        language and its own conventions (D-046), so the honest failure names
+        the field rather than guessing `pytest`."""
+        with pytest.raises(InstallerError, match="No test command configured"):
+            await installer.plan(onboarding, {capability})
+
+    async def test_a_test_lane_with_a_command_installs(
+        self, installer: WorkflowInstaller, onboarding: RepoOnboarding
+    ) -> None:
+        plan = await installer.plan(
+            onboarding, {"unit"}, configs={"unit": {"command": "pytest -q"}}
+        )
+
+        assert plan.added == ["unit"]
+        assert "pytest -q" in (plan.changes[0].content or "")
+
+    async def test_a_whitespace_command_does_not_count(
+        self, installer: WorkflowInstaller, onboarding: RepoOnboarding
+    ) -> None:
+        """Otherwise the refusal is one space away from being bypassed by
+        somebody who meant to fill the field in later."""
+        with pytest.raises(InstallerError, match="No test command configured"):
+            await installer.plan(onboarding, {"unit"}, configs={"unit": {"command": "   "}})
+
     async def test_rendered_workflow_carries_repo_context(
         self, installer: WorkflowInstaller, onboarding: RepoOnboarding
     ) -> None:

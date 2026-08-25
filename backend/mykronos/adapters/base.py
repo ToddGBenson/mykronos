@@ -57,6 +57,17 @@ class AdapterResult:
     warnings: list[str] = field(default_factory=list)
     #: Count of results the parser could not make sense of at all.
     skipped: int = 0
+    #: Line and branch coverage, 0..1, where the runner reported it (spec 31
+    #: §4). `None` means the report did not carry it — distinct from 0.0,
+    #: which means the runner measured and found none.
+    #:
+    #: **Not a security metric, and labelled that way everywhere it is shown.**
+    #: It is context that stops a green pass-rate sparkline being read as more
+    #: than it is: 90% coverage with zero regression links means the tests are
+    #: thorough about something other than the things that have gone wrong
+    #: here.
+    line_coverage: float | None = None
+    branch_coverage: float | None = None
 
     @property
     def degraded(self) -> bool:

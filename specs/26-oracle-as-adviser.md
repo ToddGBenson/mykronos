@@ -33,9 +33,9 @@ It is also, still, only a scorer. Three consequences:
 | Item | Status |
 |---|---|
 | Path to green: the minimal action set (§1) | **Built** |
-| Terms that reward, capped and evidence-backed (§2) | Not started |
+| Terms that reward, capped and evidence-backed (§2) | **Built** — with one correction to `within_target`, recorded in §2.2 |
 | 30-day shadow report of what the gate would have refused (§3) | **Built** — as an extension of spec 09 §6's existing report, which measured the retired gate |
-| Forecast: when this repository turns no-go on ageing alone (§4) | Not started |
+| Forecast: when this repository turns no-go on ageing alone (§4) | **Built** |
 
 ## 1. Path to green
 
@@ -116,6 +116,15 @@ enough that a quarter of real work moves the number, not enough to buy a verdict
 
 **`available: False` until the source exists**, with a reason, per spec 09 §9. A platform where the
 credits silently contribute zero is one where teams conclude the model is rigged.
+
+**Corrected while building: `within_target` counts findings that were *closed* inside their window,
+not open ones that are merely not late yet.** The first implementation credited the latter and the
+golden scoring tests caught it: a repository full of brand-new criticals is inside every remediation
+window by construction, and would have earned the full six points for having done nothing at all.
+That is the evidence-not-switches rule failing in its subtlest form — not a configuration flag, but a
+credit that rewards the passage of time. The shipped term is a rate over findings fixed in the last
+90 days, windowed for `mean_time_to_fix`'s reason: an all-time rate is dominated by whatever happened
+when the platform was switched on.
 
 ### 2.3 What does not ship
 

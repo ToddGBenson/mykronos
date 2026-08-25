@@ -1775,7 +1775,19 @@ class DashboardQueries:
                    sum(CASE WHEN scan_status = 'no_applicable_targets'
                             THEN 1 ELSE 0 END)                              AS no_targets,
                    max(coalesce(completed_at, started_at))                  AS last_run_at,
-                   max(finding_count)                                       AS peak_findings
+                   max(finding_count)                                       AS peak_findings,
+                   -- The most recent run that *reported* coverage, not the
+                   -- most recent run (spec 31 §4). A pipeline that writes a
+                   -- coverage report on scheduled runs and not on every push
+                   -- would otherwise show a number one day and a blank the
+                   -- next, which reads as coverage having been lost.
+                   arg_max(line_coverage, coalesce(completed_at, started_at))
+                       FILTER (WHERE line_coverage IS NOT NULL)             AS line_coverage,
+                   arg_max(branch_coverage, coalesce(completed_at, started_at))
+                       FILTER (WHERE branch_coverage IS NOT NULL)           AS branch_coverage,
+                   max(coalesce(completed_at, started_at))
+                       FILTER (WHERE line_coverage IS NOT NULL
+                                  OR branch_coverage IS NOT NULL)           AS coverage_at
             FROM scan_runs
             WHERE repo_full_name = ?
             GROUP BY capability
@@ -1786,7 +1798,18 @@ class DashboardQueries:
         )
         recent = self._recent_scan_runs(repo_full_name)
         health = []
-        for capability, runs, succeeded, failed, no_targets, last_run_at, peak in rows:
+        for (
+            capability,
+            runs,
+            succeeded,
+            failed,
+            no_targets,
+            last_run_at,
+            peak,
+            line_coverage,
+            branch_coverage,
+            coverage_at,
+        ) in rows:
             total = int(runs) or 1
             health.append(
                 {
@@ -1808,6 +1831,24 @@ class DashboardQueries:
                     # a longer streak would only change how loudly, not
                     # whether.
                     "flaky": _is_flaky(recent.get(str(capability), [])),
+                    # Coverage where the runner reported it (spec 31 §4).
+                    # `None` rather than 0.0 when it did not: a lane with no
+                    # coverage report and a lane measured at zero are
+                    # different facts, and rendering both as 0% would make
+                    # the honest one look like the broken one.
+                    #
+                    # **Not a security metric**, and the tab says so. It is
+                    # context that stops a green pass rate being read as more
+                    # than it is: high coverage with no regression links
+                    # (spec 31 §3) means the tests are thorough about
+                    # something other than what has gone wrong here.
+                    "line_coverage": None if line_coverage is None else round(
+                        float(line_coverage), 3
+                    ),
+                    "branch_coverage": None if branch_coverage is None else round(
+                        float(branch_coverage), 3
+                    ),
+                    "coverage_at": coverage_at,
                 }
             )
         return health

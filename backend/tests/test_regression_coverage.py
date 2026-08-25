@@ -233,6 +233,74 @@ class TestStaleness:
         assert "D-046" in note
 
 
+class TestThePortfolio:
+    def test_it_counts_every_repository(
+        self, client: TestClient, auth, catalog: Catalog, run_compaction
+    ) -> None:
+        """The same arithmetic over the estate, not a mean of per-repository
+        ratios. Averaging ratios gives a repository with two fixed findings
+        the same weight as one with two hundred, so a single well-tested
+        corner would carry an estate that has pinned nothing."""
+        seed_fixed(client, auth, run_compaction, count=3)
+
+        assert regression.coverage(catalog).fixed_findings == 3
+
+    def test_one_repositorys_green_lane_does_not_revive_anothers_links(
+        self, client: TestClient, auth, catalog: Catalog, run_compaction
+    ) -> None:
+        """The bug portfolio scope would have introduced: keyed on capability
+        alone, a `unit` lane running green anywhere would keep an abandoned
+        link alive everywhere, and a number meant to catch expired protection
+        would do the opposite."""
+        [finding_id] = seed_fixed(client, auth, run_compaction)
+        regression.record(
+            client.app.state.buffer,  # type: ignore[attr-defined]
+            repo_full_name=REPO,
+            finding_id=finding_id,
+            test_identifier="t.test_x",
+            capability="unit",
+        )
+        run_compaction()
+        # A green `unit` lane, but in a different repository.
+        from tests.conftest import issue_token
+
+        other = "acme/other"
+        post_scan(
+            client,
+            {"Authorization": f"Bearer {issue_token(client, other, 'unit')}"},
+            repo_full_name=other,
+            scan_run_id="other-unit",
+            capability="unit",
+            tool_name="junit",
+            scan_status="success",
+            finding_count=0,
+        )
+        run_compaction()
+
+        assert regression.coverage(catalog).stale == 1
+
+    def test_the_trends_page_serves_it(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        seed_fixed(client, auth, run_compaction, count=2)
+        run_compaction()
+
+        body = client.get("/api/dashboard/trends", headers=admin_auth).json()
+
+        assert body["scope"] == "portfolio"
+        assert body["regression_coverage"]["fixed_findings"] == 2
+
+    def test_an_estate_with_nothing_fixed_is_unavailable_not_zero(
+        self, client: TestClient, admin_auth
+    ) -> None:
+        onboard(client, admin_auth)
+
+        body = client.get("/api/dashboard/trends", headers=admin_auth).json()
+
+        assert body["regression_coverage"]["available"] is False
+
+
 class TestTheApi:
     def _repo_id(self, client: TestClient, admin_auth: dict[str, str]) -> str:
         return client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0][

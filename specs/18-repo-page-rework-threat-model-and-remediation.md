@@ -46,7 +46,7 @@ This spec covers, precisely:
 | Tab restructure and renames (§3) | Done |
 | Dashboard tab — enable/disable, scan health, enabled jobs; no findings (§3) | Done — corrected, D-063: shipped once with summary cards + a findings list, reversed on sight |
 | Harness tab restyle: remove Pipeline stages, tile-grid Enabled jobs (§3.1) | Done |
-| Harness tab — real test harness: `unit`/`functional`/`qa` health + scoped "run tests" (§4) | Done — Concourse-scanned repos only; no GitHub Actions workflow template exists for these lanes, named as a real gap, not attempted this pass |
+| Harness tab — real test harness: `unit`/`functional`/`qa` health + scoped "run tests" (§4) | Done — and no longer Concourse-only: spec 31 §5 added the three Actions workflow templates this row named as a real gap |
 | Findings: `triage` filter | Done |
 | Findings: `found_by` (capability) filter made clickable | Done |
 | Threat Model tab: capability-level STRIDE inventory | Done |
@@ -169,21 +169,27 @@ rather than a second copy of it, and clicking it there dispatches unit/functiona
 security scan alongside them.
 
 **`unit`/`functional`/`qa` join `DISPATCHABLE_CAPABILITIES`** (`api/repos.py`) — and this is where a
-real gap surfaced, not just a missing button. No GitHub Actions workflow template exists for any of
-the three (`workflow-templates/manifest.json` has none), and an Actions-scanned repo's install PR is
-generated *from* the templates of the capabilities being enabled — so the capabilities endpoint
-itself refuses to enable `unit`/`functional`/`qa` there with a 422, before dispatch is ever reached.
-**On-demand test running therefore works today for Concourse-scanned repositories only**, resolving
-through `_JOBS_BY_CAPABILITY` — the reverse of `ci.py`'s `CAPABILITY_BY_JOB`, already built for
-stage-coverage cross-checking and reused here rather than duplicated. The tab states this limitation
-plainly rather than presenting a "run tests" button that silently does nothing for an Actions-scanned
-repo.
+real gap surfaced, not just a missing button. No GitHub Actions workflow template existed for any of
+the three, and an Actions-scanned repo's install PR is generated *from* the templates of the
+capabilities being enabled — so the capabilities endpoint itself refused to enable
+`unit`/`functional`/`qa` there with a 422, before dispatch was ever reached. **On-demand test running
+therefore worked for Concourse-scanned repositories only**, resolving through `_JOBS_BY_CAPABILITY` —
+the reverse of `ci.py`'s `CAPABILITY_BY_JOB`, already built for stage-coverage cross-checking and
+reused here rather than duplicated. The tab stated this limitation plainly rather than presenting a
+"run tests" button that silently did nothing for an Actions-scanned repo.
 
-**Not attempted: a GitHub Actions workflow template for these lanes.** D-046's own reasoning — "a
-repository's test runner is decided by its language and its own conventions" — is exactly why no
-single generic template could serve every repository honestly. A real answer needs either a
-per-language template set or a convention this platform does not yet have; that is separate, larger
-work, named here and left undone on purpose rather than half-built.
+**Closed by spec 31 §5**, and the answer was not the one this section expected. It reasoned that no
+single generic template could serve every repository honestly, because D-046 says a repository's test
+runner is decided by its language and its own conventions — and concluded that a real answer needed a
+per-language template set or a convention the platform did not have.
+
+The reasoning was right and the conclusion did not follow. What the templates do is *not decide*: the
+command is required config with no default, the install is refused with a 422 that names the field
+when it is missing, and the workflow fails loudly if it ever renders without one. One template
+serves every language precisely because it declines to know anything about any of them. What it
+supplies is the part that is genuinely universal — the fail-fast probe, the results contract, the
+upload that happens even when the suite fails, and the failure that comes *after* the run is
+recorded.
 
 ## 5. Findings: two new filters
 

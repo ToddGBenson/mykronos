@@ -146,34 +146,55 @@ def record(
     return identifier
 
 
-def _lane_last_green(catalog: Catalog, repo_full_name: str) -> dict[str, datetime]:
-    """When each test lane last completed successfully."""
+def _lane_last_green(
+    catalog: Catalog, repo_full_name: str | None
+) -> dict[tuple[str, str], datetime]:
+    """When each `(repo, lane)` pair last completed successfully.
+
+    Keyed on the pair rather than on the lane, because portfolio-wide this is
+    asked across every repository at once: a `unit` lane running green in one
+    repository would otherwise keep another repository's abandoned links
+    alive, and the number would be the opposite of what it claims to measure.
+    """
     if not catalog.all_files("scan_runs"):
         return {}
     names = ", ".join(f"'{c}'" for c in TEST_CAPABILITIES)
+    where = f"capability IN ({names}) AND scan_status = 'success'"
+    params: list[Any] = []
+    if repo_full_name is not None:
+        where = "repo_full_name = ? AND " + where
+        params.append(repo_full_name)
     rows = catalog.query(
         f"""
-        SELECT capability, max(coalesce(completed_at, started_at))
+        SELECT repo_full_name, capability, max(coalesce(completed_at, started_at))
         FROM scan_runs
-        WHERE repo_full_name = ? AND capability IN ({names})
-          AND scan_status = 'success'
-        GROUP BY 1
+        WHERE {where}
+        GROUP BY 1, 2
         """,
-        [repo_full_name],
+        params,
     )
-    return {str(c): when for c, when in rows if when is not None}
+    return {(str(r), str(c)): when for r, c, when in rows if when is not None}
 
 
 def coverage(
-    catalog: Catalog, repo_full_name: str, *, now: datetime | None = None
+    catalog: Catalog, repo_full_name: str | None = None, *, now: datetime | None = None
 ) -> Coverage:
-    """Of the findings ever fixed here, how many have a test pinned."""
+    """Of the findings ever fixed here, how many have a test pinned.
+
+    `repo_full_name=None` is the portfolio (spec 31 §3): the same arithmetic
+    over every repository rather than a mean of per-repository ratios. The
+    distinction matters — averaging ratios gives a repository with two fixed
+    findings the same weight as one with two hundred, so a single well-tested
+    corner would carry an estate that has pinned nothing.
+    """
     if not catalog.all_files("findings"):
         return Coverage()
 
+    scope = "" if repo_full_name is None else " AND asset_id = ?"
+    scoped: list[Any] = [] if repo_full_name is None else [repo_full_name]
     fixed_rows = catalog.query(
-        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'fixed'",
-        [repo_full_name],
+        f"SELECT count(*) FROM findings WHERE status = 'fixed'{scope}",
+        scoped,
     )
     fixed = int(fixed_rows[0][0]) if fixed_rows else 0
     if not fixed or not catalog.all_files("finding_tests"):
@@ -183,28 +204,29 @@ def coverage(
     green = _lane_last_green(catalog, repo_full_name)
     cutoff = moment - timedelta(days=STALE_AFTER_DAYS)
 
+    link_scope = "" if repo_full_name is None else " AND l.repo_full_name = ?"
     links = catalog.query(
-        """
-        SELECT l.finding_id, l.evidence, l.capability
+        f"""
+        SELECT l.finding_id, l.evidence, l.capability, l.repo_full_name
         FROM finding_tests l
         JOIN findings f ON f.finding_id = l.finding_id
-        WHERE l.repo_full_name = ? AND f.status = 'fixed'
+        WHERE f.status = 'fixed'{link_scope}
         """,
-        [repo_full_name],
+        scoped,
     )
 
-    by_finding: dict[str, list[tuple[str, str]]] = {}
-    for finding_id, evidence, capability in links:
+    by_finding: dict[str, list[tuple[str, str, str]]] = {}
+    for finding_id, evidence, capability, repo in links:
         by_finding.setdefault(str(finding_id), []).append(
-            (str(evidence), str(capability))
+            (str(evidence), str(capability), str(repo))
         )
 
     covered = demonstrated = asserted = stale = 0
     for grades in by_finding.values():
         live = [
             (grade, capability)
-            for grade, capability in grades
-            if (green.get(capability) or datetime.min) >= cutoff
+            for grade, capability, repo in grades
+            if (green.get((repo, capability)) or datetime.min) >= cutoff
         ]
         if not live:
             # Its lane has not run green in a month. A protection nobody runs

@@ -55,19 +55,17 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 #:
 #: `unit`/`functional`/`qa` (spec 18, Test Harness tab) dispatch through the
 #: exact same two paths as everything else here, and need no special case in
-#: either — but only one of them is reachable today. No workflow template
-#: exists for them (`workflow-templates/manifest.json` has none), and an
-#: Actions-scanned repo's install PR is generated *from* the templates of the
-#: capabilities being enabled — so the capabilities endpoint itself refuses
-#: to enable `unit`/`functional`/`qa` there with a 422, before `scan_now` is
-#: ever reached; the `TemplateError` handling below exists for every other
-#: template-less capability and simply never fires for these three via an
-#: Actions repo's normal path. A Concourse-scanned repo's attempt resolves
-#: through `_JOBS_BY_CAPABILITY`, which already maps the
+#: either. Both paths are now reachable: spec 31 §5 added the three workflow
+#: templates, so an Actions-scanned repository can enable a test lane and
+#: `scan_now` can dispatch it. This comment said the opposite until then, and
+#: the reason it was true is worth keeping: an Actions repo's install PR is
+#: generated *from* the templates of the capabilities being enabled, so with
+#: no template the capabilities endpoint refused the enable with a 422 long
+#: before a dispatch was attempted. A Concourse-scanned repo's attempt
+#: resolves instead through `_JOBS_BY_CAPABILITY`, which reuses the
 #: `unit`/`qa`/`qa-spec-links`/`functional` job names `ci.py`'s
-#: `CAPABILITY_BY_JOB` names for stage-coverage cross-checking — the same
-#: mapping, reused rather than a second one built for this — which is why
-#: on-demand test dispatch works only for Concourse-scanned repos today.
+#: `CAPABILITY_BY_JOB` already maps for stage-coverage cross-checking — the
+#: same mapping, rather than a second one built for this.
 DISPATCHABLE_CAPABILITIES = frozenset(
     {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )

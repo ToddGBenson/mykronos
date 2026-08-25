@@ -567,14 +567,52 @@ class NetworkConfig(BaseCapabilityConfig):
     )
 
 
-class UnitConfig(BaseCapabilityConfig):
-    """The repository's own unit suite (D-046).
+class TestLaneConfig(BaseCapabilityConfig):
+    """What the three test lanes share (D-046, spec 31 §5).
 
-    No tool field: a repository's test runner is decided by its language and
-    its own conventions, not by this platform. What Mykronos records is that
-    the suite ran, how it ended, and how many cases failed.
+    Until spec 31 §5 these capabilities existed for Concourse-scanned
+    repositories only: the pipeline named the command, and there was no
+    workflow template, so an Actions-scanned repository could not enable them
+    at all. The Harness tab was dark for a whole class of onboarded repos and
+    said so honestly in spec 18 §0a.
+
+    **The command comes from the repository, not from this platform.** A
+    repository's test runner is decided by its language and its own
+    conventions; guessing `pytest` because a `.py` file exists is how a
+    platform ships a workflow that fails on every run for reasons the team did
+    not choose. So the field has no default and an Actions install is refused
+    without it, which is a 422 naming the field rather than a green workflow
+    that tests nothing.
+
+    **This is arbitrary code execution on the runner, by design and by
+    definition.** A test lane runs the repository's test suite; there is no
+    version of that which is not "run what this config says". The boundary
+    that matters is therefore not the content of the command but who may set
+    it — capability config is admin-only — and that a command cannot escape
+    its own step into the rest of the workflow, which is what the
+    control-character guard below enforces.
     """
 
+    command: str = Field(
+        default="",
+        max_length=2_000,
+        description=(
+            "The command that runs the suite and writes JUnit XML into "
+            "$MYKRONOS_RESULTS. Required for GitHub Actions-scanned "
+            "repositories; Concourse-scanned ones name the command in their "
+            "pipeline and leave this empty."
+        ),
+    )
+    setup: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Commands run before `command` — installing dependencies, "
+            "starting a service. A list rather than one string with newlines "
+            "in it, because a newline in a value rendered into YAML is a new "
+            "line and potentially a new step."
+        ),
+    )
     fail_build_on_failure: bool = Field(
         default=True,
         description=(
@@ -585,8 +623,29 @@ class UnitConfig(BaseCapabilityConfig):
         ),
     )
 
+    @field_validator("command")
+    @classmethod
+    def _command_is_one_step(cls, value: str) -> str:
+        return _reject_control_characters(value, "command")
 
-class FunctionalConfig(BaseCapabilityConfig):
+    @field_validator("setup")
+    @classmethod
+    def _setup_lines_are_one_step_each(cls, value: list[str]) -> list[str]:
+        for entry in value:
+            _reject_control_characters(entry, "setup command")
+        return value
+
+
+class UnitConfig(TestLaneConfig):
+    """The repository's own unit suite (D-046).
+
+    No tool field: a repository's test runner is decided by its language and
+    its own conventions, not by this platform. What Mykronos records is that
+    the suite ran, how it ended, and how many cases failed.
+    """
+
+
+class FunctionalConfig(TestLaneConfig):
     """Functional tests against a deployed lower environment (D-046, PIP-2).
 
     The traffic these generate is the input to proxy-first DAST: functional
@@ -612,10 +671,9 @@ class FunctionalConfig(BaseCapabilityConfig):
             "what an unauthenticated crawl can find."
         ),
     )
-    fail_build_on_failure: bool = Field(default=True)
 
 
-class QaConfig(BaseCapabilityConfig):
+class QaConfig(TestLaneConfig):
     """Repository quality checks (D-046, spec 15 §1).
 
     The checks themselves belong to the repository - link integrity here,
@@ -627,15 +685,6 @@ class QaConfig(BaseCapabilityConfig):
     giving it a severity would put documentation drift into a security risk
     score.
     """
-
-    fail_build_on_failure: bool = Field(
-        default=True,
-        description=(
-            "Whether a failing QA check stops the pipeline. Separate from any "
-            "risk score - the pipeline enforces quality, and the score stays "
-            "about risk (D-046)."
-        ),
-    )
 
 
 class AiConfig(BaseCapabilityConfig):

@@ -3333,3 +3333,110 @@ inherited.
 Found while repairing the live token by hand on 2026-08-23, after a manual
 rotation expired the value Vault was serving. The manual repair is now: rotate,
 write to `backend/.env`, write to Vault, verify against `:8100`.
+
+## D-087 — The score can now go down for work done, and the first attempt rewarded the clock
+
+**2026-08-24. Spec 26 §2. Policy 1.8.**
+
+Oracle had nine modifiers and one negative — the import-reachability discount,
+which is a fact about code structure rather than a reward for anything anybody
+did. So the number could only ever go up. A team that spent a quarter adding
+regression tests, verifying its fixes and clearing its backlog inside target
+watched the score not move, which is how a model stops being acted on and
+starts being argued with.
+
+`posture_credits` adds three additive negative terms, each gated on evidence a
+*different* spec produces: a test pinned to a fixed finding (spec 31), a fix
+verified gone by a re-scan of its merge commit (spec 25 §2), a finding closed
+inside its remediation window (spec 24 §2). None can be earned by changing a
+setting — the rule `maturity-model-v1.yaml` states for its own criteria, for
+the same reason.
+
+**The floor is the part that matters.** Credits may not take a repository
+below the review threshold while a critical is open. Without that rule the
+arithmetic lets a team test its way out of an exploited critical, which is the
+single outcome this idea must not produce. It is applied in `evaluate` rather
+than inside the snapshot because it needs the score the rest of the model
+produced, and the terms are rescaled when it bites so the published breakdown
+still sums to what was applied — a breakdown whose parts do not add up is one
+nobody can check.
+
+**The first `within_target` was wrong, and the golden tests caught it.** It
+credited findings that were open and merely *not late yet*. A repository full
+of brand-new criticals is inside every remediation window by construction, so
+it would have earned the full six points for having done nothing at all. That
+is the evidence-not-switches rule failing in its subtlest form: not a flag
+somebody flips, but a credit that rewards the passage of time. The shipped
+term counts findings *closed* inside their window over the last 90 days,
+windowed for `mean_time_to_fix`'s reason — an all-time rate is dominated by
+whatever happened when the platform was switched on.
+
+Worth stating that the pinned golden scores are what surfaced it. The credit
+looked right in isolation and looked right in its own unit test; what failed
+was a fixed-input score moving in a direction nobody could justify. That is
+the whole argument for pinning them.
+
+**Two record-keeping repairs alongside.** The policy file's version log stopped
+at 1.4 while the file said 1.7 — 1.5, 1.6 and 1.7 were bumped correctly and
+never written down, which made the log the one place a reader could not see
+what had changed. Reconstructed from the commits. And its header pointed at
+`tests/test_oracle_golden.py`, a file that has never existed; the golden values
+are in `tests/test_oracle.py`. A pointer to nothing is worse than no pointer,
+because somebody following it concludes there is no such guard.
+
+## D-088 — One test-lane template serves every language, because it declines to know any of them
+
+**2026-08-24. Spec 31 §4, §5. Closes a gap spec 18 §0a named and left.**
+
+Spec 18 §4 reasoned that no single generic workflow template could serve every
+repository honestly, because D-046 says a repository's test runner is decided
+by its language and its own conventions. It concluded that a real answer needed
+a per-language template set or a convention the platform did not have, and left
+the Harness tab dark for every Actions-scanned repository.
+
+The reasoning was right and the conclusion did not follow. The template's job
+is to *not decide*. `command` is required config with no default; an Actions
+install without one is refused with a 422 naming the field; and the rendered
+workflow fails loudly rather than silently if it ever renders without one — a
+lane that runs nothing and reports success is exactly what the refusal exists
+to prevent. One template serves every language precisely because it knows
+nothing about any of them.
+
+What it does supply is the part that genuinely is universal, and none of it is
+about a test runner: the fail-fast probe, the results contract, an upload that
+happens even when the suite fails, and a build failure that comes *after* the
+run is recorded. That ordering is the whole point — failing earlier would make
+the pipeline's verdict and the platform's record disagree exactly when somebody
+needs them to agree.
+
+**A test lane is arbitrary code execution on the runner, by definition.** There
+is no version of "run this repository's test suite" that is not "run what this
+config says". The boundary is therefore who may set it — capability config is
+admin-only — and that a command cannot escape its own step into the rest of the
+workflow. Newlines are refused in `command` and in every `setup` line; shell
+metacharacters are allowed, because refusing those would refuse most real test
+commands. The guard is about YAML structure, not about shell syntax, and
+conflating the two would have produced security theatre that broke the feature.
+
+**Found while building: a coverage report was making the record worse.** The
+JUnit adapter globs `*.xml`. A repository writing `coverage.xml` beside
+`unit.xml` — the default layout of pytest-cov, of jest, and of every Maven
+build — was handing a Cobertura document to a JUnit parser, which found no
+`testsuite`, warned "the report contains no test suites", and downgraded a
+green run to `no_applicable_targets`. The file carrying the most useful context
+about a suite had been actively degrading the record of that suite since D-046.
+Cobertura and JaCoCo are now recognised by root element.
+
+**Coverage is not a security metric and the page says so beside the number.**
+The label is not a disclaimer bolted on; it is the reason showing this is safe
+at all. Ninety percent coverage with zero regression links (spec 31 §3) means
+the tests are thorough about something other than what has actually gone wrong
+here, and a number displayed without that sentence next to it will be read as a
+security score by the third person who sees it.
+
+Two smaller calls, both instances of rules already in the file. Null coverage
+is not zero coverage — a lane whose runner never wrote a report and a lane
+measured at zero are different facts (spec 05 §7a). And sharded suites take the
+highest report rather than the sum or the mean: summing exceeds 1.0, averaging
+understates a repository whose shards are deliberately narrow, and the largest
+is at least a number somebody observed.

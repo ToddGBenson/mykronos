@@ -113,6 +113,12 @@ SCAN_RUNS_COLUMNS: Final[list[Column]] = [
     # no GRANDFATHERED entry in the schema-drift guard (D-052): a column
     # that's fine to be absent on an old row needs neither.
     ("detail", "VARCHAR"),
+    # Coverage where the runner reported it, 0..1 (spec 31 §4). NULL means the
+    # report did not carry it, which is not the same fact as 0.0 — the runner
+    # measured and found none. Explicitly not a security metric: it is context
+    # that stops a green pass rate being read as more than it is.
+    ("line_coverage", "DOUBLE"),
+    ("branch_coverage", "DOUBLE"),
 ]
 
 RISK_DECISIONS_COLUMNS: Final[list[Column]] = [

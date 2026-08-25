@@ -4,6 +4,7 @@ import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
+import { TestCoverage } from "@/components/test-coverage";
 import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
 import { ScanNowButton } from "@/components/scan-now";
 import {
@@ -12,6 +13,7 @@ import {
   type FindingsQuery,
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
+import { AgeForecast } from "@/components/forecast";
 import { PathToGreen } from "@/components/path-to-green";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
@@ -295,10 +297,11 @@ async function TestHarnessTab({
         <strong className="text-ink">Pass/fail, not findings.</strong> Unit,
         functional, and QA-doc checks record a run and a count, never a
         security finding — a failing test cannot lower this repository&rsquo;s
-        risk score by being suppressed the way a finding can. &ldquo;Run
-        tests&rdquo; reaches Concourse-scanned repositories today; no GitHub
-        Actions workflow template exists yet for these three lanes, so an
-        Actions-scanned repository cannot enable them here at all.
+        risk score by being suppressed the way a finding can. An
+        Actions-scanned repository enables these the same way as any other
+        capability, and each lane needs a{" "}
+        <span className="font-mono">command</span> in its config — this
+        platform does not guess a repository&rsquo;s test runner.
       </p>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -329,7 +332,16 @@ async function TestHarnessTab({
       </Section>
 
       {boxes.map((capability) => (
-        <LaneTrend key={capability} repoId={repoId} capability={capability} />
+        <LaneTrend
+          key={capability}
+          repoId={repoId}
+          capability={capability}
+          health={
+            scanHealth.ok
+              ? scanHealth.data.capabilities.find((c) => c.capability === capability)
+              : undefined
+          }
+        />
       ))}
     </div>
   );
@@ -338,7 +350,15 @@ async function TestHarnessTab({
 /** One lane's pass rate over time (spec 19 §1.1) — its own component so each
  *  lane's fetch is independent: a trend that fails to load for `qa` should
  *  not take `unit`'s down with it. */
-async function LaneTrend({ repoId, capability }: { repoId: string; capability: string }) {
+async function LaneTrend({
+  repoId,
+  capability,
+  health,
+}: {
+  repoId: string;
+  capability: string;
+  health: ScanHealth["capabilities"][number] | undefined;
+}) {
   const trend = await getScanRunTrend(repoId, capability);
   return (
     <Section title={`${capability} — pass rate`} detail="last 90 days">
@@ -348,6 +368,13 @@ async function LaneTrend({ repoId, capability }: { repoId: string; capability: s
         ) : (
           <p className="text-[11px] text-critical">{trend.error}</p>
         )}
+      </div>
+      {/* Beside the sparkline rather than in a section of its own (spec 31
+          §4): the whole value of this number is that it qualifies the one
+          above it, and a reader who has to go looking for the qualification
+          will not. */}
+      <div className="border-t border-rule-soft px-3 py-2">
+        <TestCoverage row={health} />
       </div>
     </Section>
   );
@@ -442,12 +469,20 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
   // Read from the decision rather than fetched separately: a path computed by
   // a second call could disagree with the score it is supposed to explain.
   const latest = result.data.decisions[0];
-  const path =
-    (latest?.inputs_snapshot as { path_to_green?: Parameters<typeof PathToGreen>[0]["path"] })
-      ?.path_to_green ?? null;
+  const snapshot = latest?.inputs_snapshot as
+    | {
+        path_to_green?: Parameters<typeof PathToGreen>[0]["path"];
+        forecast?: Parameters<typeof AgeForecast>[0]["forecast"];
+      }
+    | undefined;
+  const path = snapshot?.path_to_green ?? null;
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Above the path, because it is the one thing here about a score that
+          has not happened yet (spec 26 §4). Renders nothing when ageing alone
+          does not cross a band, which is most of the time. */}
+      <AgeForecast forecast={snapshot?.forecast ?? null} />
       <PathToGreen repoId={repoId} path={path} />
       {profile.ok ? (
         <RiskProfileCard repoId={repoId} profile={profile.data} />
