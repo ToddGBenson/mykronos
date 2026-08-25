@@ -1,0 +1,90 @@
+# The seeded-vulnerability manifest (spec 23 §1.2).
+#
+# This file is the *schema and worked example*. The real one lives at
+# `bench/manifest.yaml` in the corpus repository — `mykronos-bench` — and not
+# in this repository, for a reason worth stating plainly: seeded
+# vulnerabilities inside the platform repository would be ingested under this
+# repo's own `repo_full_name` as real findings, raise its risk score, and reach
+# its own Oracle gate. The corpus has to be scanned by the real pipelines to be
+# worth anything, so it has to live somewhere that scanning it is harmless.
+#
+# The corpus repository is onboarded with `synthetic: true`, which keeps it out
+# of every portfolio aggregate. Without that it becomes, permanently, the
+# fleet's worst repository — deliberately vulnerable code counted as estate
+# risk.
+#
+# ---------------------------------------------------------------------------
+# What an entry names, and what it deliberately does not
+# ---------------------------------------------------------------------------
+#
+# `capability` — which *lane* should have caught this. Not `rule_id`: a rule
+# identifier is a free-form string the reporting tool chose (spec 18 §6), so
+# pinning a grade to one would grade the tool's naming rather than its
+# detection, and every scanner rename would need a manifest rewrite.
+#
+# `line_start`/`line_end` — a window, not a point. The grader allows five lines
+# of drift either side, because the finding fingerprint already assumes that
+# much (spec 05 §5); a grader stricter than the platform's own identity model
+# would report regressions the platform does not believe in.
+#
+# `description` — prose for the human reading a failure. It is what appears
+# under a missed detection in the JUnit report, and "the thing the scanner did
+# not find" is only useful if somebody can tell what it was.
+#
+# ---------------------------------------------------------------------------
+# One rule about what may be seeded
+# ---------------------------------------------------------------------------
+#
+# **First-party code only.** A seeded vulnerability that Atlas resolves against
+# a real advisory would be counted twice — once as a seed and once as a genuine
+# dependency finding — and the grade would silently include a detection nobody
+# planted (spec 23 §8).
+
+version: "1.0"
+
+seeded:
+  - id: sqli-orders-lookup
+    file: src/orders/lookup.py
+    line_start: 42
+    line_end: 44
+    capability: sast
+    description: >-
+      Order id is concatenated into a SQL string rather than bound, so a
+      crafted id changes the query. The canonical injection, seeded first
+      because it is the one every SAST tool claims to find.
+
+  - id: hardcoded-api-key
+    file: src/config/defaults.py
+    line_start: 17
+    capability: secrets
+    description: >-
+      A live-shaped API key committed as a default. Seeded under `secrets`
+      rather than `sast` deliberately: both lanes could plausibly report it,
+      and the grade should say which one actually does.
+
+  - id: command-injection-export
+    file: src/reports/export.py
+    line_start: 88
+    line_end: 91
+    capability: sast
+    description: >-
+      A filename from the request reaches a shell invocation. Distinct from
+      the SQL injection above in the taint sink, which is what makes it worth
+      seeding separately — a tool can find one and miss the other.
+
+  - id: world-readable-bucket
+    file: infra/storage.tf
+    line_start: 12
+    line_end: 20
+    capability: iac
+    description: >-
+      A storage bucket with public read. The IaC lane's equivalent of the
+      injection above: the finding every tool in the category claims.
+
+  - id: root-container
+    file: Dockerfile
+    line_start: 3
+    capability: containers
+    description: >-
+      No USER directive, so the image runs as root. Seeded to check that the
+      container lane reports configuration and not only CVEs.

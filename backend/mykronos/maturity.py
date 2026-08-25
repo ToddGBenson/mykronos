@@ -450,7 +450,11 @@ class TrendPoint:
 
 
 def _risk_at(
-    catalog: Catalog, at: datetime, repo_full_name: str | None
+    catalog: Catalog,
+    at: datetime,
+    repo_full_name: str | None,
+    *,
+    exclude: list[str] | None = None,
 ) -> tuple[int | None, int | None, int | None]:
     """Risk at one instant: `(mean, median, repos)` (spec 21 §2).
 
@@ -491,8 +495,14 @@ def _risk_at(
     # One row per repository: its latest decision as of this instant. A
     # window function rather than a correlated subquery so the whole fleet is
     # one scan, which matters at twelve buckets per request.
+    # The seeded corpus is dropped here as well as from the finding counts
+    # (spec 23 §1.2): a repository built to be vulnerable would otherwise drag
+    # the fleet mean down permanently and be counted in `repos_scored`, which
+    # is the number that says how much of the estate the mean speaks for.
+    dropped = [name for name in (exclude or []) if name]
+    holes = f" AND repo_full_name NOT IN ({', '.join('?' for _ in dropped)})" if dropped else ""
     rows = catalog.query(
-        """
+        f"""
         SELECT overall_risk_score, inputs_snapshot FROM (
             SELECT
                 overall_risk_score,
@@ -501,11 +511,11 @@ def _risk_at(
                     PARTITION BY repo_full_name ORDER BY evaluated_at DESC
                 ) AS recency
             FROM risk_decisions
-            WHERE decision_type = 'portfolio' AND evaluated_at <= ?
+            WHERE decision_type = 'portfolio' AND evaluated_at <= ?{holes}
         )
         WHERE recency = 1
         """,
-        [at],
+        [at, *dropped],
     )
 
     scores = []
@@ -547,6 +557,7 @@ def trend_series(
     days: int = 90,
     points: int = 12,
     as_of: datetime | None = None,
+    exclude: list[str] | None = None,
 ) -> list[TrendPoint]:
     """Open findings, risk and supply-chain trust over time (spec 10 §2.3).
 
@@ -556,6 +567,14 @@ def trend_series(
     able to disagree with them.
 
     `repo_full_name` of None means the whole portfolio.
+
+    `exclude` drops named repositories from a portfolio series — the seeded
+    benchmark corpus, in practice (spec 23 §1.2). Passed in by the caller
+    rather than looked up here: which repositories are synthetic is a fact in
+    the operational store, and a lake query that reached into the database to
+    find out would couple the two in the one direction this codebase has kept
+    clear. Ignored for a single-repository series, where the caller has
+    already named its subject.
     """
     now = as_of or utcnow()
     step = timedelta(days=days / points)
@@ -567,6 +586,13 @@ def trend_series(
     asset_scope = "AND asset_id = ?" if repo_full_name else ""
     scope = "AND repo_full_name = ?" if repo_full_name else ""
     repo_param: list[Any] = [repo_full_name] if repo_full_name else []
+
+    dropped = [name for name in (exclude or []) if name] if not repo_full_name else []
+    if dropped:
+        holes = ", ".join("?" for _ in dropped)
+        asset_scope += f" AND asset_id NOT IN ({holes})"
+        scope += f" AND repo_full_name NOT IN ({holes})"
+        repo_param = [*repo_param, *dropped]
 
     series: list[TrendPoint] = []
     for index in range(points, 0, -1):
@@ -589,7 +615,9 @@ def trend_series(
 
         # The most recent decision and evidence *as of that instant* — not the
         # latest overall, which would draw a flat line at today's value.
-        risk_mean, risk_median, repos_scored = _risk_at(catalog, at, repo_full_name)
+        risk_mean, risk_median, repos_scored = _risk_at(
+            catalog, at, repo_full_name, exclude=dropped
+        )
         # Not filtered to assessed rows. If the most recent evidence at this
         # instant resolved nothing, the point is a gap (spec 07 §5a) rather
         # than the last real score carried forward — the line should break

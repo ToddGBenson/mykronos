@@ -70,6 +70,16 @@ class PortfolioRowOut(BaseModel):
     #: cost a navigation.
     github_url: str = ""
     pipeline_url: str | None = None
+    synthetic: bool = Field(
+        default=False,
+        description=(
+            "A seeded benchmark corpus (spec 23 §1.2). Scanned and browsable "
+            "like any other repository, and counted in none of the summary "
+            "totals beside it — which the row says, because a repository "
+            "excluded from every number with nothing on the page explaining "
+            "why is how somebody comes to distrust the numbers."
+        ),
+    )
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     severity_counts: dict[str, int]
@@ -838,6 +848,7 @@ async def portfolio(
             PortfolioRowOut(
                 repo_id=row.repo_id,
                 repo_full_name=row.repo_full_name,
+                synthetic=row.synthetic,
                 status=row.status,
                 github_url=f"https://github.com/{row.repo_full_name}",
                 pipeline_url=pipeline_url(row.repo_full_name),
@@ -973,7 +984,22 @@ async def trends(
     repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
     catalog = request.app.state.catalog
 
-    series = trend_series(catalog, repo_full_name, days=days, points=points)
+    # The seeded benchmark corpus is excluded from every portfolio aggregate
+    # (spec 23 §1.2). Looked up here rather than inside `trend_series`:
+    # which repositories are synthetic is a fact in the operational store, and
+    # a lake query reaching into the database to find out would couple the two
+    # in the one direction this codebase has kept clear.
+    with request.app.state.db.session() as session:
+        synthetic = [
+            row.github_repo_full_name
+            for row in session.query(RepoOnboarding).filter(
+                RepoOnboarding.synthetic.is_(True)
+            )
+        ]
+
+    series = trend_series(
+        catalog, repo_full_name, days=days, points=points, exclude=synthetic
+    )
     return {
         "scope": repo_full_name or "portfolio",
         "days": days,

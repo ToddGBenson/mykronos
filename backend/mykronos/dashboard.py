@@ -314,6 +314,10 @@ class PortfolioRow:
     status: str
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
+    #: A seeded benchmark corpus (spec 23 §1.2). Listed, opened and scanned
+    #: like any other repository, and counted in no aggregate: deliberately
+    #: vulnerable code is not estate risk.
+    synthetic: bool = False
     severity_counts: dict[str, int] = field(default_factory=dict)
     total_open: int = 0
     last_scan_at: datetime | None = None
@@ -419,6 +423,7 @@ class DashboardQueries:
                     repo_full_name=repo,
                     repo_id=onboarding.id,
                     status=onboarding.status,
+                    synthetic=bool(onboarding.synthetic),
                     enabled_capabilities=sorted(enabled),
                     pending_capabilities=(
                         sorted(onboarding.pending_capabilities)
@@ -433,14 +438,21 @@ class DashboardQueries:
                 )
             )
 
+        # Every aggregate below is over `real` rather than `rows` (spec 23
+        # §1.2). The bench corpus is still returned and still opens like any
+        # other repository — a benchmark nobody can inspect is one nobody
+        # trusts — but counting seeded vulnerabilities as estate risk would
+        # make it permanently the worst repository in the fleet and would
+        # move every number on the landing page.
+        real = [r for r in rows if not r.synthetic]
         summary = PortfolioSummary(
-            active_repos=sum(1 for r in rows if r.status == "active"),
-            open_critical=sum(r.severity_counts.get("critical", 0) for r in rows),
-            open_high=sum(r.severity_counts.get("high", 0) for r in rows),
-            repos_awaiting_first_scan=sum(1 for r in rows if r.awaiting_first_scan),
-            repos_with_stale_scans=sum(1 for r in rows if r.is_stale),
-            repos_no_go=sum(1 for r in rows if r.recommendation == "no_go"),
-            repos_not_assessed=sum(1 for r in rows if r.recommendation is None),
+            active_repos=sum(1 for r in real if r.status == "active"),
+            open_critical=sum(r.severity_counts.get("critical", 0) for r in real),
+            open_high=sum(r.severity_counts.get("high", 0) for r in real),
+            repos_awaiting_first_scan=sum(1 for r in real if r.awaiting_first_scan),
+            repos_with_stale_scans=sum(1 for r in real if r.is_stale),
+            repos_no_go=sum(1 for r in real if r.recommendation == "no_go"),
+            repos_not_assessed=sum(1 for r in real if r.recommendation is None),
             overdue_findings=overdue_findings,
         )
         return rows, summary

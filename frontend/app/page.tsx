@@ -137,6 +137,20 @@ export default async function PortfolioPage({
                         </Pill>
                       </span>
                     ) : null}
+                    {/* Said on the row rather than left to be discovered
+                        (spec 23 §1.5). A repository whose findings are
+                        excluded from every number above it, with nothing on
+                        the page saying so, is how somebody comes to distrust
+                        the numbers. */}
+                    {repo.synthetic ? (
+                      <span className="ml-2">
+                        <Pill tone="muted">
+                          <span title="A seeded benchmark corpus. Scanned like any other repository and counted in no portfolio total.">
+                            benchmark
+                          </span>
+                        </Pill>
+                      </span>
+                    ) : null}
                     <span className="ml-2 inline-flex gap-1.5 align-baseline">
                       <a
                         href={repo.github_url}

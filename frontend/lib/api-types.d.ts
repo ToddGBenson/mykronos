@@ -2998,6 +2998,12 @@ export interface components {
              */
             org_login: string;
             /**
+             * Synthetic
+             * @description A deliberately-vulnerable benchmark corpus (spec 23 §1.2). Scanned by the real pipelines — a benchmark run through a different code path measures a different platform — and counted in no portfolio aggregate, because seeded vulnerabilities are not estate risk. Stated at onboarding and never inferred: guessing from a repository name is how a real repository silently stops being counted.
+             * @default false
+             */
+            synthetic: boolean;
+            /**
              * Scanned By
              * @description Which CI is supposed to scan this repository (spec 03 §3a). `concourse` and `none` install no workflows: enabling a capability grants ingestion and nothing else. Only `github_actions` opens an install pull request.
              * @default concourse
@@ -3118,6 +3124,12 @@ export interface components {
             github_url: string;
             /** Pipeline Url */
             pipeline_url?: string | null;
+            /**
+             * Synthetic
+             * @description A seeded benchmark corpus (spec 23 §1.2). Scanned and browsable like any other repository, and counted in none of the summary totals beside it — which the row says, because a repository excluded from every number with nothing on the page explaining why is how somebody comes to distrust the numbers.
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -3570,6 +3582,11 @@ export interface components {
              * @default concourse
              */
             scanned_by: string;
+            /**
+             * Synthetic
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -3613,6 +3630,11 @@ export interface components {
              * @default concourse
              */
             scanned_by: string;
+            /**
+             * Synthetic
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
