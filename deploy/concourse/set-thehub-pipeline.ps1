@@ -318,7 +318,7 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v5",
+        "mykronos-ref: v6",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #

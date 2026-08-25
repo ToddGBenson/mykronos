@@ -172,7 +172,7 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v5",
+        "mykronos-ref: v6",
         # personal-soc is granted exactly one capability - secrets - so the
         # secrets job is the only lane with anywhere to report. Empty is
         # allowed: the scan still runs and still gates, and says loudly in the

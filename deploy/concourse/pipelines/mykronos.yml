@@ -280,6 +280,24 @@ jobs:
   # `build` on it would turn "one signal is inert" into "nothing ships".
   - name: pin-check
     public: true
+    # Concurrency added 2026-08-25, after six merges in ten minutes started
+    # six overlapping runs of this whole stage: five `unit` builds at once,
+    # each running the full suite, plus overlapping `lint-and-types` and
+    # `frontend`. A suite that takes 23 minutes was at 1h23m and climbing,
+    # both workers sat at ~600% CPU, and `frontend` and `pin-check` failed on
+    # `timeout exceeded` — starvation, not code. The mykronos-frontend
+    # container went unhealthy while still serving 200s.
+    #
+    # The security stage was already bounded by `scan-heavy-a`/`-b` on
+    # 2026-08-15; the five quality jobs were the only ones in this file left
+    # unbounded, which is why they were the ones that piled up.
+    #
+    # Two groups rather than one, matching the two workers: the stage can
+    # still use the box fully, and cannot exceed it. Being in a group also
+    # makes each job serial with *itself*, which is the part that actually
+    # bit — five builds of one job, one per commit, four of them already
+    # superseded before they finished.
+    serial_groups: [quality-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -312,6 +330,7 @@ jobs:
 
   - name: unit
     public: true
+    serial_groups: [quality-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -394,6 +413,7 @@ jobs:
 
   - name: lint-and-types
     public: true
+    serial_groups: [quality-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -481,6 +501,7 @@ jobs:
 
   - name: qa-spec-links
     public: true
+    serial_groups: [quality-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -526,6 +547,7 @@ jobs:
   # retired: lint, build, and the contract check that matters more than either.
   - name: frontend
     public: true
+    serial_groups: [quality-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:

@@ -129,13 +129,30 @@ services:
       # Same trap as curl, one base image later. The rule that survives both:
       # a healthcheck must name something the image is known to contain, and
       # the image is the only place that knows.
+      #
+      # `/api/healthz`, not `/`. Until 2026-08-25 this fetched the portfolio
+      # page — `force-dynamic`, `cache: "no-store"`, one backend call per
+      # render — so the check ran Next.js, the backend and a DuckDB aggregate
+      # before it would answer. Under CI load that took 3-10s against the 5s
+      # timeout below, and the container reported `unhealthy` while serving
+      # 200s to every real request. It also meant a backend blip marked the
+      # *frontend* unhealthy, which is the backend healthcheck's job to
+      # report from the container that can do something about it.
+      #
+      # `/api/healthz` touches nothing. If it answers, this process is up and
+      # routing works, which is the whole claim a container should make about
+      # itself.
       test:
         - CMD
         - /nodejs/bin/node
         - -e
-        - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - "fetch('http://localhost:3100/api/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 30s
-      timeout: 5s
+      # 10s, not 5s. The endpoint is trivial now, so this is headroom for a
+      # contended box rather than time for real work: both Concourse workers
+      # can be at 600% CPU on this host, and a scheduling delay is not a
+      # failing service.
+      timeout: 10s
       retries: 3
       start_period: 30s
 
