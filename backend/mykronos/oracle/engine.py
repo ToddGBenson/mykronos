@@ -1715,6 +1715,7 @@ class OracleEngine:
             radius_map,
             min_dependents=self.policy.blast_radius.min_dependents,
             points_per_package=self.policy.blast_radius.points_per_package,
+            source=blast_radius.resolution(self.catalog),
         )
         radius_points = min(radius_points, self.policy.blast_radius.cap)
         if radius_points:

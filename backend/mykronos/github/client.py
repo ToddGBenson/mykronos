@@ -223,6 +223,40 @@ class GitHubClient(Protocol):
         summary is the product, not a log line.
         """
 
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        """Branch protection for one branch, or `None` if there is none.
+
+        `None` and `{}` are different answers and both are real (spec 30 §1):
+        `None` means the branch is unprotected, which is a finding; a raised
+        `GitHubError` means the platform could not look, which is not. The
+        caller has to keep them apart, so this never converts one into the
+        other.
+        """
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        """The newer ruleset model, which increasingly supersedes branch
+        protection and which a repository may use *instead* (spec 30 §1.2).
+
+        Read as well as branch protection rather than in place of it: a
+        repository can have either, both, or neither, and reading only the
+        older model would report a modern, well-governed repository as
+        unprotected.
+        """
+
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        self.calls.append(("get_branch_protection", f"{repo_full_name}:{branch}"))
+        self._require("administration", "read", "Reading branch protection")
+        return self._repo(repo_full_name).branch_protection.get(branch)
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        self.calls.append(("get_rulesets", repo_full_name))
+        self._require("administration", "read", "Reading rulesets")
+        return list(self._repo(repo_full_name).rulesets)
+
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
     async def dispatch_workflow(
@@ -280,6 +314,11 @@ class FakeRepo:
     check_runs: list[dict[str, Any]] = field(default_factory=list)
     dispatched_workflows: list[dict[str, Any]] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
+    #: Spec 30 §1. `None` is the default and means *unprotected*, which is the
+    #: honest default for a fake repository nobody has configured — and is a
+    #: different answer from "could not read", which is a raised error.
+    branch_protection: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rulesets: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FakeGitHubClient:
@@ -696,6 +735,37 @@ class RestGitHubClient:
 
     async def get_repo(self, repo_full_name: str) -> dict[str, Any]:
         return dict(await self._json("GET", f"/repos/{repo_full_name}"))
+
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        response = await self._request(
+            "GET", f"/repos/{repo_full_name}/branches/{branch}/protection"
+        )
+        if response.status_code == 404:
+            # GitHub returns 404 for "this branch is not protected", which is
+            # an answer and not a failure. Returned as `None` so the caller can
+            # report *unprotected*; a 403 still raises, because "we were not
+            # allowed to look" must never render as "there is no protection".
+            return None
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Could not read branch protection for {repo_full_name}: "
+                f"{response.text[:400]}",
+                status=response.status_code,
+            )
+        return dict(response.json())
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        # `includes_parents` so an organisation-level ruleset counts: a
+        # repository governed entirely from the org would otherwise report as
+        # having no rules at all.
+        rules = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/rulesets",
+            params={"includes_parents": "true"},
+        )
+        return list(rules) if isinstance(rules, list) else []
 
     async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
         response = await self._request(

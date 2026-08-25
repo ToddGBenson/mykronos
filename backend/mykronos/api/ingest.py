@@ -38,6 +38,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
+from mykronos import inventory
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
 from mykronos.atlas import evidence_id as atlas_evidence_id
@@ -590,7 +591,7 @@ async def ingest_atlas(
     """
     _require_capability(token, Capability.ATLAS.value)
 
-    assessment = trust_score(body.ecosystems)
+    assessment = trust_score(body.ecosystems, body.provenance_signals)
 
     with request.app.state.db.session() as session:
         config = capability_config_for(session, token.repo_full_name, "atlas")
@@ -602,8 +603,16 @@ async def ingest_atlas(
         "sscs_evidence", [atlas_row(body, assessment, token.repo_full_name)]
     )
 
+    # The component inventory, from the SBOM this submission already points at
+    # (spec 29 §1). A third read of a file the runner produced and this
+    # platform already archived — no new upload, no template change, and a
+    # repository whose SBOM was archived last month gets an inventory on its
+    # next report rather than on its next workflow resync.
+    components = _record_components(request, body, token.repo_full_name)
+
     return AtlasAccepted(
         accepted=1,
+        components_recorded=components,
         evidence_id=atlas_evidence_id(token.repo_full_name, body.commit_sha),
         trust_score=assessment.trust_score,
         raw_trust_score=assessment.raw_trust_score,
@@ -615,6 +624,60 @@ async def ingest_atlas(
         # compare, and reporting it as below would block a release for a
         # measurement that never happened (spec 07 §5a).
         below_minimum=(assessment.trust_score is not None and assessment.trust_score < minimum),
+    )
+
+
+def _record_components(
+    request: Request, body: SscsEvidenceSubmission, repo_full_name: str
+) -> int:
+    """Extract and store the resolved components. Never fails the submission.
+
+    Every failure here is swallowed deliberately. The evidence row is the
+    thing this endpoint exists to write and is already in the buffer; losing
+    a trust score because an SBOM was truncated in transit would trade the
+    number a release gate reads for a convenience index. The inventory is
+    rebuilt on the next scan, and a warning says what went wrong.
+    """
+    if not body.sbom_ref:
+        return 0
+
+    settings = request.app.state.settings
+    # The ref is produced by `/api/ingest/raw` as a path relative to the lake
+    # directory. Resolved and then checked to be inside it: the value arrives
+    # from a workflow, and a caller who can post evidence must not be able to
+    # name a file outside the archive by sending `../../etc/passwd`.
+    try:
+        source = (settings.datalake_dir / body.sbom_ref).resolve()
+        source.relative_to(settings.datalake_dir.resolve())
+    except (ValueError, OSError):
+        logger.warning(
+            "SBOM ref %r for %s does not resolve inside the archive; no "
+            "component inventory recorded.",
+            body.sbom_ref,
+            repo_full_name,
+        )
+        return 0
+
+    try:
+        document = json.loads(source.read_bytes())
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "Could not read the archived SBOM for %s (%s); the supply-chain "
+            "evidence was still recorded.",
+            repo_full_name,
+            exc,
+        )
+        return 0
+
+    if not isinstance(document, dict):
+        return 0
+
+    return inventory.record(
+        request.app.state.buffer,
+        document,
+        repo_full_name=repo_full_name,
+        commit_sha=body.commit_sha,
+        scan_run_id=body.sbom_ref,
     )
 
 

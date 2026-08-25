@@ -175,6 +175,19 @@ _UPDATE_SETS: dict[str, str] = {
     # lane's last green run, and a promotion from `asserted` to
     # `demonstrated`. `evidence` coalesces so a later `asserted` write cannot
     # demote a link the platform has actually watched work (spec 31 §1).
+    # A component row is rewritten whole on every scan that still sees it, so
+    # everything refreshes except `first_seen_at` — which is the entire reason
+    # for upserting rather than appending. "When did this repository first
+    # take this version" is answerable from that column alone, and appending
+    # would need a second table to answer it (spec 29 §1).
+    "sbom_components": """
+        commit_sha       = i.commit_sha,
+        scan_run_id      = i.scan_run_id,
+        direct           = i.direct,
+        purl             = i.purl,
+        license_ids_json = i.license_ids_json,
+        observed_at      = i.observed_at
+    """,
     "finding_tests": """
         test_identifier    = i.test_identifier,
         capability         = i.capability,

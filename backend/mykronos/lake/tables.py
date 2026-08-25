@@ -281,6 +281,47 @@ FINDING_TESTS_COLUMNS: Final[list[Column]] = [
     ("updated_at", "TIMESTAMP"),
 ]
 
+#: What a repository actually resolved to (spec 29 §1).
+#:
+#: The SBOM has been generated on every Atlas run since spec 07 and only ever
+#: archived: downloadable per repository, queryable across none of them. So the
+#: platform could not answer the one question that matters at 2am — *which of
+#: our repositories contain this package* — about data it had already
+#: collected and was storing as an opaque blob.
+#:
+#: A third read of a file the runner has already produced, not a new scan.
+#:
+#: **Rewritten per scan, keyed on content.** `component_id` hashes repo,
+#: ecosystem, name and version, so a dependency that has not changed keeps its
+#: row and its `first_seen_at`, and one that has gone stops being refreshed.
+#: That makes "when did this repository first take this version" answerable
+#: without a second table.
+SBOM_COMPONENTS_COLUMNS: Final[list[Column]] = [
+    ("component_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    #: Provenance of the row itself: which scan of which commit saw it. An
+    #: inventory that cannot say when it was taken is one nobody can trust
+    #: under time pressure, which is the only time it gets read.
+    ("commit_sha", "VARCHAR"),
+    ("scan_run_id", "VARCHAR"),
+    ("ecosystem", "VARCHAR"),
+    ("package_name", "VARCHAR"),
+    ("package_version", "VARCHAR"),
+    #: NULL where the SBOM does not distinguish, which is most of them. Not
+    #: `false`: "Syft did not say" and "this is transitive" are different
+    #: facts and the second is a claim this platform cannot make.
+    ("direct", "BOOLEAN"),
+    #: `pkg:npm/lodash@4.17.21`. The join key that survives naming
+    #: differences between ecosystems, and empty where Syft emitted none.
+    ("purl", "VARCHAR"),
+    #: Already computed by spec 22 §1 and aggregated away into counts. Kept
+    #: per component here, because "which repository has the GPL one" is a
+    #: question the aggregate cannot answer.
+    ("license_ids_json", "VARCHAR"),
+    ("first_seen_at", "TIMESTAMP"),
+    ("observed_at", "TIMESTAMP"),
+]
+
 TABLES: Final[dict[str, list[Column]]] = {
     "findings": FINDINGS_COLUMNS,
     "scan_runs": SCAN_RUNS_COLUMNS,
@@ -289,6 +330,7 @@ TABLES: Final[dict[str, list[Column]]] = {
     "sscs_evidence": SSCS_EVIDENCE_COLUMNS,
     "remediation_events": REMEDIATION_EVENTS_COLUMNS,
     "finding_tests": FINDING_TESTS_COLUMNS,
+    "sbom_components": SBOM_COMPONENTS_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
@@ -300,6 +342,7 @@ PRIMARY_KEY: Final[dict[str, str]] = {
     "sscs_evidence": "evidence_id",
     "remediation_events": "event_id",
     "finding_tests": "link_id",
+    "sbom_components": "component_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -313,6 +356,10 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
     "sscs_evidence": "evaluated_at",
     "remediation_events": "created_at",
     "finding_tests": "linked_at",
+    # `first_seen_at`, so a component that has been present for a year stays
+    # in the partition it arrived in and a rescan rewrites one known
+    # partition rather than migrating thousands of rows every week.
+    "sbom_components": "first_seen_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -326,6 +373,7 @@ MUTATION_TS: Final[dict[str, str]] = {
     "sscs_evidence": "evaluated_at",
     "remediation_events": "updated_at",
     "finding_tests": "updated_at",
+    "sbom_components": "observed_at",
 }
 
 
@@ -354,6 +402,9 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     # The webhook sets pr_status long after the pipeline set everything else,
     # and a later pipeline run must not blank the PR it already opened.
     "finding_tests": ("lane_last_green_at", "evidence"),
+    # Nothing. Every component row is written whole by one SBOM read, so
+    # there is no partial writer to coalesce against.
+    "sbom_components": (),
     "remediation_events": (
         "pr_status",
         "fix_pr_number",

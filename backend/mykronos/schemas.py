@@ -395,6 +395,66 @@ class ReachabilitySubmission(BaseModel):
     )
 
 
+class ProvenanceSignals(BaseModel):
+    """How this repository builds, as the runner observed it (spec 29 §3).
+
+    Every existing trust-score term is a fact about *dependencies*. Nothing
+    scored the integrity of the repository's own outputs — whether its commits
+    are signed, whether its artefacts carry a provenance attestation, whether
+    what it deploys is pinned by digest rather than by a tag somebody can move
+    underneath it.
+
+    **Every field is nullable and null means "not determined", never "no".** A
+    repository whose default branch this platform cannot read has not failed
+    the signed-commits check; it has not been checked. Scoring the two the
+    same way is how a permissions problem becomes a supply-chain verdict.
+
+    Observations, not a score — the same division spec 07 §7 makes an
+    acceptance criterion. The runner reports what it saw; the weighting lives
+    in the platform, so it can change without a resync across every onboarded
+    repository.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signed_commits_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Verified signatures as a fraction of commits on the default "
+            "branch in the last 90 days. Null where the branch could not be "
+            "read."
+        ),
+    )
+    signed_commits_sampled: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many commits the ratio is over. A ratio of 1.0 across two "
+            "commits is not the same claim as 1.0 across two hundred, and the "
+            "term reports the sample so the number can be judged."
+        ),
+    )
+    attestation_present: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a build provenance attestation exists for the published "
+            "artefact. Presence only: verifying contents is a larger piece of "
+            "work, and the field is named for exactly that reason so a "
+            "repository never reads as `attested` on an attestation that does "
+            "not verify (spec 29 §5)."
+        ),
+    )
+    digest_pinned_deployment: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the deployed image is pinned by digest rather than by a "
+            "tag somebody can move underneath it."
+        ),
+    )
+
+
 class SscsEvidenceSubmission(BaseModel):
     """What the Atlas workflow posts (spec 07 §3, §4).
 
@@ -419,6 +479,16 @@ class SscsEvidenceSubmission(BaseModel):
             "Minimal SLSA-style statement: builder id, source repo and commit, "
             "workflow run id, timestamp. Straight from the runner's GITHUB_* "
             "environment."
+        ),
+    )
+    provenance_signals: ProvenanceSignals = Field(
+        default_factory=lambda: ProvenanceSignals(),
+        description=(
+            "How this repository builds (spec 29 §3). Distinct from "
+            "`provenance` above, which records *this* build's identity: these "
+            "are scored, and every one of them is absent by default so a "
+            "repository that reports none scores exactly as it did before "
+            "they existed."
         ),
     )
 
@@ -469,6 +539,11 @@ class ReachabilityAccepted(BaseModel):
 class AtlasAccepted(BaseModel):
     accepted: int
     evidence_id: str
+    #: How many resolved components went into the inventory (spec 29 §1).
+    #: Zero for a submission carrying no SBOM ref, and for one whose archived
+    #: SBOM could not be read — the evidence row is written either way, and
+    #: the workflow log says which happened.
+    components_recorded: int = 0
     #: Null when the scan resolved no dependencies (spec 07 §5a). The workflow
     #: prints this, so a repository that pinned nothing sees "not assessed"
     #: rather than a score it did not earn.

@@ -29,6 +29,9 @@ const NAV: {
       { label: "Portfolio", href: "/" },
       { label: "Triage queue", href: "/triage" },
       { label: "Threat intelligence", href: "/threat-intel" },
+      // Beside threat intelligence, because that is where somebody
+      // arrives from: a KEV row raises the question this page answers.
+      { label: "Incident lookup", href: "/incident" },
       { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", href: "/remediation" },
