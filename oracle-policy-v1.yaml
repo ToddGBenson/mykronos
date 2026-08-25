@@ -62,7 +62,13 @@
 # merged fixes and nothing closed inside a window scores exactly as it did
 # under 1.7. The cap and the open-critical floor are what keep it from
 # buying a verdict.
-version: "1.8"
+#
+# 1.9 — adds the governance modifier (spec 30 §4), shipped dark at zero
+# points. Nothing scores differently until an operator sets a weight, which is
+# deliberate: the term rests on a reading of GitHub settings, and moving every
+# score in the portfolio on deploy day for a reading nobody had reviewed is
+# exactly the kind of change this file's two rules exist to prevent.
+version: "1.9"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -259,6 +265,29 @@ modifiers:
       minimum_sample: 10
     within_target:
       points_at_full_compliance: 6
+
+  # Spec 30 §4. How hard it is to get a bad change into this repository, as a
+  # fact about what the repository *is* — which is where the risk profile's
+  # terms live and why this sits with them rather than with the finding
+  # counts. Weak review controls do not make a SQL injection worse; they make
+  # this a worse repository for one to be in.
+  #
+  # **Only ever a penalty, never a credit.** Spec 30 §4 expected strong
+  # governance to earn the reward side of spec 26 §2 for free. It cannot:
+  # branch protection is a *switch*, and spec 26 §2.3 refuses credit for
+  # switch-flipping in as many words, because the fastest route to a good
+  # score must never be a setting. The asymmetry is deliberate and is recorded
+  # in D-091.
+  #
+  # `points_at_zero: 0` ships it dark. Every repository's score is unchanged
+  # until an operator has seen the panel, agreed the weights in
+  # `governance-policy-v1.yaml` describe their estate, and set a number here.
+  # A term that started scoring on the day it deployed would move every score
+  # in the portfolio for a reading nobody had reviewed.
+  governance:
+    points_at_zero: 0
+    good_enough: 80
+    minimum_controls: 5
 
   unfixable_dampening:
     factor: 0.5

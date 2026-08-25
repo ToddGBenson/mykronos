@@ -16,6 +16,7 @@ import {
   type CiPage,
   type Finding,
   type FindingsPage,
+  type GovernancePosture,
   type InsiderRiskPage,
   type MaturityReport,
   type OpenFindingsPage,
@@ -601,6 +602,31 @@ export async function getFixEfficacy(): Promise<Result<FixEfficacy>> {
     });
     if (!data) {
       return { ok: false, error: describe(response, "Could not load fix efficacy") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The controls that would catch a bad change (spec 30).
+ *
+ * Read live on every render rather than from a snapshot: branch protection is
+ * configuration somebody can change in the GitHub UI in ten seconds, and a
+ * panel still reporting two required reviews after they were turned off would
+ * be worse than no panel.
+ */
+export async function getGovernance(
+  repoId: string,
+): Promise<Result<GovernancePosture>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/governance",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read the controls") };
     }
     return { ok: true, data };
   } catch (error) {

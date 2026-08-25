@@ -70,6 +70,10 @@ export type CiStage = NonNullable<CiPage["stages"]>[number];
 export type ThreatIntelEntry =
   paths["/api/dashboard/threat-intel"]["get"]["responses"]["200"]["content"]["application/json"][number];
 /** A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6). */
+/** A repository's change-governance posture (spec 30 §2). */
+export type GovernancePosture =
+  paths["/api/dashboard/repos/{repo_id}/governance"]["get"]["responses"]["200"]["content"]["application/json"];
+
 export type ThreatModelPage =
   paths["/api/dashboard/repos/{repo_id}/threat-model"]["get"]["responses"]["200"]["content"]["application/json"];
 export type ThreatModelCategory = ThreatModelPage["categories"][number];

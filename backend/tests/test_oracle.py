@@ -53,7 +53,7 @@ def critical(index: int = 0, **overrides):
 
 class TestPolicyValidation:
     def test_the_shipped_policy_loads(self, policy) -> None:
-        assert policy.version == "1.8"
+        assert policy.version == "1.9"
         assert policy.severity_weights["critical"] == 40
 
     def test_an_unknown_curve_is_refused(self) -> None:
@@ -376,8 +376,8 @@ class TestSnapshotCompleteness:
         """spec 09 §10: past decisions stay reproducible after a policy change."""
         seed(client, auth, run_compaction, [critical(0)])
         decision = engine.evaluate(REPO)
-        assert decision.policy_version == "1.8"
-        assert decision.inputs_snapshot["policy_version"] == "1.8"
+        assert decision.policy_version == "1.9"
+        assert decision.inputs_snapshot["policy_version"] == "1.9"
 
 
 class TestReasoning:

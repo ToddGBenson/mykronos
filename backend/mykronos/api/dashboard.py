@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import controls, incident, regression, worklist
+from mykronos import controls, governance, incident, regression, worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import STRIDE_CATEGORIES, DashboardQueries, PortfolioSummary
@@ -1715,6 +1715,140 @@ class IncidentOut(BaseModel):
         ),
     )
     note: str = ""
+
+
+class ControlStateOut(BaseModel):
+    """One change-governance control (spec 30 §2)."""
+
+    key: str
+    state: str = Field(
+        description=(
+            "`on`, `partial`, `off`, or `unknown`. Four rather than two: a "
+            "single required approval is genuinely better than none and "
+            "genuinely is not two, and `unknown` is a control the platform "
+            "could not read — a permissions gap, never a red cross."
+        )
+    )
+    detail: str = ""
+    value: float | None = None
+    prevents: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The Aegis signals this control would have prevented. The link is "
+            "the point of the panel: it turns a log of oddities into a "
+            "diagnosis with a remedy the team can action themselves."
+        ),
+    )
+
+
+class GovernanceOut(BaseModel):
+    """A repository's change-governance posture (spec 30)."""
+
+    repo_full_name: str
+    read_at: datetime | None = None
+    readable: bool = True
+    unreadable_reason: str = ""
+    source: str = Field(
+        default="none",
+        description=(
+            "`branch_protection`, `ruleset`, `both`, or `none`. A repository "
+            "governed entirely by rulesets would read as unprotected if only "
+            "the older model were consulted."
+        ),
+    )
+    governance_score: int | None = Field(
+        default=None,
+        description=(
+            "Null where too little could be read to say. Scored over the "
+            "controls that *were* read, so an unreadable repository has no "
+            "score rather than a bad one."
+        ),
+    )
+    controls: list[ControlStateOut] = Field(default_factory=list)
+    merges: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Counts by repository over the window, never by author "
+            "(spec 06 §9). Each is a statement about a control whose remedy "
+            "is a settings change."
+        ),
+    )
+    note: str = ""
+
+
+@router.get("/repos/{repo_id}/governance", response_model=GovernanceOut)
+async def repo_governance(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> GovernanceOut:
+    """The controls that would catch a bad change (spec 30 §1, §2, §3).
+
+    Read live rather than from a stored snapshot. Branch protection is
+    configuration a person can change in the GitHub UI in ten seconds, and a
+    panel that told somebody their repository still required two reviews after
+    they had turned that off would be worse than no panel. The cost is one API
+    call per view, which is the right trade for a read this small.
+
+    Never raises on GitHub. An App without `administration: read` reports every
+    control as unknown and names the permission — a permissions gap is not a
+    security failure and is not scored as one.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    with request.app.state.db.session() as session:
+        row = (
+            session.query(RepoOnboarding)
+            .filter(RepoOnboarding.github_repo_full_name == repo_full_name)
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{repo_full_name} is not onboarded.",
+            )
+        installation_id = row.github_installation_id
+        default_branch = row.default_branch
+
+    github = request.app.state.github_factory.for_installation(installation_id)
+    posture = await governance.read(
+        github,
+        repo_full_name,
+        default_branch,
+        source_paths=_source_paths(request, repo_full_name),
+    )
+    # Stored on the way past, so Oracle can score it without an HTTP call of
+    # its own (spec 30 §4). Only when the read succeeded: overwriting a good
+    # reading with an unreadable one would let a permissions blip erase a
+    # posture the platform had correctly established.
+    if posture.readable:
+        with request.app.state.db.session() as session:
+            governance.remember(session, posture)
+
+    body = governance.as_dict(posture)
+    body["merges"] = governance.merge_counts(request.app.state.catalog, repo_full_name)
+    return GovernanceOut.model_validate(body)
+
+
+def _source_paths(request: Request, repo_full_name: str) -> list[str]:
+    """Distinct file paths this repository has findings on.
+
+    A proxy for "source paths", and the honest one available: the platform does
+    not hold a file listing, and fetching a git tree per panel render would be
+    a second API call to answer a question this already answers approximately.
+    Stated wherever the coverage number is shown, because a coverage figure
+    computed over the files scanners happen to have touched is not the same as
+    one computed over the repository.
+    """
+    catalog = request.app.state.catalog
+    if not catalog.all_files("findings"):
+        return []
+    rows = catalog.query(
+        """
+        SELECT DISTINCT file_path FROM findings
+        WHERE asset_id = ? AND file_path IS NOT NULL AND trim(file_path) <> ''
+        LIMIT 2000
+        """,
+        [repo_full_name],
+    )
+    return [str(r[0]) for r in rows]
 
 
 @router.get("/incident", response_model=IncidentOut)

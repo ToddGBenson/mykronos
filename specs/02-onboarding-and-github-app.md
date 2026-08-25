@@ -81,6 +81,17 @@ capability's spec (04, 06, 07, 08, 09).
      Pull requests above: an issue is a work item, not a repository content
      change, and this permission does not grant PR-opening or merge rights)
    - Metadata: **Read-only** (mandatory baseline)
+   - Administration: **Read-only** — **optional, and deliberately not in the
+     required set** (spec 30 §1.4). It is what lets the platform read branch
+     protection and rulesets for the change-governance panel. Making it
+     required would fail the §8 permission smoke test for every installation
+     that already exists, turning an additive panel into a breaking change
+     across the estate — to read settings that are useful and are necessary
+     for nothing else Mykronos does. An App without it reports every
+     governance control as `unknown`, names this permission as the reason,
+     and scores nothing against the repository for it: a permissions gap is
+     not a security failure. Grant it to light the panel up; everything else
+     works identically either way.
    - Secrets: **Write** (to create and update the ingestion token secret it
      manages, spec 05 §4) — see the note below. Mykronos never *reads* a repo
      secret's value, and GitHub's API makes that structural rather than a

@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from mykronos import blast_radius, regression
+from mykronos import blast_radius, governance, regression
 from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
@@ -56,6 +56,7 @@ MODIFIER_CATEGORIES = (
     "exploitability",
     "reachability",
     "risk_profile",
+    "governance",
     "blast_radius",
     "overdue_findings",
     "posture_credits",
@@ -782,6 +783,100 @@ def _risk_profile_snapshot(
     )
 
 
+def _governance_snapshot(
+    reading: dict[str, Any] | None, policy: Policy
+) -> tuple[dict[str, Any], list[Term]]:
+    """Weak change governance, as part of what this repository *is* (spec 30 §4).
+
+    Sits with the risk profile rather than with the finding terms, and the
+    distinction is spec 21's: the profile carries context about what a
+    repository is — its exposure, its data classification, its criticality —
+    and how hard it is to get a bad change into it is exactly that kind of
+    fact. The finding score carries what was found. Weak review controls do
+    not make a SQL injection worse; they make this repository a worse place
+    for one to be.
+
+    **Only ever a penalty.** Spec 30 §4 expected strong governance to earn the
+    reward side of spec 26 §2 for free. It cannot: branch protection is a
+    switch, and spec 26 §2.3 refuses credit for switch-flipping because the
+    fastest route to a good score must never be a setting.
+
+    **Stale is unavailable, not old.** A reading more than two weeks old is
+    about a repository that may have been reconfigured twice since, and
+    scoring it would be worse than scoring nothing.
+    """
+    weights = policy.governance
+    if reading is None:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "reason": (
+                    "No current reading of this repository's change controls "
+                    "(spec 30 §1). Either the Insider Threat tab has not been "
+                    "opened for it, or the last reading has gone stale — "
+                    "neither is a statement that its governance is weak."
+                ),
+            },
+            [],
+        )
+
+    read_controls = int(reading.get("controls_read") or 0)
+    if read_controls < weights.minimum_controls:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "controls_read": read_controls,
+                "reason": (
+                    f"Only {read_controls} control(s) could be read; below "
+                    f"{weights.minimum_controls} that is not a posture. A "
+                    "score over two controls is not a weaker version of a "
+                    "score over nine."
+                ),
+            },
+            [],
+        )
+
+    value = int(reading.get("governance_score") or 0)
+    snapshot: dict[str, Any] = {
+        "available": True,
+        "governance_score": value,
+        "source": reading.get("source"),
+        "controls_read": read_controls,
+        "read_at": reading.get("read_at"),
+        "good_enough": weights.good_enough,
+        "contribution": 0.0,
+    }
+
+    if value >= weights.good_enough or not weights.points_at_zero:
+        # At or above the bar, nothing is added — and a repository does not
+        # have to be perfect to get there. A term that could only be silenced
+        # by a flawless configuration is one teams learn to ignore.
+        return (snapshot, [])
+
+    shortfall = (weights.good_enough - value) / weights.good_enough
+    points = weights.points_at_zero * shortfall
+    snapshot["contribution"] = round(points, 2)
+    return (
+        snapshot,
+        [
+            Term(
+                key="risk_profile.governance",
+                label="Weak change-governance controls",
+                contribution=points,
+                detail=(
+                    f"Governance scores {value}/100 against a bar of "
+                    f"{weights.good_enough}, adding {points:g} points. Weak "
+                    "controls do not make a finding worse; they make this a "
+                    "worse repository for one to be in."
+                ),
+                inputs={"governance_score": value},
+            )
+        ],
+    )
+
+
 def _exploitability_snapshot(
     matched: list[dict[str, Any]], *, db_configured: bool
 ) -> dict[str, Any]:
@@ -1375,6 +1470,19 @@ class OracleEngine:
         )
         return ([str(row[0]) for row in rows], blast_radius.build(self.catalog))
 
+    def _governance(self, repo_full_name: str) -> dict[str, Any] | None:
+        """The last reading of this repository's change controls (spec 30 §4).
+
+        `None` when the database is not configured, when nothing has read
+        them, or when the reading has gone stale — all three render as
+        `available: false`, which is the honest answer in every case: the
+        platform does not currently know how this repository is governed.
+        """
+        if self.db is None:
+            return None
+        with self.db.session() as session:
+            return governance.stored(session, repo_full_name, now=self._as_of)
+
     def _risk_profile(self, repo_full_name: str) -> dict[str, Any] | None:
         """This repository's recorded asset context (spec 21 §1.4).
 
@@ -1739,6 +1847,16 @@ class OracleEngine:
                 )
             )
 
+        # 7b. Change governance (spec 30 §4). With the profile rather than
+        #     with the findings: how hard it is to get a bad change in is a
+        #     fact about what this repository *is*, which is what the profile
+        #     carries. Never a credit — branch protection is a switch, and
+        #     spec 26 §2.3 refuses to reward switch-flipping.
+        governance_snapshot, governance_terms = _governance_snapshot(
+            self._governance(repo_full_name), self.policy
+        )
+        terms.extend(governance_terms)
+
         # 8. Reachability (spec 19 §2.1). A discount, not a penalty: a
         #    finding in a file nothing imports is lower priority than the
         #    same finding on a request path. The only negative term in the
@@ -1833,6 +1951,7 @@ class OracleEngine:
             exploitable=exploitable,
             risk_profile=risk_profile,
             blast_radius_snapshot=radius_snapshot,
+            governance_snapshot=governance_snapshot,
             reachability_snapshot=reach_snapshot,
             overdue_snapshot=overdue_snapshot,
             posture_snapshot=posture_snapshot,
@@ -1878,6 +1997,7 @@ class OracleEngine:
         exploitable: list[dict[str, Any]] | None = None,
         risk_profile: dict[str, Any] | None = None,
         blast_radius_snapshot: dict[str, Any] | None = None,
+        governance_snapshot: dict[str, Any] | None = None,
         reachability_snapshot: dict[str, Any] | None = None,
         overdue_snapshot: dict[str, Any] | None = None,
         posture_snapshot: dict[str, Any] | None = None,
@@ -1951,6 +2071,10 @@ class OracleEngine:
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "blast_radius": blast_radius_snapshot
             or blast_radius.snapshot([], None)[0],
+            # spec 09 §9: a category with nothing to say still appears, so a
+            # reader can tell "not weighed" from "weighed and found nothing".
+            "governance": governance_snapshot
+            or _governance_snapshot(None, self.policy)[0],
             "terms": [
                 {
                     "key": term.key,
