@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import controls, regression, worklist
+from mykronos import controls, incident, regression, worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
 from mykronos.dashboard import STRIDE_CATEGORIES, DashboardQueries, PortfolioSummary
@@ -1648,6 +1648,98 @@ async def regression_coverage(
             regression.coverage(request.app.state.catalog, repo_full_name)
         ),
     }
+
+
+class AffectedRepoOut(BaseModel):
+    """One repository's exposure to one package (spec 29 §2)."""
+
+    repo_full_name: str
+    versions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every version present, not one. 'We have three copies and one is "
+            "patched' is the actual state, and a single version would hide the "
+            "two that are not."
+        ),
+    )
+    ecosystem: str = ""
+    matched_by: str = Field(
+        default="name",
+        description=(
+            "`purl` is exact; `name` is a guess that is usually right. A "
+            "package renamed upstream matches by name and not by purl, and a "
+            "view that did not say which would present a guess as an identity."
+        ),
+    )
+    commit_sha: str = ""
+    observed_at: datetime | None = None
+    open_findings: int = Field(
+        default=0,
+        description=(
+            "Exposure and a finding are different facts: a repository can "
+            "contain a vulnerable package with no finding, because its last "
+            "scan predates the advisory."
+        ),
+    )
+    highest_severity: str = ""
+    fixed_version: str = ""
+    recommendation: str = ""
+    risk_score: int | None = None
+
+
+class IncidentOut(BaseModel):
+    """Are we affected by this? (spec 29 §2)"""
+
+    query: str
+    kind: str = Field(description="`cve`, `purl`, or `package`.")
+    in_kev: bool | None = Field(
+        default=None,
+        description=(
+            "Null means the CVE has not been checked against KEV, which is "
+            "not the same as not being listed."
+        ),
+    )
+    epss_score: float | None = None
+    affected: list[AffectedRepoOut] = Field(default_factory=list)
+    clear: list[str] = Field(
+        default_factory=list,
+        description="Repositories with an SBOM and no match — genuinely checked.",
+    )
+    not_checked: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repositories with no SBOM in the lake. **Never a clean result.** "
+            "Folding these in with `clear` would convert an absence of data "
+            "into a statement of safety, which is the worst thing this view "
+            "could do and the thing it would do by default."
+        ),
+    )
+    note: str = ""
+
+
+@router.get("/incident", response_model=IncidentOut)
+async def incident_lookup(
+    request: Request,
+    principal: PrincipalDep,
+    q: Annotated[str, Query(min_length=1, max_length=300)],
+) -> IncidentOut:
+    """Are we affected by this? (spec 29 §2)
+
+    A CVE, a package name, or a purl, answered across every onboarded
+    repository. Nothing here is new information — the inventory, the findings,
+    the Oracle verdicts and the KEV/EPSS matches are all already held. The only
+    new thing is that they arrive together, joined by package name and ordered
+    worst-first, which is the difference between answering this in ten seconds
+    and answering it in twenty minutes across five tabs.
+
+    A read, deliberately. The batch actions spec 29 §2.1 describes go through
+    the existing story and Patchwork paths and are triggered per repository by
+    a person: the platform does not open forty pull requests because KEV
+    published overnight.
+    """
+    with request.app.state.db.session() as session:
+        view = incident.look_up(request.app.state.catalog, session, q)
+    return IncidentOut.model_validate(incident.as_dict(view))
 
 
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)

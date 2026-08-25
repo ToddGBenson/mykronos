@@ -16,7 +16,19 @@ import {
 } from "@/components/primitives";
 import type { SscsEvidence } from "@/lib/api";
 
-type ScoreTerm = { key: string; penalty: number; detail: string; count: number };
+type ScoreTerm = {
+  key: string;
+  penalty: number;
+  detail: string;
+  count: number;
+  /**
+   * Absent on the dependency terms, which are always determinable from
+   * the SBOM. Present and `false` on a provenance term the runner could
+   * not read (spec 29 §3) — not the same fact as a term that scored
+   * zero, and the row says which.
+   */
+  available?: boolean;
+};
 
 type Ecosystems = {
   ecosystems?: {
@@ -46,6 +58,12 @@ const TERM_LABEL: Record<string, string> = {
   // copyleft ones.
   flagged_licenses: "Restrictive licenses",
   unknown_licenses: "License not stated",
+  // Spec 29 §3 — the first terms here that are about how the repository
+  // *builds* rather than about what it depends on, and the first that can
+  // give points back.
+  signed_commits: "Signed commits",
+  attestation_present: "Build attestation",
+  digest_pinned_deployment: "Digest-pinned deployment",
 };
 
 /** Higher is better here, unlike every other score in the platform. */
@@ -149,8 +167,25 @@ export function SscsTab({
               </tr>
               {terms.map((term) => (
                 <tr key={term.key}>
-                  <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">
-                    −{term.penalty.toFixed(1)}
+                  {/* Three states, not one. A provenance term can give points
+                      back (spec 29 §3), and one that could not be determined
+                      is not one that scored zero — a repository whose branch
+                      could not be read has not failed the signing check, and
+                      rendering it as `−0.0` would say it had. */}
+                  <td
+                    className={`tabular w-14 py-0.5 pr-3 text-right ${
+                      term.available === false
+                        ? "text-ink-3"
+                        : term.penalty < 0
+                          ? "text-pass"
+                          : "text-ink"
+                    }`}
+                  >
+                    {term.available === false
+                      ? "—"
+                      : `${term.penalty < 0 ? "+" : "\u2212"}${Math.abs(
+                          term.penalty,
+                        ).toFixed(1)}`}
                   </td>
                   <td className="py-0.5 pr-6 text-ink-2">
                     {TERM_LABEL[term.key] ?? term.key}

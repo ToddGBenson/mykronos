@@ -3502,3 +3502,82 @@ register — and wiring that up turned up `worklist.purge_for_repo` (spec 27 §3
 written and never called, so triage claims had been surviving offboarding
 since. Both are wired to the offboard route now, with their counts in the audit
 entry so a deletion is recorded even though the rows are not.
+
+## D-090 — The SBOM was already on disk, and provenance can only ever be a credit
+
+**2026-08-25. Spec 29 §1, §1.4, §2, §3.**
+
+Since spec 07 the platform has generated an SBOM on every Atlas run and only
+ever archived it: downloadable per repository, queryable across none of them.
+So the one question that matters at two in the morning — *which of our
+repositories contain this package* — could not be answered about data the
+platform had already collected and was storing as an opaque blob.
+
+**Nothing new is uploaded.** Spec 29 §1.2 says to write the table from the Syft
+output the runner already produces; the implementation goes one step further
+and adds no upload at all. The archived SBOM's ref already arrives on the Atlas
+evidence submission, so the components are extracted server-side from a file
+already on disk. That means no workflow resync across every onboarded
+repository, and it means a repository whose SBOM was archived last month gets
+an inventory on its *next report* rather than on its next resync.
+
+Reading a caller-supplied ref means resolving a path, so it is resolved and
+then checked to be inside the archive directory. Somebody who can post
+supply-chain evidence must not be able to name `../../etc/passwd`.
+
+**Extraction failures are swallowed, deliberately.** The evidence row is what a
+release gate reads and is already in the buffer. Losing a trust score because
+an SBOM was truncated in transit would trade the number that matters for a
+convenience index.
+
+**Blast radius merges the two populations rather than choosing one.** D-069
+counted findings because package names were unavailable; they are available
+now. But a portfolio part-way through adopting Atlas has both kinds of
+repository in it at once, and picking a single source outright would either
+drop the SBOM-less repositories from every count or throw the graph away
+because one repository lacks it. The larger of the two wins per package, which
+is safe in the one direction that matters: the finding-derived count only ever
+*misses* repositories, never invents them. Which population produced a number
+is published, for the reason spec 28 publishes `mapping_resolution`.
+
+**Incident mode has three states, and the third is the entire design.**
+`affected`, `clear`, and `not_checked`. A repository with no SBOM cannot be
+reported as unaffected — converting an absence of data into a statement of
+safety is the worst thing this view could do and precisely what it would do by
+default. The same rule twice more: a CVE with no threat-intelligence record
+reads as *not checked against KEV*, never *not exploited*; and a CVE nothing
+has ever reported on resolves to no packages and reports nothing affected,
+rather than reporting the whole estate clean of an advisory the platform cannot
+recognise.
+
+The batch actions of §2.1 are **not built and are named as not built.** Both
+existing paths are per-subject — `triage_story.py` grooms a finding, Patchwork
+fixes a finding — while this view's subject is a package across repositories.
+Half-building the fan-out would produce exactly what §2.3 refuses: a button
+that opens pull requests nobody quite asked for.
+
+**Provenance terms are credits, and that is forced rather than chosen.** Spec
+29 §3.2 reads as though they are penalties like every other trust-score term.
+They cannot be: the score starts at 100 and subtracts, its ceiling means
+*nothing wrong found*, and a term deducting for a missing attestation would
+change every repository's score on the day it shipped — which §4 explicitly
+forbids. So they add and are clamped at the ceiling. A clean repository gains
+nothing and is unchanged; a penalised one recovers ground for building
+carefully. That is the only shape a hygiene bonus can take inside a subtractive
+score, and it meets the acceptance criterion by arithmetic rather than by a
+special case.
+
+Null is not zero on all three. A branch the token could not read has not failed
+the signing check, and scoring the two alike turns a permissions problem into a
+supply-chain verdict. A signed-commits ratio below ten commits reports
+unavailable — one person signing one merge is a coincidence, not a policy.
+`attestation_present` is asked only on a release, because a commit with no
+published artefact has nothing to attest and `false` would penalise every push.
+
+**Two guards earned their keep here.** The observations run in a step of their
+own with `continue-on-error` rather than `|| true` inside the evidence step,
+because `test_adapters_phase2` fails the build on a scanner step that
+blanket-ignores an exit code — that is how a failed scan comes to look like a
+clean one. And the same file caught a release tag being interpolated into a
+shell body; a tag is chosen by whoever cut the release, `${{ }}` is substituted
+before bash parses it, and the tag is bound to `env:` now.

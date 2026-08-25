@@ -639,6 +639,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/incident": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Incident Lookup
+         * @description Are we affected by this? (spec 29 §2)
+         *
+         *     A CVE, a package name, or a purl, answered across every onboarded
+         *     repository. Nothing here is new information — the inventory, the findings,
+         *     the Oracle verdicts and the KEV/EPSS matches are all already held. The only
+         *     new thing is that they arrive together, joined by package name and ordered
+         *     worst-first, which is the difference between answering this in ten seconds
+         *     and answering it in twenty minutes across five tabs.
+         *
+         *     A read, deliberately. The batch actions spec 29 §2.1 describes go through
+         *     the existing story and Patchwork paths and are triggered per repository by
+         *     a person: the platform does not open forty pull requests because KEV
+         *     published overnight.
+         */
+        get: operations["incident_lookup_api_dashboard_incident_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/threat-model": {
         parameters: {
             query?: never;
@@ -1747,12 +1779,71 @@ export interface components {
              */
             detail: string;
         };
+        /**
+         * AffectedRepoOut
+         * @description One repository's exposure to one package (spec 29 §2).
+         */
+        AffectedRepoOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Versions
+             * @description Every version present, not one. 'We have three copies and one is patched' is the actual state, and a single version would hide the two that are not.
+             */
+            versions?: string[];
+            /**
+             * Ecosystem
+             * @default
+             */
+            ecosystem: string;
+            /**
+             * Matched By
+             * @description `purl` is exact; `name` is a guess that is usually right. A package renamed upstream matches by name and not by purl, and a view that did not say which would present a guess as an identity.
+             * @default name
+             */
+            matched_by: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /** Observed At */
+            observed_at?: string | null;
+            /**
+             * Open Findings
+             * @description Exposure and a finding are different facts: a repository can contain a vulnerable package with no finding, because its last scan predates the advisory.
+             * @default 0
+             */
+            open_findings: number;
+            /**
+             * Highest Severity
+             * @default
+             */
+            highest_severity: string;
+            /**
+             * Fixed Version
+             * @default
+             */
+            fixed_version: string;
+            /**
+             * Recommendation
+             * @default
+             */
+            recommendation: string;
+            /** Risk Score */
+            risk_score?: number | null;
+        };
         /** AtlasAccepted */
         AtlasAccepted: {
             /** Accepted */
             accepted: number;
             /** Evidence Id */
             evidence_id: string;
+            /**
+             * Components Recorded
+             * @default 0
+             */
+            components_recorded: number;
             /** Trust Score */
             trust_score: number | null;
             /** Raw Trust Score */
@@ -2651,6 +2742,43 @@ export interface components {
             granted_capabilities?: string[];
         };
         /**
+         * IncidentOut
+         * @description Are we affected by this? (spec 29 §2)
+         */
+        IncidentOut: {
+            /** Query */
+            query: string;
+            /**
+             * Kind
+             * @description `cve`, `purl`, or `package`.
+             */
+            kind: string;
+            /**
+             * In Kev
+             * @description Null means the CVE has not been checked against KEV, which is not the same as not being listed.
+             */
+            in_kev?: boolean | null;
+            /** Epss Score */
+            epss_score?: number | null;
+            /** Affected */
+            affected?: components["schemas"]["AffectedRepoOut"][];
+            /**
+             * Clear
+             * @description Repositories with an SBOM and no match — genuinely checked.
+             */
+            clear?: string[];
+            /**
+             * Not Checked
+             * @description Repositories with no SBOM in the lake. **Never a clean result.** Folding these in with `clear` would convert an absence of data into a statement of safety, which is the worst thing this view could do and the thing it would do by default.
+             */
+            not_checked?: string[];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /**
          * IngestAccepted
          * @description A 200 from an ingestion endpoint is a durability guarantee (spec 05 §4).
          */
@@ -2995,6 +3123,49 @@ export interface components {
             reasons_withheld: number;
             /** Note */
             note: string;
+        };
+        /**
+         * ProvenanceSignals
+         * @description How this repository builds, as the runner observed it (spec 29 §3).
+         *
+         *     Every existing trust-score term is a fact about *dependencies*. Nothing
+         *     scored the integrity of the repository's own outputs — whether its commits
+         *     are signed, whether its artefacts carry a provenance attestation, whether
+         *     what it deploys is pinned by digest rather than by a tag somebody can move
+         *     underneath it.
+         *
+         *     **Every field is nullable and null means "not determined", never "no".** A
+         *     repository whose default branch this platform cannot read has not failed
+         *     the signed-commits check; it has not been checked. Scoring the two the
+         *     same way is how a permissions problem becomes a supply-chain verdict.
+         *
+         *     Observations, not a score — the same division spec 07 §7 makes an
+         *     acceptance criterion. The runner reports what it saw; the weighting lives
+         *     in the platform, so it can change without a resync across every onboarded
+         *     repository.
+         */
+        ProvenanceSignals: {
+            /**
+             * Signed Commits Ratio
+             * @description Verified signatures as a fraction of commits on the default branch in the last 90 days. Null where the branch could not be read.
+             */
+            signed_commits_ratio?: number | null;
+            /**
+             * Signed Commits Sampled
+             * @description How many commits the ratio is over. A ratio of 1.0 across two commits is not the same claim as 1.0 across two hundred, and the term reports the sample so the number can be judged.
+             * @default 0
+             */
+            signed_commits_sampled: number;
+            /**
+             * Attestation Present
+             * @description Whether a build provenance attestation exists for the published artefact. Presence only: verifying contents is a larger piece of work, and the field is named for exactly that reason so a repository never reads as `attested` on an attestation that does not verify (spec 29 §5).
+             */
+            attestation_present?: boolean | null;
+            /**
+             * Digest Pinned Deployment
+             * @description Whether the deployed image is pinned by digest rather than by a tag somebody can move underneath it.
+             */
+            digest_pinned_deployment?: boolean | null;
         };
         /** PullRequestOut */
         PullRequestOut: {
@@ -3616,6 +3787,8 @@ export interface components {
             provenance?: {
                 [key: string]: unknown;
             };
+            /** @description How this repository builds (spec 29 §3). Distinct from `provenance` above, which records *this* build's identity: these are scored, and every one of them is absent by default so a repository that reports none scores exactly as it did before they existed. */
+            provenance_signals?: components["schemas"]["ProvenanceSignals"];
         };
         /** SscsPage */
         SscsPage: {
@@ -4801,6 +4974,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    incident_lookup_api_dashboard_incident_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentOut"];
                 };
             };
             /** @description Validation Error */

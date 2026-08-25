@@ -16,9 +16,14 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
-from mykronos.schemas import EcosystemEvidence, SscsEvidenceSubmission, utcnow
+from mykronos.schemas import (
+    EcosystemEvidence,
+    ProvenanceSignals,
+    SscsEvidenceSubmission,
+    utcnow,
+)
 
 #: Penalty weights per severity (spec 07 §5).
 VULN_WEIGHTS: dict[str, float] = {"critical": 20.0, "high": 10.0, "medium": 3.0}
@@ -106,12 +111,139 @@ def _curve(count: int) -> float:
     return math.log2(1 + count)
 
 
-def score(ecosystems: list[EcosystemEvidence]) -> TrustAssessment:
+#: What each provenance signal is worth (spec 29 §3.2). Small and capped:
+#: these are degrees of hygiene, not vulnerabilities, and a repository cannot
+#: attest its way past a critical CVE.
+PROVENANCE_POINTS: Final[dict[str, float]] = {
+    "signed_commits": 3.0,
+    "attestation_present": 3.0,
+    "digest_pinned_deployment": 4.0,
+}
+
+#: Below this a signed-commits ratio is not a practice, it is a coincidence.
+#: Ten commits: enough that one person signing one merge does not read as a
+#: signing policy, few enough that a quiet repository can still qualify.
+SIGNED_COMMITS_MIN_SAMPLE = 10
+
+
+def _provenance_terms(
+    signals: ProvenanceSignals | None,
+) -> tuple[list[dict[str, Any]], float]:
+    """`(terms, credit)` — what the repository earned back (spec 29 §3).
+
+    **Credits, and they only ever recover ground already lost.** The score
+    ceiling is 100 and means "nothing wrong found", so a repository already
+    there gains nothing here — which is exactly what spec 29 §4 requires: a
+    repository with no provenance data scores identically to before these
+    existed, and so does a clean one. What changes is that a repository
+    carrying penalties gets some back for building carefully, which is the
+    only shape a hygiene bonus can honestly take inside a subtractive score.
+
+    **Null is not zero, and each term says which it is.** A repository whose
+    default branch could not be read has not failed the signed-commits check.
+    Scoring an unreadable branch the same as an unsigned one turns a
+    permissions problem into a supply-chain verdict.
+    """
+    if signals is None:
+        return ([], 0.0)
+
+    terms: list[dict[str, Any]] = []
+    credit = 0.0
+
+    ratio = signals.signed_commits_ratio
+    if ratio is None:
+        terms.append(
+            {
+                "key": "signed_commits",
+                "penalty": 0.0,
+                "available": False,
+                "detail": (
+                    "The default branch could not be read, so commit signing "
+                    "was not assessed. Not the same as unsigned."
+                ),
+                "count": 0,
+            }
+        )
+    elif signals.signed_commits_sampled < SIGNED_COMMITS_MIN_SAMPLE:
+        terms.append(
+            {
+                "key": "signed_commits",
+                "penalty": 0.0,
+                "available": False,
+                "detail": (
+                    f"Only {signals.signed_commits_sampled} commit(s) in the "
+                    f"window; below {SIGNED_COMMITS_MIN_SAMPLE} a ratio is a "
+                    "coincidence rather than a practice."
+                ),
+                "count": signals.signed_commits_sampled,
+            }
+        )
+    else:
+        earned = PROVENANCE_POINTS["signed_commits"] * ratio
+        credit += earned
+        terms.append(
+            {
+                "key": "signed_commits",
+                "penalty": round(-earned, 2),
+                "available": True,
+                "detail": (
+                    f"{ratio:.0%} of {signals.signed_commits_sampled} commit(s) "
+                    f"on the default branch carry a verified signature, worth "
+                    f"{earned:.1f}."
+                ),
+                "count": signals.signed_commits_sampled,
+            }
+        )
+
+    for key, value in (
+        ("attestation_present", signals.attestation_present),
+        ("digest_pinned_deployment", signals.digest_pinned_deployment),
+    ):
+        if value is None:
+            terms.append(
+                {
+                    "key": key,
+                    "penalty": 0.0,
+                    "available": False,
+                    "detail": (
+                        "Not determined for this repository, which is not the "
+                        "same as absent."
+                    ),
+                    "count": 0,
+                }
+            )
+            continue
+        earned = PROVENANCE_POINTS[key] if value else 0.0
+        credit += earned
+        terms.append(
+            {
+                "key": key,
+                "penalty": round(-earned, 2),
+                "available": True,
+                "detail": (
+                    f"Present, worth {earned:.1f}."
+                    if value
+                    else "Absent. No credit, and no penalty either."
+                ),
+                "count": 1 if value else 0,
+            }
+        )
+
+    return (terms, credit)
+
+
+def score(
+    ecosystems: list[EcosystemEvidence],
+    provenance: ProvenanceSignals | None = None,
+) -> TrustAssessment:
     """Compute the trust score from per-ecosystem counts (spec 07 §5, §8).
 
     A monorepo scans each ecosystem independently; counts are summed across
     them into one score, and the per-ecosystem detail is kept separately so
     the sum does not destroy it.
+
+    `provenance` adds spec 29 §3's credits, which can only recover ground the
+    penalties above have already taken.
     """
     totals = {level: 0 for level in VULN_WEIGHTS}
     dependency_count = 0
@@ -261,7 +393,13 @@ def score(ecosystems: list[EcosystemEvidence]) -> TrustAssessment:
             ],
         )
 
-    raw = 100.0 - penalty
+    provenance_terms, credit = _provenance_terms(provenance)
+    terms.extend(provenance_terms)
+
+    # The credit cannot lift a repository above the ceiling, so a clean one
+    # gains nothing and its score is unchanged — spec 29 §4's acceptance
+    # criterion, satisfied by the arithmetic rather than by a special case.
+    raw = min(100.0, 100.0 - penalty + credit)
     return TrustAssessment(
         trust_score=int(round(max(0.0, min(100.0, raw)))),
         raw_trust_score=round(raw, 2),

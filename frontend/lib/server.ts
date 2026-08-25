@@ -608,6 +608,31 @@ export async function getFixEfficacy(): Promise<Result<FixEfficacy>> {
   }
 }
 
+export type IncidentView =
+  paths["/api/dashboard/incident"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Are we affected by this? (spec 29 §2)
+ *
+ * Read under time pressure by somebody who has just been paged, so nothing
+ * here is fetched lazily and nothing is cached: an answer from ten minutes ago
+ * is exactly the kind of thing that gets somebody to stand down early.
+ */
+export async function getIncident(query: string): Promise<Result<IncidentView>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/incident", {
+      params: { query: { q: query } },
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not run the lookup") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type Reachability =
   paths["/api/repos/{repo_id}/reachability"]["get"]["responses"]["200"]["content"]["application/json"];
 
