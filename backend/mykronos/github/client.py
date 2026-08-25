@@ -44,6 +44,24 @@ REQUIRED_PERMISSIONS = {
     "metadata": "read",
 }
 
+#: Permissions that unlock a capability without being required for one
+#: (spec 30 §1.2). Deliberately separate from the set above, and the
+#: separation is the decision rather than a filing choice.
+#:
+#: `administration: read` is what lets the platform read branch protection and
+#: rulesets. Putting it in `REQUIRED_PERMISSIONS` would fail the spec 02 §8
+#: permission smoke test for **every installation that already exists**,
+#: turning an additive new panel into a breaking change for the whole estate —
+#: and it would do so to read settings that are useful and are not necessary
+#: for anything else the platform does.
+#:
+#: An App without it reports every governance control as `unknown`, with the
+#: reason and the permission named. That is the correct outcome: a permissions
+#: gap is not a security failure and must never be scored as one.
+OPTIONAL_PERMISSIONS = {
+    "administration": "read",
+}
+
 WORKFLOW_PATH_PREFIX = ".github/workflows/"
 
 
@@ -245,17 +263,6 @@ class GitHubClient(Protocol):
         unprotected.
         """
 
-    async def get_branch_protection(
-        self, repo_full_name: str, branch: str
-    ) -> dict[str, Any] | None:
-        self.calls.append(("get_branch_protection", f"{repo_full_name}:{branch}"))
-        self._require("administration", "read", "Reading branch protection")
-        return self._repo(repo_full_name).branch_protection.get(branch)
-
-    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
-        self.calls.append(("get_rulesets", repo_full_name))
-        self._require("administration", "read", "Reading rulesets")
-        return list(self._repo(repo_full_name).rulesets)
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
@@ -324,9 +331,12 @@ class FakeRepo:
 class FakeGitHubClient:
     """In-memory GitHub, enforcing the preconditions that actually bite.
 
-    `permissions` defaults to the correct post-D-008 set. Narrowing it is how
-    the tests prove the installer fails loudly — and says why — when the App
-    is registered without `workflows: write` or `secrets: write`.
+    `permissions` defaults to the correct post-D-008 set, plus the optional
+    grants. Narrowing it is how the tests prove the installer fails loudly —
+    and says why — when the App is registered without `workflows: write` or
+    `secrets: write`, and how they prove the governance panel degrades to
+    `unknown` rather than to a row of red crosses without
+    `administration: read`.
     """
 
     def __init__(
@@ -335,7 +345,11 @@ class FakeGitHubClient:
         permissions: dict[str, str] | None = None,
     ) -> None:
         self.repos = repos or {}
-        self.permissions = dict(REQUIRED_PERMISSIONS if permissions is None else permissions)
+        self.permissions = dict(
+            {**REQUIRED_PERMISSIONS, **OPTIONAL_PERMISSIONS}
+            if permissions is None
+            else permissions
+        )
         self.calls: list[tuple[str, str]] = []
         #: Bodies by PR number, so a test can assert what a reviewer would
         #: actually read rather than only that a PR was opened.
@@ -543,6 +557,18 @@ class FakeGitHubClient:
             }
         )
         return check_id
+
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        self.calls.append(("get_branch_protection", f"{repo_full_name}:{branch}"))
+        self._require("administration", "read", "Reading branch protection")
+        return self._repo(repo_full_name).branch_protection.get(branch)
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        self.calls.append(("get_rulesets", repo_full_name))
+        self._require("administration", "read", "Reading rulesets")
+        return list(self._repo(repo_full_name).rulesets)
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         self.calls.append(("get_installation", str(installation_id)))

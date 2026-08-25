@@ -37,10 +37,10 @@ across the scoring model generally.
 
 | Item | Status |
 |---|---|
-| Read branch protection / rulesets through the App (§1) | Not started |
-| The control panel on the Insider Threat tab (§2) | Not started |
-| Repository-level governance aggregate (§3) | Not started |
-| Into Oracle through the risk profile, not the finding score (§4) | Not started |
+| Read branch protection / rulesets through the App (§1) | **Built** — two operations, and `administration: read` stays *optional*; see §1.4 |
+| The control panel on the Insider Threat tab (§2) | **Built** |
+| Repository-level governance aggregate (§3) | **Built** — `governance-policy-v1.yaml` |
+| Into Oracle through the risk profile, not the finding score (§4) | **Built** — as a penalty only, and shipped dark; see §4.1 |
 
 ## 1. Reading the controls
 
@@ -77,6 +77,34 @@ No writes. This platform does not turn on branch protection for anybody. Every c
 observed and reported, and changing one is an action the repository's owners take in GitHub, where the
 audit trail for it belongs.
 
+### 1.4 Corrected while building
+
+**`administration: read` is optional, not a required-permission bump.** §1.2 anticipated "a
+documented, additive permission bump recorded in spec 02". Making it *required* would fail the spec 02
+§8 permission smoke test for **every installation that already exists**, turning an additive panel
+into a breaking change across the whole estate — to read settings that are useful and are necessary
+for nothing else the platform does. It lives in a separate `OPTIONAL_PERMISSIONS` set, and an App
+without it reports every control as `unknown` with the reason and the permission named. That is §2's
+own rule applied to itself: a permissions gap is not a security failure.
+
+**Two operations, not four.** `get_branch_protection` and `get_rulesets` ship. CODEOWNERS coverage is
+derived from a file the client could already read (spec 24 §1), so it needed no new operation.
+`list_admin_bypasses` does **not** ship: the endpoints behind it are plan-gated, and an operation that
+returns "absent" for most installations would be a permanently empty column. `enforced_for_admins`
+answers the question that matters — whether the rules bind administrators at all — and it is
+weighted accordingly.
+
+**Rulesets merge as the strongest wins, never as the newest wins.** A repository can use branch
+protection, rulesets, both, or neither. Reading only the older model would report a modern,
+well-governed repository as wide open; taking the newer one alone would under-report one governed
+twice over. `source` says which model produced the answer. Only `active` rulesets count — an
+`evaluate`-mode ruleset is a dry run that blocks nothing, and counting it would credit a repository
+for a control that is switched off.
+
+**A single required approval is `partial`, not `on`.** Four states rather than two, because that
+configuration is exactly the one `self_approval` and `sole_approver` fire under, and calling it "on"
+would put a repository one rubber stamp from a bad merge level with one that requires two people.
+
 ## 2. The control panel
 
 A panel at the top of the Insider Threat tab — above the signals, because it explains them:
@@ -100,6 +128,11 @@ action themselves.
 **Unknown is a state.** A control the platform could not read is `unknown` with the reason, never a
 red cross. A permissions gap is not a security failure and must not be scored as one.
 
+**Built, with one restraint the table above did not specify.** A row names what it would have
+prevented only when the control is *not* in force. Telling somebody that their working control "would
+have prevented self-approval" reads as an accusation about something that did not happen, and the
+whole value of the link is that it points at work worth doing.
+
 ## 3. The aggregate
 
 One number per repository, `governance_score` (0–100), from the panel's controls, weighted in a
@@ -119,6 +152,19 @@ approver on a sensitive path"* is a statement about a control, and the remedy is
 The same data grouped by person is a statement about colleagues, and it is not built here — not
 because it is hard, but because spec 06 §9 already decided, and this spec agrees.
 
+### 3.1 Built
+
+**Scored over what was read, never over what exists.** An `unknown` control is excluded from both
+halves of the fraction, so a repository whose settings could not be read has *no* score rather than a
+bad one — the same `available: False` rule spec 09 §9 applies to every Oracle input, for the identical
+reason. `partial` earns half, because a binary would have to call one required approval either "on" or
+"off" and it is honestly neither.
+
+The weights are relative rather than absolute (`earned / possible`), so adding a control later does
+not silently deflate every existing score. The one argument the file expects to have is weighting
+`enforced_for_admins` alongside the two entry controls, and it makes the case in place: without it,
+every rule above it describes what usually happens rather than what is enforced.
+
 ## 4. Into Oracle, through the profile
 
 The governance aggregate becomes an input to the **risk profile** (spec 21 §1), not a term in the
@@ -133,6 +179,36 @@ that belief already lives.
 Consequences that fall out for free: `path_to_green` (spec 26 §1) can name a settings change as an
 action, and a repository with strong governance gets the reward side of spec 26 §2 without a new term
 being invented for it.
+
+### 4.1 Corrected while building: it is a penalty, and only a penalty
+
+The paragraph above is wrong about the reward, and the reason is a rule spec 26 wrote for itself.
+**Branch protection is a switch.** Spec 26 §2.3 refuses credit for switch-flipping in as many words —
+*"No credit for enabling a capability, installing a workflow, or turning on the gate… they would be
+trivially gamed"* — so strong governance cannot earn the reward side of §2 without contradicting the
+spec it is supposed to fall out of.
+
+The asymmetry that survives is the honest one, and §4's own framing supports it: weak controls do not
+make a SQL injection worse; they make this repository a worse place for one to be. That is a fact
+about what the repository *is*, which is precisely what the profile carries. So the term only ever
+adds, and it adds nothing at or above a `good_enough` bar deliberately set short of perfect — a term
+that could only be silenced by a flawless configuration is one teams learn to ignore.
+
+**Shipped dark.** `points_at_zero: 0` in `oracle-policy-v1.yaml` 1.9, so every repository's score is
+unchanged until an operator has seen the panel, agreed the weights describe their estate, and set a
+number. A term that started scoring on deploy day would move every score in the portfolio for a
+reading nobody had reviewed.
+
+**Stale is unavailable, not old.** The reading is stored in `repo_governance` — Oracle cannot make an
+HTTP call — and a reading more than fourteen days old returns nothing rather than an old number. It
+describes a repository that may have been reconfigured twice since, and scoring it would be worse than
+scoring nothing. A reading covering fewer than five controls is also unavailable: a score over two
+controls is not a weaker posture, it is not a posture.
+
+**Not a `RiskProfile` column**, though this section puts governance "into the profile". Every field of
+a profile is somebody's *stated belief* about what the application is; a machine-read setting in the
+same row would be indistinguishable from one, which is the distinction spec 21 §1 built that table
+around. It gets its own row and contributes a `risk_profile.`-prefixed term.
 
 ## 5. Acceptance criteria
 

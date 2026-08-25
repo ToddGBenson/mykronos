@@ -14,6 +14,7 @@ import {
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
 import { AgeForecast } from "@/components/forecast";
+import { GovernancePanel, MergeCounts } from "@/components/governance";
 import { PathToGreen } from "@/components/path-to-green";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
@@ -38,6 +39,7 @@ import {
   getRepo,
   getReachability,
   getRiskProfile,
+  getGovernance,
   getScanHealth,
   getScanRunTrend,
   getSscs,
@@ -533,18 +535,41 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
 }
 
 async function AegisTab({ repoId }: { repoId: string }) {
-  const result = await getInsiderRisk(repoId);
+  // Fetched alongside rather than nested: a governance read that fails — an
+  // App without `administration: read` is the common case — must not take the
+  // signals down with it, and the signals were the whole tab until now.
+  const [result, posture] = await Promise.all([
+    getInsiderRisk(repoId),
+    getGovernance(repoId),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Insider risk unavailable" detail={result.error} />;
   }
   return (
-    <InsiderRiskTab
-      repoFullName={result.data.repo_full_name}
-      signals={result.data.signals}
-      detailIncluded={result.data.detail_included}
-      governance={result.data.governance}
-      blocking={result.data.blocking}
-    />
+    <div className="flex flex-col gap-4">
+      {/* Above the signals, because it explains them (spec 30 §2). Every
+          signal below describes a pull request after the fact;
+          `self_approval` firing is a symptom, and "self-approval is permitted
+          on the default branch" is the cause. */}
+      {posture.ok ? (
+        <>
+          <GovernancePanel posture={posture.data} />
+          <MergeCounts merges={posture.data.merges} />
+        </>
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-ink-3">
+          {posture.error}
+        </p>
+      )}
+
+      <InsiderRiskTab
+        repoFullName={result.data.repo_full_name}
+        signals={result.data.signals}
+        detailIncluded={result.data.detail_included}
+        governance={result.data.governance}
+        blocking={result.data.blocking}
+      />
+    </div>
   );
 }
 

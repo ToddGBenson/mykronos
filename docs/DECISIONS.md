@@ -3581,3 +3581,71 @@ blanket-ignores an exit code — that is how a failed scan comes to look like a
 clean one. And the same file caught a release tag being interpolated into a
 shell body; a tag is chosen by whoever cut the release, `${{ }}` is substituted
 before bash parses it, and the tag is bound to `env:` now.
+
+## D-091 — Governance is read but never rewarded, and the permission to read it stays optional
+
+**2026-08-25. Spec 30. Policy 1.9, shipped dark.**
+
+Aegis has nine signals and every one describes a pull request after the fact.
+`self_approval` fires when somebody approved their own change — a symptom.
+*"Self-approval is permitted on the default branch"* is the cause, and it was
+invisible from anywhere in this platform. The GitHub App has been installed the
+whole time and the client had no operation that read a single control.
+
+**`administration: read` is optional, not required.** Spec 30 §1.2 anticipated
+"a documented, additive permission bump". Making it required would fail the
+spec 02 §8 permission smoke test for every installation that already exists —
+turning an additive panel into a breaking change across the estate, to read
+settings that are useful and are necessary for nothing else. It lives in a
+separate `OPTIONAL_PERMISSIONS` set. An App without it reports every control as
+`unknown`, with the reason and the permission named, which is §2's own rule
+applied to itself: a permissions gap is not a security failure.
+
+That distinction is enforced twice over. GitHub returns 404 for *"this branch
+is not protected"*, which is an answer and a bad one; a 403 raises instead. So
+"we were not allowed to look" can never render as "there is no protection" —
+the two are opposite claims and confusing them is the worst thing this panel
+could do.
+
+**Only a penalty, never a credit, and spec 30 §4 was wrong about that.** §4
+expected strong governance to earn the reward side of spec 26 §2 "without a new
+term being invented for it". It cannot. Branch protection is a *switch*, and
+spec 26 §2.3 refuses credit for switch-flipping in as many words, because the
+fastest route to a good score must never be a setting. What survives is the
+asymmetry §4's own framing supports: weak controls do not make a SQL injection
+worse, they make this repository a worse place for one to be, which is exactly
+what the risk profile carries.
+
+**Shipped dark at zero points.** Every repository's score is unchanged until an
+operator has seen the panel, agreed the weights in `governance-policy-v1.yaml`
+describe their estate, and set a number. A term that began scoring on deploy
+day would move every score in the portfolio for a reading nobody had reviewed —
+which is the shape of D-048 and D-083's mistake, made once with a gate and not
+worth making again with a term.
+
+**Stale is unavailable, not old.** The reading lives in `repo_governance`
+because Oracle cannot make an HTTP call, and a reading more than fourteen days
+old returns nothing rather than an old number: it describes a repository that
+may have been reconfigured twice since. Fewer than five controls read is also
+unavailable — a score over two controls is not a weaker posture, it is not a
+posture.
+
+It is not a `RiskProfile` column, though §4 puts governance "into the profile".
+Every field of a profile is somebody's stated belief about what the application
+is; a machine-read setting in the same row would be indistinguishable from one,
+which is the distinction spec 21 §1 built that table around.
+
+**Two smaller calls.** Rulesets merge as *the strongest wins*: a repository can
+use branch protection, rulesets, both or neither, and reading only the older
+model would report a modern well-governed repository as wide open. Only
+`active` rulesets count — an `evaluate`-mode ruleset is a dry run that blocks
+nothing. And a single required approval is `partial` rather than `on`, because
+that is precisely the configuration `self_approval` and `sole_approver` fire
+under, and calling it "on" would put a repository one rubber stamp from a bad
+merge level with one that requires two people.
+
+`list_admin_bypasses` from §1.2 does **not** ship: the endpoints behind it are
+plan-gated and it would be a permanently empty column for most installations.
+`enforced_for_admins` answers the question that actually matters — whether the
+rules bind administrators at all — and is weighted alongside the two entry
+controls for that reason.

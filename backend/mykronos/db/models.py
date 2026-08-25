@@ -532,3 +532,45 @@ class RepoControl(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<RepoControl {self.repo_full_name} {self.stride}/{self.kind}>"
+
+
+class RepoGovernance(Base):
+    """The last read of this repository's change controls (spec 30 §1.2).
+
+    **Operational, not lake, and current state rather than history.** This is
+    configuration: branch protection either requires two reviews right now or
+    it does not, and a time series of a setting is not evidence of anything the
+    way a scan result is. The same call `ReachabilityReport` makes, one row per
+    repository, superseded outright by the next read.
+
+    **Stored at all only because Oracle cannot make an HTTP call.** The panel
+    reads GitHub live — a setting somebody changed in the UI ten seconds ago
+    must not still be reported as it was — and this row is the copy the risk
+    engine reads when it scores. `read_at` is therefore load-bearing rather
+    than decorative: a score resting on a six-week-old reading of a setting is
+    exactly the failure this platform keeps refusing to ship, so the term goes
+    `available: False` once the reading is stale.
+
+    Not a `RiskProfile` column, though spec 30 §4 puts governance "into the
+    profile". A profile is admin-authored — every field of it is somebody's
+    stated belief about what the application is — and a machine-read setting
+    sitting in the same row would be indistinguishable from one, which is
+    exactly the distinction spec 21 §1 built that table around.
+    """
+
+    __tablename__ = "repo_governance"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: 0-100, or null where too little could be read to say. Null is not zero:
+    #: a repository whose settings the App may not read has no posture, not a
+    #: bad one.
+    governance_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    #: `branch_protection` | `ruleset` | `both` | `none`.
+    source: Mapped[str] = mapped_column(String(32), default="none")
+    #: How many of the nine controls the read actually resolved. A score of 80
+    #: over two controls is not the same claim as 80 over nine.
+    controls_read: Mapped[int] = mapped_column(Integer, default=0)
+    read_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<RepoGovernance {self.repo_full_name} score={self.governance_score}>"

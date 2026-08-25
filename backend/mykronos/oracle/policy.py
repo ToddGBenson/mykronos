@@ -84,6 +84,39 @@ class UnfixableDampening:
 
 
 @dataclass(frozen=True)
+class GovernancePolicy:
+    """Weak change governance as a risk-profile term (spec 30 §4).
+
+    **A penalty for weakness, and deliberately not a credit for strength.**
+    Spec 30 §4 expected strong governance to earn the reward side of spec 26
+    §2 "without a new term being invented for it". It cannot: turning on
+    branch protection is a *switch*, and spec 26 §2.3 refuses credit for
+    switch-flipping in as many words, because the fastest route to a good
+    score must never be a setting. So this only ever adds.
+
+    That asymmetry is the honest one. Weak controls do not make a SQL
+    injection worse — they make this repository a worse place for one to be,
+    which is precisely what the risk profile is for (spec 21 §1). A repository
+    where anybody can push to main and approve their own change is carrying
+    the same findings under materially worse conditions, and the profile is
+    where that belief already lives.
+    """
+
+    #: Points at a governance score of zero, scaled linearly down to nothing
+    #: at `good_enough`. Linear rather than curved: unlike finding counts,
+    #: there is no saturation problem here — the score is already bounded at
+    #: 0-100 and every point of it is a control somebody can turn on.
+    points_at_zero: float = 0.0
+    #: At or above this, nothing is added. A repository does not have to be
+    #: perfect to stop being penalised, and a term that could only be silenced
+    #: by a flawless configuration would be one teams learn to ignore.
+    good_enough: int = 80
+    #: Below this many controls read, the term reports unavailable. A score
+    #: over two controls is not a posture.
+    minimum_controls: int = 5
+
+
+@dataclass(frozen=True)
 class BlastRadiusPolicy:
     """Weights for portfolio-wide package concentration (spec 19 §2.4).
 
@@ -259,6 +292,7 @@ class Policy:
     age: AgePolicy
     dampening: DampeningPolicy
     risk_profile: RiskProfilePolicy
+    governance: GovernancePolicy
     blast_radius: BlastRadiusPolicy
     reachability: ReachabilityPolicy
     unfixable: UnfixableDampening
@@ -347,6 +381,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # hard `_require` here would have made this spec's policy change
     # mandatory before the code could load at all.
     profile_raw = modifiers.get("risk_profile") or {}
+    # Optional, like every modifier added after 1.0: a policy file written
+    # before spec 30 loads unchanged, the category reports available with a
+    # zero weight, and no repository's score moves.
+    governance_raw = modifiers.get("governance") or {}
     # Optional for the same reason, one spec later: a policy file from
     # before spec 19 §2.4 loads, with the category available and worth
     # zero, rather than refusing to load at all.
@@ -450,6 +488,11 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                     "dampening.min_observations",
                 )
             ),
+        ),
+        governance=GovernancePolicy(
+            points_at_zero=float(governance_raw.get("points_at_zero", 0.0)),
+            good_enough=int(governance_raw.get("good_enough", 80)),
+            minimum_controls=int(governance_raw.get("minimum_controls", 5)),
         ),
         risk_profile=RiskProfilePolicy(
             internet_facing_points=_number(

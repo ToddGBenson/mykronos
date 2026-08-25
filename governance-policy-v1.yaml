@@ -1,0 +1,75 @@
+# Change-governance weights (spec 30 §3).
+#
+# A file, not a dict in a module, for the same reason `oracle-policy-v1.yaml`
+# and `stride-map-v1.yaml` are files: this decides what a team is told to aim
+# at, and that is a judgement which belongs where it can be argued with in a
+# pull request rather than changed in a commit nobody reviews as policy.
+#
+# ---------------------------------------------------------------------------
+# What this scores, and what it deliberately does not
+# ---------------------------------------------------------------------------
+#
+# Aegis scores *changes* — nine signals, each describing a pull request after
+# the fact. This scores the controls that decide whether a bad change could get
+# in at all. `self_approval` firing is a symptom; "self-approval is permitted
+# on the default branch" is the cause, and until spec 30 it was invisible.
+#
+# **Scored over what was read, never over what exists.** A control the platform
+# could not read is excluded from both halves of the fraction, so a repository
+# whose settings are unreadable has *no* score rather than a bad one. A
+# permissions gap is not a posture, and the same rule spec 09 §9 applies to
+# every Oracle input applies here.
+#
+# **Nothing here is written back.** This platform does not turn on branch
+# protection for anybody. Changing a control is an action a repository's owners
+# take in GitHub, where the audit trail for it belongs.
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# The weights
+# ---------------------------------------------------------------------------
+#
+# Relative, not absolute: the score is `earned / possible`, so these say how
+# much each control matters *compared to the others*, and adding a control
+# later does not silently deflate every existing score.
+#
+# A control in the `partial` state earns half. That state exists because a
+# binary would have to call one required approval either "on" or "off", and it
+# is honestly neither: better than none, and not two.
+weights:
+  # The two that decide whether an unreviewed change can reach the branch at
+  # all. Everything below is about the quality of a review that is at least
+  # happening.
+  pull_request_required: 10
+  approving_reviews_required: 10
+
+  # Enforced-for-admins is weighted with them, and that is the argument this
+  # file most expects to have. Without it every rule above is a description of
+  # what usually happens rather than of what is enforced — one administrator
+  # and one bad afternoon, and the protection was never there.
+  enforced_for_admins: 9
+
+  # Review routing. `codeowner_review_required` without coverage routes to
+  # nobody, and coverage without the requirement routes to somebody who does
+  # not have to answer — so they are weighted together and neither is worth
+  # much alone.
+  codeowner_review_required: 7
+  codeowners_coverage: 7
+
+  # A stale approval means the change that was reviewed and the change that
+  # merges need not be the same one, which is the quietest way a reviewed
+  # repository admits an unreviewed change.
+  dismiss_stale_reviews: 6
+
+  # Required checks are the platform's own foothold — the Oracle gate is one —
+  # so this is weighted deliberately *below* the review controls rather than
+  # above them. A tool that scored its own presence highest would be marking
+  # its own homework.
+  required_status_checks: 5
+
+  # Both are real and neither is where a change gets in. Signed commits prove
+  # authorship of what merged rather than preventing the merge; blocked force
+  # pushes protect history after the fact.
+  signed_commits_required: 4
+  force_push_blocked: 3

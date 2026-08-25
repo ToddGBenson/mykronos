@@ -639,6 +639,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/governance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Governance
+         * @description The controls that would catch a bad change (spec 30 §1, §2, §3).
+         *
+         *     Read live rather than from a stored snapshot. Branch protection is
+         *     configuration a person can change in the GitHub UI in ten seconds, and a
+         *     panel that told somebody their repository still required two reviews after
+         *     they had turned that off would be worse than no panel. The cost is one API
+         *     call per view, which is the right trade for a read this small.
+         *
+         *     Never raises on GitHub. An App without `administration: read` reports every
+         *     control as unknown and names the permission — a permissions gap is not a
+         *     security failure and is not scored as one.
+         */
+        get: operations["repo_governance_api_dashboard_repos__repo_id__governance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/incident": {
         parameters: {
             query?: never;
@@ -2122,6 +2152,31 @@ export interface components {
             evidence_ref: string;
         };
         /**
+         * ControlStateOut
+         * @description One change-governance control (spec 30 §2).
+         */
+        ControlStateOut: {
+            /** Key */
+            key: string;
+            /**
+             * State
+             * @description `on`, `partial`, `off`, or `unknown`. Four rather than two: a single required approval is genuinely better than none and genuinely is not two, and `unknown` is a control the platform could not read — a permissions gap, never a red cross.
+             */
+            state: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Value */
+            value?: number | null;
+            /**
+             * Prevents
+             * @description The Aegis signals this control would have prevented. The link is the point of the panel: it turns a log of oddities into a diagnosis with a remedy the team can action themselves.
+             */
+            prevents?: string[];
+        };
+        /**
          * DigestGroupOut
          * @description One fix, repeated across the portfolio (spec 19 §3.4).
          */
@@ -2693,6 +2748,51 @@ export interface components {
              * @description False for viewer roles; raw output is admin-only (spec 12 §5).
              */
             raw_output_included: boolean;
+        };
+        /**
+         * GovernanceOut
+         * @description A repository's change-governance posture (spec 30).
+         */
+        GovernanceOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Read At */
+            read_at?: string | null;
+            /**
+             * Readable
+             * @default true
+             */
+            readable: boolean;
+            /**
+             * Unreadable Reason
+             * @default
+             */
+            unreadable_reason: string;
+            /**
+             * Source
+             * @description `branch_protection`, `ruleset`, `both`, or `none`. A repository governed entirely by rulesets would read as unprotected if only the older model were consulted.
+             * @default none
+             */
+            source: string;
+            /**
+             * Governance Score
+             * @description Null where too little could be read to say. Scored over the controls that *were* read, so an unreadable repository has no score rather than a bad one.
+             */
+            governance_score?: number | null;
+            /** Controls */
+            controls?: components["schemas"]["ControlStateOut"][];
+            /**
+             * Merges
+             * @description Counts by repository over the window, never by author (spec 06 §9). Each is a statement about a control whose remedy is a settings change.
+             */
+            merges?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** GroomResult */
         GroomResult: {
@@ -4974,6 +5074,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_governance_api_dashboard_repos__repo_id__governance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GovernanceOut"];
                 };
             };
             /** @description Validation Error */
