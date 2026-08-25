@@ -37,8 +37,8 @@ Two smaller gaps sit alongside it, and both block making this universal:
 
 | Item | Status |
 |---|---|
-| The `finding_tests` link and its capture (§1, §2) | Not started |
-| Regression coverage, per repository and portfolio-wide (§3) | Not started |
+| The `finding_tests` link and its capture (§1, §2) | **Built** — via its own endpoint, not the disposition form; see below |
+| Regression coverage, per repository and portfolio-wide (§3) | **Built** per repository; portfolio-wide not started |
 | Coverage percentage beside pass rate (§4) | Not started |
 | Test-lane workflow templates for Actions (§5) | Not started |
 | Into Oracle as a posture credit (§6) | Not started — lands with spec 26 §2 |
@@ -67,9 +67,14 @@ they are not the same claim and are never displayed as one.
 
 Three sources, in increasing order of strength:
 
-- **A person, at disposition.** When a finding is marked `fixed` by hand, the form offers a test
-  identifier. Optional — a mandatory field here would be answered with garbage — but present at the
-  one moment somebody has the context to answer it.
+- **A person, on the finding.** Its own endpoint, and this section's first draft was wrong about
+  where: it said "when a finding is marked `fixed` by hand, the form offers a test identifier".
+  Nobody can mark a finding fixed by hand — `HUMAN_DISPOSITIONS` excludes it deliberately, because
+  `fixed` is an observation the scanners and the reconciler own and letting a person assert it would
+  put a claim in the lake no scan supports. So the moment the spec described does not exist. What
+  does exist is a person who has just written the test, and
+  `POST /api/dashboard/findings/{id}/regression-test` is where they say so. Optional, for the reason
+  the draft gave: a mandatory field here would be answered with garbage.
 - **A fix pull request.** Patchwork's PR body gains a line: *"if you add a regression test, name it
   here"*, parsed on merge. The person writing the test is the person merging the fix, and this is the
   cheapest possible moment to ask.
@@ -100,6 +105,14 @@ The number, on the Harness tab:
 > 4 demonstrated, 8 asserted. 3 links are stale (test not seen in 30 days).
 
 And its portfolio equivalent on the trends page.
+
+**What staleness can and cannot catch — narrower than this section assumed.** The JUnit adapter
+records suite totals, not case names (D-046: "what reaches the lake is that a suite ran, how it
+ended, and how many cases failed"). So `lane_last_green_at` knows when the *lane* last ran green and
+cannot know whether one particular test still exists inside it. A deleted test keeps counting until
+its whole lane stops running. That is a real limit on the number and is why `stale` is reported
+beside the headline rather than folded into it; closing it means recording per-test results, which
+is its own piece of work and is not smuggled in here.
 
 **Stale links matter as much as missing ones.** A pinned test that stopped running — deleted, renamed,
 skipped, or in a lane nobody enabled any more — is a protection that quietly expired, and it is the

@@ -582,6 +582,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/regression-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link Regression Test
+         * @description Record the test that would fail if this came back (spec 31 §2).
+         *
+         *     Its own endpoint rather than a field on the disposition form, and the
+         *     reason is a rule this platform already holds: `fixed` is not a disposition
+         *     a person may set -- it is an observation the scanners and the reconciler
+         *     own (`HUMAN_DISPOSITIONS`). Spec 31 §2 assumed somebody marks a finding
+         *     fixed by hand and is offered the field there; nobody can, so the moment
+         *     the spec described does not exist. What does exist is a person who has
+         *     just written the test, and this is where they say so.
+         *
+         *     Recorded as `asserted`. `demonstrated` is earned by watching the test fail
+         *     against the vulnerable code and pass against the fixed code, never claimed
+         *     through this route: the whole point of the distinction is that one is
+         *     somebody's word and the other is evidence.
+         */
+        post: operations["link_regression_test_api_dashboard_findings__finding_id__regression_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/regression-coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Regression Coverage
+         * @description Which fixed vulnerabilities would we notice coming back? (spec 31 §3)
+         *
+         *     The first number in this platform that measures a repository getting
+         *     structurally safer rather than temporarily cleaner. Everything else counts
+         *     what is open; this counts what was learned.
+         */
+        get: operations["regression_coverage_api_dashboard_repos__repo_id__regression_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/threat-model": {
         parameters: {
             query?: never;
@@ -2931,6 +2988,35 @@ export interface components {
              */
             files_unparseable: number;
         };
+        /**
+         * RegressionLinkRequest
+         * @description Pin a test to a finding (spec 31 §2).
+         */
+        RegressionLinkRequest: {
+            /**
+             * Test Identifier
+             * @description A JUnit `classname.name`, as the runner reports it.
+             */
+            test_identifier: string;
+            /**
+             * Capability
+             * @description Which lane runs it.
+             * @default unit
+             * @enum {string}
+             */
+            capability: "unit" | "functional" | "qa";
+        };
+        /** RegressionLinkResult */
+        RegressionLinkResult: {
+            /** Link Id */
+            link_id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Test Identifier */
+            test_identifier: string;
+            /** Evidence */
+            evidence: string;
+        };
         /** RemediationEventOut */
         RemediationEventOut: {
             /** Event Id */
@@ -4448,6 +4534,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    link_regression_test_api_dashboard_findings__finding_id__regression_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegressionLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegressionLinkResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regression_coverage_api_dashboard_repos__repo_id__regression_coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
