@@ -207,6 +207,13 @@ GRANDFATHERED = {
     # one, so there is nothing to backfill an existing row with. The table is
     # new, so no database has rows this would have to be added to.
     "reachability_reports.repo_onboarding_id",
+    # Which repository a triage claim is about (spec 27 §3). The same case a
+    # third time: a claim cannot exist without the repository it scopes to, so
+    # there is no value an existing row could be backfilled with, and a
+    # server-side default would attach every old row to the empty string —
+    # which the queue would then read as a real repository. The table arrived
+    # with #97, so no database has rows this would have to be added to.
+    "triage_state.repo_full_name",
 }
 
 
