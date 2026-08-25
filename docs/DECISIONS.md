@@ -3333,3 +3333,53 @@ inherited.
 Found while repairing the live token by hand on 2026-08-23, after a manual
 rotation expired the value Vault was serving. The manual repair is now: rotate,
 write to `backend/.env`, write to Vault, verify against `:8100`.
+
+## D-087 — The score can now go down for work done, and the first attempt rewarded the clock
+
+**2026-08-24. Spec 26 §2. Policy 1.8.**
+
+Oracle had nine modifiers and one negative — the import-reachability discount,
+which is a fact about code structure rather than a reward for anything anybody
+did. So the number could only ever go up. A team that spent a quarter adding
+regression tests, verifying its fixes and clearing its backlog inside target
+watched the score not move, which is how a model stops being acted on and
+starts being argued with.
+
+`posture_credits` adds three additive negative terms, each gated on evidence a
+*different* spec produces: a test pinned to a fixed finding (spec 31), a fix
+verified gone by a re-scan of its merge commit (spec 25 §2), a finding closed
+inside its remediation window (spec 24 §2). None can be earned by changing a
+setting — the rule `maturity-model-v1.yaml` states for its own criteria, for
+the same reason.
+
+**The floor is the part that matters.** Credits may not take a repository
+below the review threshold while a critical is open. Without that rule the
+arithmetic lets a team test its way out of an exploited critical, which is the
+single outcome this idea must not produce. It is applied in `evaluate` rather
+than inside the snapshot because it needs the score the rest of the model
+produced, and the terms are rescaled when it bites so the published breakdown
+still sums to what was applied — a breakdown whose parts do not add up is one
+nobody can check.
+
+**The first `within_target` was wrong, and the golden tests caught it.** It
+credited findings that were open and merely *not late yet*. A repository full
+of brand-new criticals is inside every remediation window by construction, so
+it would have earned the full six points for having done nothing at all. That
+is the evidence-not-switches rule failing in its subtlest form: not a flag
+somebody flips, but a credit that rewards the passage of time. The shipped
+term counts findings *closed* inside their window over the last 90 days,
+windowed for `mean_time_to_fix`'s reason — an all-time rate is dominated by
+whatever happened when the platform was switched on.
+
+Worth stating that the pinned golden scores are what surfaced it. The credit
+looked right in isolation and looked right in its own unit test; what failed
+was a fixed-input score moving in a direction nobody could justify. That is
+the whole argument for pinning them.
+
+**Two record-keeping repairs alongside.** The policy file's version log stopped
+at 1.4 while the file said 1.7 — 1.5, 1.6 and 1.7 were bumped correctly and
+never written down, which made the log the one place a reader could not see
+what had changed. Reconstructed from the commits. And its header pointed at
+`tests/test_oracle_golden.py`, a file that has never existed; the golden values
+are in `tests/test_oracle.py`. A pointer to nothing is worse than no pointer,
+because somebody following it concludes there is no such guard.

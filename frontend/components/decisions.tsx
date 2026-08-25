@@ -132,8 +132,16 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
             <tbody>
               {terms.map((term) => (
                 <tr key={term.label}>
-                  <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">
-                    +{term.contribution.toFixed(1)}
+                  {/* Signed, because the model can now subtract as well as
+                      add (spec 26 §2), and a credit rendered as `+-1.5` reads
+                      as a formatting bug rather than as points earned back. */}
+                  <td
+                    className={`tabular w-14 py-0.5 pr-3 text-right ${
+                      term.contribution < 0 ? "text-pass" : "text-ink"
+                    }`}
+                  >
+                    {term.contribution < 0 ? "−" : "+"}
+                    {Math.abs(term.contribution).toFixed(1)}
                   </td>
                   <td className="py-0.5 pr-6 text-ink-2">{term.label}</td>
                   <td className="py-0.5 text-ink-3">{term.detail}</td>

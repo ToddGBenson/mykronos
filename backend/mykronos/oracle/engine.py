@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from mykronos import blast_radius
+from mykronos import blast_radius, regression
 from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
@@ -58,6 +58,7 @@ MODIFIER_CATEGORIES = (
     "risk_profile",
     "blast_radius",
     "overdue_findings",
+    "posture_credits",
 )
 
 #: One band up (spec 17 §5.4). `critical` has nowhere further to go — a
@@ -403,6 +404,182 @@ def _overdue_snapshot(
             )
         ],
     )
+
+
+def _posture_snapshot(
+    *,
+    coverage: Any,
+    verified: tuple[int, int],
+    within_target: tuple[int, int],
+    open_criticals: int,
+    policy: Policy,
+) -> tuple[dict[str, Any], list[Term]]:
+    """What the team earned back (spec 26 §2).
+
+    The only terms in the model that subtract for something somebody *did*
+    rather than for a fact about the code. Each is `available: False` with a
+    reason until its evidence exists, per spec 09 §9 — a credit that silently
+    contributes zero is how a team concludes the model is rigged.
+    """
+    credits = policy.posture
+    if not credits.configured:
+        return (
+            {
+                "available": False,
+                "contribution": 0.0,
+                "reason": "No posture credits are configured in the policy.",
+            },
+            [],
+        )
+
+    parts: list[Term] = []
+    detail: dict[str, Any] = {}
+
+    # 1. Regression coverage (spec 31).
+    if coverage is not None and coverage.available:
+        points = min(
+            credits.regression_per_covered * coverage.covered, credits.regression_cap
+        )
+        detail["regression_coverage"] = {
+            "available": True,
+            "covered": coverage.covered,
+            "of_fixed": coverage.fixed_findings,
+            "points": round(points, 2),
+        }
+        if points:
+            parts.append(
+                Term(
+                    key="posture.regression_coverage",
+                    label="Fixed findings with a regression test pinned",
+                    contribution=-points,
+                    detail=(
+                        f"{coverage.covered} of {coverage.fixed_findings} fixed "
+                        f"finding(s) would be caught coming back, worth "
+                        f"{points:g} points."
+                    ),
+                    inputs={"covered": coverage.covered},
+                )
+            )
+    else:
+        detail["regression_coverage"] = {
+            "available": False,
+            "reason": "Nothing has been fixed here yet, so there is no coverage to earn.",
+        }
+
+    # 2. Verified fix rate (spec 25 §3).
+    verified_count, merged_count = verified
+    if merged_count >= credits.verified_minimum_sample:
+        rate = verified_count / merged_count if merged_count else 0.0
+        points = credits.verified_at_full_rate * rate
+        detail["verified_fix_rate"] = {
+            "available": True,
+            "verified": verified_count,
+            "merged": merged_count,
+            "rate": round(rate, 3),
+            "points": round(points, 2),
+        }
+        if points:
+            parts.append(
+                Term(
+                    key="posture.verified_fix_rate",
+                    label="Merged fixes verified as removing the finding",
+                    contribution=-points,
+                    detail=(
+                        f"{verified_count} of {merged_count} merged fix(es) were "
+                        f"verified gone by a re-scan, worth {points:g} points."
+                    ),
+                    inputs={"verified": verified_count, "merged": merged_count},
+                )
+            )
+    else:
+        detail["verified_fix_rate"] = {
+            "available": False,
+            "reason": (
+                f"Only {merged_count} merged fix(es); below the minimum sample of "
+                f"{credits.verified_minimum_sample} the rate is noise. A team that "
+                "has fixed three things well has not earned a rate, and must not "
+                "be scored as though it failed seven."
+            ),
+        }
+
+    # 3. Findings inside their remediation window (spec 24 §2).
+    on_track, with_target = within_target
+    if with_target:
+        rate = on_track / with_target
+        points = credits.within_target_at_full * rate
+        detail["within_target"] = {
+            "available": True,
+            "on_track": on_track,
+            "with_target": with_target,
+            "rate": round(rate, 3),
+            "points": round(points, 2),
+        }
+        if points:
+            parts.append(
+                Term(
+                    key="posture.within_target",
+                    label="Findings fixed inside their remediation target",
+                    contribution=-points,
+                    detail=(
+                        f"{on_track} of {with_target} finding(s) with a deadline were "
+                        f"fixed inside it, worth {points:g} points."
+                    ),
+                    inputs={"on_track": on_track, "with_target": with_target},
+                )
+            )
+    else:
+        detail["within_target"] = {
+            "available": False,
+            "reason": (
+                "Nothing with a remediation target has been fixed here in the "
+                "last 90 days. Open findings that are merely not late yet earn "
+                "nothing: that would credit the clock rather than the team."
+            ),
+        }
+
+    earned = sum(-term.contribution for term in parts)
+    capped = min(earned, credits.total_cap)
+    floored = False
+    if credits.floor_with_open_critical and open_criticals and capped:
+        # A team may not test its way out of an exploited critical. Flagged
+        # rather than applied here: the clamp needs the score the rest of the
+        # model produced, so `evaluate` applies it and rewrites the terms.
+        floored = True
+
+    snapshot = {
+        "available": True,
+        "credits": detail,
+        "earned": round(earned, 2),
+        "applied": round(capped, 2),
+        "capped_at": credits.total_cap if capped < earned else None,
+        "floored_by_open_critical": floored,
+        "contribution": round(-capped, 2),
+        "reason": (
+            "The only terms here that subtract for something somebody did. "
+            "Every one requires evidence — a test pinned, a fix verified, a "
+            "deadline met — and none can be earned by changing a setting."
+        ),
+    }
+
+    if not capped:
+        return (snapshot, [])
+
+    # Rescale the individual terms so the published arithmetic sums to what
+    # was actually applied. Terms that do not add up to the total are how a
+    # breakdown stops being checkable.
+    if capped < earned and earned:
+        factor = capped / earned
+        parts = [
+            Term(
+                key=term.key,
+                label=term.label,
+                contribution=term.contribution * factor,
+                detail=f"{term.detail} Scaled to the {credits.total_cap:g}-point cap.",
+                inputs=term.inputs,
+            )
+            for term in parts
+        ]
+    return (snapshot, parts)
 
 
 #: How many actions a path may name before it stops being an instruction and
@@ -966,6 +1143,126 @@ class OracleEngine:
             )
         return candidates
 
+    def _forecast(self, repo_full_name: str, score: float) -> dict[str, Any]:
+        """When this repository crosses a threshold on ageing alone (spec 26 §4).
+
+        The age term escalates on a date, so a repository with a static
+        backlog crosses a band on a day that is already computable. Saying it
+        in advance is the difference between a verdict that changes overnight
+        and one somebody saw coming.
+
+        Deliberately one sentence and deliberately not a chart. It is a
+        projection of a known curve over known ages — not a model — and it
+        must not acquire the visual authority of one.
+        """
+        if score >= self.policy.no_go:
+            return {"available": False, "reason": "Already at no_go."}
+
+        rows = self.catalog.query(
+            """
+            SELECT severity, first_seen_at FROM findings
+            WHERE repo_full_name = ? AND status = 'open'
+              AND severity IN ('critical', 'high')
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return {"available": False, "reason": "Nothing open that ages into a penalty."}
+
+        thresholds = {
+            "critical": (30, self.policy.age.over_30_days_critical),
+            "high": (90, self.policy.age.over_90_days_high),
+        }
+        # (days until it ages, points it will add)
+        upcoming: list[tuple[int, float, str]] = []
+        for severity, first_seen in rows:
+            days, points = thresholds[str(severity)]
+            if not isinstance(first_seen, datetime) or not points:
+                continue
+            crosses_in = days - (self._as_of - first_seen).days
+            if crosses_in > 0:
+                upcoming.append((crosses_in, points, str(severity)))
+
+        if not upcoming:
+            return {
+                "available": True,
+                "crosses_in_days": None,
+                "reason": "Everything that will age into a penalty already has.",
+            }
+
+        upcoming.sort()
+        running = score
+        for index, (days, points, _severity) in enumerate(upcoming):
+            running += points
+            if running >= self.policy.no_go:
+                counted = index + 1
+                return {
+                    "available": True,
+                    "crosses_in_days": days,
+                    "findings_involved": counted,
+                    "reaches": "no_go",
+                    "reason": (
+                        f"With no changes, this repository reaches no_go in "
+                        f"{days} day(s) as {counted} finding(s) cross their age "
+                        "threshold."
+                    ),
+                }
+        return {
+            "available": True,
+            "crosses_in_days": None,
+            "reason": (
+                "Ageing alone does not reach no_go from here — everything open "
+                "would have to age and it would still be below the threshold."
+            ),
+        }
+
+    def _verified_fixes(self, repo_full_name: str) -> tuple[int, int]:
+        """`(verified, merged)` for this repository (spec 25 §3)."""
+        if not self.catalog.all_files("remediation_events"):
+            return (0, 0)
+        rows = self.catalog.query(
+            """
+            SELECT
+                count(*) FILTER (WHERE verification_outcome = 'verified_fixed'),
+                count(*) FILTER (WHERE pr_status = 'merged')
+            FROM remediation_events WHERE repo_full_name = ?
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return (0, 0)
+        return (int(rows[0][0] or 0), int(rows[0][1] or 0))
+
+    def _within_target(self, repo_full_name: str) -> tuple[int, int]:
+        """`(fixed inside its window, fixed with a window)` — spec 24 §2.
+
+        Deliberately about findings that were **closed**, not open ones that
+        are merely not late yet. The first draft credited the latter, and it
+        was wrong in a way the golden scoring tests caught: a repository full
+        of brand-new criticals is inside every window by construction and had
+        done nothing to earn it. A credit that rewards the clock rather than
+        the team is exactly what spec 26 §2's evidence-not-switches rule
+        exists to prevent.
+
+        Windowed to the last 90 days for `mean_time_to_fix`'s reason: an
+        all-time rate is dominated by whatever happened when the platform was
+        switched on and stops responding to the present.
+        """
+        since = self._as_of - timedelta(days=90)
+        rows = self.catalog.query(
+            """
+            SELECT count(*) FILTER (WHERE resolved_at <= due_at), count(*)
+            FROM findings
+            WHERE repo_full_name = ? AND status = 'fixed'
+              AND due_at IS NOT NULL AND resolved_at IS NOT NULL
+              AND resolved_at >= ?
+            """,
+            [repo_full_name, since],
+        )
+        if not rows:
+            return (0, 0)
+        return (int(rows[0][0] or 0), int(rows[0][1] or 0))
+
     def _overdue(self, repo_full_name: str, for_gate: bool) -> tuple[int, int]:
         """`(overdue, with_a_target)` over this decision's in-scope findings.
 
@@ -1460,6 +1757,42 @@ class OracleEngine:
         )
         terms.extend(overdue_terms)
 
+        # 10. What the team earned back (spec 26 §2). The only terms that
+        #     subtract for something somebody did, and the last ones applied
+        #     so the cap and the critical floor act on a settled score.
+        posture_snapshot, posture_terms = _posture_snapshot(
+            coverage=regression.coverage(self.catalog, repo_full_name, now=self._as_of),
+            verified=self._verified_fixes(repo_full_name),
+            within_target=self._within_target(repo_full_name),
+            open_criticals=counts.get("critical", 0),
+            policy=self.policy,
+        )
+        # The floor is applied here rather than inside the snapshot because it
+        # needs the score the rest of the model produced.
+        if posture_terms and posture_snapshot.get("floored_by_open_critical"):
+            before = sum(term.contribution for term in terms)
+            allowed = max(0.0, before - self.policy.review_recommended)
+            applied = sum(-term.contribution for term in posture_terms)
+            if applied > allowed:
+                factor = (allowed / applied) if applied else 0.0
+                posture_terms = [
+                    Term(
+                        key=term.key,
+                        label=term.label,
+                        contribution=term.contribution * factor,
+                        detail=(
+                            f"{term.detail} Reduced: credits may not take a "
+                            "repository below the review threshold while a "
+                            "critical is open."
+                        ),
+                        inputs=term.inputs,
+                    )
+                    for term in posture_terms
+                ]
+                posture_snapshot["applied"] = round(allowed, 2)
+                posture_snapshot["contribution"] = round(-allowed, 2)
+        terms.extend(posture_terms)
+
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
@@ -1501,6 +1834,8 @@ class OracleEngine:
             blast_radius_snapshot=radius_snapshot,
             reachability_snapshot=reach_snapshot,
             overdue_snapshot=overdue_snapshot,
+            posture_snapshot=posture_snapshot,
+            forecast=self._forecast(repo_full_name, raw_score),
             path_to_green=path,
         )
 
@@ -1544,6 +1879,8 @@ class OracleEngine:
         blast_radius_snapshot: dict[str, Any] | None = None,
         reachability_snapshot: dict[str, Any] | None = None,
         overdue_snapshot: dict[str, Any] | None = None,
+        posture_snapshot: dict[str, Any] | None = None,
+        forecast: dict[str, Any] | None = None,
         path_to_green: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
@@ -1595,6 +1932,15 @@ class OracleEngine:
             or _reachability_snapshot(None, 0, self.policy)[0],
             "overdue_findings": overdue_snapshot
             or _overdue_snapshot(0, 0, self.policy)[0],
+            "posture_credits": posture_snapshot
+            or {
+                "available": False,
+                "contribution": 0.0,
+                "reason": "Not computed for this decision.",
+            },
+            # Neither of these contributes to the score. One says what would
+            # make it fall, the other when it will rise on its own.
+            "forecast": forecast or {"available": False, "reason": "Not computed."},
             # Not a modifier category — it contributes nothing to the score.
             # It is the inverse of the score, and it lives in the snapshot so
             # a decision carries its own answer to "what now" rather than

@@ -12,6 +12,7 @@ import {
   type FindingsQuery,
 } from "@/components/open-findings";
 import { RemediationTab } from "@/components/remediation";
+import { AgeForecast } from "@/components/forecast";
 import { PathToGreen } from "@/components/path-to-green";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
@@ -442,12 +443,20 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
   // Read from the decision rather than fetched separately: a path computed by
   // a second call could disagree with the score it is supposed to explain.
   const latest = result.data.decisions[0];
-  const path =
-    (latest?.inputs_snapshot as { path_to_green?: Parameters<typeof PathToGreen>[0]["path"] })
-      ?.path_to_green ?? null;
+  const snapshot = latest?.inputs_snapshot as
+    | {
+        path_to_green?: Parameters<typeof PathToGreen>[0]["path"];
+        forecast?: Parameters<typeof AgeForecast>[0]["forecast"];
+      }
+    | undefined;
+  const path = snapshot?.path_to_green ?? null;
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Above the path, because it is the one thing here about a score that
+          has not happened yet (spec 26 §4). Renders nothing when ageing alone
+          does not cross a band, which is most of the time. */}
+      <AgeForecast forecast={snapshot?.forecast ?? null} />
       <PathToGreen repoId={repoId} path={path} />
       {profile.ok ? (
         <RiskProfileCard repoId={repoId} profile={profile.data} />

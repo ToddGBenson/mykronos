@@ -120,6 +120,47 @@ class ReachabilityPolicy:
 
 
 @dataclass(frozen=True)
+class PostureCredits:
+    """What a team earns for work that made the repository safer (spec 26 §2).
+
+    Every other modifier in this policy can only punish. The import
+    reachability discount is the sole negative and it is a fact about code
+    structure, not a reward for anything anybody did — so a team that spends a
+    quarter adding regression tests, verifying its fixes and clearing its
+    backlog inside target sees the number not move. A model that can only
+    punish is one people argue with rather than act on.
+
+    **Every credit requires something to have happened.** Not a switch, not a
+    configuration value — a test pinned to a fixed finding, a fix verified by a
+    re-scan, a finding closed inside its window. That is the rule
+    `maturity-model-v1.yaml` states for its own criteria, and for the same
+    reason: the fastest route to a good score must never be a setting.
+
+    **Capped, and floored.** `total_cap` bounds the sum, and `floor_with_open_critical`
+    is the harder rule: credits may not take a repository below the review
+    threshold while a critical is open. Without it the arithmetic allows a team
+    to test its way out of an exploited critical, which is the one outcome this
+    whole idea must not produce.
+    """
+
+    regression_per_covered: float
+    regression_cap: float
+    verified_at_full_rate: float
+    verified_minimum_sample: int
+    within_target_at_full: float
+    total_cap: float
+    floor_with_open_critical: bool
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self.regression_per_covered
+            or self.verified_at_full_rate
+            or self.within_target_at_full
+        )
+
+
+@dataclass(frozen=True)
 class TriageRankPolicy:
     """What to look at first (spec 27 §1.1).
 
@@ -224,6 +265,7 @@ class Policy:
     remediation_targets: RemediationTargets
     overdue: OverduePolicy
     triage_rank: TriageRankPolicy
+    posture: PostureCredits
 
     no_go: float
     review_recommended: float
@@ -319,6 +361,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # Top-level, not a modifier: it changes what a person looks at first and
     # contributes nothing to any score. Optional like the rest, so a policy
     # file from before spec 27 loads and the queue keeps its severity order.
+    credits_raw = modifiers.get("posture_credits") or {}
     rank_raw = document.get("triage_rank") or {}
     rank_severity_raw = rank_raw.get("severity") or {}
     unknown_rank = set(rank_severity_raw) - known
@@ -446,6 +489,40 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
         ),
         remediation_targets=RemediationTargets(days=target_days),
+        posture=PostureCredits(
+            regression_per_covered=_number(
+                (credits_raw.get("regression_coverage") or {}).get(
+                    "points_per_covered_finding", 0
+                ),
+                "modifiers.posture_credits.regression_coverage.points_per_covered_finding",
+            ),
+            regression_cap=_number(
+                (credits_raw.get("regression_coverage") or {}).get("cap", 0),
+                "modifiers.posture_credits.regression_coverage.cap",
+            ),
+            verified_at_full_rate=_number(
+                (credits_raw.get("verified_fix_rate") or {}).get("points_at_full_rate", 0),
+                "modifiers.posture_credits.verified_fix_rate.points_at_full_rate",
+            ),
+            verified_minimum_sample=int(
+                _number(
+                    (credits_raw.get("verified_fix_rate") or {}).get("minimum_sample", 10),
+                    "modifiers.posture_credits.verified_fix_rate.minimum_sample",
+                )
+            ),
+            within_target_at_full=_number(
+                (credits_raw.get("within_target") or {}).get(
+                    "points_at_full_compliance", 0
+                ),
+                "modifiers.posture_credits.within_target.points_at_full_compliance",
+            ),
+            total_cap=_number(
+                credits_raw.get("total_cap", 0), "modifiers.posture_credits.total_cap"
+            ),
+            floor_with_open_critical=bool(
+                credits_raw.get("floor_with_open_critical", True)
+            ),
+        ),
         triage_rank=TriageRankPolicy(
             severity={
                 name: _number(value, f"triage_rank.severity.{name}")
