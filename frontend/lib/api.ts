@@ -159,10 +159,28 @@ export type RemediationEvent = RemediationPage["events"][number];
  * Hand-typed: both endpoints assemble their rows at request time, so the
  * generated schema is an open object.
  */
+export type RegressionCoverage = {
+  /** False when nothing has ever been fixed here — an empty denominator, not
+   *  a failing grade. */
+  available: boolean;
+  fixed_findings: number;
+  covered: number;
+  demonstrated: number;
+  asserted: number;
+  /** Links whose lane has not run green in 30 days. Reported beside the
+   *  headline rather than folded into it (spec 31 §3). */
+  stale: number;
+  ratio: number | null;
+  note: string;
+};
+
 export type TrendSeries = {
   scope: string;
   days: number;
   mean_time_to_fix_days: number | null;
+  /** Not windowed by `days`: every other number here is a rate over a period,
+   *  while this is a standing property of everything ever fixed. */
+  regression_coverage: RegressionCoverage;
   points: {
     at: string;
     open_critical: number;

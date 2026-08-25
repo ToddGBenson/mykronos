@@ -907,6 +907,18 @@ async def trends(
         "scope": repo_full_name or "portfolio",
         "days": days,
         "mean_time_to_fix_days": mean_time_to_fix(catalog, repo_full_name),
+        # Spec 31 §3's portfolio equivalent. Here rather than on a page of its
+        # own because every other number on this page counts what is open, and
+        # this is the one that counts what was learned — it is only legible
+        # beside them.
+        #
+        # Not windowed by `days`, and deliberately: the other series are rates
+        # over a period, while this is a standing property of everything ever
+        # fixed. Clipping it to 90 days would make a repository's regression
+        # tests expire from the number for having been written too long ago.
+        "regression_coverage": regression.as_dict(
+            regression.coverage(catalog, repo_full_name)
+        ),
         "points": [
             {
                 "at": point.at,

@@ -86,7 +86,68 @@ function Trends({ series }: { series: TrendSeries }) {
       </div>
 
       <Sparklines points={points} />
+
+      <RegressionCoverageBanner coverage={series.regression_coverage} />
     </section>
+  );
+}
+
+/**
+ * Which of the vulnerabilities we have already fixed would we notice coming
+ * back? (spec 31 §3)
+ *
+ * The only number on this page that measures the estate getting
+ * *structurally* safer rather than temporarily cleaner. Everything above it
+ * counts what is open; this counts what was learned, which is why it sits
+ * beside them rather than on a page of its own.
+ */
+function RegressionCoverageBanner({
+  coverage,
+}: {
+  coverage: TrendSeries["regression_coverage"];
+}) {
+  // An empty denominator, not a failing grade. `0%` on an estate that has
+  // never fixed anything would be a verdict on work nobody has had the chance
+  // to do yet.
+  if (!coverage.available || coverage.ratio === null) {
+    return (
+      <div className="border border-rule bg-paper-2 px-3 py-2">
+        <Label>Regression coverage</Label>
+        <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          Nothing has been fixed across the portfolio yet, so there is no
+          coverage to report.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-rule bg-paper-2 px-3 py-2">
+      <Label>Regression coverage</Label>
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[11px] text-ink-2">
+        <span className="tabular font-mono text-xl font-bold leading-none text-ink">
+          {Math.round(coverage.ratio * 100)}%
+        </span>
+        <span>
+          — {coverage.covered} of {coverage.fixed_findings} fixed findings have
+          a test pinned.
+        </span>
+        <span className="font-mono text-[10px] text-ink-3">
+          {coverage.demonstrated} demonstrated · {coverage.asserted} asserted
+        </span>
+        {/* Beside the headline, never folded into it: a pinned test whose lane
+            stopped running is a protection that quietly expired, and hiding
+            that would make this a number that only ever goes up. */}
+        {coverage.stale > 0 ? (
+          <span className="border border-high bg-high-wash px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-high">
+            {coverage.stale} stale
+          </span>
+        ) : null}
+      </p>
+      <p className="mt-1 max-w-prose text-[10px] leading-relaxed text-ink-3">
+        {coverage.note}
+      </p>
+    </div>
   );
 }
 

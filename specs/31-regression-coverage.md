@@ -39,7 +39,7 @@ Two smaller gaps sit alongside it, and both block making this universal:
 | Item | Status |
 |---|---|
 | The `finding_tests` link and its capture (§1, §2) | **Built** — via its own endpoint, not the disposition form; see below |
-| Regression coverage, per repository and portfolio-wide (§3) | **Built** per repository; portfolio-wide not started |
+| Regression coverage, per repository and portfolio-wide (§3) | **Built** — both; the portfolio number found a keying bug, see §3.1 |
 | Coverage percentage beside pass rate (§4) | **Built** — and it fixed a bug: a coverage report was being parsed as broken JUnit, see §4 |
 | Test-lane workflow templates for Actions (§5) | **Built** |
 | Into Oracle as a posture credit (§6) | **Built** — landed with spec 26 §2 as `posture.regression_coverage` |
@@ -124,6 +124,22 @@ dropped.
 **Fixed findings are the denominator, not all findings.** A vulnerability never fixed does not need a
 regression test; it needs a fix. Using every finding as the denominator would make the number
 unimprovable and therefore ignored.
+
+### 3.1 The portfolio number, and the bug it found
+
+**The same arithmetic over every repository, not a mean of per-repository ratios.** Averaging ratios
+gives a repository with two fixed findings the same weight as one with two hundred, so one
+well-tested corner would carry an estate that has pinned nothing.
+
+Widening the scope exposed a bug that per-repository scope had been hiding: staleness was keyed on
+the *lane* rather than on `(repository, lane)`. Per repository that is equivalent and it passed every
+test. Portfolio-wide it is precisely backwards — a `unit` lane running green anywhere would keep an
+abandoned link alive everywhere, so the number built to catch expired protection would have hidden
+it. Keyed on the pair now, with a test that fails on the old behaviour.
+
+**Not windowed by the trends page's `days`.** Every other number there is a rate over a period; this
+is a standing property of everything ever fixed. Clipping it to 90 days would expire a repository's
+regression tests from the count for having been written too long ago.
 
 ## 4. Coverage beside pass rate
 
