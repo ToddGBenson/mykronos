@@ -653,11 +653,100 @@ export interface paths {
          *     Composed from `open_findings`' own building blocks — `_finding_rows` and
          *     `_group_findings` — not a second grouping implementation reading the same
          *     table differently.
+         *
+         *     Now also carries what *stops* the things it lists (spec 28 §3, §4). A
+         *     threat model is made of four things and this had one; the declared
+         *     controls are read here rather than fetched separately because a category's
+         *     state is a fact about its findings and its controls together, and two
+         *     calls could disagree about it.
          */
         get: operations["repo_threat_model_api_dashboard_repos__repo_id__threat_model_get"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Declare Control
+         * @description Declare a mitigation (spec 28 §3).
+         *
+         *     Admin-authored, and the response never dresses that up as more. A declared
+         *     control says *a person asserted this*, which is a weaker and clearer claim
+         *     than a machine implying it — and it is useful the day it ships, where a
+         *     register waiting on spec 23 §2's entry-point inventory stays unbuilt for a
+         *     year.
+         *
+         *     `verified_by_capability` is derived from the kind rather than accepted
+         *     here: it says which capability could *contradict* this control, which is a
+         *     property of what the control is, not something a declarer may choose. A
+         *     control naming a capability that cannot see it would look checked and be
+         *     nothing of the kind.
+         */
+        post: operations["declare_control_api_dashboard_repos__repo_id__controls_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls/{control_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Control
+         * @description Somebody re-read it and it is still true.
+         *
+         *     Its own action rather than an edit, because the thing being recorded is
+         *     that a person looked — a mitigation nobody has checked since last quarter
+         *     is a belief, and the tab has to be able to say which of the two it is
+         *     showing.
+         */
+        post: operations["confirm_control_api_dashboard_repos__repo_id__controls__control_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls/{control_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Withdraw Control
+         * @description Remove a control that is no longer true.
+         *
+         *     Deleted rather than flagged withdrawn, unlike almost everything else here.
+         *     A control is a claim about the present; a withdrawn one is not evidence of
+         *     anything, and nobody needs to know that somebody once believed
+         *     authentication was enforced. The audit entry records who removed it, which
+         *     is the part that matters.
+         */
+        delete: operations["withdraw_control_api_dashboard_repos__repo_id__controls__control_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1414,6 +1503,14 @@ export interface paths {
          *     Stops all scheduled activity and revokes every ingestion token and grant,
          *     but **does not delete historical data lake rows** — those are the audit
          *     trail. Deleting them is a separate, explicitly-confirmed action.
+         *
+         *     Two operational tables *are* purged, and the distinction is the one the
+         *     lake/operational split rests on. A triage claim is a fact about who is
+         *     working on something this week (spec 27 §3); a declared control is a claim
+         *     about the present (spec 28 §3). Neither is evidence of anything once the
+         *     repository is offboarded, and both would otherwise sit in the queue and on
+         *     the tab of a repository nobody scans any more. The counts go in the audit
+         *     entry, so the deletion is recorded even though the rows are not.
          */
         delete: operations["offboard_repo_api_repos__repo_id__delete"];
         options?: never;
@@ -1860,6 +1957,78 @@ export interface components {
              * @description A handle. An anonymous claim tells nobody anything.
              */
             by: string;
+        };
+        /**
+         * ControlOut
+         * @description A declared mitigation (spec 28 §3).
+         */
+        ControlOut: {
+            /** Control Id */
+            control_id: string;
+            /** Stride */
+            stride: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Evidence Ref
+             * @default
+             */
+            evidence_ref: string;
+            /**
+             * Evidence
+             * @description `referenced` when the control names a file, route, policy or test; `asserted` when it does not. Both are allowed — refusing the second would mean the register only ever holds the controls somebody had time to document — and the tab renders the second as the weaker claim it is.
+             */
+            evidence: string;
+            /**
+             * Verified By Capability
+             * @default
+             */
+            verified_by_capability: string;
+            /**
+             * Checkable
+             * @description Whether any capability in this platform could contradict this control. False is stated rather than left implied: a control nothing can check is not a verified control.
+             */
+            checkable: boolean;
+            /** Last Verified At */
+            last_verified_at?: string | null;
+            /**
+             * Stale
+             * @description Nobody has re-confirmed this in 90 days. A mitigation nobody has checked since last quarter is a belief, and the tab says which of the two it is showing.
+             */
+            stale: boolean;
+            /**
+             * Declared By
+             * @default
+             */
+            declared_by: string;
+            /**
+             * Declared At
+             * Format: date-time
+             */
+            declared_at: string;
+        };
+        /** ControlRequest */
+        ControlRequest: {
+            /** Stride */
+            stride: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Evidence Ref
+             * @description A file path, a route, a policy document, a test id. Optional: a control without one is the weaker claim and is still worth having, because requiring it would mean the register only ever holds the controls somebody had time to document.
+             * @default
+             */
+            evidence_ref: string;
         };
         /**
          * DigestGroupOut
@@ -3357,6 +3526,10 @@ export interface components {
             raw_output_ref?: string | null;
             /** Detail */
             detail?: string | null;
+            /** Line Coverage */
+            line_coverage?: number | null;
+            /** Branch Coverage */
+            branch_coverage?: number | null;
         };
         /**
          * ScanStatus
@@ -3557,6 +3730,26 @@ export interface components {
             stride: string;
             /** Findings */
             findings: components["schemas"]["FindingGroupOut"][];
+            /**
+             * State
+             * @description `findings_open` | `unmitigated` | `mitigated` | `unscanned` (spec 28 §4). `unscanned` is the one that matters: a category nothing has ever reported into used to render identically to a clean one, which made an absence of looking read as good news.
+             * @default findings_open
+             */
+            state: string;
+            /** Controls */
+            controls?: components["schemas"]["ControlOut"][];
+            /**
+             * Contradicted
+             * @description Findings open *and* a control declared here. Shown rather than resolved: a control that exists while findings accumulate under it is either wrong, bypassed, or narrower than its description, and the platform has no basis to decide which.
+             * @default false
+             */
+            contradicted: boolean;
+            /**
+             * Reason
+             * @description Why this category is in this state.
+             * @default
+             */
+            reason: string;
         };
         /**
          * ThreatModelOut
@@ -3577,6 +3770,12 @@ export interface components {
             unmapped_cwes?: string[];
             /** Categories */
             categories: components["schemas"]["ThreatModelCategoryOut"][];
+            /**
+             * Nothing Scanned
+             * @description No capability that feeds any STRIDE category has ever reported here. Said once at the top rather than six times (spec 28 §6): it is one fact about the repository, not six about its categories.
+             * @default false
+             */
+            nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
         };
         /**
@@ -4634,6 +4833,103 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ThreatModelOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_control_api_dashboard_repos__repo_id__controls_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_control_api_dashboard_repos__repo_id__controls__control_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                control_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_control_api_dashboard_repos__repo_id__controls__control_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                control_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

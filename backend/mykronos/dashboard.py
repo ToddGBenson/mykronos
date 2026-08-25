@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import blast_radius, worklist
+from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
@@ -863,7 +864,9 @@ class DashboardQueries:
 
     # -- threat model -----------------------------------------------------
 
-    def threat_model(self, repo_full_name: str) -> dict[str, Any]:
+    def threat_model(
+        self, repo_full_name: str, *, controls: list[Any] | None = None
+    ) -> dict[str, Any]:
         """A STRIDE-categorized attack-surface inventory (spec 18 §6).
 
         Capability-level, not per-finding: no `Finding` carries a structured
@@ -949,6 +952,19 @@ class DashboardQueries:
         evidence = self.sscs_evidence(repo_full_name, limit=1)
         latest = evidence[0] if evidence else None
 
+        # Four states rather than "empty or not" (spec 28 §4). A category with
+        # no findings because nothing ever looked and one with no findings
+        # because the code is clean rendered identically, and the data that
+        # separates them was already being fetched on the same page.
+        states = category_states(
+            categories=STRIDE_CATEGORIES,
+            findings_by_category={c: len(g) for c, g in by_category.items()},
+            controls=list(controls or []),
+            scanned_capabilities=set(self.last_successful_scan_at(repo_full_name)),
+            stride_by_capability=STRIDE_BY_CAPABILITY,
+        )
+        states_by_category = {s["stride"]: s for s in states}
+
         return {
             "repo_full_name": repo_full_name,
             # Per page *and* per row: a repository will routinely be mixed —
@@ -961,9 +977,17 @@ class DashboardQueries:
             ),
             "unmapped_cwes": sorted(unmapped),
             "categories": [
-                {"stride": category, "findings": by_category[category]}
+                {
+                    "stride": category,
+                    "findings": by_category[category],
+                    **states_by_category[category],
+                }
                 for category in STRIDE_CATEGORIES
             ],
+            # Once, at the top, rather than six identical empty sections
+            # (spec 28 §6). A repository nothing has ever scanned is one fact
+            # about the repository, not six about its categories.
+            "nothing_scanned": all(s["state"] == "unscanned" for s in states),
             # Context for the Tampering/Information Disclosure categories'
             # atlas-derived findings, not a finding itself — the dependency
             # graph as a whole, distinct from the vulnerable slice of it the

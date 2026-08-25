@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import controls, worklist
 from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.auth import TokenRegistry
 from mykronos.capabilities import (
@@ -562,6 +563,14 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
     Stops all scheduled activity and revokes every ingestion token and grant,
     but **does not delete historical data lake rows** — those are the audit
     trail. Deleting them is a separate, explicitly-confirmed action.
+
+    Two operational tables *are* purged, and the distinction is the one the
+    lake/operational split rests on. A triage claim is a fact about who is
+    working on something this week (spec 27 §3); a declared control is a claim
+    about the present (spec 28 §3). Neither is evidence of anything once the
+    repository is offboarded, and both would otherwise sit in the queue and on
+    the tab of a repository nobody scans any more. The counts go in the audit
+    entry, so the deletion is recorded even though the rows are not.
     """
     db = request.app.state.db
     with db.session() as session:
@@ -569,6 +578,8 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
         registry = TokenRegistry(session)
         revoked = registry.revoke_repo(row.github_repo_full_name)
         row.status = "removed"
+        claims_purged = worklist.purge_for_repo(session, row.github_repo_full_name)
+        controls_purged = controls.purge_for_repo(session, row.github_repo_full_name)
 
         db.audit(
             session,
@@ -578,6 +589,8 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
             entity_id=row.id,
             repo=row.github_repo_full_name,
             tokens_revoked=revoked,
+            triage_rows_purged=claims_purged,
+            controls_purged=controls_purged,
             note="historical findings retained for audit (spec 02 §6)",
         )
         return _summary(row)

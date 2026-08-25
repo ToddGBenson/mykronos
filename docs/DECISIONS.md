@@ -3440,3 +3440,65 @@ measured at zero are different facts (spec 05 §7a). And sharded suites take the
 highest report rather than the sum or the mean: summing exceeds 1.0, averaging
 understates a repository whose shards are deliberately narrow, and the largest
 is at least a number somebody observed.
+
+## D-089 — A declared control lives in the operational store, and the spec that said otherwise was wrong
+
+**2026-08-24. Spec 28 §3, §4.**
+
+Spec 28 §3.2 specified `repo_controls` as a lake table. That contradicted the
+rule this platform had already applied three times, and applying it here makes
+the rule explicit rather than incidental.
+
+**Everything in the lake is append-only because its history is evidence.** You
+have to be able to say what a finding looked like in March. A declared control
+is not an observation: it is an editable statement about the present, corrected
+in place when it turns out to be wrong, and the lake's compaction and
+partitioning model is built for scan results (spec 05 §2). `RiskProfile`,
+`ReachabilityReport` and `TriageState` each made this call and each wrote down
+why; the register is the fourth.
+
+**The register exists because a threat model is made of four things and this
+platform had one.** Assets, entry points, trust boundaries, mitigations — the
+Threat Model tab had findings, grouped six ways. It could say what was found
+and not what stops it, and both halves of that get worse as the platform
+improves: the tab can only grow more red as scanning gets better, and a team
+that spends a quarter adding controls sees no change at all.
+
+**Declared is not verified, and no wording anywhere upgrades it.** A row says a
+person asserted this, which is a weaker and clearer claim than a machine
+implying it, and it is useful the day it ships where a register waiting on
+spec 23 §2's entry-point inventory stays unbuilt for a year. What stops it
+being a wiki is that the platform can *contradict* it. `verified_by_capability`
+is therefore derived from the control's kind and never accepted from the
+caller: it names the capability that could disprove the control, which is a
+property of what the control is, not a choice a declarer gets to make. A
+control naming a capability that cannot see it would look checked and be
+nothing of the kind, and a kind nothing can check — `logging`, `rate_limiting`
+— reports `checkable: false` rather than staying quiet about it.
+
+**A control over open findings is shown, not resolved.** The platform has no
+basis to decide whether such a control is wrong, bypassed, or narrower than its
+description. All three are worth somebody's attention, so both facts are put on
+the page together.
+
+**§4's real subject was never the controls.** An empty STRIDE category read as
+safe: one with no findings because DAST has never run in this repository
+rendered identically to one with no findings because the code is clean, and the
+scan-health data that separates them was already being fetched on the same
+page. Four states now, and `unscanned` is checked before any other, because
+whatever else is true of a category nothing has ever looked at, `clean` is not
+it. `scanned` counts capabilities that have actually reported rather than
+capabilities that are enabled — a lane switched on last week and never run is
+precisely the case this is for.
+
+`unmitigated` renders muted rather than green. Scanned, clean and nothing
+declared is a fine place to be and is not an achievement; colouring it like
+`mitigated` would put it level with a category somebody built a control for.
+
+**Withdrawing deletes the row**, unlike almost everything else here. A control
+is a claim about the present, a withdrawn one is not evidence of anything, and
+the audit entry records who removed it. Offboarding does the same to the whole
+register — and wiring that up turned up `worklist.purge_for_repo` (spec 27 §3),
+written and never called, so triage claims had been surviving offboarding
+since. Both are wired to the offboard route now, with their counts in the audit
+entry so a deletion is recorded even though the rows are not.

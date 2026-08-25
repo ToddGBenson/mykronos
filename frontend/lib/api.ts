@@ -73,6 +73,11 @@ export type ThreatIntelEntry =
 export type ThreatModelPage =
   paths["/api/dashboard/repos/{repo_id}/threat-model"]["get"]["responses"]["200"]["content"]["application/json"];
 export type ThreatModelCategory = ThreatModelPage["categories"][number];
+/** A declared mitigation (spec 28 §3). Declared, never verified — the
+ *  distinction is the whole point of the register. */
+export type ThreatModelControl = NonNullable<
+  ThreatModelCategory["controls"]
+>[number];
 
 /** The shape `signal_breakdown` carries when an admin is allowed to see it. */
 export type SignalBreakdown = {

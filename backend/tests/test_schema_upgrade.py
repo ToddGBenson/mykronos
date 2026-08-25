@@ -214,6 +214,15 @@ GRANDFATHERED = {
     # which the queue would then read as a real repository. The table arrived
     # with #97, so no database has rows this would have to be added to.
     "triage_state.repo_full_name",
+    # The controls register's three required columns (spec 28 §3). New table,
+    # so nothing has rows these would be added to. Defaults would be worse
+    # than absent for all three: a control with no repository belongs to
+    # everybody, and one defaulted to a STRIDE category or a control kind is
+    # a claim about a mitigation that nobody made — which is the one thing a
+    # register of asserted controls must never contain.
+    "repo_controls.repo_full_name",
+    "repo_controls.stride",
+    "repo_controls.kind",
 }
 
 
