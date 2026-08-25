@@ -68,9 +68,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Vault needs a token and this script never supplied one, so every call came
+# back 403 - including `get` and `list`, not just writes. The root token lives
+# in vault/init.json, gitignored, the same file vault-unseal.ps1 reads.
+#
+# Held in an environment variable and never passed as an argument: `-e
+# VAULT_TOKEN` with no value forwards this process's variable into the
+# container, so the token never appears in any command line. The AppRole a
+# pipeline uses cannot write here - that 403 is the policy working - which is
+# why this is the root token and why the file it comes from is not committed.
+$initFile = Join-Path $PSScriptRoot 'vault\init.json'
+if (-not (Test-Path $initFile)) {
+  Write-Error "Missing $initFile - that is where the root token lives. Vault cannot be read or written without it."
+}
+$env:VAULT_TOKEN = (Get-Content $initFile -Raw | ConvertFrom-Json).root_token
+if (-not $env:VAULT_TOKEN) { Write-Error "No root_token in $initFile." }
+
 function Invoke-Vault {
   param([string[]] $VaultArgs)
-  $out = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -i $Container vault @VaultArgs 2>&1
+  $out = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN -i $Container vault @VaultArgs 2>&1
   if ($LASTEXITCODE -ne 0) {
     if ($out -match 'Vault is sealed') {
       Write-Error "Vault is sealed. Run .\vault-unseal.ps1 first."
@@ -135,6 +151,7 @@ switch ($Action) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'docker'
     foreach ($a in @('exec', '-e', 'VAULT_ADDR=http://127.0.0.1:8200',
+                     '-e', 'VAULT_TOKEN',
                      '-i', $Container, 'vault', 'kv', 'put', $path, 'value=-')) {
       $psi.ArgumentList.Add($a)
     }
@@ -157,7 +174,7 @@ switch ($Action) {
     # Read the length back. A secret that stored two bytes longer than it
     # should is exactly the failure this rewrite fixes, so it is worth
     # confirming rather than assuming - and the length is safe to print.
-    $check = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 $Container `
+    $check = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN $Container `
       vault read -format=json $path 2>$null | Out-String
     if ($check) {
       $stored = ($check | ConvertFrom-Json).data
