@@ -1,0 +1,92 @@
+{#-
+  Shared skeleton for the three test lanes (spec 31 §5, D-046).
+
+  These differ from every other capability template in one way that shapes the
+  whole file: **there is no tool.** Nine capabilities run a scanner this
+  platform chose — CodeQL, Trivy, Checkov. A test lane runs the repository's
+  own suite, whose runner is decided by its language and its own conventions,
+  and the platform's job is to record that it ran, how it ended, and how many
+  cases failed (D-046). So the command comes from config, and an install
+  without one is refused rather than guessed at.
+
+  They also produce **no findings, ever**. A failing test is a defect and is
+  not a vulnerability; giving it a severity would put a broken documentation
+  link into a security risk score. The upload posts a ScanRun with a case
+  count and no rows, which is the whole point of D-046 and the reason the
+  Harness tab can show a pass rate without any of it touching Oracle.
+
+  Children override: capability_summary, and optionally extra_env / pre_steps.
+-#}
+{% extends "_base.yml.j2" %}
+
+{% block triggers %}
+  pull_request:
+  push:
+    branches: ["<< default_branch >>"]
+{%- if config.get('schedule_cron') %}
+  schedule:
+    - cron: "<< config.schedule_cron >>"
+{%- endif %}
+  workflow_dispatch:
+{% endblock %}
+
+{% block scan_steps %}
+{% block pre_steps %}{% endblock %}
+      - name: Run the << capability >> suite
+        # `continue-on-error` rather than `|| true`: the step's own outcome is
+        # what the summary step reads, and a suite that fails must still
+        # upload. "The tests failed" and "nothing told us anything" are
+        # different facts, and the second is worse (spec 04 §6).
+        id: suite
+        continue-on-error: true
+        env:
+          # Where the JUnit XML has to land. Named rather than hardcoded into
+          # the command so a config written once keeps working if the upload
+          # contract moves.
+          MYKRONOS_RESULTS: ${{ runner.temp }}/mykronos-results
+{% block extra_env %}{% endblock %}
+        run: |
+          set -uo pipefail
+          mkdir -p "$MYKRONOS_RESULTS"
+{%- for line in config.get('setup', []) %}
+          << line >>
+{%- endfor %}
+{#- The installer refuses an install with no command (spec 31 §5), so this
+    branch should be unreachable. It fails loudly rather than rendering an
+    empty line: a lane that runs nothing and reports success is the exact
+    outcome the refusal exists to prevent, and defence in depth is cheap
+    when the alternative is a green tick that means nothing. -#}
+{%- if config.get('command') %}
+          << config.get('command') >>
+{%- else %}
+          echo "::error::No test command is configured for this lane."
+          exit 1
+{%- endif %}
+
+      - name: Say what the suite did
+        # Before the upload, and unconditionally. An operator reading a failed
+        # run should not have to open Mykronos to find out whether the suite
+        # ran and failed or never started.
+        if: always()
+        run: |
+          count=$(ls -1 "${{ runner.temp }}/mykronos-results"/*.xml 2>/dev/null | wc -l)
+          echo "<< capability >>: outcome=${{ steps.suite.outcome }}, $count JUnit report(s)."
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::The suite produced no JUnit XML. Mykronos will record this run as having reported nothing."
+          fi
+{% endblock %}
+
+{% block tool_name %}junit{% endblock %}
+
+{% block post_upload %}
+{%- if config.fail_build_on_failure | default(true) %}
+      - name: Fail the build if the suite failed
+        # Last, so the ScanRun is recorded first. Failing earlier would make
+        # the pipeline's verdict and the platform's record disagree exactly
+        # when somebody most needs them to agree.
+        if: steps.suite.outcome == 'failure'
+        run: |
+          echo "::error::The << capability >> suite failed."
+          exit 1
+{%- endif %}
+{% endblock %}

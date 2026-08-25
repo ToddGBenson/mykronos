@@ -73,6 +73,24 @@
       "version": "1.0.0",
       "summary": "Auto-remediation \u2014 opens draft pull requests, never merges"
     },
+    "unit": {
+      "template": "unit.yml.j2",
+      "target": ".github/workflows/mykronos-unit.yml",
+      "version": "1.0.0",
+      "summary": "The repository's own unit suite — reports a run and a case count, never a finding (D-046)"
+    },
+    "functional": {
+      "template": "functional.yml.j2",
+      "target": ".github/workflows/mykronos-functional.yml",
+      "version": "1.0.0",
+      "summary": "Functional tests against a deployed lower environment — never production (D-046)"
+    },
+    "qa": {
+      "template": "qa.yml.j2",
+      "target": ".github/workflows/mykronos-qa.yml",
+      "version": "1.0.0",
+      "summary": "Repository quality checks — link integrity, contract and schema checks (D-046)"
+    },
     "oracle": {
       "template": "oracle-gate.yml.j2",
       "target": ".github/workflows/mykronos-oracle.yml",

@@ -314,6 +314,18 @@ export type ScanHealth = {
     detail: string | null;
     /** Same commit, disagreeing status, on the last two runs (spec 19 §1.3). */
     flaky: boolean;
+    /**
+     * Coverage from the most recent run that reported it (spec 31 §4). Null
+     * means no run has reported any — a different fact from 0, which means a
+     * runner measured and found none.
+     *
+     * Explicitly **not a security metric**, and labelled that way wherever it
+     * is shown: it is context that stops a green pass rate being read as more
+     * than it is.
+     */
+    line_coverage: number | null;
+    branch_coverage: number | null;
+    coverage_at: string | null;
   }[];
 };
 

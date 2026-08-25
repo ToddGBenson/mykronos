@@ -31,7 +31,8 @@ Two smaller gaps sit alongside it, and both block making this universal:
   trivial test and a 100% pass rate renders identically to one with a real suite.
 - **Actions-scanned repositories cannot use the Harness at all** — no workflow template exists for
   the three lanes, so they cannot even be enabled there. Named honestly in spec 18 §0a and still
-  true.
+  true. *Closed by §5: `unit.yml.j2`, `functional.yml.j2` and `qa.yml.j2` now exist, and the
+  capabilities endpoint stops refusing these three for an Actions-scanned repository.*
 
 ## 0a. Implementation status
 
@@ -39,9 +40,9 @@ Two smaller gaps sit alongside it, and both block making this universal:
 |---|---|
 | The `finding_tests` link and its capture (§1, §2) | **Built** — via its own endpoint, not the disposition form; see below |
 | Regression coverage, per repository and portfolio-wide (§3) | **Built** per repository; portfolio-wide not started |
-| Coverage percentage beside pass rate (§4) | Not started |
-| Test-lane workflow templates for Actions (§5) | Not started |
-| Into Oracle as a posture credit (§6) | Not started — lands with spec 26 §2 |
+| Coverage percentage beside pass rate (§4) | **Built** — and it fixed a bug: a coverage report was being parsed as broken JUnit, see §4 |
+| Test-lane workflow templates for Actions (§5) | **Built** |
+| Into Oracle as a posture credit (§6) | **Built** — landed with spec 26 §2 as `posture.regression_coverage` |
 
 ## 1. What a regression link is
 
@@ -134,6 +135,25 @@ Concourse lanes already have the output in hand. Reported as a `ScanRun` metric 
 sparkline being read as more than it is. Coverage of 90% with zero regression links means the tests
 are thorough about something other than the things that have gone wrong here.
 
+### 4.1 Found while building: a coverage report was making the record worse
+
+The JUnit adapter globs `*.xml`. A repository that wrote `coverage.xml` beside `unit.xml` — which is
+the default layout of pytest-cov, of jest, and of every Maven build — was handing a Cobertura
+document to a JUnit parser. It found no `testsuite` element, warned "the report contains no test
+suites", and downgraded a green run to `no_applicable_targets`.
+
+So the file carrying the most useful context about a suite was actively degrading the record of that
+suite, and had been since D-046. Cobertura and JaCoCo are now recognised by their root element and
+yield coverage rather than a warning.
+
+**Null is not zero, and the tab distinguishes them.** A lane whose runner never wrote a coverage
+report and a lane measured at zero are different facts. Rendering both as 0% would make the honest
+one look like the broken one, which is spec 05 §7a's convention applied to a new number.
+
+**Sharded suites take the highest report, not the sum or the mean.** Each shard measures only the
+code its own shard touched: summing exceeds 1.0, and averaging understates a repository whose shards
+are deliberately narrow. The largest is at least a number somebody actually observed.
+
 ## 5. The Actions gap
 
 Three workflow templates — `unit.yml.j2`, `functional.yml.j2`, `qa.yml.j2` — following the existing
@@ -143,6 +163,27 @@ repositories and the Harness tab stops being dark for a whole class of onboarded
 Mechanical work, listed last in this spec and yet a precondition for regression coverage meaning
 anything portfolio-wide: a coverage number computed over only the Concourse repositories would be a
 statement about the pipeline, not about the estate.
+
+### 5.1 What the templates decided that this section did not
+
+**The command comes from config and has no default.** A test lane runs the repository's own suite,
+whose runner is decided by its language and its own conventions (D-046). Guessing `pytest` because a
+`.py` file exists ships a workflow that fails on every run for reasons the team did not choose, so
+an Actions install without a command is refused with a 422 naming the field. The template carries a
+second, redundant guard that fails the run loudly if it ever renders without one — a lane that runs
+nothing and reports success is precisely the outcome the refusal exists to prevent.
+
+**This is arbitrary code execution on the runner, by definition.** There is no version of "run this
+repository's test suite" that is not "run what this config says". The boundary that matters is
+therefore who may set it — capability config is admin-only — and that a command cannot escape its own
+step into the rest of the workflow. Newlines are refused in `command` and in each `setup` line, for
+exactly that reason; shell metacharacters are allowed, because refusing them would refuse most real
+test commands.
+
+**The functional lane offers the DAST proxy rather than asserting it.** Actions has no long-lived ZAP
+instance for a workflow to route through — that is the Concourse lane's arrangement. What this can
+honestly do is tell the suite where a proxy is when one is configured, and say nothing when one is
+not. A workflow claiming a DAST corpus it never produced would be worse than producing none.
 
 ## 6. Into Oracle
 

@@ -66,6 +66,12 @@ class UploadOutcome:
     scan_status: ScanStatus = ScanStatus.SUCCESS
     blocking_findings: int = 0
     warnings: list[str] = field(default_factory=list)
+    #: Coverage the runner reported, 0..1 (spec 31 §4). Carried here rather
+    #: than read from the adapter result in the `finally` block, because a
+    #: crash inside `run_adapter` leaves that result empty and the finalising
+    #: post still has to happen.
+    line_coverage: float | None = None
+    branch_coverage: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +392,8 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         result = run_adapter(args.capability, args.tool, results_path, context)
         outcome.scan_status = result.scan_status
         outcome.warnings = list(result.warnings)
+        outcome.line_coverage = result.line_coverage
+        outcome.branch_coverage = result.branch_coverage
 
         for start in range(0, max(len(result.findings), 1), MAX_BATCH):
             chunk = result.findings[start : start + MAX_BATCH]
@@ -433,6 +441,13 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         # in both directions, permanently.
         if outcome.warnings:
             final["detail"] = outcome.warnings[0][:200]
+        # Same omit-when-absent rule, for the same reason (spec 31 §4): a
+        # backend that has never heard of these keys forbids them, and a 422
+        # here loses the ScanRun rather than losing a metric.
+        if outcome.line_coverage is not None:
+            final["line_coverage"] = round(outcome.line_coverage, 4)
+        if outcome.branch_coverage is not None:
+            final["branch_coverage"] = round(outcome.branch_coverage, 4)
 
         client.post("/api/ingest/scan-run", json_body=final)
 

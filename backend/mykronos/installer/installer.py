@@ -36,6 +36,7 @@ from mykronos.installer.templates import (
     TemplateLibrary,
     is_mykronos_generated,
 )
+from mykronos.regression import TEST_CAPABILITIES as TEST_LANES
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,27 @@ class WorkflowInstaller:
         )
 
         configs = configs or {}
+
+        # A test lane with no command would render a workflow that checks out
+        # the code, runs nothing, and uploads an empty results directory —
+        # green on every run and meaningless. The command has no default
+        # because a repository's test runner is decided by its language and
+        # its own conventions (D-046, spec 31 §5), so the honest failure is a
+        # 422 naming the field rather than a workflow that tests nothing.
+        commandless = sorted(
+            capability
+            for capability in requested
+            if capability in TEST_LANES
+            and not str(configs.get(capability, {}).get("command", "")).strip()
+        )
+        if commandless:
+            raise InstallerError(
+                f"No test command configured for: {', '.join(commandless)}. "
+                "A test lane runs this repository's own suite, and this "
+                "platform will not guess it — set `command` on each "
+                "capability's config to something that writes JUnit XML into "
+                "$MYKRONOS_RESULTS."
+            )
 
         enabled_after = sorted(
             c for c in requested if c in self.templates.available
