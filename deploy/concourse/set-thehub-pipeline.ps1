@@ -353,12 +353,17 @@ try {
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
         #
-        # Held at v5 on 2026-08-25: v6 sends `cwe_ids` (spec 28 §1) and the
-        # deployed backend forbids extra keys, so uploads 422'd. See the
-        # longer note in set-pipeline.ps1. Still a move forward for TheHub,
-        # which had been stranded on v4.1 by the stale-checkout problem this
-        # script's token-minting comment describes.
-        "mykronos-ref: v5",
+        # v7 — and for TheHub that is three pins in one day, from v4.1, where
+        # it had been stranded by the stale-checkout problem this script's
+        # token-minting comment describes. Nothing was wrong with TheHub; the
+        # script that applied its pipeline was being run from a copy of this
+        # repository nobody remembered was load-bearing.
+        #
+        # Held at v5 briefly because v6 sent `cwe_ids` (spec 28 §1) to a
+        # backend that forbade extra keys and 422'd the whole batch. See the
+        # ordering rule in set-pipeline.ps1: deploy the backend first, then
+        # move the pin.
+        "mykronos-ref: v7",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #

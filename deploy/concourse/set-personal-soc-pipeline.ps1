@@ -173,11 +173,12 @@ try {
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
         #
-        # Held at v5 on 2026-08-25: v6 sends `cwe_ids` (spec 28 §1) and the
-        # deployed backend forbids extra keys, so uploads 422'd. See the
-        # longer note in set-pipeline.ps1. Move to v6 once the backend
-        # serving `/api/ingest` accepts the field.
-        "mykronos-ref: v5",
+        # v7. Held at v5 earlier on 2026-08-25 because v6 sent `cwe_ids`
+        # (spec 28 §1) to a backend that forbade extra keys and 422'd the
+        # whole batch; the backend now accepts it and v7 omits it when empty.
+        # See the longer note in set-pipeline.ps1 for the ordering rule:
+        # deploy the backend first, then move the pin.
+        "mykronos-ref: v7",
         # personal-soc is granted exactly one capability - secrets - so the
         # secrets job is the only lane with anywhere to report. Empty is
         # allowed: the scan still runs and still gates, and says loudly in the
