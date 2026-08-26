@@ -280,6 +280,34 @@ jobs:
   # `build` on it would turn "one signal is inert" into "nothing ships".
   - name: pin-check
     public: true
+    # Concurrency, in two rounds on 2026-08-25, and the second round is the
+    # one that mattered.
+    #
+    # Round one added `quality-a`/`-b` here because the quality stage was the
+    # only unbounded one. That was true and insufficient: the groups were
+    # *per stage*, and per-stage caps sum. With `scan-heavy-a`/`-b` already
+    # holding two and the image jobs on `serial: true` holding one each, five
+    # heavy jobs ran together on two workers -- `pin-check`, `frontend`,
+    # `sast`, `iac` and `publish-frontend`. A 15-minute image build sat at 38
+    # minutes against a 45-minute ceiling, and a 10-minute scan at 33.
+    #
+    # Round two replaced every one of those with a single pair, `worker-a`
+    # and `worker-b`, across the whole pipeline. Two groups because there are
+    # two workers: the cap is now a fact about the box rather than an
+    # accident of how the stages were divided. `serial: true` on the image
+    # jobs stopped them stacking with *themselves* and did nothing about
+    # standing beside four other heavy jobs, which is what they were doing.
+    #
+    # thehub.yml reached the same conclusion first, from an OOM that killed
+    # the scheduler; it uses one group because it has one worker. The cost is
+    # the same one its comment names: the fan-out is a queue, and a full run
+    # is the sum of its lanes over two rather than the longest one. On a box
+    # that also hosts thehub's stack and this platform's own containers, that
+    # was always closer to the truth than the diagram suggested.
+    #
+    # The original note follows, because the first round's evidence is still
+    # why any of this is here:
+    #
     # Concurrency added 2026-08-25, after six merges in ten minutes started
     # six overlapping runs of this whole stage: five `unit` builds at once,
     # each running the full suite, plus overlapping `lint-and-types` and
@@ -297,7 +325,7 @@ jobs:
     # makes each job serial with *itself*, which is the part that actually
     # bit — five builds of one job, one per commit, four of them already
     # superseded before they finished.
-    serial_groups: [quality-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -330,7 +358,7 @@ jobs:
 
   - name: unit
     public: true
-    serial_groups: [quality-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -413,7 +441,7 @@ jobs:
 
   - name: lint-and-types
     public: true
-    serial_groups: [quality-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -501,7 +529,7 @@ jobs:
 
   - name: qa-spec-links
     public: true
-    serial_groups: [quality-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -547,7 +575,7 @@ jobs:
   # retired: lint, build, and the contract check that matters more than either.
   - name: frontend
     public: true
-    serial_groups: [quality-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -703,7 +731,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -776,7 +804,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -994,7 +1022,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1039,7 +1067,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1165,7 +1193,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1322,7 +1350,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1440,9 +1468,10 @@ jobs:
 
   - name: oracle-gate
     public: true
-    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
-    # single commit fanned out onto the one worker and left thehub with
-    # 11 builds pending and 0 started for hours.
+    # `serial: true`, not a worker group. This asks the platform to score a
+    # commit and posts a check run: it is an API call, not a build, and
+    # putting it in the two-slot cap would make a gate queue behind a
+    # twenty-minute image build for work that takes seconds.
     serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
@@ -1613,10 +1642,9 @@ jobs:
 
   - name: build
     public: true
-    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
-    # single commit fanned out onto the one worker and left thehub with
-    # 11 builds pending and 0 started for hours.
-    serial: true
+    # In the cap: this compiles the wheel the image jobs consume, and it is
+    # real work on a worker rather than an API call.
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1689,7 +1717,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1765,7 +1793,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1850,7 +1878,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
