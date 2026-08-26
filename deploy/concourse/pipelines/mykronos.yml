@@ -1558,8 +1558,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
 
       - task: promote-tags
         timeout: 10m
@@ -1685,8 +1710,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
       - task: kaniko
         timeout: 45m
         config:
@@ -1736,8 +1786,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
       - task: kaniko
         timeout: 45m
         config:
@@ -1802,8 +1877,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
 
       - task: scan-images
         timeout: 45m
