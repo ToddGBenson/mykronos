@@ -364,6 +364,36 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         workspace=workspace,
     )
 
+    def _finding_payload(finding: FindingSubmission) -> dict[str, Any]:
+        """One finding, with fields an older backend has never heard of dropped.
+
+        The uploader and the platform are versioned independently: CI installs
+        this module from a pinned tag while the backend it posts to is
+        whatever was last deployed, so a *new* uploader routinely talks to an
+        *older* backend — and `FindingSubmission` forbids extra keys
+        (spec 05 §4).
+
+        `scan_run_payload` below already learned this for `detail`,
+        `line_coverage` and `branch_coverage`, and it cost a lost ScanRun to
+        learn. This is the same trap one field later, and it cost more:
+        pinning the runner to a tag carrying spec 28 §1 made every finding
+        arrive with `cwe_ids`, the deployed backend 422'd the whole batch, and
+        SAST and secrets uploaded *nothing* for as long as the skew lasted. A
+        rejected batch is worse than a rejected field — the findings do not
+        degrade, they disappear.
+
+        Omitted only when empty, which is the common case and the safe one: an
+        empty list carries no information a backend could act on, so dropping
+        it loses nothing. A finding that really does declare CWEs still sends
+        them and would still 422 against a backend too old to accept them —
+        that skew is real and is fixed by deploying, not by silently
+        discarding what a tool found.
+        """
+        payload = finding.model_dump(mode="json")
+        if not payload.get("cwe_ids"):
+            payload.pop("cwe_ids", None)
+        return payload
+
     def scan_run_payload(**overrides: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "scan_run_id": scan_run_id,
@@ -404,7 +434,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
                 json_body={
                     "scan_run_id": scan_run_id,
                     "capability": args.capability,
-                    "findings": [f.model_dump(mode="json") for f in chunk],
+                    "findings": [_finding_payload(f) for f in chunk],
                 },
             )
             outcome.findings_accepted += int(response.get("accepted", 0))

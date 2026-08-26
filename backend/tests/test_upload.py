@@ -358,6 +358,52 @@ class TestOrchestration:
 
         assert "detail" not in client.bodies_for("/api/ingest/scan-run")[1]
 
+    def test_a_finding_with_no_cwes_omits_the_key_entirely(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """The same rule as `detail` above, one field later — and this one had
+        teeth.
+
+        Pinning the runner to a tag carrying spec 28 §1 made every finding
+        arrive with `cwe_ids`. The deployed backend predated the field,
+        `FindingSubmission` forbids extra keys, and it rejected the *whole
+        batch*: SAST and secrets uploaded nothing at all until the pin was
+        rolled back. A rejected batch is worse than a rejected field, because
+        the findings do not degrade — they disappear.
+
+        Empty is the common case and the safe one to drop: it carries nothing
+        a backend could act on."""
+        client = RecordingClient()
+        upload(make_args(results, workspace), client=client)
+
+        posted = client.bodies_for("/api/ingest/findings")[0]["findings"]
+        assert posted
+        assert all("cwe_ids" not in f for f in posted)
+
+    def test_a_finding_that_declares_cwes_still_sends_them(
+        self, results: Path, workspace: Path, monkeypatch
+    ) -> None:
+        """Dropping them when present would silently discard what the tool
+        found, which is a worse failure than the 422 it avoids. That skew is
+        fixed by deploying the backend, not by hiding the data."""
+        from mykronos import upload as upload_module
+
+        real = upload_module.run_adapter
+
+        def tagged(*args: object, **kwargs: object):
+            result = real(*args, **kwargs)  # type: ignore[arg-type]
+            for finding in result.findings:
+                finding.cwe_ids = ["CWE-89"]
+            return result
+
+        monkeypatch.setattr(upload_module, "run_adapter", tagged)
+        client = RecordingClient()
+        upload(make_args(results, workspace), client=client)
+
+        posted = client.bodies_for("/api/ingest/findings")[0]["findings"]
+        assert posted
+        assert all(f["cwe_ids"] == ["CWE-89"] for f in posted)
+
     def test_pr_number_zero_becomes_null(self, results: Path, workspace: Path) -> None:
         """GitHub expression fallbacks yield 0 for "not a pull request"; a run
         claiming to belong to PR #0 would be a lie in the audit trail."""

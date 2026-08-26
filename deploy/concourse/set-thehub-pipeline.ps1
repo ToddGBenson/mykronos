@@ -352,7 +352,13 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v6",
+        #
+        # Held at v5 on 2026-08-25: v6 sends `cwe_ids` (spec 28 §1) and the
+        # deployed backend forbids extra keys, so uploads 422'd. See the
+        # longer note in set-pipeline.ps1. Still a move forward for TheHub,
+        # which had been stranded on v4.1 by the stale-checkout problem this
+        # script's token-minting comment describes.
+        "mykronos-ref: v5",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #

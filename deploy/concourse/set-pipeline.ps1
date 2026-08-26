@@ -154,7 +154,24 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v6",
+        #
+        # Held at v5 on 2026-08-25 after v6 broke ingestion. v6 carries spec
+        # 28 §1, so the uploader sends `cwe_ids` on every finding; the
+        # deployed backend predates that field and its submission model
+        # forbids extra keys (spec 05 §4), so every SAST and secrets upload
+        # 422'd and the findings were lost.
+        #
+        # `pin-check` did not catch it and could not: it asserts the pinned
+        # package still has the modules and flags the pipelines invoke, which
+        # was true. The failure is not the runner missing something — it is
+        # the runner having something the *backend* does not, which is a fact
+        # about two versions and not about one.
+        #
+        # Move this to v6 only after the backend serving `/api/ingest` is on
+        # a build that accepts `cwe_ids`. The ordering matters in that
+        # direction and not the other: an old runner against a new backend is
+        # fine, because the new backend still accepts what the old one sends.
+        "mykronos-ref: v5",
         # The branch the pipeline scans, which every upload now reports rather
         # than each one naming the default branch as a literal (PS-6). One
         # place to change if this pipeline is ever pointed somewhere else.
