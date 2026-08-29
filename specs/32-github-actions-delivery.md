@@ -928,8 +928,11 @@ that failure mode since it was written.
    `"demo-and-dast": ("functional", "dast")`, so the case that raised this
    resolves with almost no new code — and it reuses the seam that exists,
    stays honest about being a heuristic, and already handles one job producing
-   several capabilities. **Not yet implemented**; roughly ten lines in
-   `capability_by_workflow`.
+   several capabilities. **Implemented 2026-08-28** as
+   `ActionsClient._job_name_for`: the registry first because it is exact, the
+   table second because it is a heuristic and already documented as one.
+   Returning the *stem* rather than a resolved capability is what lets one
+   workflow answer for two without touching `reconcile()`.
 
 6. ~~**Should the Slack alerting move, or be dropped?**~~ **Answered
    2026-08-28: route through Mykronos.** Failures reach Slack via `notify.py`,
