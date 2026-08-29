@@ -1,0 +1,138 @@
+# Move `:latest` onto a commit that has been published — spec 32 §4.1, D-047.
+#
+# Split out of `delivery.yml` on 2026-08-29, and the reason is worth stating
+# because the original arrangement looked correct and was backwards.
+#
+# `promote` sits behind the `production` environment, so it waits for a human.
+# While it waits, the *whole Delivery run* is `waiting` — and `demo-and-dast`
+# triggers on Delivery **completing**. So DAST and the functional suite could
+# not run until somebody approved a production promote: the security scan was
+# gated behind the deploy decision it exists to inform. Spec 15 §3 puts
+# security before the gate for exactly this reason, and Oracle scores the whole
+# picture before a promote rather than after one.
+#
+# Splitting it fixes the ordering without weakening the gate. Delivery now
+# completes as soon as both images are published by `:${SHA}`, which releases
+# `demo-and-dast` immediately; this workflow starts at the same moment and
+# waits for an approval that a person can now make *with the scan results in
+# front of them*.
+#
+# What is deliberately unchanged: the gate holds the tag, not the artifact
+# (D-047). Images publish as `:${SHA}` on every push whether or not anybody
+# promotes, and a commit nobody approves simply leaves images in the registry
+# that nothing points at.
+
+name: Promote
+
+on:
+  workflow_run:
+    workflows: ["Delivery"]
+    types: [completed]
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: The commit to promote. Must already be published as :<sha>.
+        required: true
+
+concurrency:
+  group: promote-${{ github.ref }}
+  # Never cancel a promote in flight: it moves a tag two images share, and a
+  # half-applied retag points `:latest` at one component's new build and the
+  # other's old one.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  promote:
+    name: promote (:latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A Delivery that failed published nothing worth promoting. `workflow_run`
+    # fires on completion regardless of outcome, so this is explicit.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    # The Actions-native form of "a person clicks a button in Concourse"
+    # (spec 16 §3). Only real once the environment has required reviewers: one
+    # with none approves itself instantly and looks identical in this file.
+    environment: production
+
+    env:
+      REGISTRY: ghcr.io
+      # The commit Delivery published, not the branch tip — those differ the
+      # moment two pushes land close together, and promoting the wrong one
+      # would move `:latest` onto an image this run never checked.
+      SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
+
+    steps:
+      - name: Lowercase the owner
+        # `github.repository_owner` is `ToddGBenson`; a Docker repository name
+        # must be lowercase or the reference is refused outright.
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move :latest onto this commit
+        run: |
+          set -euo pipefail
+          for component in backend frontend; do
+            IMAGE="${REGISTRY}/${OWNER}/mykronos-${component}"
+
+            # Retag by digest rather than by pulling and re-pushing. Doing it
+            # by digest is what makes it unraceable: a second push to
+            # :${SHA} between the resolve and the create cannot redirect
+            # :latest, because a digest names the bytes rather than the tag.
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${SHA}" \
+              --format '{{.Manifest.Digest}}')
+            echo "${component}: ${SHA} -> ${DIGEST}"
+
+            docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+          done
+
+      - name: What to do next
+        run: |
+          echo "::notice::':latest' now points at ${SHA}."
+          echo "Deploy is still a person running deploy/mykronos/deploy.ps1 on"
+          echo "the host (D-038). That script pulls ':latest'."
+
+      - name: Tell Mykronos this lane failed
+        # spec 32 §11 q6. A promote produces no findings, so there is no
+        # ScanRun for a failure to ride in on. Never fatal: the job has
+        # already failed and a notifier that cannot be reached must not turn
+        # that into a more confusing verdict.
+        if: failure()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python - <<'PY' || echo "Could not reach Mykronos to report the failure."
+          import json, os, urllib.request
+          body = json.dumps({
+              "lane": os.environ["LANE"],
+              "detail": "The lane failed. See the run for which step.",
+              "commit_sha": os.environ["SHA"],
+              "run_url": os.environ["RUN_URL"],
+          }).encode()
+          req = urllib.request.Request(
+              os.environ["INGEST"].rstrip("/") + "/api/ingest/lane-failure",
+              data=body,
+              headers={
+                  "Authorization": "Bearer " + os.environ["TOKEN"],
+                  "Content-Type": "application/json",
+              },
+          )
+          urllib.request.urlopen(req, timeout=20).read()
+          print("Reported to Mykronos.")
+          PY
+        env:
+          LANE: promote
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INGEST: https://mykronos.toddbenson.net
+          TOKEN: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}

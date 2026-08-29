@@ -375,8 +375,27 @@ pull `:latest` from GHCR instead of `192.168.0.14:5000`.
 **The Actions-native gate is a GitHub Environment**, not a job that waits. A
 `production` environment with required reviewers turns "a person clicks a
 button in Concourse" (spec 16 §3) into the same act with an audit trail and an
-identity attached. That is available now for the `promote` lane and should be
-used for it.
+identity attached.
+
+**And `promote` must be its own workflow, which the first live run proved
+(2026-08-29).** Held behind the environment, it kept the entire `Delivery` run
+in `waiting` — and `demo-and-dast` triggers on Delivery *completing*. So DAST
+and the functional suite could not run until somebody approved a production
+promote: **the security scan was gated behind the deploy decision it exists to
+inform.** Spec 15 §3 orders it the other way round for exactly this reason, and
+Oracle scores the whole picture *before* a promote.
+
+Split into `promote.yml` on a `workflow_run` trigger. Delivery now completes at
+publish, which releases `demo-and-dast` immediately; the promote starts at the
+same moment and waits for an approval a person can make with the scan results
+in front of them. The gate is unweakened and D-047 is untouched — images still
+publish as `:${SHA}` on every push, and a commit nobody approves leaves images
+nothing points at.
+
+This is the clearest example in the migration of a mistake that reads as
+correct in the file and is only visible once it runs: nothing about a single
+`Delivery` workflow with a gated final job looks wrong until you notice what
+`workflow_run: types: [completed]` waits for.
 
 **A backend-mediated deploy request is deliberately out of scope.** It would
 be a `POST /api/deploy/request` that writes the `<env>.requested` pointer of
