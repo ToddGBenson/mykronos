@@ -143,7 +143,18 @@ jobs:
       # promote, and the half that worked is still on the registry by SHA.
       fail-fast: false
       matrix:
-        component: [backend, frontend]
+        # The context differs per component and is not cosmetic. The backend
+        # Dockerfile COPYs `backend/pyproject.toml`, `workflow-templates` and
+        # `maturity-model-v1.yaml` — paths that only resolve from the
+        # repository root — so a `backend` context fails at the first COPY
+        # with "/maturity-model-v1.yaml: not found". The frontend's resolve
+        # from `frontend`, and giving it the root would ship the whole
+        # repository to the daemon for no reason.
+        include:
+          - component: backend
+            context: .
+          - component: frontend
+            context: frontend
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -168,7 +179,7 @@ jobs:
         id: push
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
-          context: ${{ matrix.component }}
+          context: ${{ matrix.context }}
           file: ${{ matrix.component }}/Dockerfile
           push: true
           # The commit SHA and nothing else. `:latest` is moved by `promote`,
