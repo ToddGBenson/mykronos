@@ -764,6 +764,40 @@ the four repositories stop needing that the day they flip to
 `scanned_by=github_actions`, which is a real operational win and should be
 verified explicitly rather than assumed.
 
+### 8.1 The platform could not tell it was unreachable
+
+**Found by the first live Actions upload, 2026-08-29.** `demo-and-dast` stood
+up the stack, seeded it, ran the functional suite through ZAP — all green — and
+then failed uploading, six times, against `HTTP 502` from the tunnel.
+
+The cause was not the workflow. `mykronos-backend` was running **without its
+host port published** — `8100/tcp`, not `0.0.0.0:8100->8100` — though
+`deploy/mykronos/docker-compose.yml` declares it. cloudflared could not reach
+the origin, so every public request 502'd, and had done for 22 hours.
+
+**What makes this the platform's own failure mode, not just an outage.** The
+container reported `healthy` throughout, because its healthcheck runs inside
+itself. The dashboard served normally, because the frontend reaches the backend
+over the Docker network. And all three Concourse pipelines upload to
+`http://192.168.0.14:8100`, which was equally unreachable — so scan results
+from *every* CI system were being lost while every surface a person looks at
+said the system was fine.
+
+That is spec 15 §4a.1's disagreement one layer down: green and unreachable at
+the same time, with nothing looking from outside.
+
+**`mykronos self-check` is the check that catches it.** It requests the
+*public* URL — a `localhost` probe would have passed for all 22 hours, because
+the process was healthy the whole time and only the path to it was broken —
+and it uses `/healthz`, which `gate.py` exempts, so it needs no credential and
+cannot fail for a reason of its own. Quiet when healthy; critical when not,
+and the alert says the dashboard will look fine, because that is what turns a
+confusing page into an actionable one.
+
+It exits non-zero, so a scheduled task or a cron entry reports it without
+anybody reading logs. Verified against the live outage rather than only in
+tests: it returned 502 and exit 1.
+
 **Environments carry the deploy credentials.** Spec 15 §6's rule — "a pipeline
 where the test job can read production credentials has no meaningful
 separation" — maps exactly onto GitHub Environments, which scope secrets to the
