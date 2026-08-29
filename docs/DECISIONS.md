@@ -3717,3 +3717,119 @@ writing deliberately vulnerable fixtures into it, and installing the App on it
 is an operator action — and one that should be taken deliberately rather than
 automated by a security platform. The platform side is ready; the corpus is a
 person's decision.
+
+---
+
+## D-093 — Three repositories leave Concourse by dissolving the LAN, not by moving the runner
+
+**2026-08-28. Spec 32.**
+
+`mykronos`, `keel` and `personal-soc` move from Concourse to GitHub Actions.
+TheHub does not. Concourse, Vault, `ConcourseClient` and `scanned_by=concourse`
+all stay, because the pipeline that deploys to production is the one that is
+not moving.
+
+Spec 15 §2 gave three reasons a second CI system existed, and two of them have
+expired. Going public settles the Actions-minutes reason outright. The first
+reason — a second execution environment inside the LAN, for network scanning —
+**was already false and nothing said so.** `personal-soc.yml`'s
+`netassess-ingest` records that the scan runs under a Windows Scheduled Task
+and publishes to MinIO, because an nmap sweep from a Concourse task reported
+all 256 addresses up while the host's ARP table had 38: Docker Desktop's NAT
+answers every probe, and MAC-keyed inventory needs L2 adjacency a container
+does not have. The capability that justified a LAN worker had already left it.
+Spec 14 §4 and spec 15 §8 still say otherwise and need amending.
+
+**The LAN dependencies dissolve; they are not relocated.** This is the whole
+decision, and the alternative is what makes it one. A self-hosted Actions
+runner would have kept every endpoint where it is and cost almost nothing to
+migrate — and a public repository with a self-hosted runner means a fork's pull
+request executes at `192.168.0.14`, beside the registry, MinIO, TheHub's
+Postgres and the Vault. That is precisely what spec 14 §4 and spec 15 §7
+refused when the question was Concourse's worker, and the answer does not
+change because the runner has a different logo. A third option — a private ops
+repository owning the LAN runner, driven by `repository_dispatch` — is secure
+and was rejected for keeping two CI systems and adding a hop that makes "which
+build produced this finding" harder to answer.
+
+So each endpoint moves to something that is reachable from anywhere, and each
+move is worth making on its own terms rather than only as migration cost. The
+registry becomes GHCR, gaining authentication it does not have today and
+immutable digests a tag race cannot defeat. Build artifacts and SBOMs become
+Actions artifacts and release assets, at the same retentions spec 15 §5 already
+specified. The netassess ingest becomes a backend scheduled job, which is what
+it always was — it consumes no source and is triggered by an artifact
+appearing, and it lived in Concourse because Concourse was the only scheduler.
+
+**The demo environment is the one that pays for itself immediately.**
+`demo-and-dast` carries `serial: true`, a "rebuild it on the host" preflight
+and a seeded-repository count check, and all three exist because one
+long-lived, hand-maintained stack is shared between builds — builds 8 and 9
+wiped build 7's ZAP site tree. An ephemeral stack stood up inside the job
+cannot be shared, cannot be stale, and cannot be missing. It is also the
+largest piece of work in the migration and the one most likely to need a second
+attempt, because `Invoke-DemoRebuild.ps1` is PowerShell and the seeding is what
+the count check guards.
+
+**Install stays a pull request; enable and disable become API calls.** Adding
+or removing code that runs in a repository is a change a human reviews, which
+is spec 03 §3 and is not weakened. But spec 03's `--soft-disable` — set the job
+to `if: false` — makes "stop this lane now" a commit, a pull request and a
+review round-trip, when what an operator needs at 2am is the `fly pause` that
+spec 15 §4a.1 calls "state only an operator remembers". GitHub has a
+first-class API for exactly this, so the off switch is one call and the file on
+disk still says what the lane does when it comes back.
+
+**Workflow state is derived, never stored**, for the same reason §4a derives
+the pipeline name: a `workflow_enabled` column is a second place for the truth
+to live, and it is wrong the moment somebody clicks Disable in the GitHub UI.
+`disabled_inactivity` is rendered distinctly from `disabled_manually`, because
+a scheduled lane GitHub switched off after 60 days of no pushes is a real
+coverage gap that otherwise looks identical to a deliberate pause.
+
+**Enable and disable do not touch `enabled_capabilities`.** A disabled workflow
+is an enabled capability whose lane is paused. Conflating them would make the
+grant registry lie about what may write, and the grants are what the coverage
+cross-check trusts for any repository the installer's ledger never moves for
+(spec 03 §3a).
+
+**`ci.py` is split behind a protocol rather than rewritten.**
+`Reporting`, `StageCoverage`, `coverage()` and `reconcile()` already take job
+names, statuses and timestamps and know nothing about Concourse; only
+`ConcourseClient` does. Those two functions are also the ones §4a.1 records
+getting wrong twice. An `ActionsClient` beside the existing client keeps them
+untouched, and dispatches on `scanned_by` exactly as `scan_now` and fix
+verification already do.
+
+Two properties change and are worth naming rather than discovering. The
+job-to-capability mapping stops being a heuristic — the installer chose the
+filename, so `mykronos-<capability>.yml` is exact for every installed lane.
+And the read **stops being anonymous**: Concourse was read with no credential
+because the pipelines are `public: true` on a loopback-bound server, while
+GitHub needs an installation token, from inside a dashboard request, against a
+5000/hour limit shared with token rotation, the installer and Patchwork. The
+status panel is the least important consumer of that budget and must be the
+first to give up, which makes a cache and a ceiling part of the design rather
+than an optimisation.
+
+**The parity check decides when Concourse is destroyed, not a green badge.**
+Every capability that reads `reporting` under Concourse must read `reporting`
+under Actions first. The lanes run in both systems for a period, and the
+duplicate findings that D-039 removed are accepted deliberately and briefly —
+the ingestion upsert makes the two indistinguishable, which is the only reason
+a parity check is possible at all. Spec 15 §4a.1's first day of existence found
+a lane green on every build that had never reported once; this migration is the
+largest opportunity to recreate that failure since it was written.
+
+**No App re-registration is needed, contrary to the first draft of spec 32.**
+That draft made granting `actions: write` and re-consenting every installation
+the blocking first step. `actions: write` has been in `REQUIRED_PERMISSIONS`
+since the scan-now button needed it for `dispatch_workflow` (spec 17 §2.5), and
+it is the same permission GitHub documents for enabling, disabling and reading
+workflows. So §6 and §7 are buildable today with no 403 window and nothing to
+schedule around. Recorded rather than deleted, because "the App needs a new
+permission" is a prerequisite that gets planned around for weeks.
+
+**What is not built, and cannot be from here.** Making the three repositories
+public is an operator action, and it is gated on a full-history secret scan
+rather than on the working-tree scans the `secrets` lanes already run.
