@@ -166,11 +166,78 @@ container beside it, and tears it down. Concurrency stops mattering, the
 preflight becomes unnecessary, and the environment cannot be stale because it
 did not exist ninety seconds ago.
 
-**This is the step most likely to be underestimated.** `Invoke-DemoRebuild.ps1`
-is PowerShell that seeds the environment, and the seeding is what the
-`REPOS < 1` check is guarding. Porting it to something a Linux runner can run
-— or invoking `pwsh` on the runner, which is preinstalled — is real work, and
-it is the task that decides whether this migration is a week or three.
+**This was called the step most likely to be underestimated, and the spike
+says otherwise (2026-08-28).** `Invoke-DemoRebuild.ps1` was expected to be
+the schedule risk — PowerShell that seeds the environment, guarding the
+`REPOS < 1` check. It is not, and the compose file said so all along:
+
+> *"Stood up from nothing, seeded, tested, attacked, and destroyed — inside a
+> single Concourse task, on a Docker daemon that dies with it."*
+
+Ephemeral-in-job is the design the file was **written for**. It moved to the
+host for exactly one reason, stated in both the script and the compose
+header: *"dockerd will not start inside a task on this worker."* That
+constraint is Concourse's. A GitHub-hosted runner ships Docker and Compose
+running. Moving this to Actions restores the original intent rather than
+inventing a new arrangement.
+
+**The spike ran the whole sequence with no PowerShell.** A line-for-line bash
+port — same order, same health wait, same seeding path — against the
+unmodified `deploy/demo/docker-compose.yml`:
+
+```
+== Waiting for health ==
+  healthy healthy healthy
+== Seeding ==
+Seeded 4 repositories, 39 scan runs, 88 findings (seed=20260813).
+== Verifying the way demo-and-dast does ==
+  backend healthz    OK
+  frontend           OK
+  zap api (proxied)  OK      {"version":"2.16.1"}
+  seeded repositories: 4
+```
+
+**72 seconds**, from `down -v` to all four of `demo-and-dast`'s preflight
+assertions passing, images already present. Every step is a `docker` or
+`docker compose` call; nothing touches the Windows API, the registry or a
+host path. `seed.py` runs *inside* the backend container via `docker exec`,
+so the runner's OS never sees it. The port to bash is a translation, not a
+rewrite — and `pwsh` is preinstalled on `ubuntu-latest` if even that is not
+wanted.
+
+**What the spike does not prove.** It ran on this host against images already
+in the local registry. A runner pulls from GHCR (§4.1), which adds pull time
+to the 72 seconds and is the one number still unmeasured. It also says
+nothing about ZAP's scan duration, which is D-053's separate question.
+
+### 4.2.1 The demo's ports are unusable on this host right now
+
+The spike failed twice before it ran, and the reason is worth recording
+because it is a live fault rather than a spike artefact. `docker compose up`
+refused with *"ports are not available … bind: An attempt was made to access
+a socket in a way forbidden by its access permissions"*, and:
+
+```
+netsh interface ipv4 show excludedportrange protocol=tcp
+      8201        8300
+```
+
+Windows has reserved 8201–8300 for dynamic allocation. That range contains
+**both** the demo backend's `8201` and ZAP's `8290`, so
+`Invoke-DemoRebuild.ps1` cannot currently start the demo environment on this
+host at all — and `demo-and-dast` would fail its preflight with *"No demo
+environment at $BACKEND. Rebuild it on the host"*, which describes the
+symptom and not this cause.
+
+The range moves between reboots, which makes this an intermittent failure
+that looks like a broken script. It is a third argument for §4.2 beyond the
+two already there: a runner allocates its own ports on a machine where
+nothing else is competing for them, and the fixed offsets that exist to keep
+a scan away from production (compose header) stop being a hostage to
+Hyper-V's reservations.
+
+Worth fixing on the host regardless of this migration, since TheHub's
+pipeline is staying and the demo is how DAST is exercised.
 
 **DAST's resource budget still applies.** D-053 paused DAST because ZAP's
 active scan measured 548% CPU and 7 GiB on this host. A GitHub-hosted runner
@@ -643,10 +710,19 @@ that failure mode since it was written.
 
 ## 11. Open questions
 
-1. **Does `Invoke-DemoRebuild.ps1` port to a Linux runner, or does the demo
-   stack need `pwsh` on the runner?** §4.2 assumes one of the two works. This
-   is the largest unknown in the plan and the one that should be spiked first,
-   before step 5 rather than at step 7.
+1. ~~**Does `Invoke-DemoRebuild.ps1` port to a Linux runner?**~~ **Answered,
+   2026-08-28. Yes, and it is a translation rather than a rewrite.** The
+   spike ran the full sequence in bash against the unmodified compose file:
+   stack up, three healthy, seeded 4 repositories / 39 scan runs / 88
+   findings, and all four of `demo-and-dast`'s preflight assertions passing,
+   in 72 seconds. Nothing in the path is PowerShell-specific and `seed.py`
+   runs inside the container. §4.2 has the detail.
+
+   This was named the largest unknown and the thing that decided whether the
+   migration is a week or three. It is neither — it was the *host* that could
+   not run the demo (§4.2.1), not the script that could not leave it. The
+   remaining unknown is smaller and is question 3: what the GHCR pull adds to
+   those 72 seconds.
 2. **CodeQL or Semgrep, per repository?** §5.2. Running both is the duplication
    D-039 removed; the choice needs making rather than defaulting.
 3. **Does the GHCR pull cost enough to matter for `deploy.ps1`?** §4.1. Measure
