@@ -89,6 +89,44 @@ jobs:
           # off MinIO — they are the largest and least valuable class here.
           retention-days: 30
 
+      - name: Tell Mykronos this lane failed
+        # spec 32 §11 q6. `delivery.yml` produces no findings by design, so
+        # there is no ScanRun for a failure to ride in on — without this a
+        # broken publish tells nobody, which is what `on_failure:
+        # *slack_alert` did on every Concourse job.
+        #
+        # Never fatal: the job has already failed, and a notifier that cannot
+        # be reached must not change that verdict into a more confusing one.
+        if: failure()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python - <<'PY' || echo "Could not reach Mykronos to report the failure."
+          import json, os, urllib.request
+          body = json.dumps({
+              "lane": os.environ["LANE"],
+              "detail": "The lane failed. See the run for which step.",
+              "commit_sha": os.environ["SHA"],
+              "run_url": os.environ["RUN_URL"],
+          }).encode()
+          req = urllib.request.Request(
+              os.environ["INGEST"].rstrip("/") + "/api/ingest/lane-failure",
+              data=body,
+              headers={
+                  "Authorization": "Bearer " + os.environ["TOKEN"],
+                  "Content-Type": "application/json",
+              },
+          )
+          urllib.request.urlopen(req, timeout=20).read()
+          print("Reported to Mykronos.")
+          PY
+        env:
+          LANE: build
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INGEST: https://mykronos.toddbenson.net
+          TOKEN: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
+
   publish:
     name: publish (${{ matrix.component }})
     runs-on: ubuntu-latest
@@ -144,6 +182,44 @@ jobs:
           echo "  tag    : ${{ env.REGISTRY }}/${{ github.repository_owner }}/mykronos-${{ matrix.component }}:${{ github.sha }}"
           echo "  digest : ${{ steps.push.outputs.digest }}"
 
+      - name: Tell Mykronos this lane failed
+        # spec 32 §11 q6. `delivery.yml` produces no findings by design, so
+        # there is no ScanRun for a failure to ride in on — without this a
+        # broken publish tells nobody, which is what `on_failure:
+        # *slack_alert` did on every Concourse job.
+        #
+        # Never fatal: the job has already failed, and a notifier that cannot
+        # be reached must not change that verdict into a more confusing one.
+        if: failure()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python - <<'PY' || echo "Could not reach Mykronos to report the failure."
+          import json, os, urllib.request
+          body = json.dumps({
+              "lane": os.environ["LANE"],
+              "detail": "The lane failed. See the run for which step.",
+              "commit_sha": os.environ["SHA"],
+              "run_url": os.environ["RUN_URL"],
+          }).encode()
+          req = urllib.request.Request(
+              os.environ["INGEST"].rstrip("/") + "/api/ingest/lane-failure",
+              data=body,
+              headers={
+                  "Authorization": "Bearer " + os.environ["TOKEN"],
+                  "Content-Type": "application/json",
+              },
+          )
+          urllib.request.urlopen(req, timeout=20).read()
+          print("Reported to Mykronos.")
+          PY
+        env:
+          LANE: publish (${{ matrix.component }})
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INGEST: https://mykronos.toddbenson.net
+          TOKEN: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
+
   promote:
     name: promote (:latest)
     runs-on: ubuntu-latest
@@ -192,3 +268,41 @@ jobs:
           echo "::notice::':latest' now points at ${{ github.sha }}."
           echo "Deploy is still a person running deploy/mykronos/deploy.ps1 on"
           echo "the host (D-038). That script pulls ':latest'."
+
+      - name: Tell Mykronos this lane failed
+        # spec 32 §11 q6. `delivery.yml` produces no findings by design, so
+        # there is no ScanRun for a failure to ride in on — without this a
+        # broken publish tells nobody, which is what `on_failure:
+        # *slack_alert` did on every Concourse job.
+        #
+        # Never fatal: the job has already failed, and a notifier that cannot
+        # be reached must not change that verdict into a more confusing one.
+        if: failure()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python - <<'PY' || echo "Could not reach Mykronos to report the failure."
+          import json, os, urllib.request
+          body = json.dumps({
+              "lane": os.environ["LANE"],
+              "detail": "The lane failed. See the run for which step.",
+              "commit_sha": os.environ["SHA"],
+              "run_url": os.environ["RUN_URL"],
+          }).encode()
+          req = urllib.request.Request(
+              os.environ["INGEST"].rstrip("/") + "/api/ingest/lane-failure",
+              data=body,
+              headers={
+                  "Authorization": "Bearer " + os.environ["TOKEN"],
+                  "Content-Type": "application/json",
+              },
+          )
+          urllib.request.urlopen(req, timeout=20).read()
+          print("Reported to Mykronos.")
+          PY
+        env:
+          LANE: promote
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INGEST: https://mykronos.toddbenson.net
+          TOKEN: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}

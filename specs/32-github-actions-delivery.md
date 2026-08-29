@@ -940,5 +940,25 @@ that failure mode since it was written.
    one destination to change, and consistent with a pipeline that "reports to
    Mykronos" rather than one that reports beside it. The alternative put the
    webhook in every repository as an Actions secret and stood a second
-   notification path next to the first. **Not yet implemented**; needs a small
-   ingestion path for "a lane failed", which is the only new contract in it.
+   notification path next to the first.
+
+   **Implemented 2026-08-28**, and it turned out most of it already existed.
+   `ingest.py` has notified Slack on a failed `ScanRun` since spec 16 §14, and
+   `mykronos.upload` registers a run before it interprets anything and
+   finalises in a `finally` — so **every lane that uploads already alerts
+   through Mykronos**, and always did. The gap was narrower than "move the
+   alerting": a lane with nothing to upload (`delivery.yml`, by design) and a
+   lane that dies before its upload step.
+
+   `POST /api/ingest/lane-failure` covers both. It **writes nothing to the
+   lake** — a build failure is not a finding, has no severity, and must not
+   move a risk score, which is D-046's rule one step further out. It takes the
+   repository from the token rather than the body, like every other endpoint
+   here, and needs no capability grant, because a lane failure is not a
+   capability and requiring one would stop a repository reporting a broken
+   build until somebody granted it something unrelated.
+
+   `delivery.yml`'s three jobs call it on `failure()`, non-fatally: the job has
+   already failed, and a notifier that cannot be reached must not turn that
+   into a more confusing verdict. `demo-and-dast.yml` needs no equivalent —
+   its uploads are `if: always()`, so a failure there still records a run.

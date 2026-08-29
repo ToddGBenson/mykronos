@@ -65,6 +65,8 @@ from mykronos.schemas import (
     HealthResponse,
     IngestAccepted,
     InsiderRiskSubmission,
+    LaneFailure,
+    LaneFailureAccepted,
     RawAccepted,
     ReachabilityAccepted,
     ReachabilitySubmission,
@@ -209,6 +211,62 @@ async def health(request: Request, token: TokenDep) -> HealthResponse:
         detail=detail,
         repo_full_name=token.repo_full_name,
         granted_capabilities=sorted(token.granted_capabilities),
+    )
+
+
+@router.post("/lane-failure", response_model=LaneFailureAccepted)
+async def ingest_lane_failure(
+    request: Request,
+    background: BackgroundTasks,
+    submission: LaneFailure,
+    token: TokenDep,
+) -> LaneFailureAccepted:
+    """A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+
+    Concourse put `on_failure: *slack_alert` on every job. On Actions most
+    lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+    interprets anything and finalises in a `finally`, so a failed scan already
+    reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+    lane with nothing to upload (`delivery.yml` builds and publishes and
+    produces no findings by design), and a lane that died before its upload
+    step ever ran.
+
+    **Nothing is written to the lake.** A build failure is not a finding, has
+    no severity, and must not reach a risk score — D-046's rule about test
+    lanes, one step further out. This endpoint sends a message and returns.
+
+    **The repository comes from the token, never from the body.** A token
+    scoped to one repository cannot raise an alert that appears to be about
+    another.
+
+    **No capability grant is required**, because a lane failure is not a
+    capability. Requiring one would mean a repository could not report that
+    its build broke until somebody granted it something unrelated.
+    """
+    notifier = request.app.state.notifier
+    background.add_task(
+        notifier.send,
+        Notification(
+            title=f"{submission.lane} failed",
+            detail="\n".join(
+                part
+                for part in (
+                    submission.detail or "The lane failed and reported no detail.",
+                    f"Commit `{submission.commit_sha}`." if submission.commit_sha else "",
+                    submission.run_url,
+                )
+                if part
+            ),
+            repo_full_name=token.repo_full_name,
+            level="warning",
+        ),
+    )
+    return LaneFailureAccepted(
+        notified=bool(getattr(notifier, "enabled", False)),
+        detail=(
+            f"Recorded a failure of {submission.lane!r} for "
+            f"{token.repo_full_name}. Nothing was written to the lake."
+        ),
     )
 
 

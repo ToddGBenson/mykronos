@@ -27,6 +27,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/lane-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Lane Failure
+         * @description A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+         *
+         *     Concourse put `on_failure: *slack_alert` on every job. On Actions most
+         *     lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+         *     interprets anything and finalises in a `finally`, so a failed scan already
+         *     reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+         *     lane with nothing to upload (`delivery.yml` builds and publishes and
+         *     produces no findings by design), and a lane that died before its upload
+         *     step ever ran.
+         *
+         *     **Nothing is written to the lake.** A build failure is not a finding, has
+         *     no severity, and must not reach a risk score — D-046's rule about test
+         *     lanes, one step further out. This endpoint sends a message and returns.
+         *
+         *     **The repository comes from the token, never from the body.** A token
+         *     scoped to one repository cannot raise an alert that appears to be about
+         *     another.
+         *
+         *     **No capability grant is required**, because a lane failure is not a
+         *     capability. Requiring one would mean a repository could not report that
+         *     its build broke until somebody granted it something unrelated.
+         */
+        post: operations["ingest_lane_failure_api_ingest_lane_failure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/scan-run": {
         parameters: {
             query?: never;
@@ -3057,6 +3097,61 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /**
+         * LaneFailure
+         * @description A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
+         *
+         *     Every Concourse job carries `on_failure: *slack_alert`. On Actions most
+         *     lanes need no equivalent, because `mykronos.upload` registers a ScanRun
+         *     before it interprets anything and finalises in a `finally` — so a failed
+         *     scan already reaches Slack through the ingestion path that records it.
+         *
+         *     Two cases that path cannot cover, and this exists for both:
+         *
+         *     *A lane with nothing to upload.* `delivery.yml` builds, publishes and
+         *     promotes, and produces no findings by design — `ci.py` says its absence
+         *     from the lake is not a fault. A failed build currently tells nobody.
+         *
+         *     *A lane that died before its upload step.* A failed checkout or a failing
+         *     fail-fast probe leaves no ScanRun, so the capability reads as never having
+         *     run rather than as having broken.
+         *
+         *     **This writes nothing to the lake.** It is a message, not evidence. A
+         *     build failure is not a finding, has no severity, and must not reach a risk
+         *     score — which is the same rule D-046 applies to test lanes, one step
+         *     further out.
+         */
+        LaneFailure: {
+            /**
+             * Lane
+             * @description Which lane failed, as a person would name it: `publish`, `promote`.
+             */
+            lane: string;
+            /**
+             * Detail
+             * @description What went wrong, in one or two lines. Rendered verbatim.
+             * @default
+             */
+            detail: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Run Url
+             * @description Where to go and look. The whole point of the message.
+             * @default
+             */
+            run_url: string;
+        };
+        /** LaneFailureAccepted */
+        LaneFailureAccepted: {
+            /** Notified */
+            notified: boolean;
+            /** Detail */
+            detail: string;
+        };
         /** OnboardRequest */
         OnboardRequest: {
             /** Github Repo Full Name */
@@ -4422,6 +4517,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    ingest_lane_failure_api_ingest_lane_failure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaneFailure"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaneFailureAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

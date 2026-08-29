@@ -323,3 +323,78 @@ class TestOracleGateAlerts:
         response = self._seed_and_evaluate(client, auth, run_compaction, 0, notified)
         assert response.json()["recommendation"] == "go"
         assert notified.sent == []
+
+
+class TestLaneFailure:
+    """A lane that failed with no ScanRun to say so with (spec 32 §11 q6).
+
+    Every other alert in this file is derived from something recorded in the
+    lake. This one is not, and cannot be: `delivery.yml` builds and publishes
+    and produces no findings by design, so there is no row for a notification
+    to hang off. The contract around the endpoint — auth, validation, and that
+    it writes nothing — is in `test_lane_failure.py`; what reaches Slack is
+    here, beside the decisions it sits among.
+    """
+
+    def _post(self, client: TestClient, token: str, **body: object):
+        return client.post(
+            "/api/ingest/lane-failure",
+            json={"lane": "publish", **body},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    def test_a_failed_lane_reaches_slack(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        token = issue_token(client, REPO)
+
+        self._post(
+            client,
+            token,
+            detail="docker push returned 403",
+            commit_sha="abc123",
+            run_url="https://github.com/x/y/actions/runs/1",
+        )
+
+        assert len(notified.sent) == 1
+        note = notified.sent[0]
+        assert note.title == "publish failed"
+        assert "docker push returned 403" in note.detail
+        assert "abc123" in note.detail
+        assert "actions/runs/1" in note.detail
+
+    def test_the_repo_comes_from_the_token_not_the_body(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        """Spec 05 §4's second property, applied here: a token scoped to one
+        repository must not raise an alert that appears to be about another.
+        There is no field in which to say so, and this proves the attribution
+        is taken from the token."""
+        token = issue_token(client, REPO)
+
+        self._post(client, token, detail="whatever")
+
+        assert notified.sent[0].repo_full_name == REPO
+
+    def test_a_lane_that_reported_nothing_still_says_something(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        """A message reading only "publish failed" with an empty body is worse
+        than one that admits the lane reported no detail."""
+        token = issue_token(client, REPO)
+
+        self._post(client, token)
+
+        assert "reported no detail" in notified.sent[0].detail
+
+    def test_it_is_a_warning_not_a_page(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        """`critical` is reserved for what the platform found, not for what
+        its own pipeline did. A failed publish is worth telling somebody and
+        is not an incident."""
+        token = issue_token(client, REPO)
+
+        self._post(client, token)
+
+        assert notified.sent[0].level == "warning"
