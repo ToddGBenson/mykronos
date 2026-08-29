@@ -36,6 +36,7 @@ import {
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
+  type WorkflowsPage,
 } from "./api";
 import type { paths } from "./api-types";
 
@@ -371,6 +372,21 @@ export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load supply-chain evidence") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getWorkflows(repoId: string): Promise<Result<WorkflowsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/repos/{repo_id}/workflows",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load workflow state") };
     }
     return { ok: true, data };
   } catch (error) {

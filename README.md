@@ -82,6 +82,7 @@ Read the specs in this order:
 | 29 | [Component Inventory & Incident Mode](specs/29-component-inventory-and-incident-mode.md) | Who uses this package, answered in one screen — plus provenance signals |
 | 30 | [Change-Governance Posture](specs/30-change-governance-posture.md) | The review controls that would catch a bad change, not just the changes that looked odd |
 | 31 | [Regression Coverage](specs/31-regression-coverage.md) | Pin a test to every finding you fix, so a regression is noticed |
+| 32 | [GitHub Actions Delivery](specs/32-github-actions-delivery.md) | Move mykronos, keel and personal-soc off Concourse onto Actions, controlled by Mykronos. TheHub stays |
 
 Specs 18–22 close a round of depth work: each began as a full read of a
 subsystem, and each is a list of things that were *named* in an earlier spec —

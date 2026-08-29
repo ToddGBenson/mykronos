@@ -1,18 +1,19 @@
 /**
  * Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a).
  *
- * A link, not a mirror. Concourse's own UI is the authority on its state, and
- * restating a build outcome here would create a second version of it to
- * disagree with. What this adds is knowing *which* pipeline, from a page
- * already about this repository — which until now meant knowing by heart.
+ * A link, not a mirror. The CI's own UI — Concourse's, or GitHub's Actions
+ * tab — is the authority on its state, and restating a build outcome here
+ * would create a second version of it to disagree with. What this adds is
+ * knowing *which* pipeline, from a page already about this repository — which
+ * until now meant knowing by heart.
  *
  * Both rows are indicator lights with the state written next to them. The
  * distinction they exist to keep visible: a stage nobody enabled and a stage
  * that is enabled and not answering render as the same absence everywhere
  * else, and only one of them is a problem.
  *
- * The panel also distinguishes "no pipeline covers this repo" from "Concourse
- * did not answer". Those look identical if you only render an absence, and a
+ * The panel also distinguishes "nothing covers this repo" from "the CI did
+ * not answer". Those look identical if you only render an absence, and a
  * coverage gap and an outage need entirely different responses.
  */
 
@@ -27,7 +28,10 @@ import {
 } from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
 
-/** Concourse's vocabulary, mapped to the palette the rest of the app uses. */
+/** The platform's shared build-status vocabulary, mapped to the palette the
+ *  rest of the app uses. Concourse reports these words natively; GitHub's
+ *  run conclusions are translated into them in `ci.py` (spec 32 §7), so this
+ *  mapping serves both and neither CI leaks its own spelling into the UI. */
 function jobTone(status: string | null | undefined): IndicatorTone {
   if (status === "succeeded") return "ok";
   if (status === "failed" || status === "errored") return "bad";
@@ -58,7 +62,12 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
       >
         Actions
       </a>
-      {ci.pipeline_url ? (
+      {/* Only Concourse gets a third link. An Actions-scanned repository
+          reports `pipeline: "github-actions"` and a `pipeline_url` pointing
+          at the same Actions tab already linked above (spec 32 §7) — showing
+          it again, labelled "Concourse", would be a duplicate link and a
+          false one. */}
+      {ci.pipeline_url && ci.pipeline !== "github-actions" ? (
         <a
           className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
           href={ci.pipeline_url}
@@ -257,7 +266,14 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
  */
 export function PipelineCoverage({ ci }: { ci: CiPage }) {
   return (
-    <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
+    <Section
+      title="Enabled jobs"
+      // `pipeline` is the Concourse pipeline name, or "github-actions", or
+      // null when nothing covers this repository. Naming Concourse in the
+      // null case predated there being a second CI and told an
+      // Actions-scanned repo it was missing a pipeline it never wanted.
+      detail={ci.pipeline ?? "nothing covers this repository"}
+    >
       <JobLights ci={ci} />
       <ReportingGaps reporting={ci.reporting ?? []} />
     </Section>

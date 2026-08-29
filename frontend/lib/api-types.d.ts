@@ -27,6 +27,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/netassess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Netassess
+         * @description Judge a network-assessment run the host has just produced (spec 32 §4.4).
+         *
+         *     The half Concourse was good at — deciding whether the run that arrived is
+         *     worth believing, and saying what changed — with the half it was bad at
+         *     left where it works. The scan itself stays on Windows: an nmap sweep from
+         *     a container reported all 256 addresses of a /24 as up while the host's ARP
+         *     table had 38, because MAC-keyed inventory needs L2 adjacency a container
+         *     does not have.
+         *
+         *     **The failure this exists to catch is the Scheduled Task degrading rather
+         *     than dying**: still writing `network-status.md` every week with the checks
+         *     inside it no longer running. So an `unknown` line fails the run rather than
+         *     warning about it — a NAS that is switched off must not read the same as one
+         *     confirmed closed.
+         *
+         *     **A run that fails verification is still recorded.** "The last scan was bad"
+         *     is precisely what the freshness check needs to know, and discarding it
+         *     would make a degraded scanner indistinguishable from a silent one.
+         *
+         *     Requires the `network` capability, unlike `/lane-failure`: this *is* a
+         *     capability, it is the one spec 14 defines, and what may write it is what
+         *     the grant says.
+         */
+        post: operations["ingest_netassess_api_ingest_netassess_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/lane-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Lane Failure
+         * @description A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+         *
+         *     Concourse put `on_failure: *slack_alert` on every job. On Actions most
+         *     lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+         *     interprets anything and finalises in a `finally`, so a failed scan already
+         *     reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+         *     lane with nothing to upload (`delivery.yml` builds and publishes and
+         *     produces no findings by design), and a lane that died before its upload
+         *     step ever ran.
+         *
+         *     **Nothing is written to the lake.** A build failure is not a finding, has
+         *     no severity, and must not reach a risk score — D-046's rule about test
+         *     lanes, one step further out. This endpoint sends a message and returns.
+         *
+         *     **The repository comes from the token, never from the body.** A token
+         *     scoped to one repository cannot raise an alert that appears to be about
+         *     another.
+         *
+         *     **No capability grant is required**, because a lane failure is not a
+         *     capability. Requiring one would mean a repository could not report that
+         *     its build broke until somebody granted it something unrelated.
+         */
+        post: operations["ingest_lane_failure_api_ingest_lane_failure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/scan-run": {
         parameters: {
             query?: never;
@@ -1577,7 +1658,26 @@ export interface paths {
         delete: operations["offboard_repo_api_repos__repo_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Set Scanner
+         * @description Record which system scans this repository.
+         *
+         *     `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+         *     onboarding — a field describing which CI covers a repository, with no way
+         *     to say that it changed, in a platform whose whole current project is
+         *     changing exactly that. Migrating a repository meant editing the database
+         *     by hand.
+         *
+         *     **This records a fact; it does not perform a migration.** Nothing is
+         *     installed, uninstalled, granted or revoked here. What moves is which
+         *     source the dashboard reads for "enabled" (spec 03 §3a's ledger-versus-
+         *     grants split), which CI `scan_now` and fix verification dispatch to, which
+         *     reader answers for the CI panel, and whether the rotation job can deliver
+         *     a new token (D-086, spec 32 §8). Every one of those follows the field
+         *     rather than the other way round, which is why setting it wrongly is
+         *     visible immediately and costs one call to correct.
+         */
+        patch: operations["set_scanner_api_repos__repo_id__patch"];
         trace?: never;
     };
     "/api/repos/{repo_id}/capabilities": {
@@ -1625,6 +1725,82 @@ export interface paths {
          *     synchronous — both report only what was *attempted*.
          */
         post: operations["scan_now_api_repos__repo_id__scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workflows
+         * @description What runs in this repository, and whether it is switched on
+         *     (spec 32 §6.2).
+         *
+         *     **Derived, never stored.** GitHub is asked on every read, because a
+         *     `workflow_enabled` column would be wrong the moment somebody clicks
+         *     Disable in the GitHub UI, and nothing would ever correct it. This is the
+         *     same rule spec 15 §4a applied to Concourse pipeline names, for the same
+         *     reason.
+         *
+         *     **Fails soft.** A repository page is about findings; GitHub being
+         *     unreachable, rate-limited or 403 must not take it down. Every failure
+         *     resolves to a reason string beside an empty list.
+         */
+        get: operations["list_workflows_api_repos__repo_id__workflows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Enable Workflow
+         * @description Switch one installed workflow back on, with no pull request
+         *     (spec 32 §6).
+         */
+        put: operations["enable_workflow_api_repos__repo_id__workflows__capability__enable_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Disable Workflow
+         * @description Stop one installed workflow now, with no pull request (spec 32 §6).
+         *
+         *     The `fly pause` equivalent spec 15 §4a.1 calls "state only an operator
+         *     remembers". The file stays, so it still says what the lane does when it
+         *     comes back.
+         */
+        put: operations["disable_workflow_api_repos__repo_id__workflows__capability__disable_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2981,6 +3157,119 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /**
+         * LaneFailure
+         * @description A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
+         *
+         *     Every Concourse job carries `on_failure: *slack_alert`. On Actions most
+         *     lanes need no equivalent, because `mykronos.upload` registers a ScanRun
+         *     before it interprets anything and finalises in a `finally` — so a failed
+         *     scan already reaches Slack through the ingestion path that records it.
+         *
+         *     Two cases that path cannot cover, and this exists for both:
+         *
+         *     *A lane with nothing to upload.* `delivery.yml` builds, publishes and
+         *     promotes, and produces no findings by design — `ci.py` says its absence
+         *     from the lake is not a fault. A failed build currently tells nobody.
+         *
+         *     *A lane that died before its upload step.* A failed checkout or a failing
+         *     fail-fast probe leaves no ScanRun, so the capability reads as never having
+         *     run rather than as having broken.
+         *
+         *     **This writes nothing to the lake.** It is a message, not evidence. A
+         *     build failure is not a finding, has no severity, and must not reach a risk
+         *     score — which is the same rule D-046 applies to test lanes, one step
+         *     further out.
+         */
+        LaneFailure: {
+            /**
+             * Lane
+             * @description Which lane failed, as a person would name it: `publish`, `promote`.
+             */
+            lane: string;
+            /**
+             * Detail
+             * @description What went wrong, in one or two lines. Rendered verbatim.
+             * @default
+             */
+            detail: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Run Url
+             * @description Where to go and look. The whole point of the message.
+             * @default
+             */
+            run_url: string;
+        };
+        /** LaneFailureAccepted */
+        LaneFailureAccepted: {
+            /** Notified */
+            notified: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /** NetassessAccepted */
+        NetassessAccepted: {
+            /** Believable */
+            believable: boolean;
+            /** Problems */
+            problems?: string[];
+            /**
+             * Host Count
+             * @default 0
+             */
+            host_count: number;
+            /** Hosts Appeared */
+            hosts_appeared?: string[];
+            /** Hosts Disappeared */
+            hosts_disappeared?: string[];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
+         * NetassessSubmission
+         * @description One network-assessment run, pushed by the host that produced it
+         *     (spec 32 §4.4).
+         *
+         *     **Push rather than pull, and that is the whole design decision.** The scan
+         *     runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+         *     addresses, which is measured rather than assumed — and the publisher that
+         *     archives it to MinIO already runs there. Having the backend poll an object
+         *     store instead would mean an S3 client it does not otherwise need, MinIO
+         *     credentials it does not otherwise hold, and a schedule to guess at when the
+         *     arrival is already an event somebody could just report.
+         *
+         *     **Files, not an archive.** Two text files are what the judgement reads; a
+         *     zip would mean unpacking attacker-controlled entries inside the ingestion
+         *     path for no gain. The archive still goes to MinIO, which remains the
+         *     history — this platform stores what it needs to compare against next week.
+         */
+        NetassessSubmission: {
+            /**
+             * Run Key
+             * @description The publisher's object name, e.g. `netassess-2026.8.9.zip`.
+             */
+            run_key: string;
+            /**
+             * Inventory Csv
+             * @description `inventory.csv` verbatim. Empty means the run enumerated nothing.
+             * @default
+             */
+            inventory_csv: string;
+            /**
+             * Network Status Md
+             * @description `network-status.md` verbatim. Empty means the scan did not finish.
+             * @default
+             */
+            network_status_md: string;
+        };
         /** OnboardRequest */
         OnboardRequest: {
             /** Github Repo Full Name */
@@ -3830,6 +4119,17 @@ export interface components {
          */
         ScanStatus: "success" | "no_applicable_targets" | "partial_failure" | "failure";
         /**
+         * ScannerUpdate
+         * @description Which system scans this repository (spec 03 §3a, spec 32 §9.1).
+         */
+        ScannerUpdate: {
+            /**
+             * Scanned By
+             * @enum {string}
+             */
+            scanned_by: "concourse" | "github_actions" | "none";
+        };
+        /**
          * Severity
          * @enum {string}
          */
@@ -4263,6 +4563,64 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WorkflowState
+         * @description One capability's workflow, as GitHub currently has it (spec 32 §6).
+         *
+         *     `state` is GitHub's own vocabulary, passed through rather than reduced to
+         *     a boolean, plus `not_installed` for a capability this repository has
+         *     enabled and has no workflow file for. The distinction that matters:
+         *     `disabled_manually` is somebody's decision, `disabled_inactivity` is
+         *     GitHub switching a scheduled workflow off after sixty days without a
+         *     push, and only the second is a coverage gap nobody chose.
+         */
+        WorkflowState: {
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Installed */
+            installed: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** State */
+            state: string;
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+        };
+        /** WorkflowStateResult */
+        WorkflowStateResult: {
+            /** Repo */
+            repo: string;
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * WorkflowsPage
+         * @description spec 32 §6.2. Never an error for a repository that simply has no
+         *     workflows: a Concourse-scanned repo and an unreachable GitHub are
+         *     different facts, and both render as an empty list unless the reason is
+         *     carried alongside it.
+         */
+        WorkflowsPage: {
+            /** Repo */
+            repo: string;
+            /** Scanned By */
+            scanned_by: string;
+            /** Workflows */
+            workflows: components["schemas"]["WorkflowState"][];
+            /** Unavailable */
+            unavailable?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -4288,6 +4646,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    ingest_netassess_api_ingest_netassess_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NetassessSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetassessAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_lane_failure_api_ingest_lane_failure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaneFailure"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaneFailureAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -6316,6 +6740,41 @@ export interface operations {
             };
         };
     };
+    set_scanner_api_repos__repo_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScannerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_capabilities_api_repos__repo_id__capabilities_patch: {
         parameters: {
             query?: never;
@@ -6372,6 +6831,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workflows_api_repos__repo_id__workflows_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_workflow_api_repos__repo_id__workflows__capability__enable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_workflow_api_repos__repo_id__workflows__capability__disable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
                 };
             };
             /** @description Validation Error */

@@ -1,8 +1,82 @@
 {% extends "_test_lane.yml.j2" %}
 {#-
-  Repository quality checks (D-046, spec 15 §1).
+  Repository quality checks (D-046, spec 15 §1, spec 32 §5.1).
 
   The checks themselves belong to the repository — link integrity here,
   contract or schema checks elsewhere. Mykronos records that they ran and how
   they ended, and nothing about what they are.
+
+  This is the one test lane that is routinely several *different* commands.
+  `mykronos.yml` runs four jobs — `lint-and-types`, `frontend`,
+  `qa-spec-links`, `api-inventory` — all reporting as `qa`, which `ci.py`
+  calls "a richer answer rather than a collision": quality stages carry no
+  findings, so several runs per commit cannot overwrite one another the way
+  two scanners on one capability would.
+
+  With `checks` set, each becomes a matrix leg with its own upload. Chaining
+  them into one `command` with `&&` was the obvious alternative and loses the
+  property worth keeping — the first failure would hide every check after it,
+  and four runs would collapse into one.
+
+  With `checks` empty every block below falls through to `super()`, so a
+  repository with a single quality check renders exactly what it always did.
+
+  **The conditions are inside the blocks, not around them.** Jinja resolves
+  blocks at compile time, so a `{% raw %}{% block %}{% endraw %}` wrapped in an
+  `{% raw %}{% if %}{% endraw %}` is still defined and still overrides — the
+  `if` would read as a guard and do nothing.
 -#}
+
+{% block job_name %}
+{%- if config.get('checks') %}qa (${{ matrix.check.name }})
+{%- else %}<< super() >>{% endif %}
+{%- endblock %}
+
+{% block job_strategy %}
+{%- if config.get('checks') %}
+    strategy:
+      # One check failing must not cancel the others. The whole reason these
+      # are separate legs is that a lint failure should not hide a broken
+      # contract, and `fail-fast: true` would reinstate exactly that.
+      fail-fast: false
+      matrix:
+        check:
+{%- for entry in config.get('checks') %}
+          # `tojson` on every value: these are configured strings that land in
+          # YAML, and a command containing a colon or a quote would otherwise
+          # end the scalar and change the document's shape. Setup lines are
+          # joined here, at render time, rather than left as a list for a
+          # GitHub expression to join at runtime — the value is known now, and
+          # `join()` with a literal newline is awkward to write and easy to
+          # get subtly wrong.
+          - name: << entry.name | tojson >>
+            command: << entry.command | tojson >>
+            setup: << (entry.get('setup', []) | join('\n')) | tojson >>
+{%- endfor %}
+{%- else %}<< super() >>{% endif %}
+{% endblock %}
+
+{% block extra_env %}
+{%- if config.get('checks') %}
+          # Bound to env, never interpolated into the script body. These are
+          # admin-set config rather than attacker-controlled, but `${{ ... }}`
+          # is substituted before bash sees the line, so a value containing a
+          # quote would change the script's *syntax* rather than its data. The
+          # upload action's own comment argues at length that the source of a
+          # value is the wrong thing to rely on when deciding this; same
+          # reasoning, one file over.
+          MYKRONOS_CHECK_NAME: ${{ matrix.check.name }}
+          MYKRONOS_CHECK_SETUP: ${{ matrix.check.setup }}
+          MYKRONOS_CHECK_COMMAND: ${{ matrix.check.command }}
+{%- else %}<< super() >>{% endif %}
+{% endblock %}
+
+{% block suite_command %}
+{%- if config.get('checks') %}
+          echo "qa check: $MYKRONOS_CHECK_NAME"
+          if [ -n "$MYKRONOS_CHECK_SETUP" ]; then
+            bash -c "$MYKRONOS_CHECK_SETUP"
+          fi
+          bash -c "$MYKRONOS_CHECK_COMMAND"
+{%- else %}<< super() >>{% endif %}
+{% endblock %}

@@ -3,16 +3,31 @@
     Pull the images the pipeline published and bring the Mykronos stack up.
 
 .DESCRIPTION
-    The host half of the deploy (spec 15 §3, D-038). Concourse builds images
-    and pushes them to the registry; this pulls and restarts. Nothing in the
-    pipeline can run this, deliberately: a Concourse task with the host's
-    Docker socket could restart anything on this machine, which is the risk
+    The host half of the deploy (spec 15 §3, D-038). CI builds images and
+    pushes them to a registry; this pulls and restarts. Nothing in the
+    pipeline can run this, deliberately: a CI task with the host's Docker
+    socket could restart anything on this machine, which is the risk spec 15
     §7 raises about a worker sitting inside the LAN. A registry is a one-way
-    handoff.
+    handoff, and that property is what survived the move to Actions unchanged.
 
-    Pulls from localhost:5000 rather than the host IP the pipeline pushes to.
-    Docker treats localhost as an insecure registry by default, so no daemon
-    configuration is needed here.
+    Pulls from GHCR since spec 32 §4.1. It used to pull `localhost:5000` - a
+    registry with no TLS and no authentication, reachable only from this LAN
+    and therefore unreachable from a GitHub-hosted runner. GHCR is reachable
+    from both ends, and authenticates, which the LAN registry never did.
+
+    Two things that can go wrong here and did not before, both handled below:
+
+    A GHCR package is **private by default even in a public repository**.
+    Publishing from Actions does not make it public; that is a separate switch
+    in the package's settings. A private package needs `docker login ghcr.io`
+    on this host with a token carrying `read:packages`.
+
+    And `:latest` only exists once `promote` has run. `delivery.yml` publishes
+    `:${SHA}` on every push and moves `:latest` only after the production
+    environment's approval, which is D-047's rule that the gate holds the tag
+    rather than the artifact. A first deploy after the cutover therefore has
+    nothing to pull until a promote has happened - which reads as a broken
+    script unless it says so.
 
 .PARAMETER MigrateFrom
     Copy an existing lake and operational database into the volume before
@@ -26,7 +41,10 @@
 
 [CmdletBinding()]
 param(
-    [string]$Registry = "localhost:5000",
+    # `ghcr.io/<owner>` - the owner segment is part of the path, so the
+    # `$Registry/$name` join below is unchanged. Pass `localhost:5000` to pull
+    # from the old LAN registry while both are still publishing.
+    [string]$Registry = "ghcr.io/toddgbenson",
     [string]$MigrateFrom,
     [switch]$NoStart
 )
@@ -46,7 +64,26 @@ function Read-EnvValue {
 Write-Host "Pulling images from $Registry..." -ForegroundColor Cyan
 foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
     docker pull "$Registry/$name`:latest"
-    if ($LASTEXITCODE -ne 0) { throw "Could not pull $name. Has the pipeline published it?" }
+    if ($LASTEXITCODE -ne 0) {
+        # Named causes rather than "could not pull". Each of these fails the
+        # same way at the daemon and needs a different thing done about it,
+        # and the first cutover to GHCR is exactly when somebody will meet
+        # one of them for the first time.
+        $lines = @(
+            "Could not pull $Registry/$name`:latest.",
+            "",
+            "  * Has delivery.yml promoted yet? It publishes :<sha> on every",
+            "    push and moves :latest only after the production",
+            "    environment's approval (D-047). Before the first promote",
+            "    there is no :latest to pull.",
+            "  * Is the package public? A GHCR package is private by default",
+            "    even in a public repository. Either make it public in the",
+            "    package settings, or run: docker login ghcr.io",
+            "    with a token carrying read:packages.",
+            "  * Still on the old registry? Pass -Registry localhost:5000."
+        )
+        throw ($lines -join [Environment]::NewLine)
+    }
     docker tag "$Registry/$name`:latest" "$name`:latest"
 }
 

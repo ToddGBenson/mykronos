@@ -9,6 +9,7 @@ policy — which is why it demands a reason.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
@@ -19,7 +20,16 @@ from sqlalchemy import select
 
 from mykronos import controls, governance, incident, regression, worklist
 from mykronos.adminauth import PrincipalDep
-from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
+from mykronos.ci import (
+    ActionsClient,
+    ConcourseClient,
+    PipelineStatus,
+    StatusCache,
+    capability_by_workflow,
+    coverage,
+    pipeline_name_for,
+    reconcile,
+)
 from mykronos.dashboard import STRIDE_CATEGORIES, DashboardQueries, PortfolioSummary
 from mykronos.db.models import (
     CapabilityGrant,
@@ -1429,6 +1439,64 @@ async def vulnerability_management(
     return _queries(request).vulnerability_management(repo_full_name)
 
 
+async def _ci_status(
+    request: Request,
+    repo_full_name: str,
+    scanned_by: str,
+    installation_id: int | None,
+) -> PipelineStatus:
+    """Where this repository is built, from whichever CI builds it.
+
+    Concourse is read synchronously off the same host and is not cached — it
+    was never expensive. Actions is a network round-trip against a shared
+    installation rate limit, so it goes through `StatusCache` (spec 32 §7.1),
+    which stores successes only.
+
+    Neither branch raises. A repository with `scanned_by="none"` gets a
+    `PipelineStatus` saying exactly that, rather than a Concourse lookup for
+    a pipeline nobody claimed exists.
+    """
+    settings = request.app.state.settings
+
+    if scanned_by == "github_actions":
+        if installation_id is None:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=f"https://github.com/{repo_full_name}/actions",
+                unavailable="This repository has no GitHub App installation to read.",
+            )
+        cache: StatusCache = request.app.state.ci_status_cache
+        now = time.monotonic()
+        cached = cache.get(repo_full_name, now=now)
+        if cached is not None:
+            return cached
+        client = ActionsClient(
+            request.app.state.github_factory.for_installation(installation_id),
+            capability_by_workflow=capability_by_workflow(request.app.state.templates),
+        )
+        status = await client.status_for(repo_full_name)
+        cache.put(repo_full_name, status, now=now)
+        return status
+
+    if scanned_by == "none":
+        return PipelineStatus(
+            repo_full_name=repo_full_name,
+            pipeline=None,
+            url=None,
+            unavailable=(
+                "This repository declares no scanner (scanned_by=none). Findings can "
+                "still be uploaded by hand, and nothing runs on its own."
+            ),
+        )
+
+    return ConcourseClient(
+        settings.concourse_url,
+        team=settings.concourse_team,
+        external_url=settings.concourse_external_url,
+    ).status_for(repo_full_name)
+
+
 @router.get("/repos/{repo_id}/ci", response_model=CiPage)
 async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> CiPage:
     """Links out to where this repository is built (spec 15 §4a).
@@ -1439,20 +1507,14 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
     pipeline, from a page that is already about this repository.
     """
     repo_full_name = _resolve_repo(request, repo_id)
-    settings = request.app.state.settings
-    status = ConcourseClient(
-        settings.concourse_url,
-        team=settings.concourse_team,
-        external_url=settings.concourse_external_url,
-    ).status_for(repo_full_name)
-
-    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
 
     with request.app.state.db.session() as session:
         row = session.execute(
             select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == repo_full_name)
         ).scalar_one_or_none()
         enabled = set(row.enabled_capabilities or []) if row else set()
+        scanned_by = row.scanned_by if row else "concourse"
+        installation_id = row.github_installation_id if row else None
 
         if row and row.scanned_by != "github_actions":
             # `enabled_capabilities` is the installer's ledger: capabilities
@@ -1469,6 +1531,14 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                     )
                 ).scalars()
             )
+
+    # Dispatch on `scanned_by`, the same split `scan_now` and fix
+    # verification already use (spec 32 §7). Everything below this line is
+    # unchanged and unaware of which CI answered: `reconcile` and `coverage`
+    # were always about job names, statuses and timestamps.
+    status = await _ci_status(request, repo_full_name, scanned_by, installation_id)
+
+    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
 
     return CiPage(
         repo_full_name=repo_full_name,

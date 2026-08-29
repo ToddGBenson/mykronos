@@ -23,6 +23,7 @@ from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
+from mykronos.ci import StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.digest import send_all as send_digests
@@ -161,6 +162,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
+    # Held on the app rather than built per request, which is the whole point
+    # of it (spec 32 §7.1): reading GitHub Actions state spends an
+    # installation rate limit shared with token rotation, the installer and
+    # Patchwork, and a repository page refreshed in a loop must not be what
+    # stops a token rotating. Per-process, and successes only.
+    app.state.ci_status_cache = StatusCache(settings.ci_status_cache_seconds)
     # Loaded once at startup and held: spec 09 §10 requires an evaluation
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.

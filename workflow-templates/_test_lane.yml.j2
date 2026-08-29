@@ -48,6 +48,7 @@
         run: |
           set -uo pipefail
           mkdir -p "$MYKRONOS_RESULTS"
+{% block suite_command %}
 {%- for line in config.get('setup', []) %}
           << line >>
 {%- endfor %}
@@ -62,6 +63,7 @@
           echo "::error::No test command is configured for this lane."
           exit 1
 {%- endif %}
+{% endblock %}
 
       - name: Say what the suite did
         # Before the upload, and unconditionally. An operator reading a failed

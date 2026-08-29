@@ -570,6 +570,108 @@ class RawAccepted(BaseModel):
     bytes_written: int
 
 
+class NetassessSubmission(BaseModel):
+    """One network-assessment run, pushed by the host that produced it
+    (spec 32 §4.4).
+
+    **Push rather than pull, and that is the whole design decision.** The scan
+    runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+    addresses, which is measured rather than assumed — and the publisher that
+    archives it to MinIO already runs there. Having the backend poll an object
+    store instead would mean an S3 client it does not otherwise need, MinIO
+    credentials it does not otherwise hold, and a schedule to guess at when the
+    arrival is already an event somebody could just report.
+
+    **Files, not an archive.** Two text files are what the judgement reads; a
+    zip would mean unpacking attacker-controlled entries inside the ingestion
+    path for no gain. The archive still goes to MinIO, which remains the
+    history — this platform stores what it needs to compare against next week.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_key: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The publisher's object name, e.g. `netassess-2026.8.9.zip`.",
+    )
+    inventory_csv: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`inventory.csv` verbatim. Empty means the run enumerated nothing.",
+    )
+    network_status_md: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`network-status.md` verbatim. Empty means the scan did not finish.",
+    )
+
+
+class NetassessAccepted(BaseModel):
+    believable: bool
+    problems: list[str] = Field(default_factory=list)
+    host_count: int = 0
+    hosts_appeared: list[str] = Field(default_factory=list)
+    hosts_disappeared: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
+class LaneFailure(BaseModel):
+    """A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
+
+    Every Concourse job carries `on_failure: *slack_alert`. On Actions most
+    lanes need no equivalent, because `mykronos.upload` registers a ScanRun
+    before it interprets anything and finalises in a `finally` — so a failed
+    scan already reaches Slack through the ingestion path that records it.
+
+    Two cases that path cannot cover, and this exists for both:
+
+    *A lane with nothing to upload.* `delivery.yml` builds, publishes and
+    promotes, and produces no findings by design — `ci.py` says its absence
+    from the lake is not a fault. A failed build currently tells nobody.
+
+    *A lane that died before its upload step.* A failed checkout or a failing
+    fail-fast probe leaves no ScanRun, so the capability reads as never having
+    run rather than as having broken.
+
+    **This writes nothing to the lake.** It is a message, not evidence. A
+    build failure is not a finding, has no severity, and must not reach a risk
+    score — which is the same rule D-046 applies to test lanes, one step
+    further out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lane: str = Field(
+        min_length=1,
+        max_length=100,
+        description="Which lane failed, as a person would name it: `publish`, `promote`.",
+    )
+    detail: str = Field(
+        default="",
+        max_length=1_000,
+        description="What went wrong, in one or two lines. Rendered verbatim.",
+    )
+    commit_sha: str = Field(default="", max_length=100)
+    run_url: str = Field(
+        default="",
+        max_length=500,
+        description="Where to go and look. The whole point of the message.",
+    )
+
+    @field_validator("run_url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("run_url must be an http(s) URL.")
+        return value
+
+
+class LaneFailureAccepted(BaseModel):
+    notified: bool
+    detail: str
+
+
 class HealthResponse(BaseModel):
     status: str
     datalake_writable: bool

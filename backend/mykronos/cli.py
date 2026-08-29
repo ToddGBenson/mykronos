@@ -9,8 +9,16 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
+    mykronos parity <owner/repo>
+    mykronos workflows <owner/repo>
+    mykronos enable-workflow <owner/repo> <capability>
+    mykronos disable-workflow <owner/repo> <capability>
     mykronos query "SELECT ..."
     mykronos stats
+
+The three `workflow` commands are the off switch of spec 32 §6, here as well
+as in the API on purpose: the state an operator needs them for is the one
+where the dashboard is the thing that is misbehaving.
 
 `query` is the Phase 0 demo's second half (spec 13 §3): curl a finding in,
 then read it back out of the lake with SQL.
@@ -25,12 +33,22 @@ import logging
 import sys
 from collections.abc import Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos.auth import TokenRegistry
+from mykronos.ci import (
+    ActionsClient,
+    ConcourseClient,
+    capability_by_workflow,
+    compare,
+    coverage,
+    reconcile,
+)
 from mykronos.config import get_settings
+from mykronos.dashboard import DashboardQueries
 from mykronos.db import Database
-from mykronos.db.models import RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
@@ -128,6 +146,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Mint a short-lived GitHub App installation token (spec 02 §4)",
     )
     ghtoken.add_argument("repo", help="owner/repo the token should be scoped to.")
+
+    parity = sub.add_parser(
+        "parity",
+        help="Compare what each CI reports for a repo, before retiring a pipeline",
+    )
+    parity.add_argument("repo")
+
+    workflows = sub.add_parser(
+        "workflows",
+        help="List this repo's installed workflows and whether each is switched on",
+    )
+    workflows.add_argument("repo")
+
+    wf_enable = sub.add_parser(
+        "enable-workflow",
+        help="Switch one installed workflow on, with no pull request (spec 32 §6)",
+    )
+    wf_enable.add_argument("repo")
+    wf_enable.add_argument("capability", choices=CAPABILITIES)
+
+    wf_disable = sub.add_parser(
+        "disable-workflow",
+        help="Stop one installed workflow now, with no pull request (spec 32 §6)",
+    )
+    wf_disable.add_argument("repo")
+    wf_disable.add_argument("capability", choices=CAPABILITIES)
 
     reproc = sub.add_parser(
         "reprocess",
@@ -428,6 +472,150 @@ def main(argv: list[str] | None = None) -> int:
             # here would be a second place for App credential handling to
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
+            return 0
+
+        if args.command == "parity":
+            # The check that authorises spec 32 §9 step 8. Retiring a pipeline
+            # because its replacement looks green is how a lane goes quiet
+            # without anybody noticing — spec 15 §4a.1's first day of
+            # existence found a lane green on every build that had never
+            # reported once.
+            #
+            # Reads both systems for the same repository and compares them
+            # capability by capability. Comparing counts would be satisfied by
+            # two systems covering different sets of eleven.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                par_enabled = set(onboarding.enabled_capabilities or [])
+                par_grants = {
+                    str(grant.capability)
+                    for grant in session.execute(
+                        select(CapabilityGrant).where(
+                            CapabilityGrant.repo_full_name == args.repo
+                        )
+                    ).scalars()
+                }
+                par_installation = onboarding.github_installation_id
+
+            # The same union every other view applies (spec 03 §3a): the
+            # installer's ledger never moves for a Concourse-scanned repo, so
+            # the grants are what may write and therefore what is enabled.
+            par_capabilities = par_enabled | par_grants
+            last_scan = DashboardQueries(catalog).last_successful_scan_at(args.repo)
+
+            concourse = ConcourseClient(
+                settings.concourse_url,
+                team=settings.concourse_team,
+                external_url=settings.concourse_external_url,
+            ).status_for(args.repo)
+
+            actions_client = ActionsClient(
+                _github_factory(settings).for_installation(par_installation),
+                capability_by_workflow=capability_by_workflow(
+                    TemplateLibrary(settings.workflow_templates_dir)
+                ),
+            )
+            actions = asyncio.run(actions_client.status_for(args.repo))
+
+            for label, status in (("concourse", concourse), ("actions", actions)):
+                if status.unavailable:
+                    print(f"{label}: {status.unavailable}")
+
+            # Distinct name: `rows` is bound above by other subcommands and
+            # reusing it makes mypy infer the wrong type — the same trap the
+            # `reprocess` branch already documents.
+            parity_rows = compare(
+                coverage(par_capabilities, reconcile(concourse.jobs, last_scan)),
+                coverage(par_capabilities, reconcile(actions.jobs, last_scan)),
+            )
+            _print_table(
+                ["capability", "concourse", "actions", "verdict"],
+                [[r.capability, r.before, r.after, r.verdict] for r in parity_rows],
+            )
+
+            regressed = [r.capability for r in parity_rows if r.regressed]
+            if regressed:
+                print()
+                print(
+                    "NOT SAFE to retire the pipeline. Worse under Actions: "
+                    + ", ".join(regressed),
+                    file=sys.stderr,
+                )
+                return 1
+            print()
+            print("No capability is worse under Actions.")
+            return 0
+
+        if args.command in {"workflows", "enable-workflow", "disable-workflow"}:
+            # The off switch that works when the dashboard is the thing that
+            # is down (spec 32 §6.2). Same three operations as the API, and
+            # deliberately the same shape: state comes from GitHub on every
+            # read, and neither enable nor disable touches
+            # `enabled_capabilities` or a grant.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                if onboarding.scanned_by != "github_actions":
+                    print(
+                        f"{args.repo} is scanned by {onboarding.scanned_by!r}, so "
+                        "Mykronos installs no workflows into it (spec 03 §3a).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                wf_installation_id = onboarding.github_installation_id
+                wf_enabled = sorted(set(onboarding.enabled_capabilities or []))
+
+            templates = TemplateLibrary(settings.workflow_templates_dir)
+            gh = _github_factory(settings).for_installation(wf_installation_id)
+
+            if args.command == "workflows":
+                live = {
+                    ref.file_name: ref
+                    for ref in asyncio.run(gh.list_workflows(args.repo))
+                }
+                wf_rows: list[Sequence[object]] = []
+                for capability in wf_enabled:
+                    if capability not in templates.available:
+                        continue
+                    name = templates.target_path(capability).rsplit("/", 1)[-1]
+                    ref = live.get(name)
+                    wf_rows.append(
+                        [
+                            capability,
+                            name,
+                            ref.state if ref is not None else "not_installed",
+                        ]
+                    )
+                _print_table(["capability", "workflow", "state"], wf_rows)
+                return 0
+
+            if args.capability not in templates.available:
+                print(
+                    f"No workflow template for '{args.capability}', so there is "
+                    "nothing installed to switch.",
+                    file=sys.stderr,
+                )
+                return 1
+            wf_file = templates.target_path(args.capability).rsplit("/", 1)[-1]
+            wf_on = args.command == "enable-workflow"
+            asyncio.run(gh.set_workflow_state(args.repo, wf_file, enabled=wf_on))
+            print(f"{args.repo}: {wf_file} {'enabled' if wf_on else 'disabled'}.")
+            print("The capability is unchanged — its grant still permits writes.")
             return 0
 
         if args.command == "reprocess":

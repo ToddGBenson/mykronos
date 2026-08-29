@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from datetime import datetime, time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -38,7 +39,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import inventory
+from mykronos import inventory, netassess
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
 from mykronos.atlas import evidence_id as atlas_evidence_id
@@ -46,6 +47,7 @@ from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
 from mykronos.db.models import (
+    NetassessRun,
     ReachabilityReport,
     RepoOnboarding,
     RiskProfile,
@@ -65,6 +67,10 @@ from mykronos.schemas import (
     HealthResponse,
     IngestAccepted,
     InsiderRiskSubmission,
+    LaneFailure,
+    LaneFailureAccepted,
+    NetassessAccepted,
+    NetassessSubmission,
     RawAccepted,
     ReachabilityAccepted,
     ReachabilitySubmission,
@@ -209,6 +215,164 @@ async def health(request: Request, token: TokenDep) -> HealthResponse:
         detail=detail,
         repo_full_name=token.repo_full_name,
         granted_capabilities=sorted(token.granted_capabilities),
+    )
+
+
+@router.post("/netassess", response_model=NetassessAccepted)
+async def ingest_netassess(
+    request: Request,
+    background: BackgroundTasks,
+    submission: NetassessSubmission,
+    token: TokenDep,
+) -> NetassessAccepted:
+    """Judge a network-assessment run the host has just produced (spec 32 §4.4).
+
+    The half Concourse was good at — deciding whether the run that arrived is
+    worth believing, and saying what changed — with the half it was bad at
+    left where it works. The scan itself stays on Windows: an nmap sweep from
+    a container reported all 256 addresses of a /24 as up while the host's ARP
+    table had 38, because MAC-keyed inventory needs L2 adjacency a container
+    does not have.
+
+    **The failure this exists to catch is the Scheduled Task degrading rather
+    than dying**: still writing `network-status.md` every week with the checks
+    inside it no longer running. So an `unknown` line fails the run rather than
+    warning about it — a NAS that is switched off must not read the same as one
+    confirmed closed.
+
+    **A run that fails verification is still recorded.** "The last scan was bad"
+    is precisely what the freshness check needs to know, and discarding it
+    would make a degraded scanner indistinguishable from a silent one.
+
+    Requires the `network` capability, unlike `/lane-failure`: this *is* a
+    capability, it is the one spec 14 defines, and what may write it is what
+    the grant says.
+    """
+    _require_capability(token, Capability.NETWORK.value)
+
+    previous_inventory: str | None = None
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is not None:
+            previous_inventory = row.inventory_csv or None
+
+    verdict = netassess.verify(
+        inventory_csv=submission.inventory_csv or None,
+        network_status_md=submission.network_status_md or None,
+        previous_inventory_csv=previous_inventory,
+    )
+
+    when = netassess.run_date(submission.run_key)
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is None:
+            row = NetassessRun(repo_full_name=token.repo_full_name)
+            session.add(row)
+        row.run_key = submission.run_key
+        row.run_date = datetime.combine(when, time.min) if when else None
+        row.inventory_csv = submission.inventory_csv
+        row.believable = verdict.believable
+        session.commit()
+
+    if not verdict.believable:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network scan is not believable",
+                detail="\n".join(
+                    [f"`{submission.run_key}` reported {verdict.host_count} host(s)."]
+                    + [f"- {problem}" for problem in verdict.problems[:6]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="critical",
+            ),
+        )
+    elif verdict.diff.changed:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network inventory changed",
+                detail="\n".join(
+                    [f"`{submission.run_key}`"]
+                    + [f"+ new  {host}" for host in verdict.diff.appeared[:10]]
+                    + [f"- gone {host}" for host in verdict.diff.disappeared[:10]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="warning",
+            ),
+        )
+
+    return NetassessAccepted(
+        believable=verdict.believable,
+        problems=verdict.problems,
+        host_count=verdict.host_count,
+        hosts_appeared=[str(h) for h in verdict.diff.appeared],
+        hosts_disappeared=[str(h) for h in verdict.diff.disappeared],
+        detail=netassess.summarise(
+            verdict,
+            netassess.Freshness(
+                newest_key=submission.run_key,
+                newest_date=when,
+                age_days=(netassess.utc_today() - when).days if when else None,
+                max_age_days=0,
+            ),
+        ),
+    )
+
+
+@router.post("/lane-failure", response_model=LaneFailureAccepted)
+async def ingest_lane_failure(
+    request: Request,
+    background: BackgroundTasks,
+    submission: LaneFailure,
+    token: TokenDep,
+) -> LaneFailureAccepted:
+    """A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+
+    Concourse put `on_failure: *slack_alert` on every job. On Actions most
+    lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+    interprets anything and finalises in a `finally`, so a failed scan already
+    reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+    lane with nothing to upload (`delivery.yml` builds and publishes and
+    produces no findings by design), and a lane that died before its upload
+    step ever ran.
+
+    **Nothing is written to the lake.** A build failure is not a finding, has
+    no severity, and must not reach a risk score — D-046's rule about test
+    lanes, one step further out. This endpoint sends a message and returns.
+
+    **The repository comes from the token, never from the body.** A token
+    scoped to one repository cannot raise an alert that appears to be about
+    another.
+
+    **No capability grant is required**, because a lane failure is not a
+    capability. Requiring one would mean a repository could not report that
+    its build broke until somebody granted it something unrelated.
+    """
+    notifier = request.app.state.notifier
+    background.add_task(
+        notifier.send,
+        Notification(
+            title=f"{submission.lane} failed",
+            detail="\n".join(
+                part
+                for part in (
+                    submission.detail or "The lane failed and reported no detail.",
+                    f"Commit `{submission.commit_sha}`." if submission.commit_sha else "",
+                    submission.run_url,
+                )
+                if part
+            ),
+            repo_full_name=token.repo_full_name,
+            level="warning",
+        ),
+    )
+    return LaneFailureAccepted(
+        notified=bool(getattr(notifier, "enabled", False)),
+        detail=(
+            f"Recorded a failure of {submission.lane!r} for "
+            f"{token.repo_full_name}. Nothing was written to the lake."
+        ),
     )
 
 

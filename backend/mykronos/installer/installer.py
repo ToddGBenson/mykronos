@@ -204,11 +204,15 @@ class WorkflowInstaller:
         # because a repository's test runner is decided by its language and
         # its own conventions (D-046, spec 31 §5), so the honest failure is a
         # 422 naming the field rather than a workflow that tests nothing.
+        # `qa` may say the same thing in the plural instead (spec 32 §5.1):
+        # several named checks, each its own matrix leg and its own run. Either
+        # form satisfies this guard; neither being present does not.
         commandless = sorted(
             capability
             for capability in requested
             if capability in TEST_LANES
             and not str(configs.get(capability, {}).get("command", "")).strip()
+            and not configs.get(capability, {}).get("checks")
         )
         if commandless:
             raise InstallerError(
@@ -216,7 +220,7 @@ class WorkflowInstaller:
                 "A test lane runs this repository's own suite, and this "
                 "platform will not guess it — set `command` on each "
                 "capability's config to something that writes JUnit XML into "
-                "$MYKRONOS_RESULTS."
+                "$MYKRONOS_RESULTS (or, for `qa`, a `checks` list)."
             )
 
         enabled_after = sorted(
