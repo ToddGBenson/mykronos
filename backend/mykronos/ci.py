@@ -515,6 +515,35 @@ class ActionsClient:
     def configured(self) -> bool:
         return self._github is not None
 
+    def _job_name_for(self, file_name: str) -> str | None:
+        """What to call this workflow's job, or None if it is not ours.
+
+        Two sources, in order, and the order is the point:
+
+        **The template registry, which is exact.** The installer chose
+        `mykronos-sast.yml`, so mapping it to `sast` is the registry answering
+        a question about its own output.
+
+        **`CAPABILITY_BY_JOB`, which is a heuristic and is already one.** A
+        repository may legitimately produce a capability from a workflow this
+        platform did not write — `demo-and-dast.yml` uploads `functional` and
+        `dast` from an ephemeral stack the templates cannot express (spec 32
+        §4.2). Before this fell back, both read `no_job`: rendered red, as a
+        coverage gap, while the scans were arriving.
+
+        Returning the *stem* rather than a resolved capability is what makes
+        the one-job-to-several-capabilities case work without touching
+        `reconcile()`. That function already splits a tuple — it has to, for
+        Concourse's `demo-and-dast` — so handing it the same key the Concourse
+        side hands it means the two CIs converge on one table rather than
+        growing a second.
+        """
+        capability = self._capability_by_workflow.get(file_name)
+        if capability is not None:
+            return capability
+        stem = file_name.rsplit(".", 1)[0]
+        return stem if stem in CAPABILITY_BY_JOB else None
+
     async def status_for(self, repo_full_name: str) -> PipelineStatus:
         """Workflow state for one repository. Never raises."""
         url = f"https://github.com/{repo_full_name}/actions"
@@ -549,12 +578,13 @@ class ActionsClient:
 
         jobs: list[JobStatus] = []
         for workflow in workflows:
-            capability = self._capability_by_workflow.get(workflow.file_name)
+            capability = self._job_name_for(workflow.file_name)
             if capability is None:
-                # A workflow this platform did not install — the repository's
-                # own CI. Not cross-checked, which is the safe direction to be
-                # wrong in: it is somebody else's lane and claiming it
-                # produces a capability would invent coverage.
+                # A workflow neither the template registry nor the job-name
+                # table recognises — the repository's own CI, `delivery.yml`
+                # among them. Not cross-checked, which is the safe direction to
+                # be wrong in: claiming somebody else's lane produces a
+                # capability would invent coverage.
                 continue
             run = by_file.get(workflow.file_name)
             # A workflow GitHub has switched off has not run and will not.

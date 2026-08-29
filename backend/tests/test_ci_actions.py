@@ -295,3 +295,77 @@ class TestStatusCache:
 
         assert cache.get("repo-0", now=103.0) is None
         assert cache.get("repo-2", now=103.0) is not None
+
+
+class TestRepoOwnedWorkflows:
+    """A workflow the platform did not write, producing capabilities anyway.
+
+    `demo-and-dast.yml` stands up an ephemeral stack, runs the functional suite
+    through ZAP's proxy and uploads both `functional` and `dast` (spec 32
+    §4.2). No template can express that, so it is hand-written — and before
+    `ActionsClient` fell back to `CAPABILITY_BY_JOB`, both capabilities read
+    `no_job`: rendered red, as a coverage gap, while the scans were arriving.
+
+    The parity check that authorises retiring the Concourse pipelines reads
+    exactly this signal, so a false red here is not cosmetic.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_known_job_name_is_credited(self) -> None:
+        client = _client(
+            files={".github/workflows/demo-and-dast.yml": "..."},
+            runs={"demo-and-dast.yml": _run("demo-and-dast.yml", "success")},
+        )
+
+        status = await client.status_for(REPO)
+
+        assert [j.name for j in status.jobs] == ["demo-and-dast"]
+
+    @pytest.mark.asyncio
+    async def test_one_workflow_answers_for_both_capabilities(self) -> None:
+        """The property that made the stem the right thing to return.
+
+        `reconcile()` already splits a tuple — it has to, for Concourse's
+        `demo-and-dast` — so the two CIs converge on one table instead of
+        growing a second.
+        """
+        built = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+        client = _client(
+            files={".github/workflows/demo-and-dast.yml": "..."},
+            runs={"demo-and-dast.yml": _run("demo-and-dast.yml", "success", when=built)},
+        )
+        status = await client.status_for(REPO)
+
+        reported = reconcile(status.jobs, {"functional": built, "dast": built})
+        stages = {c.stage: c.state for c in coverage({"functional", "dast"}, reported)}
+
+        assert stages["functional"] == "reporting"
+        assert stages["dast"] == "reporting"
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_workflow_is_still_ignored(self) -> None:
+        """`delivery.yml` builds and publishes and produces no findings — the
+        exact case `ci.py` says "their absence from the lake is not a fault".
+        The fallback must not start crediting it with something."""
+        client = _client(
+            files={".github/workflows/delivery.yml": "..."},
+            runs={"delivery.yml": _run("delivery.yml", "success")},
+        )
+
+        status = await client.status_for(REPO)
+
+        assert status.pipeline is None
+        assert "No Mykronos workflow is installed" in (status.unavailable or "")
+
+    @pytest.mark.asyncio
+    async def test_the_template_registry_still_wins(self) -> None:
+        """Order matters: the registry is exact and the table is a heuristic,
+        so a filename in both resolves by the registry."""
+        client = _client(
+            files={".github/workflows/mykronos-sast.yml": "..."},
+            runs={"mykronos-sast.yml": _run("mykronos-sast.yml", "success")},
+        )
+
+        status = await client.status_for(REPO)
+
+        assert [j.name for j in status.jobs] == ["sast"]
