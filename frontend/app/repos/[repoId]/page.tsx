@@ -6,6 +6,7 @@ import { InsiderRiskTab } from "@/components/insider-risk";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { TestCoverage } from "@/components/test-coverage";
 import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
+import { WorkflowSwitches } from "@/components/workflow-switches";
 import { ScanNowButton } from "@/components/scan-now";
 import {
   OccurrenceDisposition,
@@ -28,7 +29,7 @@ import {
   Pill,
   Section,
 } from "@/components/primitives";
-import type { CiPage, ScanHealth } from "@/lib/api";
+import type { CiPage, ScanHealth, WorkflowsPage } from "@/lib/api";
 import {
   getCi,
   getDecisions,
@@ -44,6 +45,7 @@ import {
   getScanRunTrend,
   getSscs,
   getThreatModel,
+  getWorkflows,
 } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -89,7 +91,15 @@ export default async function RepoPage({
   // Harness tab's capability buttons (spec 17 §2.2) need the same `CiPage` to
   // colour themselves consistently with the panel below them, and Dashboard
   // (spec 18 §3) reuses both rather than issuing its own copies.
-  const [scanHealth, ci] = await Promise.all([getScanHealth(repoId), getCi(repoId)]);
+  // `getWorkflows` joins them because the Dashboard tab's switches (spec 32
+  // §6) need GitHub's live view of each workflow's state, which is derived on
+  // every read rather than stored. One GitHub call per repository page — the
+  // fan-out §7.1 warns about is the *portfolio*, which does not read this.
+  const [scanHealth, ci, workflows] = await Promise.all([
+    getScanHealth(repoId),
+    getCi(repoId),
+    getWorkflows(repoId),
+  ]);
   // What "enabled" means depends on who scans this repo: the installer's
   // ledger for Actions, the grants for everything else — same union the
   // portfolio and stages views apply. `live` is which of those have actually
@@ -180,6 +190,7 @@ export default async function RepoPage({
           scanHealth={scanHealth.ok ? scanHealth.data : null}
           scanHealthError={scanHealth.ok ? null : scanHealth.error}
           ci={ci.ok ? ci.data : null}
+          workflows={workflows.ok ? workflows.data : null}
         />
       )}
     </div>
@@ -203,6 +214,7 @@ function DashboardTab({
   scanHealth,
   scanHealthError,
   ci,
+  workflows,
 }: {
   repoId: string;
   enabled: string[];
@@ -211,6 +223,11 @@ function DashboardTab({
   scanHealth: ScanHealth | null;
   scanHealthError: string | null;
   ci: CiPage | null;
+  /** Null when the read failed. The panel is then omitted rather than
+   *  rendered empty — "no workflows" and "could not ask GitHub" are
+   *  different facts, and the backend already distinguishes them through
+   *  `unavailable` when it can answer at all. */
+  workflows: WorkflowsPage | null;
 }) {
   // A box per enabled check, plus anything that has reported without being
   // enabled — which is worth seeing rather than hiding, because it means the
@@ -253,6 +270,8 @@ function DashboardTab({
           <ScanHealthBoxes capabilities={boxes} health={scanHealth?.capabilities ?? []} />
         )}
       </Section>
+
+      {workflows ? <WorkflowSwitches repoId={repoId} page={workflows} /> : null}
 
       {ci ? (
         <PipelineCoverage ci={ci} />

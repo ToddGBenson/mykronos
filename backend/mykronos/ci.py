@@ -1,28 +1,42 @@
-"""Where a repository is built, and how to get there (spec 15 §4a).
+"""Where a repository is built, and how to get there (spec 15 §4a, spec 32 §7).
 
-The traffic between Mykronos and Concourse has only ever run one way:
-pipelines upload findings, and the lake cannot tell which CI produced any of
-them. That is deliberate for analysis — spec 15 §4 — and useless for
-navigation. Somebody looking at a repository's findings has no way to reach
-the pipeline that produced them without already knowing which of three
-pipelines to open.
+The traffic between Mykronos and its CI has only ever run one way: pipelines
+upload findings, and the lake cannot tell which CI produced any of them. That
+is deliberate for analysis — spec 15 §4 — and useless for navigation. Somebody
+looking at a repository's findings has no way to reach the build that produced
+them without already knowing where to look.
 
 This closes that, and nothing more. Nothing read here is an input to a
 finding, a score or a decision; it is a link and a status next to it.
 
+**Two CI systems, one set of answers.** `ConcourseClient` reads Concourse and
+`ActionsClient` reads GitHub Actions, and everything downstream of them —
+`JobStatus`, `PipelineStatus`, `reconcile`, `coverage`, the dashboard panel —
+is shared and unaware of which answered. That is not a refactor made for
+elegance: `reconcile()` and `coverage()` are the two functions spec 15 §4a.1
+records getting wrong twice, and the cheapest way to avoid a third is to add a
+second reader in front of them rather than a second copy of them behind.
+
 Three properties worth stating, because each is a way this could go wrong:
 
-*Which pipeline covers a repository is derived.* The pipeline is the
-repository name, lowercased, checked against the live list. No configured
-mapping to go stale, and a repository Concourse does not cover reports
-exactly that rather than a dead link.
+*Which lane covers a repository is derived.* For Concourse the pipeline is the
+repository name, lowercased, checked against the live list. For Actions it is
+the workflow filename the installer itself chose, looked up in the template
+registry — exact rather than heuristic. Neither is a configured mapping that
+can go stale, and a repository nothing covers reports exactly that rather than
+a dead link.
 
 *It reads the job list, never build logs.* Logs carry scanner output and,
-until CNC-2 lands, resolved `((var))` values.
+until CNC-2 lands, resolved `((var))` values. True of Actions runs for the
+same reason.
 
-*It fails soft, always.* Concourse restarting must not affect a page about
-findings. Every failure resolves to "unavailable, and here is why", never an
-exception that reaches a request handler.
+*It fails soft, always.* Concourse restarting, or GitHub rate-limiting, must
+not affect a page about findings. Every failure resolves to "unavailable, and
+here is why", never an exception that reaches a request handler.
+
+One property is *not* shared, and is called out where it is lost: the
+Concourse read is anonymous, and the Actions read spends an installation
+token against a limit other things need more (see `StatusCache`).
 """
 
 from __future__ import annotations
@@ -33,6 +47,7 @@ from datetime import UTC, datetime
 
 import httpx2
 
+from mykronos.github.client import GitHubClient
 from mykronos.logsafe import scrub
 
 logger = logging.getLogger(__name__)
@@ -350,6 +365,234 @@ class ConcourseClient:
             finished_at=datetime.fromtimestamp(int(end), tz=UTC)
             if isinstance(end, int | float) and end
             else None,
+        )
+
+
+#: GitHub's run conclusions, mapped onto the status vocabulary the rest of
+#: this module, the dashboard and `reconcile` already speak (spec 32 §7).
+#:
+#: Translating here rather than teaching four call sites a second vocabulary
+#: is the whole reason `reconcile()` and `coverage()` need no edit to work
+#: against Actions: they compare `status == "succeeded"`, and a client that
+#: handed them `"success"` would have reported every green lane as one that
+#: had never run — a silent, total false negative in exactly the check that
+#: exists to catch silent failures.
+#:
+#: `skipped` maps to `None` — *not run*. A skipped job produced no outcome,
+#: and calling it a success would let a lane that never executed vouch for a
+#: capability. `None` is also what an unrecognised conclusion becomes, which
+#: is the safe direction to be wrong in: "has not run" invites a look, while
+#: a wrong "succeeded" ends the conversation.
+_STATUS_BY_CONCLUSION: dict[str, str] = {
+    "success": "succeeded",
+    "failure": "failed",
+    "timed_out": "errored",
+    "startup_failure": "errored",
+    "action_required": "errored",
+    "cancelled": "aborted",
+    "stale": "aborted",
+}
+
+
+def status_from_conclusion(conclusion: str | None) -> str | None:
+    """One GitHub run conclusion as a platform status, or None for *not run*."""
+    if not conclusion:
+        return None
+    return _STATUS_BY_CONCLUSION.get(conclusion)
+
+
+def capability_by_workflow(templates: object) -> dict[str, str]:
+    """`mykronos-sast.yml` -> `sast`, from the template registry.
+
+    The Actions counterpart of `CAPABILITY_BY_JOB`, and unlike it, **not a
+    heuristic**: the Workflow Installer chose these filenames, so this is the
+    registry answering a question about its own output rather than a guess
+    about names somebody else picked.
+
+    Takes the library loosely rather than importing `TemplateLibrary`, which
+    would point this module at the installer for one attribute — and the
+    dependency runs the wrong way. A library without `specs` yields an empty
+    map, so a caller with no templates configured reports "no workflow
+    installed" rather than raising inside a status read that must not.
+    """
+    specs = getattr(templates, "specs", None)
+    if not isinstance(specs, dict):
+        return {}
+    return {
+        str(spec.target).rsplit("/", 1)[-1]: capability
+        for capability, spec in specs.items()
+        if getattr(spec, "target", None)
+    }
+
+
+class StatusCache:
+    """A short-lived cache in front of a status read (spec 32 §7.1).
+
+    Concourse was read anonymously off a server on the same host, so a read
+    per request cost nothing anybody could measure. GitHub is a network
+    round-trip against an installation limit of 5000/hour that token
+    rotation, the installer and Patchwork all draw on — and this is the least
+    important of the four. A repository page refreshed in a loop must not be
+    what stops a token rotating.
+
+    **Only successful reads are cached.** Caching a failure would pin a
+    transient blip in place for the whole TTL, and "GitHub did not answer"
+    is exactly the answer somebody re-loads the page to change.
+    """
+
+    def __init__(self, ttl_seconds: float = 60.0, limit: int = 512) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.limit = limit
+        self._entries: dict[str, tuple[float, PipelineStatus]] = {}
+
+    def get(self, key: str, *, now: float) -> PipelineStatus | None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        stored_at, value = entry
+        if now - stored_at > self.ttl_seconds:
+            self._entries.pop(key, None)
+            return None
+        return value
+
+    def put(self, key: str, value: PipelineStatus, *, now: float) -> None:
+        if value.unavailable is not None:
+            return
+        if len(self._entries) >= self.limit:
+            # Oldest first. A dashboard reads a bounded set of repositories,
+            # so this is a ceiling rather than an eviction strategy worth
+            # tuning.
+            oldest = min(self._entries, key=lambda k: self._entries[k][0])
+            self._entries.pop(oldest, None)
+        self._entries[key] = (now, value)
+
+
+class ActionsClient:
+    """Reads workflow state from GitHub Actions (spec 32 §7).
+
+    The second implementation of what `ConcourseClient` does, for the
+    repositories that moved. Everything downstream — `reconcile`, `coverage`,
+    `PipelineStatus`, the dashboard panel — is unchanged and unaware, because
+    those were always about job names, statuses and timestamps rather than
+    about Concourse.
+
+    Three properties are carried over deliberately, and one is lost:
+
+    *Derived, not configured.* Which lane produces which capability comes from
+    the template registry, because the installer chose the filename. Where the
+    Concourse mapping is a documented heuristic about names somebody else
+    picked, this one is exact.
+
+    *Never reads logs.* Run metadata only, for the same reason as spec 15 §4a:
+    logs carry scanner output.
+
+    *Fails soft, always.* Every failure resolves to "unavailable, and here is
+    why". The failure modes are richer than Concourse's — an expired
+    installation token, a 403, a rate limit — and none of them may reach a
+    request handler.
+
+    *Reads anonymously.* *Lost*, and worth stating rather than discovering.
+    Concourse was read with no credential because those pipelines are
+    `public: true` on a loopback-bound server. This spends an installation
+    token, against a limit shared with token rotation, the installer and
+    Patchwork — which is why the read is cached (§7.1) and why the panel is
+    the first consumer to give up.
+    """
+
+    def __init__(
+        self,
+        github: GitHubClient | None,
+        *,
+        capability_by_workflow: dict[str, str],
+    ) -> None:
+        self._github = github
+        #: `mykronos-sast.yml` -> `sast`. Built by the caller from the
+        #: template registry rather than restated here, so there is one
+        #: answer to "which lane is this" and the installer owns it.
+        self._capability_by_workflow = capability_by_workflow
+
+    @property
+    def configured(self) -> bool:
+        return self._github is not None
+
+    async def status_for(self, repo_full_name: str) -> PipelineStatus:
+        """Workflow state for one repository. Never raises."""
+        url = f"https://github.com/{repo_full_name}/actions"
+        if not self.configured:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=None,
+                unavailable="No GitHub App is configured for this deployment.",
+            )
+
+        github = self._github
+        assert github is not None  # `configured` above
+        try:
+            workflows = await github.list_workflows(repo_full_name)
+            runs = await github.latest_workflow_runs(repo_full_name)
+        except Exception as exc:  # noqa: BLE001 - see the class docstring
+            logger.warning(
+                "Actions read of %s failed: %s", scrub(repo_full_name), scrub(str(exc))
+            )
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=url,
+                unavailable=(
+                    "GitHub did not answer, so this repository's workflow "
+                    "state is unknown."
+                ),
+            )
+
+        by_file = {run.workflow_file: run for run in runs}
+
+        jobs: list[JobStatus] = []
+        for workflow in workflows:
+            capability = self._capability_by_workflow.get(workflow.file_name)
+            if capability is None:
+                # A workflow this platform did not install — the repository's
+                # own CI. Not cross-checked, which is the safe direction to be
+                # wrong in: it is somebody else's lane and claiming it
+                # produces a capability would invent coverage.
+                continue
+            run = by_file.get(workflow.file_name)
+            # A workflow GitHub has switched off has not run and will not.
+            # Reporting its last conclusion would show a lane as green while
+            # it is paused, which is the "green pipeline, stale data"
+            # disagreement spec 15 §4a.1 exists to surface rather than hide.
+            status = (
+                status_from_conclusion(run.conclusion)
+                if run is not None and workflow.enabled
+                else None
+            )
+            jobs.append(
+                JobStatus(
+                    name=capability,
+                    status=status,
+                    build_name=str(run.run_number) if run and run.run_number else None,
+                    build_url=(run.url if run else None)
+                    or f"{url}/workflows/{workflow.file_name}",
+                    finished_at=run.finished_at if run and workflow.enabled else None,
+                )
+            )
+
+        if not jobs:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=url,
+                unavailable=(
+                    "No Mykronos workflow is installed in this repository. Enabling a "
+                    "capability opens the pull request that installs one (spec 03 §3)."
+                ),
+            )
+
+        return PipelineStatus(
+            repo_full_name=repo_full_name,
+            pipeline="github-actions",
+            url=url,
+            jobs=jobs,
         )
 
 

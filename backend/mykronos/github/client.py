@@ -91,6 +91,55 @@ class IssueRef:
     url: str
 
 
+@dataclass(frozen=True)
+class WorkflowRef:
+    """One workflow as GitHub knows it (spec 32 §6).
+
+    `state` is GitHub's own vocabulary and is deliberately passed through
+    rather than reduced to a boolean. `disabled_manually` and
+    `disabled_inactivity` are both "not running" and they are not the same
+    fact: the first is somebody's decision, the second is GitHub switching a
+    scheduled workflow off after 60 days without a push. Collapsing them
+    hides a real coverage gap behind a deliberate pause.
+
+    Known values: `active`, `disabled_manually`, `disabled_inactivity`,
+    `disabled_fork`. Unknown values pass through unaltered — a vocabulary
+    GitHub extends must not become an exception here.
+    """
+
+    #: The filename, e.g. `mykronos-sast.yml`. The identifier every other
+    #: method here takes, and the one the installer chose.
+    file_name: str
+    name: str
+    state: str
+    url: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return self.state == "active"
+
+
+@dataclass(frozen=True)
+class WorkflowRun:
+    """One completed workflow run (spec 32 §7).
+
+    The Actions analogue of Concourse's `finished_build`, and carrying the
+    same three things a link needs: what it was, how it ended, and when.
+    Deliberately not the run's logs — those hold scanner output, and spec 15
+    §4a's rule that the status read never reads logs is not weakened by
+    changing which CI it reads.
+    """
+
+    workflow_file: str
+    #: GitHub's `conclusion`, verbatim. Translated to the platform's status
+    #: vocabulary in `ci.py`, where the two systems are already reconciled,
+    #: rather than here — this stays a transport.
+    conclusion: str | None
+    run_number: int | None
+    url: str
+    finished_at: datetime | None
+
+
 @dataclass
 class FileChange:
     """One staged file addition, update or deletion."""
@@ -280,6 +329,40 @@ class GitHubClient(Protocol):
         run id synchronously, so there is nothing to hand back — the new run
         shows up wherever scan results already show up, once it completes."""
 
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]: ...
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        """The most recent *completed* run of each workflow (spec 32 §7).
+
+        One call for the whole repository, not one per workflow. The
+        per-workflow endpoint would be tidier and would spend a request per
+        lane on every read, against an installation rate limit shared with
+        token rotation, the installer and Patchwork (§7.1) — the status
+        panel is the least important consumer of that budget and must not be
+        the greediest.
+
+        Completed only, matching Concourse's `finished_build`: a run in
+        progress has no outcome, and reporting one as anything would invent
+        a result.
+        """
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        """Turn one installed workflow on or off without touching the file
+        (spec 32 §6).
+
+        The off switch spec 03 §3 did not have. Its `--soft-disable` sets the
+        job to `if: false`, which is a commit, a pull request and a review
+        round-trip — and what an operator needs when a lane is misbehaving is
+        the `fly pause` equivalent that takes effect now. Installing and
+        uninstalling stay pull requests, because those add and remove code;
+        this only changes whether existing code runs.
+
+        `workflow_file` is the filename, as with `dispatch_workflow`, so a
+        caller never looks up a numeric id first. GitHub returns 204 with no
+        body."""
+
     async def create_issue(
         self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
     ) -> IssueRef:
@@ -326,6 +409,14 @@ class FakeRepo:
     #: different answer from "could not read", which is a raised error.
     branch_protection: dict[str, dict[str, Any]] = field(default_factory=dict)
     rulesets: list[dict[str, Any]] = field(default_factory=list)
+    #: Workflow state by filename (spec 32 §6). Absent means the workflow
+    #: exists as a file and GitHub has not been told otherwise, which is
+    #: `active` — the same default a freshly merged install PR produces.
+    workflow_states: dict[str, str] = field(default_factory=dict)
+    #: Latest completed run per workflow filename (spec 32 §7). Absent means
+    #: the workflow exists and has never finished a run — which is a real
+    #: state (`not_run`) and not an error.
+    workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
 
 
 class FakeGitHubClient:
@@ -591,6 +682,52 @@ class FakeGitHubClient:
         repo.dispatched_workflows.append(
             {"workflow_file": workflow_file, "ref": ref, "inputs": inputs or {}}
         )
+
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]:
+        self.calls.append(("list_workflows", repo_full_name))
+        self._require("actions", "read", "Listing workflows")
+        repo = self._repo(repo_full_name)
+        out: list[WorkflowRef] = []
+        for path in sorted(repo.files):
+            if not path.startswith(WORKFLOW_PATH_PREFIX):
+                continue
+            file_name = path[len(WORKFLOW_PATH_PREFIX) :]
+            out.append(
+                WorkflowRef(
+                    file_name=file_name,
+                    name=file_name,
+                    state=repo.workflow_states.get(file_name, "active"),
+                    url=f"https://github.com/{repo_full_name}/actions/workflows/{file_name}",
+                )
+            )
+        return out
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        self.calls.append(("latest_workflow_runs", repo_full_name))
+        self._require("actions", "read", "Reading workflow runs")
+        repo = self._repo(repo_full_name)
+        return [
+            run
+            for name, run in sorted(repo.workflow_runs.items())
+            if f"{WORKFLOW_PATH_PREFIX}{name}" in repo.files
+        ]
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        self.calls.append(
+            ("set_workflow_state", f"{repo_full_name}/{workflow_file}={enabled}")
+        )
+        self._require("actions", "write", "Enabling or disabling a workflow")
+        repo = self._repo(repo_full_name)
+        # 404 on a workflow that is not installed, as GitHub does. Silently
+        # recording state for a file that does not exist would let a caller
+        # "disable" a capability that was never installed and report success.
+        if f"{WORKFLOW_PATH_PREFIX}{workflow_file}" not in repo.files:
+            raise GitHubError(
+                f"{repo_full_name} has no workflow {workflow_file}", status=404
+            )
+        repo.workflow_states[workflow_file] = "active" if enabled else "disabled_manually"
 
     async def create_issue(
         self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
@@ -1077,6 +1214,66 @@ class RestGitHubClient:
             "POST",
             f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/dispatches",
             json={"ref": ref, "inputs": inputs or {}},
+        )
+
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]:
+        """Every workflow GitHub knows about in this repository, with its
+        state (spec 32 §6).
+
+        One page. A repository with more than 100 workflows exists in theory
+        and not in this estate, and paginating a status read that §7.1 already
+        wants to spend as few calls as possible on would buy nothing.
+        """
+        payload = await self._json(
+            "GET", f"/repos/{repo_full_name}/actions/workflows", params={"per_page": 100}
+        )
+        out: list[WorkflowRef] = []
+        for item in payload.get("workflows", []) or []:
+            # `path` is `.github/workflows/<file>`; every other method here
+            # takes the bare filename, so this normalises once rather than
+            # making each caller strip it.
+            path = str(item.get("path", ""))
+            file_name = path.rsplit("/", 1)[-1]
+            if not file_name:
+                continue
+            out.append(
+                WorkflowRef(
+                    file_name=file_name,
+                    name=str(item.get("name") or file_name),
+                    state=str(item.get("state") or "active"),
+                    url=str(item.get("html_url") or ""),
+                )
+            )
+        return out
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/actions/runs",
+            params={"per_page": 100, "status": "completed"},
+        )
+        # Newest first, per GitHub. Keeping the first run seen for each
+        # workflow is therefore keeping the latest, without sorting.
+        latest: dict[str, WorkflowRun] = {}
+        for item in payload.get("workflow_runs", []) or []:
+            file_name = str(item.get("path", "")).rsplit("/", 1)[-1]
+            if not file_name or file_name in latest:
+                continue
+            latest[file_name] = WorkflowRun(
+                workflow_file=file_name,
+                conclusion=str(item["conclusion"]) if item.get("conclusion") else None,
+                run_number=int(item["run_number"]) if item.get("run_number") else None,
+                url=str(item.get("html_url") or ""),
+                finished_at=_parse_time(item.get("updated_at")),
+            )
+        return list(latest.values())
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        verb = "enable" if enabled else "disable"
+        await self._json(
+            "PUT", f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/{verb}"
         )
 
     async def create_issue(

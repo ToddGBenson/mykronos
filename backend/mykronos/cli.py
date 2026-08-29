@@ -9,8 +9,15 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
+    mykronos workflows <owner/repo>
+    mykronos enable-workflow <owner/repo> <capability>
+    mykronos disable-workflow <owner/repo> <capability>
     mykronos query "SELECT ..."
     mykronos stats
+
+The three `workflow` commands are the off switch of spec 32 §6, here as well
+as in the API on purpose: the state an operator needs them for is the one
+where the dashboard is the thing that is misbehaving.
 
 `query` is the Phase 0 demo's second half (spec 13 §3): curl a finding in,
 then read it back out of the lake with SQL.
@@ -128,6 +135,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Mint a short-lived GitHub App installation token (spec 02 §4)",
     )
     ghtoken.add_argument("repo", help="owner/repo the token should be scoped to.")
+
+    workflows = sub.add_parser(
+        "workflows",
+        help="List this repo's installed workflows and whether each is switched on",
+    )
+    workflows.add_argument("repo")
+
+    wf_enable = sub.add_parser(
+        "enable-workflow",
+        help="Switch one installed workflow on, with no pull request (spec 32 §6)",
+    )
+    wf_enable.add_argument("repo")
+    wf_enable.add_argument("capability", choices=CAPABILITIES)
+
+    wf_disable = sub.add_parser(
+        "disable-workflow",
+        help="Stop one installed workflow now, with no pull request (spec 32 §6)",
+    )
+    wf_disable.add_argument("repo")
+    wf_disable.add_argument("capability", choices=CAPABILITIES)
 
     reproc = sub.add_parser(
         "reprocess",
@@ -428,6 +455,70 @@ def main(argv: list[str] | None = None) -> int:
             # here would be a second place for App credential handling to
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
+            return 0
+
+        if args.command in {"workflows", "enable-workflow", "disable-workflow"}:
+            # The off switch that works when the dashboard is the thing that
+            # is down (spec 32 §6.2). Same three operations as the API, and
+            # deliberately the same shape: state comes from GitHub on every
+            # read, and neither enable nor disable touches
+            # `enabled_capabilities` or a grant.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                if onboarding.scanned_by != "github_actions":
+                    print(
+                        f"{args.repo} is scanned by {onboarding.scanned_by!r}, so "
+                        "Mykronos installs no workflows into it (spec 03 §3a).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                wf_installation_id = onboarding.github_installation_id
+                wf_enabled = sorted(set(onboarding.enabled_capabilities or []))
+
+            templates = TemplateLibrary(settings.workflow_templates_dir)
+            gh = _github_factory(settings).for_installation(wf_installation_id)
+
+            if args.command == "workflows":
+                live = {
+                    ref.file_name: ref
+                    for ref in asyncio.run(gh.list_workflows(args.repo))
+                }
+                wf_rows: list[Sequence[object]] = []
+                for capability in wf_enabled:
+                    if capability not in templates.available:
+                        continue
+                    name = templates.target_path(capability).rsplit("/", 1)[-1]
+                    ref = live.get(name)
+                    wf_rows.append(
+                        [
+                            capability,
+                            name,
+                            ref.state if ref is not None else "not_installed",
+                        ]
+                    )
+                _print_table(["capability", "workflow", "state"], wf_rows)
+                return 0
+
+            if args.capability not in templates.available:
+                print(
+                    f"No workflow template for '{args.capability}', so there is "
+                    "nothing installed to switch.",
+                    file=sys.stderr,
+                )
+                return 1
+            wf_file = templates.target_path(args.capability).rsplit("/", 1)[-1]
+            wf_on = args.command == "enable-workflow"
+            asyncio.run(gh.set_workflow_state(args.repo, wf_file, enabled=wf_on))
+            print(f"{args.repo}: {wf_file} {'enabled' if wf_on else 'disabled'}.")
+            print("The capability is unchanged — its grant still permits writes.")
             return 0
 
         if args.command == "reprocess":

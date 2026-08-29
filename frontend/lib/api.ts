@@ -67,6 +67,9 @@ export type CiPage =
 export type CiJob = NonNullable<CiPage["jobs"]>[number];
 export type CiReporting = NonNullable<CiPage["reporting"]>[number];
 export type CiStage = NonNullable<CiPage["stages"]>[number];
+export type WorkflowsPage =
+  paths["/api/repos/{repo_id}/workflows"]["get"]["responses"]["200"]["content"]["application/json"];
+export type WorkflowState = WorkflowsPage["workflows"][number];
 export type ThreatIntelEntry =
   paths["/api/dashboard/threat-intel"]["get"]["responses"]["200"]["content"]["application/json"][number];
 /** A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6). */

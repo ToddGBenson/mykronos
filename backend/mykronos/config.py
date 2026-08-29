@@ -366,6 +366,19 @@ class Settings(BaseSettings):
         ),
     )
 
+    ci_status_cache_seconds: float = Field(
+        default=60.0,
+        description=(
+            "How long a GitHub Actions status read is reused before asking "
+            "again (spec 32 §7.1). Reading Actions spends the installation's "
+            "rate limit, which token rotation, the installer and Patchwork "
+            "all share and all need more than a status panel does. Successes "
+            "only are cached, so an outage is retried rather than pinned. "
+            "Zero disables reuse, which is honest for a test and wasteful in "
+            "a deployment."
+        ),
+    )
+
     # --- Concourse (spec 15 §4a) ---------------------------------------
 
     concourse_url: str = Field(

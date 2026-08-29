@@ -1631,6 +1631,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/repos/{repo_id}/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workflows
+         * @description What runs in this repository, and whether it is switched on
+         *     (spec 32 §6.2).
+         *
+         *     **Derived, never stored.** GitHub is asked on every read, because a
+         *     `workflow_enabled` column would be wrong the moment somebody clicks
+         *     Disable in the GitHub UI, and nothing would ever correct it. This is the
+         *     same rule spec 15 §4a applied to Concourse pipeline names, for the same
+         *     reason.
+         *
+         *     **Fails soft.** A repository page is about findings; GitHub being
+         *     unreachable, rate-limited or 403 must not take it down. Every failure
+         *     resolves to a reason string beside an empty list.
+         */
+        get: operations["list_workflows_api_repos__repo_id__workflows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Enable Workflow
+         * @description Switch one installed workflow back on, with no pull request
+         *     (spec 32 §6).
+         */
+        put: operations["enable_workflow_api_repos__repo_id__workflows__capability__enable_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Disable Workflow
+         * @description Stop one installed workflow now, with no pull request (spec 32 §6).
+         *
+         *     The `fly pause` equivalent spec 15 §4a.1 calls "state only an operator
+         *     remembers". The file stays, so it still says what the lane does when it
+         *     comes back.
+         */
+        put: operations["disable_workflow_api_repos__repo_id__workflows__capability__disable_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/{repo_id}/reachability": {
         parameters: {
             query?: never;
@@ -4263,6 +4339,64 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WorkflowState
+         * @description One capability's workflow, as GitHub currently has it (spec 32 §6).
+         *
+         *     `state` is GitHub's own vocabulary, passed through rather than reduced to
+         *     a boolean, plus `not_installed` for a capability this repository has
+         *     enabled and has no workflow file for. The distinction that matters:
+         *     `disabled_manually` is somebody's decision, `disabled_inactivity` is
+         *     GitHub switching a scheduled workflow off after sixty days without a
+         *     push, and only the second is a coverage gap nobody chose.
+         */
+        WorkflowState: {
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Installed */
+            installed: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** State */
+            state: string;
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+        };
+        /** WorkflowStateResult */
+        WorkflowStateResult: {
+            /** Repo */
+            repo: string;
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * WorkflowsPage
+         * @description spec 32 §6.2. Never an error for a repository that simply has no
+         *     workflows: a Concourse-scanned repo and an unreachable GitHub are
+         *     different facts, and both render as an empty list unless the reason is
+         *     carried alongside it.
+         */
+        WorkflowsPage: {
+            /** Repo */
+            repo: string;
+            /** Scanned By */
+            scanned_by: string;
+            /** Workflows */
+            workflows: components["schemas"]["WorkflowState"][];
+            /** Unavailable */
+            unavailable?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -6372,6 +6506,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workflows_api_repos__repo_id__workflows_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_workflow_api_repos__repo_id__workflows__capability__enable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_workflow_api_repos__repo_id__workflows__capability__disable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
                 };
             };
             /** @description Validation Error */
