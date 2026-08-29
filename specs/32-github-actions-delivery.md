@@ -794,6 +794,20 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    syntax-checked with `bash -n`.
 7. **Move the netassess jobs into the backend** (§4.4), then port
    `personal-soc`'s remaining lanes.
+
+   **Judgement ported, 2026-08-28**: `mykronos/netassess.py` — the verify,
+   diff and freshness logic as pure functions over files already in hand,
+   with 22 tests. **Transport is deliberately not in it** and is the one
+   remaining decision: the backend has no S3 client (only `httpx2`), so
+   pulling from MinIO means adding `boto3` or hand-rolling SigV4, while the
+   host's existing `publish-netassess-run.ps1` could instead push to an
+   ingestion endpoint. The judgement is identical either way, and it is the
+   half that was worth porting — so it landed without the fork being forced.
+
+   The posture-score comparison is deliberately not ported: it shells out to
+   `Compare-Assessment.ps1` against `findings.json`, which a full skill
+   engagement writes and the weekly scan does not, so the Concourse task
+   already skipped it on every weekly run.
 8. **Retire `mykronos.yml` and `personal-soc.yml`**: `fly destroy-pipeline`,
    delete the YAML and the `set-*-pipeline.ps1` scripts, rewrite
    `.github/README.md` (§2). `thehub.yml`, `docker-compose.yml`, Vault and
@@ -878,8 +892,11 @@ that failure mode since it was written.
    not run the demo (§4.2.1), not the script that could not leave it. The
    remaining unknown is smaller and is question 3: what the GHCR pull adds to
    those 72 seconds.
-2. **CodeQL or Semgrep, per repository?** §5.2. Running both is the duplication
-   D-039 removed; the choice needs making rather than defaulting.
+2. ~~**CodeQL or Semgrep, per repository?**~~ **Answered 2026-08-28: CodeQL
+   for the three public repositories, and Semgrep stays TheHub's.** The `sast`
+   template already renders CodeQL, so this is the zero-work path and needs no
+   override. One tool per repository, recorded rather than defaulted — running
+   both would reproduce exactly the duplication D-039 removed.
 3. **Does the GHCR pull cost enough to matter for `deploy.ps1`?** §4.1. Measure
    once; a pull-through cache is the answer if it does.
 4. **Does DAST's D-053 budget change on a GitHub-hosted runner?** §4.2. The
@@ -905,12 +922,20 @@ that failure mode since it was written.
    - **A naming convention** for repo-owned workflows that produce
      capabilities. Cheapest, and conventions that are not enforced drift.
 
-   Worth deciding before step 8, because the parity check that authorises
-   retiring the Concourse pipelines reads exactly this signal.
+   **Answered 2026-08-28: reuse `CAPABILITY_BY_JOB`.** `ActionsClient` falls
+   back to that table, keyed on the workflow filename stem, for anything the
+   template registry does not name. It already contains
+   `"demo-and-dast": ("functional", "dast")`, so the case that raised this
+   resolves with almost no new code — and it reuses the seam that exists,
+   stays honest about being a heuristic, and already handles one job producing
+   several capabilities. **Not yet implemented**; roughly ten lines in
+   `capability_by_workflow`.
 
-6. **Should the Slack alerting move, or be dropped?** Every Concourse job
-   carries `on_failure: *slack_alert`. Actions can do the same, and Mykronos
-   already has a notification path (`notify.py`) that knows about findings.
-   Routing failures through Mykronos rather than through the CI system is more
-   consistent with "reports to Mykronos", and is a decision this spec does not
-   make.
+6. ~~**Should the Slack alerting move, or be dropped?**~~ **Answered
+   2026-08-28: route through Mykronos.** Failures reach Slack via `notify.py`,
+   which already owns the Slack credential and already knows about findings —
+   one destination to change, and consistent with a pipeline that "reports to
+   Mykronos" rather than one that reports beside it. The alternative put the
+   webhook in every repository as an Actions secret and stood a second
+   notification path next to the first. **Not yet implemented**; needs a small
+   ingestion path for "a lane failed", which is the only new contract in it.
