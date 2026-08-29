@@ -166,22 +166,11 @@ jobs:
             python -m pytest functional -q -p no:cacheprovider \
               --junitxml="$RUNNER_TEMP/functional/functional.xml"
 
-      - name: Upload the functional result
-        if: always()
-        uses: ./actions/upload-results
-        with:
-          capability: functional
-          tool: junit
-          results-path: ${{ runner.temp }}/functional
-          ingestion-url: https://mykronos.toddbenson.net
-          token: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
-          # This repository scans itself, so the uploader it installs is this
-          # commit's rather than a floating tag's. Nothing here can drift from
-          # what is being tested (D-051).
-          mykronos-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
       - name: Spider, and scan
         id: zap
+        # `always()`: a failed functional suite still leaves a site tree worth
+        # scanning, and a failed *upload* must not skip this at all.
+        if: always()
         continue-on-error: true
         env:
           ACTIVE: ${{ inputs.active_scan }}
@@ -231,6 +220,25 @@ jobs:
           fi
 
           zap_api "/OTHER/core/other/jsonreport/" > "$RUNNER_TEMP/dast/zap.json"
+
+      # Measure everything first, then report. The first live run put this
+      # upload before the scan, the upload failed on a 502 from the ingestion
+      # API, and `Spider, and scan` was *skipped* — so an unreachable Mykronos
+      # silently cost the DAST scan as well as its own result. Reporting is
+      # the fragile half and must never be able to prevent the work.
+      - name: Upload the functional result
+        if: always()
+        uses: ./actions/upload-results
+        with:
+          capability: functional
+          tool: junit
+          results-path: ${{ runner.temp }}/functional
+          ingestion-url: https://mykronos.toddbenson.net
+          token: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
+          # This repository scans itself, so the uploader it installs is this
+          # commit's rather than a floating tag's. Nothing here can drift from
+          # what is being tested (D-051).
+          mykronos-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Upload the DAST result
         if: always()
