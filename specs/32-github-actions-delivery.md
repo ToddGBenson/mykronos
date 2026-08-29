@@ -169,6 +169,44 @@ switch. Measure it once before assuming it is fine; if it is not, a
 pull-through cache on the host is a smaller thing than keeping a self-hosted
 runner.
 
+### 4.1.1 TheHub moves to GHCR too, and that retires the LAN registry
+
+**Decided 2026-08-29.** TheHub stays on Concourse (§2) and still pushes to
+`192.168.0.14:5000` — a registry with no TLS and no authentication, holding
+production images. Nothing about staying on Concourse requires that: Concourse
+can reach GHCR perfectly well. Moving it is what lets the LAN registry be shut
+down rather than kept alive for one consumer.
+
+**Not done here, and deliberately.** It needs a credential this session cannot
+mint, and it is a coordinated change across the 3605-line pipeline that
+deploys production — in a pull request that exists for a different purpose.
+Landing an untested edit that only takes effect the next time somebody runs
+`set-thehub-pipeline.ps1` is a worse outcome than landing nothing.
+
+What it takes, in order:
+
+1. **A GHCR token with `write:packages`**, in Vault as `ghcr-token`. This is
+   the prerequisite and the only part that cannot be prepared in advance.
+2. **`registry` becomes `ghcr.io/toddgbenson`** in
+   `set-thehub-pipeline.ps1`.
+3. **Kaniko authenticates and stops skipping TLS.** `--insecure
+   --skip-tls-verify` exist only because the LAN registry is plain HTTP; both
+   come out, and a `/kaniko/.docker/config.json` written from `((ghcr-token))`
+   goes in.
+4. **Trivy the same.** Its `--insecure` carries the comment "the registry's
+   TLS, not the scan's rigour" — true, and it stops being needed.
+   `TRIVY_USERNAME` / `TRIVY_PASSWORD` replace it.
+5. **The host poller** (`registry-pull-deploy`) pulls from GHCR, which needs
+   either a public package or `docker login ghcr.io` on the host — the same
+   two states `deploy.ps1` now names (§4.6).
+6. **Then the LAN registry can go.** Not before: `deploy/mykronos/deploy.ps1`
+   still accepts `-Registry localhost:5000` precisely so both can publish
+   during the overlap.
+
+The order matters at step 3. Kaniko pushing to GHCR without credentials fails
+at the *end* of a build rather than the start, so a mis-sequenced attempt
+costs a full image build before it reports.
+
 ### 4.2 The demo environment moves inside the job
 
 `demo-and-dast` runs the functional suite through ZAP's proxy and then scans,
@@ -802,14 +840,34 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
 7. **Move the netassess jobs into the backend** (§4.4), then port
    `personal-soc`'s remaining lanes.
 
-   **Judgement ported, 2026-08-28**: `mykronos/netassess.py` — the verify,
-   diff and freshness logic as pure functions over files already in hand,
-   with 22 tests. **Transport is deliberately not in it** and is the one
-   remaining decision: the backend has no S3 client (only `httpx2`), so
-   pulling from MinIO means adding `boto3` or hand-rolling SigV4, while the
-   host's existing `publish-netassess-run.ps1` could instead push to an
-   ingestion endpoint. The judgement is identical either way, and it is the
-   half that was worth porting — so it landed without the fork being forced.
+   **Judgement ported 2026-08-28, transport 2026-08-29.**
+   `mykronos/netassess.py` holds the verify, diff and freshness logic as pure
+   functions over files already in hand. `POST /api/ingest/netassess` is how
+   they arrive: `publish-netassess-run.ps1` already runs on the host after
+   every scan and already knows the run, so it pushes the two text files the
+   judgement reads.
+
+   **Push rather than poll, and the alternative is what makes the case.**
+   Pulling from MinIO would have meant an S3 client the backend needs for
+   nothing else — `boto3` and `botocore` are ~50MB in a codebase careful
+   enough to SBOM and pin everything — plus MinIO credentials it does not
+   otherwise hold, plus a schedule to guess at, all to discover an event the
+   publisher already knows about.
+
+   The archive still goes to MinIO and remains the history. What the platform
+   keeps is one row per repository: the run key, its date, the inventory to
+   diff next week against, and whether it was believable. Current state, not
+   a series — the same shape and the same reasoning as `RepoGovernance`.
+
+   **A run that fails verification is still recorded.** "The last scan was
+   bad" is exactly what a freshness check needs; discarding it would make a
+   degraded scanner indistinguishable from a silent one — which is the failure
+   this whole capability exists to catch.
+
+   **The push is never fatal to the publisher.** The archive is written either
+   way. That script's stated contract is that it does not judge the run it
+   uploads, and failing a good scan because an HTTP request did not land would
+   be exactly that by the back door.
 
    The posture-score comparison is deliberately not ported: it shells out to
    `Compare-Assessment.ps1` against `findings.json`, which a full skill

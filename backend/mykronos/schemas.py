@@ -570,6 +570,52 @@ class RawAccepted(BaseModel):
     bytes_written: int
 
 
+class NetassessSubmission(BaseModel):
+    """One network-assessment run, pushed by the host that produced it
+    (spec 32 §4.4).
+
+    **Push rather than pull, and that is the whole design decision.** The scan
+    runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+    addresses, which is measured rather than assumed — and the publisher that
+    archives it to MinIO already runs there. Having the backend poll an object
+    store instead would mean an S3 client it does not otherwise need, MinIO
+    credentials it does not otherwise hold, and a schedule to guess at when the
+    arrival is already an event somebody could just report.
+
+    **Files, not an archive.** Two text files are what the judgement reads; a
+    zip would mean unpacking attacker-controlled entries inside the ingestion
+    path for no gain. The archive still goes to MinIO, which remains the
+    history — this platform stores what it needs to compare against next week.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_key: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The publisher's object name, e.g. `netassess-2026.8.9.zip`.",
+    )
+    inventory_csv: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`inventory.csv` verbatim. Empty means the run enumerated nothing.",
+    )
+    network_status_md: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`network-status.md` verbatim. Empty means the scan did not finish.",
+    )
+
+
+class NetassessAccepted(BaseModel):
+    believable: bool
+    problems: list[str] = Field(default_factory=list)
+    host_count: int = 0
+    hosts_appeared: list[str] = Field(default_factory=list)
+    hosts_disappeared: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
 class LaneFailure(BaseModel):
     """A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
 

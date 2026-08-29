@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from datetime import datetime, time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -38,7 +39,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import inventory
+from mykronos import inventory, netassess
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
 from mykronos.atlas import evidence_id as atlas_evidence_id
@@ -46,6 +47,7 @@ from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
 from mykronos.db.models import (
+    NetassessRun,
     ReachabilityReport,
     RepoOnboarding,
     RiskProfile,
@@ -67,6 +69,8 @@ from mykronos.schemas import (
     InsiderRiskSubmission,
     LaneFailure,
     LaneFailureAccepted,
+    NetassessAccepted,
+    NetassessSubmission,
     RawAccepted,
     ReachabilityAccepted,
     ReachabilitySubmission,
@@ -211,6 +215,108 @@ async def health(request: Request, token: TokenDep) -> HealthResponse:
         detail=detail,
         repo_full_name=token.repo_full_name,
         granted_capabilities=sorted(token.granted_capabilities),
+    )
+
+
+@router.post("/netassess", response_model=NetassessAccepted)
+async def ingest_netassess(
+    request: Request,
+    background: BackgroundTasks,
+    submission: NetassessSubmission,
+    token: TokenDep,
+) -> NetassessAccepted:
+    """Judge a network-assessment run the host has just produced (spec 32 §4.4).
+
+    The half Concourse was good at — deciding whether the run that arrived is
+    worth believing, and saying what changed — with the half it was bad at
+    left where it works. The scan itself stays on Windows: an nmap sweep from
+    a container reported all 256 addresses of a /24 as up while the host's ARP
+    table had 38, because MAC-keyed inventory needs L2 adjacency a container
+    does not have.
+
+    **The failure this exists to catch is the Scheduled Task degrading rather
+    than dying**: still writing `network-status.md` every week with the checks
+    inside it no longer running. So an `unknown` line fails the run rather than
+    warning about it — a NAS that is switched off must not read the same as one
+    confirmed closed.
+
+    **A run that fails verification is still recorded.** "The last scan was bad"
+    is precisely what the freshness check needs to know, and discarding it
+    would make a degraded scanner indistinguishable from a silent one.
+
+    Requires the `network` capability, unlike `/lane-failure`: this *is* a
+    capability, it is the one spec 14 defines, and what may write it is what
+    the grant says.
+    """
+    _require_capability(token, Capability.NETWORK.value)
+
+    previous_inventory: str | None = None
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is not None:
+            previous_inventory = row.inventory_csv or None
+
+    verdict = netassess.verify(
+        inventory_csv=submission.inventory_csv or None,
+        network_status_md=submission.network_status_md or None,
+        previous_inventory_csv=previous_inventory,
+    )
+
+    when = netassess.run_date(submission.run_key)
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is None:
+            row = NetassessRun(repo_full_name=token.repo_full_name)
+            session.add(row)
+        row.run_key = submission.run_key
+        row.run_date = datetime.combine(when, time.min) if when else None
+        row.inventory_csv = submission.inventory_csv
+        row.believable = verdict.believable
+        session.commit()
+
+    if not verdict.believable:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network scan is not believable",
+                detail="\n".join(
+                    [f"`{submission.run_key}` reported {verdict.host_count} host(s)."]
+                    + [f"- {problem}" for problem in verdict.problems[:6]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="critical",
+            ),
+        )
+    elif verdict.diff.changed:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network inventory changed",
+                detail="\n".join(
+                    [f"`{submission.run_key}`"]
+                    + [f"+ new  {host}" for host in verdict.diff.appeared[:10]]
+                    + [f"- gone {host}" for host in verdict.diff.disappeared[:10]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="warning",
+            ),
+        )
+
+    return NetassessAccepted(
+        believable=verdict.believable,
+        problems=verdict.problems,
+        host_count=verdict.host_count,
+        hosts_appeared=[str(h) for h in verdict.diff.appeared],
+        hosts_disappeared=[str(h) for h in verdict.diff.disappeared],
+        detail=netassess.summarise(
+            verdict,
+            netassess.Freshness(
+                newest_key=submission.run_key,
+                newest_date=when,
+                age_days=(netassess.utc_today() - when).days if when else None,
+                max_age_days=0,
+            ),
+        ),
     )
 
 

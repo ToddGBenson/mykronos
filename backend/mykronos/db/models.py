@@ -549,6 +549,51 @@ class RepoControl(Base):
         return f"<RepoControl {self.repo_full_name} {self.stride}/{self.kind}>"
 
 
+class NetassessRun(Base):
+    """The last network-assessment run this platform accepted (spec 32 §4.4).
+
+    **One row, superseded outright by the next run**, like `RepoGovernance` and
+    for the same reason: what matters is the current inventory and when it
+    arrived, not a time series. The zip archive in MinIO is the history, and it
+    is written by the publisher rather than by this platform.
+
+    **`inventory_csv` is kept because the next run needs something to diff
+    against.** The Concourse task fetched the previous archive from MinIO to
+    get it, which is the one thing that made the job need an object store at
+    all; keeping the inventory here is what lets the judgement run without one.
+    It is a few dozen rows of MAC, address and label for hosts on a home LAN.
+
+    Operational rather than lake: a host inventory is configuration this
+    platform reads, not a finding it produced. Nothing here reaches a risk
+    score, exactly as spec 14 §5 requires — a network finding carries an asset,
+    and this is not a finding.
+    """
+
+    __tablename__ = "netassess_runs"
+
+    #: `personal-soc`, or whichever repository owns the scan. Scoped by
+    #: repository rather than global because nothing else in this schema is
+    #: global, and a second network under a second repository should not need
+    #: a migration.
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: `netassess-2026.8.9.zip` — the publisher's key, kept verbatim so a
+    #: person can find the archive this row was derived from.
+    run_key: Mapped[str] = mapped_column(String(255), default="")
+    #: The scan's own date, parsed from the key. Distinct from `received_at`:
+    #: a run published late is stale by the first and fresh by the second, and
+    #: the freshness check is about the scan rather than the upload.
+    run_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    inventory_csv: Mapped[str] = mapped_column(Text, default="")
+    #: Whether the run was believable. A run that failed verification is still
+    #: recorded — "the last scan was bad" is the fact the freshness check needs,
+    #: and discarding it would make a degraded scanner look like a silent one.
+    believable: Mapped[bool] = mapped_column(Boolean, default=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<NetassessRun {self.repo_full_name} {self.run_key}>"
+
+
 class RepoGovernance(Base):
     """The last read of this repository's change controls (spec 30 §1.2).
 

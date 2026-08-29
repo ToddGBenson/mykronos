@@ -398,3 +398,81 @@ class TestLaneFailure:
         self._post(client, token)
 
         assert notified.sent[0].level == "warning"
+
+
+class TestNetassess:
+    """A network scan worth waking somebody for (spec 32 §4.4).
+
+    Two different alerts, deliberately at two different levels. A scan that
+    cannot be believed is critical: the platform has lost its picture of the
+    network and does not know it until somebody looks. A scan that is fine but
+    shows a host that was not there last week is a warning — worth seeing, not
+    worth a page.
+    """
+
+    INVENTORY = (
+        "address,mac,label\n"
+        "192.168.0.1,AA:BB:CC:00:00:01,router\n"
+    )
+
+    def _push(self, client: TestClient, token: str, **body: object):
+        payload = {
+            "run_key": "netassess-2026.8.28.zip",
+            "inventory_csv": self.INVENTORY,
+            "network_status_md": "NFS: no exports\n",
+            **body,
+        }
+        return client.post(
+            "/api/ingest/netassess",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    def test_a_clean_unchanged_run_says_nothing(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        """The common case is a quiet week. A channel that reports every
+        successful scan is a channel nobody reads by the time something is
+        actually wrong."""
+        token = issue_token(client, REPO, "network")
+
+        self._push(client, token)
+
+        assert notified.sent == []
+
+    def test_an_unbelievable_run_is_critical(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        token = issue_token(client, REPO, "network")
+
+        self._push(client, token, network_status_md="NFS: unknown (scan failed)\n")
+
+        assert len(notified.sent) == 1
+        assert notified.sent[0].level == "critical"
+        assert "not believable" in notified.sent[0].title
+
+    def test_exposure_is_reported(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        token = issue_token(client, REPO, "network")
+
+        self._push(client, token, network_status_md="NFS: EXPORTS PRESENT\n")
+
+        assert "exporting NFS shares" in notified.sent[0].detail
+
+    def test_a_new_host_is_a_warning_not_a_page(
+        self, client: TestClient, notified: RecordingNotifier
+    ) -> None:
+        token = issue_token(client, REPO, "network")
+        self._push(client, token)
+
+        self._push(
+            client,
+            token,
+            run_key="netassess-2026.9.4.zip",
+            inventory_csv=self.INVENTORY + "192.168.0.99,AA:BB:CC:00:00:09,unknown\n",
+        )
+
+        assert len(notified.sent) == 1
+        assert notified.sent[0].level == "warning"
+        assert "192.168.0.99" in notified.sent[0].detail

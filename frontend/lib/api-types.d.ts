@@ -27,6 +27,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/netassess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Netassess
+         * @description Judge a network-assessment run the host has just produced (spec 32 §4.4).
+         *
+         *     The half Concourse was good at — deciding whether the run that arrived is
+         *     worth believing, and saying what changed — with the half it was bad at
+         *     left where it works. The scan itself stays on Windows: an nmap sweep from
+         *     a container reported all 256 addresses of a /24 as up while the host's ARP
+         *     table had 38, because MAC-keyed inventory needs L2 adjacency a container
+         *     does not have.
+         *
+         *     **The failure this exists to catch is the Scheduled Task degrading rather
+         *     than dying**: still writing `network-status.md` every week with the checks
+         *     inside it no longer running. So an `unknown` line fails the run rather than
+         *     warning about it — a NAS that is switched off must not read the same as one
+         *     confirmed closed.
+         *
+         *     **A run that fails verification is still recorded.** "The last scan was bad"
+         *     is precisely what the freshness check needs to know, and discarding it
+         *     would make a degraded scanner indistinguishable from a silent one.
+         *
+         *     Requires the `network` capability, unlike `/lane-failure`: this *is* a
+         *     capability, it is the one spec 14 defines, and what may write it is what
+         *     the grant says.
+         */
+        post: operations["ingest_netassess_api_ingest_netassess_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/lane-failure": {
         parameters: {
             query?: never;
@@ -3171,6 +3212,64 @@ export interface components {
             /** Detail */
             detail: string;
         };
+        /** NetassessAccepted */
+        NetassessAccepted: {
+            /** Believable */
+            believable: boolean;
+            /** Problems */
+            problems?: string[];
+            /**
+             * Host Count
+             * @default 0
+             */
+            host_count: number;
+            /** Hosts Appeared */
+            hosts_appeared?: string[];
+            /** Hosts Disappeared */
+            hosts_disappeared?: string[];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
+         * NetassessSubmission
+         * @description One network-assessment run, pushed by the host that produced it
+         *     (spec 32 §4.4).
+         *
+         *     **Push rather than pull, and that is the whole design decision.** The scan
+         *     runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+         *     addresses, which is measured rather than assumed — and the publisher that
+         *     archives it to MinIO already runs there. Having the backend poll an object
+         *     store instead would mean an S3 client it does not otherwise need, MinIO
+         *     credentials it does not otherwise hold, and a schedule to guess at when the
+         *     arrival is already an event somebody could just report.
+         *
+         *     **Files, not an archive.** Two text files are what the judgement reads; a
+         *     zip would mean unpacking attacker-controlled entries inside the ingestion
+         *     path for no gain. The archive still goes to MinIO, which remains the
+         *     history — this platform stores what it needs to compare against next week.
+         */
+        NetassessSubmission: {
+            /**
+             * Run Key
+             * @description The publisher's object name, e.g. `netassess-2026.8.9.zip`.
+             */
+            run_key: string;
+            /**
+             * Inventory Csv
+             * @description `inventory.csv` verbatim. Empty means the run enumerated nothing.
+             * @default
+             */
+            inventory_csv: string;
+            /**
+             * Network Status Md
+             * @description `network-status.md` verbatim. Empty means the scan did not finish.
+             * @default
+             */
+            network_status_md: string;
+        };
         /** OnboardRequest */
         OnboardRequest: {
             /** Github Repo Full Name */
@@ -4547,6 +4646,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    ingest_netassess_api_ingest_netassess_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NetassessSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetassessAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
