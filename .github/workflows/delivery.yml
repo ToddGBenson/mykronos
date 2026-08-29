@@ -1,0 +1,194 @@
+# Build, publish and promote — spec 32 §5, §4.1.
+#
+# This repository's own delivery pipeline, hand-written and committed here
+# rather than rendered by the Workflow Installer. The installer's unit is a
+# capability; `build`, `publish` and `promote` are not capabilities and never
+# should be (spec 32 §5). `workflow-templates/` remains the platform's
+# product — the scanners installed into other people's repositories — and this
+# file is ordinary CI for the repository it lives in.
+#
+# What it replaces: `build`, `publish-backend`, `publish-frontend` and
+# `promote` in `deploy/concourse/pipelines/mykronos.yml`. Those stay applied
+# and running until the parity check of spec 32 §9 says this one has taken
+# over. Two publishes of the same commit are idempotent — the tag is the
+# commit SHA and the content is the same build — so running both costs
+# registry storage and nothing else.
+#
+# What it deliberately does NOT do:
+#
+#   - Report to Mykronos. A build produces no findings, and `ci.py` says so:
+#     "`build` and `publish-backend` produce no findings and their absence
+#     from the lake is not a fault." Nothing here uploads a ScanRun, and the
+#     coverage cross-check is right not to look for one.
+#   - Deploy. For this repository D-038 is unchanged: the pipeline publishes
+#     an image and a human runs `deploy/mykronos/deploy.ps1` on the host. The
+#     one thing `promote` does is move the tag that script pulls.
+#   - Scan the image. That is the `containers` capability, which discovers
+#     Dockerfiles and builds them itself, and needs no registry (spec 32 §5).
+
+name: Delivery
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# One delivery at a time, and never cancelled. `cancel-in-progress: true` —
+# which every scanner workflow sets — would be wrong here: a cancelled publish
+# can leave a tag pushed and its sibling not, and the promote that follows
+# would move `:latest` onto a half-published commit.
+concurrency:
+  group: delivery-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: build (wheel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The wheel's local version carries the short SHA, so the build
+          # needs the commit. Not full history: nothing here fingerprints
+          # source the way the scanners do.
+          fetch-depth: 1
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Build the wheel
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist"
+
+          # `+<sha>` is a PEP 440 local version. It makes an artifact say which
+          # commit produced it without changing the release version, which is
+          # what the Concourse lane's rename was for.
+          SHA=$(git rev-parse --short HEAD)
+          for wheel in "$RUNNER_TEMP"/dist/*.whl; do
+            base=$(basename "$wheel" .whl)
+            mv "$wheel" "$RUNNER_TEMP/dist/${base%%-py3-none-any}+${SHA}-py3-none-any.whl"
+          done
+          ls -l "$RUNNER_TEMP/dist"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/dist/*.whl
+          # Spec 15 §5's retention for build artifacts, unchanged by the move
+          # off MinIO — they are the largest and least valuable class here.
+          retention-days: 30
+
+  publish:
+    name: publish (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    permissions:
+      contents: read
+      # The only credential this pipeline needs. The LAN registry had none at
+      # all (spec 32 §4.1), so this is a gain rather than a cost.
+      packages: write
+    strategy:
+      # One component failing must not stop the other from publishing: the
+      # promote job below requires both, so a partial publish simply does not
+      # promote, and the half that worked is still on the registry by SHA.
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push :${{ github.sha }}
+        id: push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.component }}
+          file: ${{ matrix.component }}/Dockerfile
+          push: true
+          # The commit SHA and nothing else. `:latest` is moved by `promote`,
+          # after the gate — spec 15 §3's rule that what the gate holds is the
+          # tag rather than the artifact (D-047). A refused commit leaves an
+          # image nothing points at.
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mykronos-${{ matrix.component }}:${{ github.sha }}
+          # Layer cache in the registry, so a rebuild of an unchanged
+          # component is cheap. Scoped per component or they evict each other.
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max
+          provenance: true
+          sbom: true
+
+      - name: Say what was published
+        run: |
+          echo "mykronos-${{ matrix.component }}"
+          echo "  tag    : ${{ env.REGISTRY }}/${{ github.repository_owner }}/mykronos-${{ matrix.component }}:${{ github.sha }}"
+          echo "  digest : ${{ steps.push.outputs.digest }}"
+
+  promote:
+    name: promote (:latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    # The Actions-native form of "a person clicks a button in Concourse"
+    # (spec 16 §3, spec 32 §4.6). A `production` environment with required
+    # reviewers holds this job until somebody approves it, and records who
+    # did — which the Concourse button did not.
+    #
+    # NOTE: the gate is only real once the environment has required reviewers
+    # configured in repository settings. An environment with none approves
+    # itself instantly, which looks identical in this file.
+    environment: production
+    steps:
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move :latest onto this commit
+        run: |
+          set -euo pipefail
+          for component in backend frontend; do
+            IMAGE="${REGISTRY}/${{ github.repository_owner }}/mykronos-${component}"
+
+            # Retag by digest rather than by pulling and re-pushing. The
+            # Concourse lane used `crane`; `buildx imagetools create` is the
+            # same operation against the manifest, and doing it by digest is
+            # what makes it unraceable — a second push to :${SHA} between the
+            # resolve and the create cannot redirect :latest, because the
+            # digest names the bytes rather than the tag.
+            DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${{ github.sha }}" \
+              --format '{{.Manifest.Digest}}')
+            echo "${component}: ${{ github.sha }} -> ${DIGEST}"
+
+            docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+          done
+
+      - name: What to do next
+        run: |
+          echo "::notice::':latest' now points at ${{ github.sha }}."
+          echo "Deploy is still a person running deploy/mykronos/deploy.ps1 on"
+          echo "the host (D-038). That script pulls ':latest'."

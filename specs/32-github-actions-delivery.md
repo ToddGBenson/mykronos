@@ -347,35 +347,56 @@ the right shape and it is not needed by any repository moving here — TheHub is
 the only repository whose pipeline deploys itself, and TheHub stays on
 Concourse. Building it now would be building for a user that does not exist.
 
-## 5. The delivery lanes become templates
+## 5. The delivery lanes are workflows, not templates
 
-The template library holds fourteen capabilities and every one of them is a
-*scanner*. Nothing renders a build, a publish, a promote or a deploy, because
-until now the only Actions workflows Mykronos generated were the ones it
-installs into other people's repositories, where build and deploy are none of
-its business (spec 15 §2).
+**Corrected 2026-08-28.** This section originally specified four new entries in
+the template library — `build.yml.j2`, `publish.yml.j2`, `promote.yml.j2`,
+`deploy.yml.j2` — rendered by the Workflow Installer like any scanner. That
+does not work, and the reason is worth stating because it is a fact about what
+this platform *is* rather than an implementation snag.
 
-That reasoning does not extend to a repository Mykronos owns. Four new
-templates:
+**The installer's unit is a capability, and delivery is not one.** It renders
+one workflow per entry in `enabled_capabilities`, and `build`, `publish`,
+`promote` and `deploy` are not in the `Capability` enum. Adding them would mean
+adding four members that ripple into `ALL_STAGES`, the coverage cross-check,
+the capability grants, the adapter registry, `ALL_CAPABILITIES` and
+`CAPABILITY_META` in the UI — four things that never produce a finding,
+threaded through every structure built for things that do.
 
-| Template | Target | What it does |
-|---|---|---|
-| `build.yml.j2` | `.github/workflows/mykronos-build.yml` | Compile, package, upload artifacts |
-| `publish.yml.j2` | `.github/workflows/mykronos-publish.yml` | Push `ghcr.io/...:${SHA}`, attach SBOM |
-| `promote.yml.j2` | `.github/workflows/mykronos-promote.yml` | Retag `:SHA` → `:latest` behind the Oracle gate and an Environment approval |
-| `deploy.yml.j2` | `.github/workflows/mykronos-deploy.yml` | Optional per repo; for `mykronos` it is a no-op today (§4.6) |
+`ci.py` already says so, in a comment that predates this spec: *"`build` and
+`publish-backend` produce no findings and their absence from the lake is not a
+fault."* The original §5 proposed making them faults.
 
-**These are opt-in and default off.** A repository onboarded to Mykronos gets
-scanners; it gets delivery lanes only if somebody enables them. The installer
-already keys everything off `enabled_capabilities`, so this is four manifest
-entries and four templates, not a new mechanism.
+**So the delivery lanes live in `.github/workflows/` in the repository they
+deliver, hand-written and committed.** For `mykronos` that is this repository.
+They are ordinary CI that a person reads and edits — versioned with the code
+they build, reviewed in the pull request that changes them.
 
-**They must not inherit `_base.yml.j2` unchanged.** The base template's
-skeleton — fail-fast ingestion probe, scan steps, upload step — describes a
-scanner. A build lane has no findings to upload and no `results-path`. It
-should report a **ScanRun and no findings**, exactly as the quality lanes do
-under D-046, so that §7's cross-check can tell a build that ran from a build
-that did not. `_test_lane.yml.j2` is the closer relative and the better parent.
+This lands in the same place spec 15 §2 did by a different route. That section
+kept build and deploy out of the capability workflows because those are
+*installed into other people's repositories* and "have no business knowing how
+to build or where to deploy". That argument is about the installed workflows.
+The argument here is about the installer: even for a repository the platform
+owns, delivery is not a capability, and the machinery that manages
+capabilities is the wrong machinery to manage it.
+
+**What this makes cheaper.** No enum change, no migration, no new grants, no
+UI work, and nothing new for the cross-check to be wrong about. The templates
+stay what `.github/README.md` already calls them — the platform's product,
+which is scanning.
+
+**What it costs.** `mykronos`, `keel` and `personal-soc` each maintain their
+own delivery workflow rather than receiving one. That is the normal situation
+for a repository and it is what TheHub's Concourse pipeline already is: a
+hand-written delivery definition, owned by the operator.
+
+**`containers` needs no change at all.** §4.1 listed it among the lanes moving
+to GHCR, on the assumption it scans the published image the way
+`mykronos.yml`'s lane does. The *template* does not: it discovers Dockerfiles,
+builds each one locally and scans the result, so it never touches a registry.
+One less thing to move — and a difference worth recording, since the Actions
+form scans an image built from the commit rather than the artifact that was
+published from it. Equivalent in content, not identical in bytes.
 
 ### 5.1 Three Concourse jobs have no template at all
 
@@ -737,8 +758,26 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    security lane `mykronos.yml` runs now has a template that can express it.
    What remains is an operator action rather than a code change, and is
    deliberately left as one — see §9.1.
-5. **Port the delivery lanes** (§5): build, publish to GHCR, promote,
-   containers against GHCR. Point `deploy.ps1` at GHCR.
+5. **Port the delivery lanes** (§5): build, publish to GHCR, promote.
+   `containers` needs no change (§5). Point `deploy.ps1` at GHCR.
+
+   **Built, 2026-08-28**: `.github/workflows/delivery.yml`, hand-written
+   rather than templated for the reason §5 now gives. It triggers on `push`
+   to `main` and `workflow_dispatch` only — never `pull_request`, so the
+   fork problem D-039 recorded is unchanged rather than widened.
+   `concurrency` deliberately does **not** cancel in progress, unlike every
+   scanner lane: a cancelled publish can leave one component's tag pushed
+   and the other's not, and the promote that follows would move `:latest`
+   onto a half-published commit. `promote` retags **by digest**, which makes
+   it unraceable — a second push to `:${SHA}` between the resolve and the
+   create cannot redirect `:latest`, because a digest names bytes rather
+   than a tag. Verified with `actionlint`; every third-party action pin was
+   resolved against the GitHub API rather than written from memory.
+
+   Still to do here: `deploy.ps1` and TheHub's poller pull from
+   `192.168.0.14:5000`, and the `production` environment needs required
+   reviewers configured before its approval gate is real — an environment
+   with none approves itself instantly and looks identical in the YAML.
 6. **Port `demo-and-dast`** (§4.2). Late, because it is the largest single
    piece of work and the one most likely to need a second attempt.
 7. **Move the netassess jobs into the backend** (§4.4), then port
