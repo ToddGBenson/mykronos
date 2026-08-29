@@ -703,6 +703,78 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
     return out
 
 
+#: States a capability can be in, ordered worst to best. Used only to decide
+#: whether the Actions side is *worse* than the Concourse side for a given
+#: capability — never rendered, because a rank is a comparison aid and not a
+#: fact about a repository.
+#:
+#: `event_driven` and `not_enabled` rank alongside `reporting` deliberately.
+#: Neither is a gap: the first is a working webhook-fed capability and the
+#: second is a capability nobody asked for, and treating either as "worse than
+#: reporting" would report a migration as having lost something it never had.
+_STATE_RANK: dict[str, int] = {
+    "no_job": 0,
+    "never_reported": 1,
+    "silent": 2,
+    "not_run": 3,
+    "reporting": 4,
+    "event_driven": 4,
+    "not_enabled": 4,
+}
+
+
+@dataclass(frozen=True)
+class Parity:
+    """One capability, as each CI system reports it (spec 32 §9).
+
+    The check that authorises step 8. Retiring a pipeline because its
+    replacement looks green is how a lane goes quiet without anybody
+    noticing — spec 15 §4a.1's first day of existence found a lane that had
+    been green on every build and had never reported once.
+    """
+
+    capability: str
+    before: str
+    after: str
+
+    @property
+    def regressed(self) -> bool:
+        """Is this capability worse under the new CI than the old one."""
+        return _STATE_RANK.get(self.after, 0) < _STATE_RANK.get(self.before, 0)
+
+    @property
+    def verdict(self) -> str:
+        if self.regressed:
+            return "REGRESSED"
+        if self.before == self.after:
+            return "same"
+        return "improved"
+
+
+def compare(before: list[StageCoverage], after: list[StageCoverage]) -> list[Parity]:
+    """Line one CI system's coverage up against the other's (spec 32 §9).
+
+    Deliberately compares *states* rather than counting green lanes. "Both
+    systems report eleven capabilities" is satisfied by two systems reporting
+    eleven different ones; what has to hold before a pipeline is destroyed is
+    that no individual capability got worse.
+
+    A capability missing from one side is treated as `no_job` there — the
+    worst state — because a capability the new system does not know about is
+    exactly the gap this is looking for, not an absence to skip over.
+    """
+    before_by = {row.stage: row.state for row in before}
+    after_by = {row.stage: row.state for row in after}
+    return [
+        Parity(
+            capability=stage,
+            before=before_by.get(stage, "no_job"),
+            after=after_by.get(stage, "no_job"),
+        )
+        for stage in sorted(set(before_by) | set(after_by))
+    ]
+
+
 def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).

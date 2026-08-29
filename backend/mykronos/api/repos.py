@@ -432,6 +432,59 @@ async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetai
         )
 
 
+class ScannerUpdate(BaseModel):
+    """Which system scans this repository (spec 03 §3a, spec 32 §9.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scanned_by: Literal["concourse", "github_actions", "none"]
+
+
+@router.patch("/{repo_id}", response_model=RepoSummary)
+async def set_scanner(
+    request: Request, repo_id: str, body: ScannerUpdate, actor: AdminDep
+) -> RepoSummary:
+    """Record which system scans this repository.
+
+    `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+    onboarding — a field describing which CI covers a repository, with no way
+    to say that it changed, in a platform whose whole current project is
+    changing exactly that. Migrating a repository meant editing the database
+    by hand.
+
+    **This records a fact; it does not perform a migration.** Nothing is
+    installed, uninstalled, granted or revoked here. What moves is which
+    source the dashboard reads for "enabled" (spec 03 §3a's ledger-versus-
+    grants split), which CI `scan_now` and fix verification dispatch to, which
+    reader answers for the CI panel, and whether the rotation job can deliver
+    a new token (D-086, spec 32 §8). Every one of those follows the field
+    rather than the other way round, which is why setting it wrongly is
+    visible immediately and costs one call to correct.
+    """
+    db = request.app.state.db
+    with db.session() as session:
+        row = _get(session, repo_id)
+        if row.status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{row.github_repo_full_name} is offboarded.",
+            )
+        previous = row.scanned_by
+        row.scanned_by = body.scanned_by
+        db.audit(
+            session,
+            actor=actor,
+            action="repo.scanned_by",
+            entity_type="repo_onboarding",
+            entity_id=row.id,
+            repo=row.github_repo_full_name,
+            previous=previous,
+            scanned_by=body.scanned_by,
+        )
+        session.commit()
+        return _summary(row)
+
+
 @router.patch("/{repo_id}/capabilities", response_model=CapabilityUpdateResult)
 async def update_capabilities(
     request: Request, repo_id: str, body: CapabilityUpdate, actor: AdminDep

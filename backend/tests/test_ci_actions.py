@@ -22,8 +22,10 @@ import pytest
 from mykronos.ci import (
     ActionsClient,
     PipelineStatus,
+    StageCoverage,
     StatusCache,
     capability_by_workflow,
+    compare,
     coverage,
     reconcile,
     status_from_conclusion,
@@ -369,3 +371,72 @@ class TestRepoOwnedWorkflows:
         status = await client.status_for(REPO)
 
         assert [j.name for j in status.jobs] == ["sast"]
+
+
+class TestParity:
+    """The check that authorises retiring a Concourse pipeline (spec 32 §9).
+
+    Retiring a pipeline because its replacement looks green is how a lane goes
+    quiet without anybody noticing. Spec 15 §4a.1's first day of existence
+    found a lane that had been green on every build and had never reported
+    once — this is what stops that happening on purpose, at the moment the old
+    system is destroyed and cannot be consulted again.
+    """
+
+    def _cov(self, **states: str) -> list[StageCoverage]:
+        return [
+            StageCoverage(stage=stage, enabled=state != "not_enabled", state=state)
+            for stage, state in states.items()
+        ]
+
+    def test_identical_coverage_is_safe(self) -> None:
+        before = self._cov(sast="reporting", unit="reporting")
+        after = self._cov(sast="reporting", unit="reporting")
+
+        rows = compare(before, after)
+
+        assert [r.verdict for r in rows] == ["same", "same"]
+        assert not any(r.regressed for r in rows)
+
+    def test_a_lane_that_stopped_reporting_is_a_regression(self) -> None:
+        """The whole point. Concourse was reporting; Actions is not."""
+        rows = compare(self._cov(sast="reporting"), self._cov(sast="never_reported"))
+
+        assert rows[0].regressed
+        assert rows[0].verdict == "REGRESSED"
+
+    def test_a_capability_missing_from_the_new_system_is_a_regression(self) -> None:
+        """Treated as `no_job` rather than skipped. A capability the new
+        system does not know about is exactly the gap this looks for."""
+        rows = compare(self._cov(sast="reporting"), [])
+
+        assert rows[0].after == "no_job"
+        assert rows[0].regressed
+
+    def test_going_green_is_an_improvement_not_a_regression(self) -> None:
+        rows = compare(self._cov(sast="never_reported"), self._cov(sast="reporting"))
+
+        assert not rows[0].regressed
+        assert rows[0].verdict == "improved"
+
+    def test_event_driven_is_not_worse_than_reporting(self) -> None:
+        """Aegis, Oracle and Patchwork never produce a ScanRun from a lane.
+        Ranking `event_driven` below `reporting` would report a working
+        webhook-fed capability as a migration casualty."""
+        rows = compare(self._cov(aegis="reporting"), self._cov(aegis="event_driven"))
+
+        assert not rows[0].regressed
+
+    def test_a_capability_nobody_enabled_is_not_a_casualty(self) -> None:
+        """`not_enabled` is an absence, not a gap — and a capability that was
+        never on cannot have been lost by moving CI."""
+        rows = compare(self._cov(cloud="not_enabled"), self._cov(cloud="not_enabled"))
+
+        assert not rows[0].regressed
+
+    def test_silent_is_worse_than_reporting_and_better_than_never(self) -> None:
+        """The three states are ordered, and the ordering is what makes
+        "no capability got worse" a decidable question rather than a
+        judgement call."""
+        assert compare(self._cov(x="reporting"), self._cov(x="silent"))[0].regressed
+        assert not compare(self._cov(x="never_reported"), self._cov(x="silent"))[0].regressed

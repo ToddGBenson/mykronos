@@ -1617,7 +1617,26 @@ export interface paths {
         delete: operations["offboard_repo_api_repos__repo_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Set Scanner
+         * @description Record which system scans this repository.
+         *
+         *     `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+         *     onboarding — a field describing which CI covers a repository, with no way
+         *     to say that it changed, in a platform whose whole current project is
+         *     changing exactly that. Migrating a repository meant editing the database
+         *     by hand.
+         *
+         *     **This records a fact; it does not perform a migration.** Nothing is
+         *     installed, uninstalled, granted or revoked here. What moves is which
+         *     source the dashboard reads for "enabled" (spec 03 §3a's ledger-versus-
+         *     grants split), which CI `scan_now` and fix verification dispatch to, which
+         *     reader answers for the CI panel, and whether the rotation job can deliver
+         *     a new token (D-086, spec 32 §8). Every one of those follows the field
+         *     rather than the other way round, which is why setting it wrongly is
+         *     visible immediately and costs one call to correct.
+         */
+        patch: operations["set_scanner_api_repos__repo_id__patch"];
         trace?: never;
     };
     "/api/repos/{repo_id}/capabilities": {
@@ -4000,6 +4019,17 @@ export interface components {
          * @enum {string}
          */
         ScanStatus: "success" | "no_applicable_targets" | "partial_failure" | "failure";
+        /**
+         * ScannerUpdate
+         * @description Which system scans this repository (spec 03 §3a, spec 32 §9.1).
+         */
+        ScannerUpdate: {
+            /**
+             * Scanned By
+             * @enum {string}
+             */
+            scanned_by: "concourse" | "github_actions" | "none";
+        };
         /**
          * Severity
          * @enum {string}
@@ -6557,6 +6587,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_scanner_api_repos__repo_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScannerUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

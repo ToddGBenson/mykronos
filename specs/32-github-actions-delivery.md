@@ -774,10 +774,17 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    than a tag. Verified with `actionlint`; every third-party action pin was
    resolved against the GitHub API rather than written from memory.
 
-   Still to do here: `deploy.ps1` and TheHub's poller pull from
-   `192.168.0.14:5000`, and the `production` environment needs required
-   reviewers configured before its approval gate is real — an environment
-   with none approves itself instantly and looks identical in the YAML.
+   **`deploy.ps1` moved to GHCR, 2026-08-29**, and now names the two things
+   that can go wrong there and could not before: a GHCR package is private by
+   default *even in a public repository*, and `:latest` does not exist until a
+   `promote` has run. Both fail identically at the daemon and need different
+   things done about them. `-Registry localhost:5000` still works while both
+   registries are publishing.
+
+   Still to do here: TheHub's poller pulls from `192.168.0.14:5000`, and the
+   `production` environment needs required reviewers configured before its
+   approval gate is real — an environment with none approves itself instantly
+   and looks identical in the YAML.
 6. **Port `demo-and-dast`** (§4.2). Late, because it was expected to be the
    largest single piece of work — the spike (§4.2) removed that expectation.
 
@@ -838,6 +845,19 @@ for `mykronos` is neither, and is left to a person on purpose:
 None of it is blocked on code. All of it changes what runs against a live
 repository and what lands in the lake, which is a different kind of change
 from the four commits above it.
+
+**`mykronos parity <repo>` is that check, built 2026-08-29.** It reads both
+systems for one repository, runs the same `reconcile`/`coverage` pair over
+each, and compares them capability by capability — exiting non-zero if any
+capability is worse under Actions.
+
+It compares *states*, not counts. "Both systems report eleven capabilities" is
+satisfied by two systems reporting eleven different ones. A capability the new
+system does not know about is treated as `no_job` rather than skipped, because
+that is exactly the gap being looked for. And `event_driven` and `not_enabled`
+rank alongside `reporting`: a webhook-fed capability is working, and one nobody
+enabled cannot have been lost by moving CI — ranking either below `reporting`
+would report a healthy migration as having casualties.
 
 **The parity check that decides step 8** is §7's own cross-check, run against
 both systems: every capability that reads `reporting` under Concourse must read

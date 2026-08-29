@@ -289,3 +289,85 @@ class TestSwitching:
         with db.session() as session:
             actions = [row.action for row in session.query(AuditLogEntry).all()]
         assert "workflow.disabled" in actions
+
+
+class TestSettingTheScanner:
+    """Recording which system scans a repository (spec 32 §9.1).
+
+    `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+    onboarding — a field describing which CI covers a repository, with no way
+    to say that it changed, in a platform whose current project is changing
+    exactly that. Migrating meant editing the database by hand.
+    """
+
+    def test_the_scanner_can_be_changed(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}", json={"scanned_by": "github_actions"}, headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        assert response.json()["scanned_by"] == "github_actions"
+
+    def test_it_changes_what_the_workflows_view_says(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """The field is read, not stored alongside a copy of its consequences.
+        Flipping it must move the behaviour that follows it."""
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+        before = client.get(f"/api/repos/{repo_id}/workflows", headers=admin_auth).json()
+        assert "concourse" in before["unavailable"]
+
+        client.patch(
+            f"/api/repos/{repo_id}", json={"scanned_by": "github_actions"}, headers=admin_auth
+        )
+
+        after = client.get(f"/api/repos/{repo_id}/workflows", headers=admin_auth).json()
+        assert after["scanned_by"] == "github_actions"
+
+    def test_it_installs_nothing(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """It records a fact; it does not perform a migration. No pull request,
+        no grant, no workflow file."""
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+        fake = client.app.state.github_factory.client
+        before = len(fake.repos[REPO].pull_requests)
+
+        client.patch(
+            f"/api/repos/{repo_id}", json={"scanned_by": "github_actions"}, headers=admin_auth
+        )
+
+        assert len(fake.repos[REPO].pull_requests) == before
+        detail = client.get(f"/api/repos/{repo_id}", headers=admin_auth).json()
+        assert detail["enabled_capabilities"] == []
+
+    def test_an_unknown_scanner_is_refused(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}", json={"scanned_by": "jenkins"}, headers=admin_auth
+        )
+
+        assert response.status_code == 422
+
+    def test_the_change_is_audited(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """Spec 12 §7. Which CI covers a repository is exactly the kind of
+        fact somebody will later need to know the history of."""
+        repo_id = onboard(client, admin_auth, scanned_by="concourse").json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}", json={"scanned_by": "github_actions"}, headers=admin_auth
+        )
+
+        from mykronos.db.models import AuditLogEntry
+
+        with client.app.state.db.session() as session:
+            actions = [row.action for row in session.query(AuditLogEntry).all()]
+        assert "repo.scanned_by" in actions
