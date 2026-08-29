@@ -149,6 +149,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Lowercase the owner
+        # `github.repository_owner` is `ToddGBenson`, and a Docker repository
+        # name must be lowercase — buildx refuses the tag outright with
+        # "repository name must be lowercase". Computed rather than hardcoded
+        # so a fork or a rename does not reintroduce it.
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
@@ -168,7 +175,7 @@ jobs:
           # after the gate — spec 15 §3's rule that what the gate holds is the
           # tag rather than the artifact (D-047). A refused commit leaves an
           # image nothing points at.
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mykronos-${{ matrix.component }}:${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/mykronos-${{ matrix.component }}:${{ github.sha }}
           # Layer cache in the registry, so a rebuild of an unchanged
           # component is cheap. Scoped per component or they evict each other.
           cache-from: type=gha,scope=${{ matrix.component }}
@@ -179,7 +186,7 @@ jobs:
       - name: Say what was published
         run: |
           echo "mykronos-${{ matrix.component }}"
-          echo "  tag    : ${{ env.REGISTRY }}/${{ github.repository_owner }}/mykronos-${{ matrix.component }}:${{ github.sha }}"
+          echo "  tag    : ${{ env.REGISTRY }}/${{ env.OWNER }}/mykronos-${{ matrix.component }}:${{ github.sha }}"
           echo "  digest : ${{ steps.push.outputs.digest }}"
 
       - name: Tell Mykronos this lane failed
@@ -238,6 +245,13 @@ jobs:
     # itself instantly, which looks identical in this file.
     environment: production
     steps:
+      - name: Lowercase the owner
+        # `github.repository_owner` is `ToddGBenson`, and a Docker repository
+        # name must be lowercase — buildx refuses the tag outright with
+        # "repository name must be lowercase". Computed rather than hardcoded
+        # so a fork or a rename does not reintroduce it.
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -248,7 +262,7 @@ jobs:
         run: |
           set -euo pipefail
           for component in backend frontend; do
-            IMAGE="${REGISTRY}/${{ github.repository_owner }}/mykronos-${component}"
+            IMAGE="${REGISTRY}/${OWNER}/mykronos-${component}"
 
             # Retag by digest rather than by pulling and re-pushing. The
             # Concourse lane used `crane`; `buildx imagetools create` is the

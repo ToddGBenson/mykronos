@@ -92,6 +92,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Lowercase the owner
+        # `github.repository_owner` is `ToddGBenson`; a Docker repository name
+        # must be lowercase or the pull is refused outright. Same fix as
+        # `delivery.yml`, which is where a live run found it.
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ghcr.io
@@ -100,8 +106,8 @@ jobs:
 
       - name: Stand up the demo stack
         env:
-          MYKRONOS_IMAGE_BACKEND: ghcr.io/${{ github.repository_owner }}/mykronos-backend:${{ github.event.workflow_run.head_sha || github.sha }}
-          MYKRONOS_IMAGE_FRONTEND: ghcr.io/${{ github.repository_owner }}/mykronos-frontend:${{ github.event.workflow_run.head_sha || github.sha }}
+          MYKRONOS_IMAGE_BACKEND: ghcr.io/${{ env.OWNER }}/mykronos-backend:${{ github.event.workflow_run.head_sha || github.sha }}
+          MYKRONOS_IMAGE_FRONTEND: ghcr.io/${{ env.OWNER }}/mykronos-frontend:${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           docker compose -f "$COMPOSE" pull --quiet
