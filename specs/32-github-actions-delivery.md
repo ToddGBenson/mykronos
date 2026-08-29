@@ -393,10 +393,55 @@ TheHub's jobs, not this repository's. They stay in Concourse and need no
 template. The mapping table covers all three pipelines, so it is not a list of
 what moves.)
 
-`pin-check` (D-051's uploader-provenance check) is a fourth job with no
-template. It is not a capability; it is a guard that belongs as a step in every
-lane that installs the package, which is what `_base.yml.j2` should do
-centrally.
+**Status: built, 2026-08-28.** `QaConfig` gains `checks` — a list of named
+`{name, command, setup}` — and `qa.yml.j2` renders one matrix leg per check,
+each with its own upload and therefore its own ScanRun. Template version
+1.0.0 → 1.1.0, so a resync offers the change to every repository with `qa`
+enabled.
+
+**Chaining them into one `command` with `&&` was the obvious alternative and
+is the one that fails silently.** It renders a green workflow that runs all
+four checks — until the first one fails, after which the other three never
+execute and the lake records one run where there were four. Nothing errors;
+coverage just quietly narrows. `fail-fast: false` on the matrix is the same
+decision restated for the runner.
+
+**The single-command form is unchanged and stays the default.** `checks` is
+additive: a repository with one quality check renders exactly what it rendered
+before, with no `strategy` block, and `unit` and `functional` — which share the
+parent template — are untouched. There are tests for all three of those, because
+the shared `_test_lane.yml.j2` is where a mistake would reach lanes this change
+was not about.
+
+**Configured commands are `tojson`-encoded into the matrix and bound to `env`,
+never interpolated into the script body.** A command containing a colon or a
+quote would otherwise end the YAML scalar early — the document still parses,
+into a different shape, and the workflow runs something other than what was
+configured. Then `${{ }}` substitution happens before bash sees the line, so a
+value reaching the script body could change its syntax rather than its data.
+The upload action's own comment argues at length that the *source* of a value
+is the wrong thing to rely on when deciding this; the same reasoning applies to
+admin-set config, one file over.
+
+### 5.1.1 `pin-check` belongs in the composite action, not the base template
+
+This section previously said `pin-check` — D-051's uploader-provenance guard —
+"belongs as a step in every lane that installs the package, which is what
+`_base.yml.j2` should do centrally". That is the wrong file. `_base.yml.j2`
+does not install the package; `actions/upload-results/action.yml` does, and it
+is what every onboarded repository calls.
+
+So the install site used by the entire estate was the one that could not answer
+the question D-051 exists to make answerable. The Concourse lanes have printed
+the resolved commit since D-051; the composite action printed only the *ref*,
+which is the half that was never in doubt — `v1` sat 53 commits behind while
+every workflow truthfully reported installing `v1`.
+
+**Built, 2026-08-28**, in the action, as one non-fatal step. Non-fatal because
+this is provenance for a human reading a log, and an editable or local install
+legitimately has no `direct_url.json` — that case prints `(local install)`
+rather than `unknown`, which would report a provenance failure where there is
+simply no ref to resolve.
 
 ### 5.2 CodeQL is available again, and Semgrep may stay
 
@@ -687,6 +732,11 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    what D-039 removed — accept it deliberately and briefly, because the
    ingestion upsert makes the two indistinguishable, which is what makes a
    parity check possible at all.
+
+   **Template work done, 2026-08-28** (§5.1, §5.1.1): every quality and
+   security lane `mykronos.yml` runs now has a template that can express it.
+   What remains is an operator action rather than a code change, and is
+   deliberately left as one — see §9.1.
 5. **Port the delivery lanes** (§5): build, publish to GHCR, promote,
    containers against GHCR. Point `deploy.ps1` at GHCR.
 6. **Port `demo-and-dast`** (§4.2). Late, because it is the largest single
@@ -697,6 +747,32 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    delete the YAML and the `set-*-pipeline.ps1` scripts, rewrite
    `.github/README.md` (§2). `thehub.yml`, `docker-compose.yml`, Vault and
    `ConcourseClient` all stay.
+
+### 9.1 Where the code stops and the operator starts
+
+Steps 1, 2, 3 and step 4's template work are all changes to this repository,
+reviewable in a pull request and revertible with `git revert`. Turning them on
+for `mykronos` is neither, and is left to a person on purpose:
+
+- **`scanned_by` moves from `concourse` to `github_actions`** on a live
+  onboarding row. That is what lets the installer open an install pull request
+  at all (spec 03 §3a), and it simultaneously changes which side of the
+  enabled-capabilities union the dashboard reads, and unblocks the token
+  rotation `jobs.py` currently defers for this repository (§8).
+- **`qa`'s `checks` must be configured** with the three commands
+  `lint-and-types`, `frontend` and `qa-spec-links` run today. The platform
+  refuses to guess a repository's own test commands (spec 31 §5's rule,
+  extended to `checks` in the installer's guard), so nothing here can be
+  inferred from the pipeline YAML.
+- **The install pull request has to be reviewed and merged**, which is spec
+  03 §3 and is the whole point of install being a pull request.
+- **Duplicate findings start arriving** the moment it merges, and that is the
+  intended state rather than an accident — but it is a deliberate,
+  time-boxed decision about the lake, and it should be somebody's decision.
+
+None of it is blocked on code. All of it changes what runs against a live
+repository and what lands in the lake, which is a different kind of change
+from the four commits above it.
 
 **The parity check that decides step 8** is §7's own cross-check, run against
 both systems: every capability that reads `reporting` under Concourse must read

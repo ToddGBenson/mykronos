@@ -673,6 +673,60 @@ class FunctionalConfig(TestLaneConfig):
     )
 
 
+class QaCheck(BaseModel):
+    """One named quality check within the `qa` lane (spec 32 §5.1).
+
+    `qa` is the one capability that is routinely several *different* commands
+    rather than one. In `mykronos.yml` it is four jobs — `lint-and-types`,
+    `frontend`, `qa-spec-links` and `api-inventory` — all reporting as `qa`,
+    which `ci.py` calls "a richer answer rather than a collision" because
+    quality stages carry no findings and so cannot overwrite each other.
+
+    A single `command` string could chain them with `&&`, and that is exactly
+    what would lose the property worth keeping: the first failure would hide
+    every check after it, and the lake would record one run instead of four.
+    Each check answers for itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+        description=(
+            "What this check is called, in the job name and in the run's "
+            "logs. Constrained because it is rendered into a GitHub Actions "
+            "matrix leg and a job title."
+        ),
+    )
+    command: str = Field(
+        min_length=1,
+        max_length=2_000,
+        description=(
+            "The command that runs this check and writes JUnit XML into "
+            "$MYKRONOS_RESULTS."
+        ),
+    )
+    setup: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Commands run before this check's `command`.",
+    )
+
+    @field_validator("command")
+    @classmethod
+    def _command_is_one_step(cls, value: str) -> str:
+        return _reject_control_characters(value, "command")
+
+    @field_validator("setup")
+    @classmethod
+    def _setup_lines_are_one_step_each(cls, value: list[str]) -> list[str]:
+        for entry in value:
+            _reject_control_characters(entry, "setup command")
+        return value
+
+
 class QaConfig(TestLaneConfig):
     """Repository quality checks (D-046, spec 15 §1).
 
@@ -684,7 +738,37 @@ class QaConfig(TestLaneConfig):
     broken documentation link is a defect and is not a vulnerability, and
     giving it a severity would put documentation drift into a security risk
     score.
+
+    **`checks` is the plural form of the inherited `command`** (spec 32 §5.1).
+    Set it and the lane runs one matrix leg per check, each recording its own
+    ScanRun; leave it empty and the lane behaves exactly as `unit` and
+    `functional` do, running the single `command`. Both are valid and the
+    single-command form stays the default, because most repositories have one
+    quality check and a matrix of one is noise.
     """
+
+    checks: list[QaCheck] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Several named quality checks, run as separate matrix legs and "
+            "recorded as separate runs. Takes precedence over `command` when "
+            "non-empty. Use it where a repository has genuinely distinct "
+            "checks — lint, types, docs, contract — that should not hide one "
+            "another behind the first failure."
+        ),
+    )
+
+    @field_validator("checks")
+    @classmethod
+    def _check_names_are_unique(cls, value: list[QaCheck]) -> list[QaCheck]:
+        # Two legs with one name render two jobs GitHub cannot tell apart, and
+        # two runs a person reading the Harness tab cannot either.
+        seen = [check.name for check in value]
+        duplicates = sorted({name for name in seen if seen.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate check name(s): {', '.join(duplicates)}")
+        return value
 
 
 class AiConfig(BaseCapabilityConfig):
