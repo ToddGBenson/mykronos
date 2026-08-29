@@ -49,49 +49,74 @@ reasoning it records — D-038, D-039, the fork-PR refusal — is the history th
 makes §3 and §4 legible, and the replacement should say what changed rather
 than pretending the removal never happened.
 
-## 3. The three repositories become public
+## 3. The three repositories are already public
 
-`mykronos`, `keel` and `personal-soc` go public. This is a prerequisite, not a
-side effect, and it settles the second of spec 15 §2's three reasons for
-Concourse existing: **public repositories have unlimited GitHub Actions
-minutes**, so the failure that put fifteen checks red on TheHub for a billing
-reason cannot happen to these three.
+**Corrected 2026-08-28.** This section was written as a prerequisite —
+"`mykronos`, `keel` and `personal-soc` go public" — with a five-item
+pre-flight checklist. All three were already public when it was written, and
+`gitleaks` had been scanning their full history on every commit for as long as
+the `secrets` lane has existed. The prerequisite was work that had already
+happened.
 
-It also settles §4 in a direction that is not negotiable afterwards. **A public
-repository must not have a self-hosted runner.** A pull request from a fork
-executes the contributor's workflow, and a runner registered on `192.168.0.14`
-sits beside the registry, MinIO, TheHub's Postgres and the Vault. GitHub's own
-guidance is not to do this; spec 14 §4 and spec 15 §7 both refused it when the
-question was Concourse's worker. Going public means §4 has to actually
-dissolve the LAN dependencies rather than relocate them, which is why §4 is
-the longest section here.
+It is corrected rather than deleted because the conclusion it reaches is
+load-bearing for §4, and because the two things it got wrong are the kind
+that a later reader would otherwise re-derive from scratch.
 
-**Before the flip, per repository:**
+**What stands.** Public repositories have unlimited GitHub Actions minutes, so
+the second of spec 15 §2's three reasons for Concourse existing does not apply
+to these three. And **a public repository must not have a self-hosted
+runner**: a fork's pull request executes the contributor's workflow, and a
+runner registered on `192.168.0.14` sits beside the registry, MinIO, TheHub's
+Postgres and the Vault. That is why §4 has to actually dissolve the LAN
+dependencies rather than relocate them — and it is a constraint that is
+already in force rather than one this migration introduces.
 
-1. `gitleaks detect` over **full history**, not the working tree. The
-   `secrets` lanes scan commits as they land; nothing has scanned the whole
-   history against the standard of "this is about to be world-readable".
-2. Confirm the ignored-secret set was never committed. It was not, as of
-   2026-08-28: `deploy/concourse/.env`, `deploy/concourse/vault/init.json`,
-   `deploy/thehub/.env` and `*.db` have zero commits each and are all covered
-   by `.gitignore`. Re-run the check at flip time rather than trusting this
-   paragraph.
-3. Review `.gitleaksignore`. An allowlisted finding that was acceptable in a
-   private repository is a different decision in a public one.
-4. Confirm the demo tokens stay obviously fake. `demo-gate-token-not-a-secret`
-   and `demo-admin-token-not-a-secret` are named the way they are precisely so
-   this review is a five-second one.
-5. `deploy/concourse/pipelines/*.yml` become world-readable, including
-   TheHub's. They contain `((var))` references and no values — that is the
-   property CNC-2 exists to keep, and it is now load-bearing rather than
-   tidy.
+**What was wrong, and why it matters.** The checklist's first item said the
+`secrets` lanes "scan commits as they land" and that "nothing has scanned the
+whole history". Both halves are false. `gitleaks detect --source .` scans the
+git log by default — `--no-git` is what limits it to the working tree — and
+neither the Concourse `source` resource nor `_base.yml.j2` (`fetch-depth: 0`)
+does a shallow clone. Measured: 328 commits on `mykronos`, 112 on `keel`, 14
+on `personal-soc`.
 
-**What going public costs.** Fork pull requests get workflow runs, which means
-the ingestion token must never be reachable from one. GitHub does not pass
-secrets to workflows triggered by `pull_request` from a fork, so the fail-fast
-probe and the upload step in `_base.yml.j2` will both fail there with an empty
-token. That is the correct outcome and it must be made *legible* rather than
-mysterious — see §5.4.
+`.gitleaksignore` says so in its own comments, which is where this should have
+been caught before it was written down: *"this repository is public and
+already cloned"*, and *"full-history scanning still sees it"*.
+
+### 3.1 The scan that the checklist asked for, run anyway
+
+Worth running despite the above, because a repository that is *already*
+exposed has a more urgent version of the same question, and because nothing
+had audited the allowlist recently.
+
+| Repository | Commits | Findings |
+|---|---|---|
+| `mykronos` | 328 | 2, both false positives, now allowlisted |
+| `keel` | 112 | none |
+| `personal-soc` | 14 | none |
+
+The two on `mykronos` were real scanner hits on non-credentials, and both are
+now pinned in `.gitleaksignore` with a reason, per the convention that file
+sets:
+
+- **`demo-and-dast`'s preflight tokens** (`curl-auth-header`). Fixed literals
+  named `demo-*-token-not-a-secret`, authenticating a compose stack that
+  publishes different ports from production, holds synthetic data, carries no
+  App key and no production credential, and is destroyed before every run.
+- **A libsodium *public* key in `FakeGitHubClient`** (`generic-api-key`). Its
+  purpose is to be published; GitHub serves the real equivalent to anyone with
+  read access. The rule fires on entropy, and a base64 public key is
+  high-entropy by construction — the rule is not wrong, the value is simply
+  not a secret.
+
+Neither literal is reproduced in the allowlist, following the lesson that file
+records in `3280561`: quoting an allowlisted value turns the allowlist itself
+into a finding.
+
+**The remaining live item from the original checklist** is that
+`deploy/concourse/pipelines/*.yml` are world-readable, TheHub's included.
+They carry `((var))` references and no values, which is the property CNC-2
+exists to keep — now load-bearing rather than tidy.
 
 ## 4. Every LAN dependency dissolves
 
@@ -644,6 +669,7 @@ jobs that declare them and add the reviewer gate §4.6 wants.
 
 Each step is separately revertible, and no step makes the previous one
 unrevertible. The Concourse pipeline stays applied and running until step 8.
+**Steps 1, 2 and 3 are done.**
 
 1. **Enable/disable API, CLI and UI** (§6), against the repositories that are
    already `scanned_by=github_actions`. Deliverable on its own, useful
@@ -652,8 +678,10 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
 2. **`ActionsClient` and the `ci.py` protocol split** (§7). Keel is the test
    case: Actions-scanned, no Concourse pipeline, and today its CI panel
    correctly says nothing covers it. It should start saying something true.
-3. **Go public** (§3), one repository at a time, `keel` first because it has
-   the least history and no pipeline to break.
+3. ~~**Go public**~~ **Already done** (§3) — all three repositories were
+   public before this spec was written. The full-history secret scan the
+   checklist asked for was run anyway and is recorded in §3.1: clean, after
+   two false positives on `mykronos` were allowlisted.
 4. **Port `mykronos`'s quality and security lanes** to Actions templates and
    run them *alongside* Concourse. Duplicate findings for a week is exactly
    what D-039 removed — accept it deliberately and briefly, because the
