@@ -778,8 +778,20 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    `192.168.0.14:5000`, and the `production` environment needs required
    reviewers configured before its approval gate is real — an environment
    with none approves itself instantly and looks identical in the YAML.
-6. **Port `demo-and-dast`** (§4.2). Late, because it is the largest single
-   piece of work and the one most likely to need a second attempt.
+6. **Port `demo-and-dast`** (§4.2). Late, because it was expected to be the
+   largest single piece of work — the spike (§4.2) removed that expectation.
+
+   **Built, 2026-08-28**: `.github/workflows/demo-and-dast.yml`, repo-owned
+   for the same reason `delivery.yml` is (§5) — the demo environment is this
+   repository's own infrastructure, not a capability. Triggered by
+   `workflow_run` on Delivery rather than by `push`, because the stack runs
+   the images Delivery published for that commit and a `push` trigger would
+   race the publish. It reads `workflow_run.head_sha` throughout, not
+   `github.sha`, which on a `workflow_run` points at the branch tip and would
+   tag results with the wrong commit whenever two pushes land close together.
+   Active scanning stays off behind a `workflow_dispatch` input, per D-053
+   and §11 question 4. Verified with `actionlint`, and every `run` block
+   syntax-checked with `bash -n`.
 7. **Move the netassess jobs into the backend** (§4.4), then port
    `personal-soc`'s remaining lanes.
 8. **Retire `mykronos.yml` and `personal-soc.yml`**: `fly destroy-pipeline`,
@@ -873,7 +885,30 @@ that failure mode since it was written.
 4. **Does DAST's D-053 budget change on a GitHub-hosted runner?** §4.2. The
    answer is a measurement, and the passive-only posture holds until there is
    one.
-5. **Should the Slack alerting move, or be dropped?** Every Concourse job
+5. **How does the coverage cross-check see a repo-owned scanning workflow?**
+   *(new, 2026-08-28)* §7 maps a workflow to a capability by its filename,
+   from the template registry — exact, because the installer chose the name.
+   `demo-and-dast.yml` is hand-written and uploads `functional` and `dast`
+   without matching any template filename, so `reconcile()` produces no row
+   for either and `coverage()` reports both as `no_job` — rendered red, as a
+   problem, while the scans are in fact arriving.
+
+   This is the first case of a repository legitimately producing a capability
+   from a workflow the platform did not write, and it is not a bug in either
+   half. Three options, none taken yet because each has a real cost:
+
+   - **A per-repo mapping in capability config.** Flexible, and the "second
+     place for the truth to live" §4a rejected for pipeline names.
+   - **Credit a capability from its ScanRuns rather than its jobs** when no
+     job matches. Removes the false alarm and weakens the check: a lane that
+     stopped running would read as covered because old runs exist.
+   - **A naming convention** for repo-owned workflows that produce
+     capabilities. Cheapest, and conventions that are not enforced drift.
+
+   Worth deciding before step 8, because the parity check that authorises
+   retiring the Concourse pipelines reads exactly this signal.
+
+6. **Should the Slack alerting move, or be dropped?** Every Concourse job
    carries `on_failure: *slack_alert`. Actions can do the same, and Mykronos
    already has a notification path (`notify.py`) that knows about findings.
    Routing failures through Mykronos rather than through the CI system is more
