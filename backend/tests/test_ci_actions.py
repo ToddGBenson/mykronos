@@ -435,12 +435,60 @@ class TestParity:
 
         assert not rows[0].regressed
 
-    def test_silent_is_worse_than_reporting_and_better_than_never(self) -> None:
-        """The three states are ordered, and the ordering is what makes
-        "no capability got worse" a decidable question rather than a
-        judgement call."""
+    def test_losing_coverage_is_the_regression_and_the_only_one(self) -> None:
+        """Coverage is a yes or no, not a gradient.
+
+        `reporting` and `event_driven` mean findings from this capability are
+        in the lake. Everything else means they are not, whatever the reason.
+        Losing that is the regression; shuffling between two ways of not
+        having it is not an improvement.
+        """
         assert compare(self._cov(x="reporting"), self._cov(x="silent"))[0].regressed
         assert not compare(self._cov(x="never_reported"), self._cov(x="silent"))[0].regressed
+
+    def test_a_lane_that_has_never_run_is_not_an_improvement_on_a_silent_one(
+        self,
+    ) -> None:
+        """The bug this pair of assertions exists for.
+
+        `_STATE_RANK` used to place `not_run` ABOVE `silent`, so a capability
+        that went from "ran and reported nothing" to "has never run at all"
+        was announced as `improved`. Nothing in the system justified that
+        order — `silent` at least means the lane executes.
+
+        On 2026-08-29 `mykronos parity ToddGBenson/keel` printed "No
+        capability is worse under Actions" while sast and secrets read
+        `silent -> not_run` and atlas read `no_job -> not_run`: the Actions
+        side had never run once. That sentence was the authorisation to delete
+        keel's pipeline.
+        """
+        row = compare(self._cov(sast="silent"), self._cov(sast="not_run"))[0]
+
+        assert not row.regressed, (
+            "silent -> not_run is not a regression: neither state puts "
+            "findings in the lake, so nothing was lost."
+        )
+        assert row.verdict == "no better", (
+            f"silent -> not_run reported as {row.verdict!r}. Calling a lane "
+            "that has never executed an improvement on one that executes and "
+            "reports nothing is how a pipeline gets retired over a repository "
+            "with no coverage at all."
+        )
+
+    def test_disabling_a_reporting_capability_is_a_regression(self) -> None:
+        """`not_enabled` used to rank alongside `reporting`.
+
+        The reasoning was that a capability nobody asked for is not a gap,
+        which is true when both sides agree — and that case still compares as
+        `same`, asserted below. But it also meant a capability that reported
+        under Concourse and simply never got enabled in the Actions installer
+        ledger passed the gate without a word. Forgetting to enable something
+        is the single most likely migration mistake, and it presents exactly
+        as a capability nobody asked for.
+        """
+        assert compare(self._cov(iac="reporting"), self._cov(iac="not_enabled"))[0].regressed
+        assert not compare(self._cov(iac="not_enabled"), self._cov(iac="not_enabled"))[0].regressed
+        assert not compare(self._cov(iac="no_job"), self._cov(iac="not_enabled"))[0].regressed
 
 
 class TestParityRefusesAnUnreadableSide:

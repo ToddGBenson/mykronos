@@ -703,24 +703,41 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
     return out
 
 
-#: States a capability can be in, ordered worst to best. Used only to decide
-#: whether the Actions side is *worse* than the Concourse side for a given
-#: capability — never rendered, because a rank is a comparison aid and not a
-#: fact about a repository.
+#: Whether a capability state constitutes *coverage* — findings from that
+#: capability actually reaching the lake. Used only to decide whether the
+#: Actions side is worse than the Concourse side; never rendered, because this
+#: is a comparison aid and not a fact about a repository.
 #:
-#: `event_driven` and `not_enabled` rank alongside `reporting` deliberately.
-#: Neither is a gap: the first is a working webhook-fed capability and the
-#: second is a capability nobody asked for, and treating either as "worse than
-#: reporting" would report a migration as having lost something it never had.
-_STATE_RANK: dict[str, int] = {
-    "no_job": 0,
-    "never_reported": 1,
-    "silent": 2,
-    "not_run": 3,
-    "reporting": 4,
-    "event_driven": 4,
-    "not_enabled": 4,
-}
+#: Two tiers, not a gradient. This was a seven-step ranking, and the ordering
+#: inside the uncovered tier was invented rather than observed: `not_run` sat
+#: ABOVE `silent`, so a capability going from "ran and reported nothing" to
+#: "has never run at all" was announced as an improvement. That is what
+#: `mykronos parity ToddGBenson/keel` said on 2026-08-29 — "No capability is
+#: worse under Actions" while every Actions lane read `not_run`, i.e. the new
+#: system had never executed once. A ranking that produces that sentence is
+#: not measuring what the gate exists to measure.
+#:
+#: There is no honest order within "not covered". `no_job`, `not_run`,
+#: `never_reported` and `silent` are four ways of describing the same
+#: outcome — nothing from this capability is in the lake — and they differ in
+#: what a human should go look at, not in how covered the repository is. So
+#: moving between them is never an improvement and never a regression.
+#:
+#: `event_driven` counts as covered: Aegis, Oracle and Patchwork are fed by
+#: webhooks and have no lane to run, so treating them as a gap would report a
+#: migration as having lost something it never had.
+#:
+#: `not_enabled` counts as NOT covered, which is a change. It used to rank
+#: alongside `reporting` on the grounds that a capability nobody asked for is
+#: not a gap — true when both sides agree, and that case still compares as
+#: "same". But it also meant a capability that was reporting under Concourse
+#: and merely never got enabled in the Actions ledger passed the gate in
+#: silence, which is exactly the migration mistake this is here to catch.
+_COVERED: frozenset[str] = frozenset({"reporting", "event_driven"})
+
+
+def _covers(state: str) -> bool:
+    return state in _COVERED
 
 
 @dataclass(frozen=True)
@@ -739,8 +756,8 @@ class Parity:
 
     @property
     def regressed(self) -> bool:
-        """Is this capability worse under the new CI than the old one."""
-        return _STATE_RANK.get(self.after, 0) < _STATE_RANK.get(self.before, 0)
+        """Did this capability lose coverage in the move."""
+        return _covers(self.before) and not _covers(self.after)
 
     @property
     def verdict(self) -> str:
@@ -748,7 +765,14 @@ class Parity:
             return "REGRESSED"
         if self.before == self.after:
             return "same"
-        return "improved"
+        if _covers(self.after) and not _covers(self.before):
+            return "improved"
+        # Different states, same tier. Named rather than folded into "same",
+        # because which uncovered state a capability is in is worth reading
+        # even though it does not change the answer — and because calling it
+        # "improved" is how a repository with no coverage at all came to be
+        # reported as ready to have its pipeline deleted.
+        return "no better"
 
 
 def compare(before: list[StageCoverage], after: list[StageCoverage]) -> list[Parity]:

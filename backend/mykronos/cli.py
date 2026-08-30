@@ -41,6 +41,7 @@ from mykronos.auth import TokenRegistry
 from mykronos.ci import (
     ActionsClient,
     ConcourseClient,
+    _covers,
     capability_by_workflow,
     compare,
     coverage,
@@ -632,7 +633,32 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
+
+            # "No capability is worse" is a true sentence about two systems
+            # that both cover nothing, and on its own it reads as permission
+            # to delete a pipeline. keel produced exactly that on 2026-08-29:
+            # every Actions lane at `not_run`, every Concourse lane `silent`,
+            # nothing regressed, and no coverage anywhere. So say what is
+            # actually covered before saying what is not worse.
+            covered_before = [r.capability for r in parity_rows if _covers(r.before)]
+            covered_after = [r.capability for r in parity_rows if _covers(r.after)]
             print()
+            print(
+                f"Covered: {len(covered_after)} under Actions, "
+                f"{len(covered_before)} under Concourse."
+            )
+
+            if not covered_after:
+                print(file=sys.stderr)
+                print(
+                    "NOT SAFE to retire the pipeline. No capability is worse "
+                    "under Actions, but no capability is covered by it either — "
+                    "nothing has reported. That is not parity, it is two systems "
+                    "agreeing about silence.",
+                    file=sys.stderr,
+                )
+                return 1
+
             print("No capability is worse under Actions.")
             return 0
 
