@@ -369,6 +369,36 @@ class Settings(BaseSettings):
         ),
     )
 
+    governance_policy_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "governance-policy-v1.yaml",
+        description=(
+            "Per-control governance weights (spec 26 §4). A setting rather "
+            "than a bare module-relative path, and the distinction is not "
+            "cosmetic: `Path(__file__).parents[2]` is the repository root "
+            "from a checkout and `/usr/local/lib/python3.13` from an "
+            "installed wheel. The deployed backend therefore looked for this "
+            "beside the standard library, did not find it, logged "
+            "'no score computed' at WARNING, and returned an empty weight "
+            "table - so every governance score in production was computed "
+            "from nothing while every test computed one correctly. Same "
+            "shape as D-052: right in every checkout, wrong in every "
+            "deployment, and quiet in both."
+        ),
+    )
+
+    stride_map_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "stride-map-v1.yaml",
+        description=(
+            "CWE-to-STRIDE taxonomy (spec 27 §3). Same packaging trap as "
+            "`governance_policy_path`, and softer consequences by design - "
+            "its loader treats absence as a real state rather than an error - "
+            "but it was absent for the same wrong reason rather than the "
+            "intended one."
+        ),
+    )
+
     ingestion_api_url: str = Field(
         default="http://localhost:8100",
         description=(

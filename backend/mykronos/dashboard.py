@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import blast_radius, worklist
+from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
@@ -127,7 +128,7 @@ def stride_by_cwe(path: Path | None = None) -> dict[str, tuple[str, ...]]:
     with `mapping_resolution` saying so per row. Refusing to start would make
     a taxonomy file a hard dependency of a tab that worked without one.
     """
-    source = path or Path(__file__).resolve().parents[2] / "stride-map-v1.yaml"
+    source = path or get_settings().stride_map_path
     try:
         document = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
