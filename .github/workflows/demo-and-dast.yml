@@ -76,9 +76,21 @@ jobs:
       # the moment two pushes land close together.
       SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       COMPOSE: deploy/demo/docker-compose.yml
-      BACKEND_URL: http://localhost:8201
-      FRONTEND_URL: http://localhost:3200
+      # The runner dials ZAP directly, on the port compose publishes.
       ZAP_PROXY: http://localhost:8290
+      # These are addresses ZAP resolves *on our behalf* — the proxied
+      # functional suite and the spider target — and confusing them with the
+      # published ones is what made 26 of 26 tests fail with `502 Bad Gateway`
+      # on the first real run.
+      #
+      # ZAP runs in a container on the compose network, so `localhost` there
+      # is ZAP itself: asking it to fetch `localhost:8201` makes it try to
+      # proxy to its own port, and it answers 502 for anything whose Host it
+      # does not recognise. The service names resolve on the network it shares
+      # with them, which is why the compose file puts ZAP there — and why
+      # `functional/conftest.py` already defaults to exactly these two.
+      PROXIED_BACKEND: http://backend:8100
+      PROXIED_FRONTEND: http://frontend:3100
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -162,7 +174,7 @@ jobs:
 
           python -m pip install --quiet pytest httpx2
           HTTP_PROXY="$ZAP_PROXY" HTTPS_PROXY="$ZAP_PROXY" \
-          DEMO_FRONTEND_URL="$FRONTEND_URL" DEMO_BACKEND_URL="$BACKEND_URL" \
+          DEMO_FRONTEND_URL="$PROXIED_FRONTEND" DEMO_BACKEND_URL="$PROXIED_BACKEND" \
             python -m pytest functional -q -p no:cacheprovider \
               --junitxml="$RUNNER_TEMP/functional/functional.xml"
 
@@ -206,14 +218,14 @@ jobs:
             done
           }
 
-          zap_api "/JSON/spider/action/scan/?url=${FRONTEND_URL}&recurse=true" >/dev/null
+          zap_api "/JSON/spider/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" >/dev/null
           poll "/JSON/spider/view/status/" 600
 
           AFTER=$(zap_api "/JSON/core/view/urls/" | python -c 'import json,sys; print(len(json.load(sys.stdin)["urls"]))')
           echo "Site tree: ${AFTER} URL(s) after spidering, from ${SEEDED} seeded by the tests."
 
           if [ "$ACTIVE" = "true" ]; then
-            zap_api "/JSON/ascan/action/scan/?url=${FRONTEND_URL}&recurse=true" >/dev/null
+            zap_api "/JSON/ascan/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" >/dev/null
             poll "/JSON/ascan/view/status/" 2400
           else
             echo "::notice::Passive scan only (D-053). Re-run with active_scan to include it."
