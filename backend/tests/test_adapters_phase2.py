@@ -534,6 +534,66 @@ class TestRegistry:
             "must not be a tag."
         )
 
+    def test_every_reviewed_policy_file_is_in_the_image_and_configurable(
+        self,
+    ) -> None:
+        """Four YAML files decide what the platform judges repositories by.
+
+        Each is loaded through a path that defaults to
+        `Path(__file__).resolve().parents[2] / <name>`. From a checkout that
+        is the repository root and correct. From an installed wheel it is the
+        parent of site-packages -- `/usr/local/lib/python3.13` -- and wrong.
+
+        Two of the four were also never COPYed into the image, so the
+        deployed backend logged
+
+            Governance policy unreadable at
+            /usr/local/lib/python3.13/governance-policy-v1.yaml;
+            no score computed.
+
+        at WARNING and carried on with an empty weight table. Every
+        governance score in production was computed from nothing, every test
+        computed one correctly, and nothing failed. That is D-052's shape
+        exactly: right in every checkout, wrong in every deployment, quiet in
+        both.
+
+        The fix is the pattern the other two already had -- a Settings field
+        so the path is overridable, and an ENV in the Dockerfile pointing at
+        a file the image actually contains. This asserts all three halves,
+        because having the setting without the COPY still yields a missing
+        file, and having the COPY without the ENV still resolves to the
+        standard library.
+        """
+        from mykronos.config import Settings
+
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+
+        for setting, filename, env in (
+            ("oracle_policy_path", "oracle-policy-v1.yaml", "MYKRONOS_ORACLE_POLICY_PATH"),
+            ("maturity_model_path", "maturity-model-v1.yaml", "MYKRONOS_MATURITY_MODEL_PATH"),
+            (
+                "governance_policy_path",
+                "governance-policy-v1.yaml",
+                "MYKRONOS_GOVERNANCE_POLICY_PATH",
+            ),
+            ("stride_map_path", "stride-map-v1.yaml", "MYKRONOS_STRIDE_MAP_PATH"),
+        ):
+            assert setting in Settings.model_fields, (
+                f"{filename} has no Settings field, so its path cannot be "
+                "overridden and it will resolve relative to the module -- "
+                "which is the standard library in a deployed image."
+            )
+            assert (root / filename).is_file(), f"{filename} is missing from the repo root"
+            assert filename in dockerfile, (
+                f"{filename} is never COPYed into the image. The setting alone "
+                "does not help: the path will point at a file that is not there."
+            )
+            assert f"{env}=/app/{filename}" in dockerfile, (
+                f"{env} is not set to /app/{filename} in the Dockerfile, so the "
+                "deployed backend falls back to the module-relative path."
+            )
+
     def test_the_package_spec_and_the_upload_action_pin_the_same_commit(
         self,
     ) -> None:

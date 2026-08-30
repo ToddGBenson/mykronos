@@ -51,6 +51,7 @@ import yaml
 from sqlalchemy.orm import Session
 
 from mykronos.codeowners import owner_for, parse
+from mykronos.config import get_settings
 from mykronos.db.models import RepoGovernance
 from mykronos.github.client import GitHubClient, GitHubError, PermissionDeniedError
 from mykronos.lake.catalog import Catalog
@@ -432,7 +433,10 @@ def weights(path: Path | None = None) -> dict[str, float]:
     at, which is a judgement that belongs where it can be argued with in a
     pull request.
     """
-    source = path or Path(__file__).resolve().parents[2] / "governance-policy-v1.yaml"
+    # Via settings, not a module-relative path: `parents[2]` is the repo root
+    # from a checkout and the site-packages parent from an installed wheel,
+    # which is why production scored every repository off an empty table.
+    source = path or get_settings().governance_policy_path
     try:
         document = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
