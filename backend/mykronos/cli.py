@@ -9,6 +9,7 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
+    mykronos self-check
     mykronos parity <owner/repo>
     mykronos workflows <owner/repo>
     mykronos enable-workflow <owner/repo> <capability>
@@ -52,6 +53,7 @@ from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
+    check_public_reachability,
     purge_expired_insider_risk,
     reconcile_installations,
     rotate_ingestion_tokens,
@@ -60,6 +62,7 @@ from mykronos.jobs import (
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.migrate_assets import migrate_assets
+from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.reprocess import reprocess
@@ -146,6 +149,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Mint a short-lived GitHub App installation token (spec 02 §4)",
     )
     ghtoken.add_argument("repo", help="owner/repo the token should be scoped to.")
+
+    sub.add_parser(
+        "self-check",
+        help="Ask the internet whether this platform is reachable (spec 32 §8)",
+    )
 
     parity = sub.add_parser(
         "parity",
@@ -473,6 +481,34 @@ def main(argv: list[str] | None = None) -> int:
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
             return 0
+
+        if args.command == "self-check":
+            # The check a container healthcheck cannot make, because a
+            # container healthcheck runs inside the thing it is checking. It
+            # deliberately uses the *public* URL: on 2026-08-29 the backend
+            # reported healthy for 22 hours while its host port was
+            # unpublished, and a localhost probe would have passed every
+            # minute of it.
+            # Distinct name: `outcome` is bound above by another subcommand
+            # and reusing it makes mypy infer the wrong type — the trap this
+            # file's `reprocess` branch already documents.
+            reach = asyncio.run(
+                check_public_reachability(
+                    settings.ingestion_api_url,
+                    notifier=SlackNotifier(settings.slack_webhook_url),
+                )
+            )
+            print(f"{reach.url} -> {reach.status_code or 'no response'}")
+            if reach.reachable:
+                print("Reachable.")
+                return 0
+            print(reach.detail, file=sys.stderr)
+            print(
+                "Scan uploads from GitHub Actions and from Concourse both go "
+                "through this URL, so findings are being lost now.",
+                file=sys.stderr,
+            )
+            return 1
 
         if args.command == "parity":
             # The check that authorises spec 32 §9 step 8. Retiring a pipeline

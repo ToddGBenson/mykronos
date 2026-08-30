@@ -23,6 +23,7 @@ from datetime import date, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
+import httpx2
 from sqlalchemy import select
 
 from mykronos.auth import TokenRegistry
@@ -38,6 +39,8 @@ from mykronos.knowledge import PurgeResult as KnowledgePurgeResult
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
+from mykronos.logsafe import scrub
+from mykronos.notify import Notification
 from mykronos.oracle.service import OracleService
 from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.patchwork.verification import (
@@ -48,6 +51,28 @@ from mykronos.patchwork.verification import (
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReachabilityResult:
+    """Whether the outside world can actually reach this platform.
+
+    The one check that cannot be delegated to a container healthcheck, because
+    a container healthcheck runs *inside* the thing it is checking. On
+    2026-08-29 `mykronos-backend` reported `healthy` for 22 hours while its
+    host port was unpublished: the process was fine, the dashboard was fine —
+    the frontend reaches it over the Docker network — and every scan upload
+    from every pipeline was failing with a 502 from the tunnel. Nothing said
+    so, because nothing was looking from outside.
+
+    That is precisely the disagreement spec 15 §4a.1 exists to surface, one
+    layer lower down: green and unreachable, at the same time.
+    """
+
+    url: str = ""
+    reachable: bool = False
+    status_code: int | None = None
+    detail: str = ""
 
 
 @dataclass
@@ -792,3 +817,67 @@ async def verify_merged_fixes(
 
     result = await dispatch_pending(catalog, buffer, dispatch=dispatch)
     return resolve_pending(catalog, buffer, result=result)
+
+
+async def check_public_reachability(
+    ingestion_api_url: str,
+    *,
+    notifier: Any = None,
+    timeout: float = 20.0,
+) -> ReachabilityResult:
+    """Ask the internet whether this platform is answering (spec 32 §8).
+
+    **It must use the public URL, and that is the entire point.** A check
+    against `localhost` would have passed for every one of the 22 hours the
+    ingestion API was unreachable, because the process was healthy the whole
+    time — what was broken was the path to it. This request leaves the host,
+    crosses the tunnel and comes back, so it exercises what a GitHub-hosted
+    runner exercises.
+
+    `/healthz` rather than `/api/ingest/health`: it is exempt from the
+    perimeter gate (`gate.py`) and needs no credential, so the check works
+    from anywhere and cannot fail for a reason of its own.
+
+    **Quiet when healthy.** A channel that reports every successful minute is
+    one nobody reads by the time it matters — the same rule the netassess
+    judgement follows.
+    """
+    url = ingestion_api_url.rstrip("/") + "/healthz"
+    result = ReachabilityResult(url=url)
+
+    try:
+        async with httpx2.AsyncClient(timeout=timeout) as http:
+            response = await http.get(url)
+        result.status_code = response.status_code
+        result.reachable = response.status_code == 200
+        if not result.reachable:
+            result.detail = f"{url} answered HTTP {response.status_code}."
+    except Exception as exc:  # noqa: BLE001 - any failure to reach is the finding
+        result.detail = f"{url} could not be reached: {scrub(str(exc))}"
+
+    if result.reachable:
+        logger.info("Public reachability OK: %s", scrub(url))
+        return result
+
+    logger.error("Public reachability FAILED: %s", scrub(result.detail))
+    if notifier is not None:
+        # Critical, and it earns it: while this is false, every scan upload
+        # from every pipeline is failing and nothing else will say so. The
+        # dashboard keeps serving, which is what makes it dangerous.
+        await notifier.send(
+            Notification(
+                title="Mykronos is not reachable from the internet",
+                detail=(
+                    result.detail
+                    + "\n"
+                    "Scan uploads from GitHub Actions and from Concourse both "
+                    "go through this URL, so findings are being lost now. The "
+                    "dashboard may still look healthy: the frontend reaches "
+                    "the backend over the Docker network, and the container's "
+                    "own healthcheck runs inside it."
+                ),
+                repo_full_name="",
+                level="critical",
+            )
+        )
+    return result
