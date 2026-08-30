@@ -100,7 +100,6 @@
           while IFS= read -r DOCKERFILE; do
             [ -n "$DOCKERFILE" ] || continue
             INDEX=$((INDEX + 1))
-            CONTEXT=$(dirname "$DOCKERFILE")
 
             # The image name carries the Dockerfile, and that is load-bearing
             # rather than cosmetic. Trivy writes the image reference into the
@@ -123,12 +122,45 @@
             TAG="mykronos-scan/${SAFE}:${{ github.sha }}"
 
             echo "::group::Building $DOCKERFILE"
-            if ! docker build --quiet --file "$DOCKERFILE" --tag "$TAG" "$CONTEXT"; then
-              echo "::warning::Could not build $DOCKERFILE — skipping it. The" \
+            # Two contexts, in order: the Dockerfile's own directory, then the
+            # repository root.
+            #
+            # `dirname` alone was wrong for a very ordinary layout, and this
+            # repository is an example of it. `backend/Dockerfile` COPYs
+            # `backend/pyproject.toml`, `workflow-templates` and
+            # `maturity-model-v1.yaml` — paths that only resolve from the root
+            # — so a `backend` context dies at the first COPY that leaves it.
+            # A monorepo whose images pull in shared files fails the same way.
+            #
+            # That mattered more here than a failed build normally would,
+            # because this step swallows failures by design: the repository's
+            # own CI owns whether an image builds, so an unbuildable
+            # Dockerfile is skipped rather than failing the scan. The result
+            # was a `containers` lane reporting a clean scan of zero images —
+            # green, and meaningless. Exactly the "reported nothing and looked
+            # fine" failure this platform exists to catch, in the platform's
+            # own product.
+            #
+            # The root is tried second rather than first because it is the
+            # wider blast radius: it sends every file in the repository to the
+            # daemon, and for a self-contained Dockerfile that is pure cost.
+            BUILT=""
+            for CONTEXT in "$(dirname "$DOCKERFILE")" "."; do
+              if docker build --quiet --file "$DOCKERFILE" --tag "$TAG" "$CONTEXT"; then
+                BUILT="$CONTEXT"
+                break
+              fi
+              echo "  (context '$CONTEXT' did not build; trying the next)"
+            done
+
+            if [ -z "$BUILT" ]; then
+              echo "::warning::Could not build $DOCKERFILE from its own" \
+                   "directory or from the repository root — skipping it. The" \
                    "repository's own CI owns whether this image builds."
               echo "::endgroup::"
               continue
             fi
+            echo "  built from context '$BUILT'"
             echo "::endgroup::"
 
             # One SARIF per image as well, so a partial failure loses one
