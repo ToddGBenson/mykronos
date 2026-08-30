@@ -62,20 +62,48 @@ if ((Test-Path $EnvFile) -and -not $Rotate) {
     Write-Host "Wrote $EnvFile with generated credentials." -ForegroundColor Green
 }
 
-# Persistent session signing key. Without one, quickstart generates a fresh
-# key on every start, every browser cookie signed with the old one becomes
-# invalid, and the login page reports "invalid state token" - which reads as
-# a broken login rather than as a container restart.
+# Persistent keys. Without them, a fresh key is generated on every start,
+# every browser cookie signed with the old one becomes invalid, and the login
+# page reports "invalid state token" - which reads as a broken login rather
+# than as a container restart.
 #
-# Only this key. Supplying the TSA host and worker keys too leaves the
-# embedded worker unable to connect ("remote host public key mismatch"),
-# because quickstart manages that handshake itself.
+# All six, not just the signing key. This block used to generate only
+# `session_signing_key`, with a comment saying that supplying the TSA host and
+# worker keys too would leave the embedded worker unable to connect - true of
+# `quickstart`, which runs every process in one container and manages that
+# handshake itself. docker-compose.yml has since moved to a separate web node
+# and two standalone workers, which reach it over the compose network and must
+# agree on keys that outlive a restart. It pins all of them; this script was
+# never updated to match.
+#
+# The cost of that gap, found on 2026-08-30: the keys directory was empty and
+# the web node refused to start with "failed to read authorized keys: open
+# /keys/authorized_worker_keys: no such file or directory". Nothing here could
+# regenerate them, so Concourse could not be brought back by running setup.
 $keyDir = Join-Path $PSScriptRoot "keys"
 New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+
 if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
     Write-Host "Generating the session signing key..." -ForegroundColor Cyan
     docker run --rm -v "${keyDir}:/keys" concourse/concourse:7.14 generate-key -t rsa -f /keys/session_signing_key | Out-Null
 }
+
+# `-t ssh` rather than `-t rsa`: these are the SSH handshake between each
+# worker and the TSA, and `generate-key` writes the matching .pub beside each.
+foreach ($name in @("tsa_host_key", "worker_key", "worker2_key")) {
+    if (-not (Test-Path (Join-Path $keyDir $name))) {
+        Write-Host "Generating $name..." -ForegroundColor Cyan
+        docker run --rm -v "${keyDir}:/keys" concourse/concourse:7.14 generate-key -t ssh -f "/keys/$name" | Out-Null
+    }
+}
+
+# The web node authorises workers by public key, so this file is the two
+# worker .pubs concatenated. Rewritten every run rather than only when absent:
+# adding a third worker means adding its key here, and a stale file rejects it
+# with an error about the worker rather than about this list.
+$authorized = Join-Path $keyDir "authorized_worker_keys"
+Get-Content (Join-Path $keyDir "worker_key.pub"), (Join-Path $keyDir "worker2_key.pub") |
+    Set-Content -Path $authorized -Encoding ascii
 
 if ($NoStart) { return }
 
