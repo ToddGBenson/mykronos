@@ -9,6 +9,7 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
+    mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
     mykronos self-check
     mykronos parity <owner/repo>
     mykronos workflows <owner/repo>
