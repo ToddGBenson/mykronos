@@ -881,3 +881,104 @@ async def check_public_reachability(
             )
         )
     return result
+
+
+async def check_vault(vault_url: str, *, timeout: float = 10.0) -> ReachabilityResult:
+    """Is Vault up, and is it unsealed (spec 32 §8.1)?
+
+    **Sealed is the interesting state, and it is not an outage.** Vault uses
+    the file storage backend rather than dev mode, so its data survives a
+    restart and it comes back *sealed* every time. Nothing can read a secret
+    until somebody unseals it, and `vault-unseal.ps1` says what that costs:
+    "Concourse pipelines fail to resolve ((vars)) after every reboot of this
+    host until you run this."
+
+    So a reachable-but-sealed Vault answers HTTP 503 and is a failure here,
+    while a container that is merely running is not a pass. The distinction is
+    the whole reason this check is not a port probe.
+    """
+    url = vault_url.rstrip("/") + "/v1/sys/health"
+    result = ReachabilityResult(url=url)
+    if not vault_url:
+        result.detail = "No Vault is configured for this deployment."
+        return result
+
+    try:
+        async with httpx2.AsyncClient(timeout=timeout) as http:
+            response = await http.get(url)
+        result.status_code = response.status_code
+        # 200 = initialised, unsealed, active. 503 = sealed or standby, which
+        # Vault reports as unhealthy on purpose.
+        body = response.json() if response.content else {}
+        sealed = bool(body.get("sealed"))
+        result.reachable = response.status_code == 200 and not sealed
+        if sealed:
+            result.detail = (
+                f"{url} answered, and Vault is SEALED. Concourse cannot resolve "
+                "((vars)) until it is unsealed: deploy/concourse/vault-unseal.ps1"
+            )
+        elif not result.reachable:
+            result.detail = f"{url} answered HTTP {response.status_code}."
+    except Exception as exc:  # noqa: BLE001 - any failure to reach is the finding
+        result.detail = f"{url} could not be reached: {scrub(str(exc))}"
+    return result
+
+
+async def check_concourse(concourse_url: str, *, timeout: float = 10.0) -> ReachabilityResult:
+    """Is Concourse answering (spec 32 §8.1)?
+
+    `/api/v1/info` rather than the pipeline list: it needs no team, no
+    authentication and no pipeline to exist, so it separates "Concourse is
+    down" from "Concourse is up and covers nothing" — which are the two facts
+    `ci.py` spends a docstring insisting are different.
+    """
+    url = concourse_url.rstrip("/") + "/api/v1/info"
+    result = ReachabilityResult(url=url)
+    if not concourse_url:
+        result.detail = "No Concourse is configured for this deployment."
+        return result
+
+    try:
+        async with httpx2.AsyncClient(timeout=timeout) as http:
+            response = await http.get(url)
+        result.status_code = response.status_code
+        result.reachable = response.status_code == 200
+        if not result.reachable:
+            result.detail = f"{url} answered HTTP {response.status_code}."
+    except Exception as exc:  # noqa: BLE001 - any failure to reach is the finding
+        result.detail = f"{url} could not be reached: {scrub(str(exc))}"
+    return result
+
+
+async def self_check(
+    settings: Any, *, notifier: Any = None
+) -> list[tuple[str, ReachabilityResult]]:
+    """Everything a reboot can quietly take away (spec 32 §8.1).
+
+    A host restart on 2026-08-28 broke three things and nothing noticed any of
+    them for a day: the ingestion API lost its published port, Vault came back
+    sealed, and Concourse never came back at all. Each was invisible in a
+    different way — a container reporting healthy from inside itself, a
+    dashboard served over the Docker network, and a CI server nothing was
+    watching.
+
+    One command, one line per dependency, so what did not come back is named
+    rather than inferred.
+
+    **Only ingestion alerts.** It is the one whose failure silently loses
+    data: scans keep running and their results go nowhere. A sealed Vault and
+    a stopped Concourse fail loudly at the next build, so paging for them
+    would train somebody to ignore the channel that matters.
+    """
+    checks = [
+        ("ingestion", await check_public_reachability(
+            settings.ingestion_api_url, notifier=notifier
+        )),
+        ("vault", await check_vault(getattr(settings, "vault_url", ""))),
+        ("concourse", await check_concourse(getattr(settings, "concourse_url", ""))),
+    ]
+    for name, result in checks:
+        logger.info(
+            "self-check %s: %s", name, "ok" if result.reachable else scrub(result.detail)
+        )
+    return checks

@@ -379,6 +379,19 @@ class Settings(BaseSettings):
         ),
     )
 
+    vault_url: str = Field(
+        default="",
+        description=(
+            "Where this process reaches Vault, for `mykronos self-check` "
+            "(spec 32 §8.1). Read-only and unauthenticated: `/v1/sys/health` "
+            "needs no token and reports whether Vault is sealed, which is the "
+            "state that matters — it comes back sealed after every restart, "
+            "and until somebody unseals it Concourse cannot resolve any "
+            "`((var))`. Empty disables the check, which is right for a "
+            "deployment with no Vault."
+        ),
+    )
+
     # --- Concourse (spec 15 §4a) ---------------------------------------
 
     concourse_url: str = Field(
