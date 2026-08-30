@@ -74,9 +74,17 @@
 {% block suite_command %}
 {%- if config.get('checks') %}
           echo "qa check: $MYKRONOS_CHECK_NAME"
-          if [ -n "$MYKRONOS_CHECK_SETUP" ]; then
-            bash -c "$MYKRONOS_CHECK_SETUP"
-          fi
-          bash -c "$MYKRONOS_CHECK_COMMAND"
+          # Setup and command go to *one* shell, and that is the whole point.
+          # Running them as two `bash -c` invocations discards everything the
+          # setup established — a `cd backend` in the first has no effect on
+          # the second, so the command runs from the workspace root and the
+          # tools it installed are not on its path. `unit` and `functional`
+          # never had this: `_test_lane.yml.j2` emits their setup lines and
+          # their command as consecutive lines of a single `run:` block.
+          #
+          # Piped rather than concatenated so neither value is ever parsed as
+          # shell syntax by the outer script: bash reads them from stdin as a
+          # script, and a quote or a `;` in a configured command stays data.
+          { printf '%s\n' "$MYKRONOS_CHECK_SETUP" "$MYKRONOS_CHECK_COMMAND"; } | bash -e
 {%- else %}<< super() >>{% endif %}
 {% endblock %}

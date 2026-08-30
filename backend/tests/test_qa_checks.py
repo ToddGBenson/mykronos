@@ -139,7 +139,24 @@ class TestRendering:
         suite = next(step for step in job["steps"] if step.get("id") == "suite")
         assert suite["env"]["MYKRONOS_CHECK_COMMAND"] == "${{ matrix.check.command }}"
         assert "${{ matrix.check.command }}" not in suite["run"]
-        assert 'bash -c "$MYKRONOS_CHECK_COMMAND"' in suite["run"]
+        # Piped into one shell, not two. Both values reach bash on stdin, so a
+        # quote or a `;` in a configured command stays data rather than being
+        # parsed as syntax by the outer script.
+        assert '"$MYKRONOS_CHECK_SETUP" "$MYKRONOS_CHECK_COMMAND"' in suite["run"]
+        assert "| bash -e" in suite["run"]
+
+    def test_setup_and_command_share_a_shell(self, library: TemplateLibrary) -> None:
+        """The bug a live run found: two `bash -c` invocations discard
+        everything the setup established, so a `cd backend` in setup left the
+        command running from the workspace root with none of the tools it had
+        just installed on its path. `unit` and `functional` never had this —
+        `_test_lane.yml.j2` emits setup and command as consecutive lines of a
+        single `run:` block."""
+        job = _job(library, {"checks": CHECKS})
+
+        suite = next(step for step in job["steps"] if step.get("id") == "suite")
+        assert 'bash -c "$MYKRONOS_CHECK_SETUP"' not in suite["run"]
+        assert suite["run"].count("| bash -e") == 1
 
     def test_the_job_name_names_the_check(self, library: TemplateLibrary) -> None:
         job = _job(library, {"checks": CHECKS})
