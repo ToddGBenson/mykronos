@@ -88,7 +88,7 @@
     "qa": {
       "template": "qa.yml.j2",
       "target": ".github/workflows/mykronos-qa.yml",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "summary": "Repository quality checks — link integrity, contract and schema checks (D-046); several named checks via `checks` (spec 32 §5.1)"
     },
     "oracle": {
