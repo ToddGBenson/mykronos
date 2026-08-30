@@ -53,11 +53,11 @@ from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
-    check_public_reachability,
     purge_expired_insider_risk,
     reconcile_installations,
     rotate_ingestion_tokens,
     score_portfolio,
+    self_check,
 )
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
@@ -492,22 +492,39 @@ def main(argv: list[str] | None = None) -> int:
             # Distinct name: `outcome` is bound above by another subcommand
             # and reusing it makes mypy infer the wrong type — the trap this
             # file's `reprocess` branch already documents.
-            reach = asyncio.run(
-                check_public_reachability(
-                    settings.ingestion_api_url,
-                    notifier=SlackNotifier(settings.slack_webhook_url),
+            # Three dependencies, because one reboot took all three and
+            # nothing noticed for a day (spec 32 §8.1). Each gets its own
+            # line: "something is wrong" is not actionable, "Vault is sealed"
+            # is.
+            checks = asyncio.run(
+                self_check(
+                    settings, notifier=SlackNotifier(settings.slack_webhook_url)
                 )
             )
-            print(f"{reach.url} -> {reach.status_code or 'no response'}")
-            if reach.reachable:
-                print("Reachable.")
-                return 0
-            print(reach.detail, file=sys.stderr)
-            print(
-                "Scan uploads from GitHub Actions and from Concourse both go "
-                "through this URL, so findings are being lost now.",
-                file=sys.stderr,
+            _print_table(
+                ["dependency", "status", "detail"],
+                [
+                    [
+                        name,
+                        "ok" if result.reachable else "FAILED",
+                        result.detail or result.url,
+                    ]
+                    for name, result in checks
+                ],
             )
+            broken = [name for name, result in checks if not result.reachable]
+            if not broken:
+                print()
+                print("All dependencies reachable.")
+                return 0
+            print()
+            print(f"Not reachable: {', '.join(broken)}", file=sys.stderr)
+            if "ingestion" in broken:
+                print(
+                    "Scan uploads from GitHub Actions and from Concourse both go "
+                    "through the ingestion URL, so findings are being lost now.",
+                    file=sys.stderr,
+                )
             return 1
 
         if args.command == "parity":
