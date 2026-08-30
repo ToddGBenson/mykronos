@@ -16,6 +16,7 @@ on:
       - "Mykronos aegis"
       - "Mykronos ai"
       - "Mykronos atlas"
+      - "Mykronos containers"
       - "Mykronos iac"
       - "Mykronos qa"
       - "Mykronos sast"
