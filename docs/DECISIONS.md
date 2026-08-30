@@ -3833,3 +3833,74 @@ permission" is a prerequisite that gets planned around for weeks.
 **What is not built, and cannot be from here.** Making the three repositories
 public is an operator action, and it is gated on a full-history secret scan
 rather than on the working-tree scans the `secrets` lanes already run.
+
+## D-094 — Both halves of D-051, and a parity check that could not see an empty repository
+
+**Date:** 2026-08-29 · **Supersedes nothing; completes D-051**
+
+Two pins install the `mykronos` package into the same job:
+`mykronos_package_spec`, which the aegis, atlas, ai and sast templates
+pip-install for their collectors, and `upload_action_ref`, which the shared
+upload action is resolved at. The templates install first. `pip install` of an
+already-satisfied requirement is a no-op — no version comparison, no warning —
+so whichever runs first decides the uploader, and the second silently does
+nothing.
+
+`upload_action_ref` had been moved forward repeatedly. `mykronos_package_spec`
+had never moved at all: it was still `@v1` while the tag series reached `v7`.
+So the package spec won every time, and the action's pin was decorative. The
+lanes failed as
+
+    argument --capability: invalid choice: 'ai'
+
+which is v1's `Capability` enum, in a job whose action was pinned to a commit
+that knew both `ai` and `atlas`. `sast` and `aegis` were unaffected only
+because v1 already knew those names — which is why this survived so long. It
+presented as two broken capabilities rather than as a stale pin.
+
+**Both now pin the same 40-character commit, and a test asserts they are
+equal.** Commit rather than tag on both, so the invariant is checkable without
+a network call. The tag is `v8`, cut deliberately at current main rather than
+reusing `v7` — which is 16 commits behind and lacks the containers root-context
+fix, the named qa checks, the fail-fast retry, and the action provenance line
+that is D-051's own remedy.
+
+**The parity check was passing the migration it exists to block.** Retiring a
+pipeline is authorised by "no capability got worse", and "worse" needed an
+ordering, so `_STATE_RANK` put seven states on a line. Four of those positions
+are real; three were invented, and the invention was `not_run` above `silent`.
+It sounds right — a lane that has not fired yet is more innocent than one
+visibly failing to report. Innocent is not the question. Covered is, and
+neither state is covered.
+
+So `mykronos parity ToddGBenson/keel` reported three capabilities `improved`,
+printed "No capability is worse under Actions", and exited 0 — the
+authorisation to delete keel's pipeline — while every Actions lane on keel had
+never executed once.
+
+The states are now two tiers. `reporting` and `event_driven` are coverage;
+`no_job`, `not_run`, `never_reported`, `silent` and `not_enabled` are not, and
+within that group there is no order, because they differ in what a human should
+go look at and not in how covered the repository is. Moving between them is
+`no better` — a verdict that did not exist, which is why `improved` was
+returned instead.
+
+`not_enabled` leaves the covered tier, which is a change. It ranked alongside
+`reporting` because a capability nobody asked for is not a gap — true when both
+sides agree, and that case still compares as `same`. But it also meant a
+capability reporting under Concourse that merely never got enabled in the
+Actions ledger passed in silence, and forgetting to enable something is the
+most likely migration mistake there is.
+
+**A gate that detects loss cannot detect absence.** "Nothing got worse" is
+satisfied by two systems that both do nothing, so the verdict now states
+coverage on both sides before stating change, and refuses outright when the new
+system covers nothing: that is not parity, it is two systems agreeing about
+silence.
+
+**What that check now says about keel: covered 0 under Actions, 0 under
+Concourse.** Which is the real finding, and it changes the migration. keel's
+Concourse lanes were already `silent`, so there is no coverage to migrate and
+nothing that retiring the pipeline would lose — but neither is there a green
+Actions run to retire it *on*. keel needs its lanes made to report before
+anything is deleted, not a pipeline retirement. Recorded as L0005.
