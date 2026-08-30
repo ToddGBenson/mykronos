@@ -422,7 +422,7 @@ class Settings(BaseSettings):
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"
-            "8b329fc5c1f739eab8ad40b8a7628da7cd1ee935"  # v1
+            "353503081aaf6437398b7558e3c116de787dc380"  # v3
         ),
         description=(
             "Commit-pinned reference to the shared upload composite action "
@@ -434,6 +434,14 @@ class Settings(BaseSettings):
             "The `mykronos-ref` input is derived from the part after `@`, so "
             "pinning here also pins the package the action installs; the two "
             "cannot drift.\n\n"
+            "This pin was stale, and stale in exactly the way D-051 "
+            "describes. It named a commit whose `Capability` enum predates "
+            "the quality stages, so `qa`, `unit`, `functional` and `ai` "
+            "uploads died on `--capability: invalid choice` after the scan "
+            "had already run — four capabilities the platform believed were "
+            "enabled and which could never report. Worse, the commit it named "
+            "carried a `# v1` comment and is not v1: it is untagged, so the "
+            "comment described a pin nobody could verify by looking.\n\n"
             "WHEN UPDATING: v1 is an ANNOTATED tag, so the tag-object SHA "
             "(926d214…) is NOT the commit. Dereference it — "
             "`gh api repos/ToddGBenson/mykronos/commits/v1 --jq .sha` — or you "
