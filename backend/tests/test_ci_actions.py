@@ -22,6 +22,7 @@ import pytest
 from mykronos.ci import (
     ActionsClient,
     PipelineStatus,
+    Reporting,
     StageCoverage,
     StatusCache,
     capability_by_workflow,
@@ -440,3 +441,57 @@ class TestParity:
         judgement call."""
         assert compare(self._cov(x="reporting"), self._cov(x="silent"))[0].regressed
         assert not compare(self._cov(x="never_reported"), self._cov(x="silent"))[0].regressed
+
+
+class TestParityRefusesAnUnreadableSide:
+    """A side that could not be read is not a side with no coverage.
+
+    `status_for` fails soft by design — it returns `unavailable` and no jobs
+    rather than raising, because a dashboard must not 500 when a CI server
+    restarts. Fed to `coverage()` that is indistinguishable from a system
+    running nothing: every capability reads `no_job` on the unreadable side,
+    every comparison against it reports "improved", and the check concludes
+    "no capability is worse" having compared real coverage against a
+    connection error.
+
+    Observed for real on 2026-08-30: Concourse was unresolvable from the
+    backend container and `mykronos parity` printed a clean sweep of
+    `improved` and exited 0. These pin the shape of that trap so the CLI's
+    refusal cannot regress into a flattering verdict.
+    """
+
+    def test_an_unreadable_side_looks_like_total_absence(self) -> None:
+        """The mechanism, stated as a fact about `coverage()` rather than
+        about the CLI: this is why the CLI has to check `unavailable` itself
+        instead of trusting the comparison."""
+        unreadable = PipelineStatus(
+            repo_full_name=REPO,
+            pipeline=None,
+            url=None,
+            unavailable="Concourse did not answer, so its state is unknown.",
+        )
+
+        rows = coverage({"sast", "unit"}, reconcile(unreadable.jobs, {}))
+
+        assert {row.state for row in rows if row.stage in {"sast", "unit"}} == {"no_job"}
+
+    def test_and_therefore_compares_as_improved_against_anything(self) -> None:
+        """The flattering verdict, demonstrated. Every real capability beats
+        `no_job`, so nothing is ever "worse" than a system nobody could
+        reach."""
+        unreadable = coverage({"sast"}, reconcile([], {}))
+        healthy = coverage({"sast"}, [Reporting("sast", "sast", None, None)])
+        healthy = [
+            StageCoverage(stage=row.stage, enabled=row.enabled, state="reporting")
+            if row.stage == "sast"
+            else row
+            for row in healthy
+        ]
+
+        rows = compare(unreadable, healthy)
+        sast = next(row for row in rows if row.capability == "sast")
+
+        # The whole estate reads as having gained coverage, because the side
+        # that could not be read contributed none.
+        assert sast.verdict == "improved"
+        assert not any(row.regressed for row in rows)
