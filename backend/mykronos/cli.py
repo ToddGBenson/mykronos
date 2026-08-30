@@ -561,9 +561,38 @@ def main(argv: list[str] | None = None) -> int:
             )
             actions = asyncio.run(actions_client.status_for(args.repo))
 
-            for label, status in (("concourse", concourse), ("actions", actions)):
-                if status.unavailable:
-                    print(f"{label}: {status.unavailable}")
+            # A side that could not be read is not a side with no coverage,
+            # and the difference decides whether a pipeline gets destroyed.
+            #
+            # `status_for` fails soft by design — it returns `unavailable` and
+            # no jobs rather than raising, because a dashboard must not 500
+            # when a CI server restarts. Fed to `coverage()` that is
+            # indistinguishable from a system running nothing, so every
+            # capability reads `no_job` on the unreadable side and *every*
+            # comparison against it reports "improved". The check then says
+            # "no capability is worse" and exits 0, having compared real
+            # coverage against a connection error.
+            #
+            # That is the exact failure this platform exists to catch, in the
+            # check that authorises retiring the thing being compared. So it
+            # refuses to reach a verdict rather than reaching a flattering
+            # one.
+            unreadable = [
+                f"{label}: {status.unavailable}"
+                for label, status in (("concourse", concourse), ("actions", actions))
+                if status.unavailable
+            ]
+            if unreadable:
+                print("Cannot compare — one side could not be read:", file=sys.stderr)
+                for line in unreadable:
+                    print(f"  {line}", file=sys.stderr)
+                print(
+                    "\nNo verdict. An unreadable system reports no coverage, which "
+                    "compares favourably against everything and means nothing. Fix "
+                    "the read, then re-run.",
+                    file=sys.stderr,
+                )
+                return 2
 
             # Distinct name: `rows` is bound above by other subcommands and
             # reusing it makes mypy infer the wrong type — the same trap the
