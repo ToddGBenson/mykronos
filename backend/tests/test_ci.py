@@ -292,10 +292,57 @@ class TestReporting:
 
     def test_a_failed_job_is_not_held_against_the_lake(self) -> None:
         """A lane that fails produces nothing, and the lake is right to be
-        empty. The failure is the pipeline's to report, not this check's."""
+        empty. The failure is the pipeline's to report, not this check's.
+
+        That policy is unchanged: `failed` is not in `problem`, so a broken
+        lane is still not counted as a coverage gap. Only the NAME changed -
+        see the test below for why.
+        """
+        [row] = reconcile([self._job("sast", status="failed")], {})
+        stages = {c.stage: c for c in coverage({"sast"}, [row])}
+
+        assert not stages["sast"].problem
+
+    def test_a_failed_lane_does_not_claim_it_never_ran(self) -> None:
+        """`not_run` means "the job exists and has never run" (spec 15 §4a).
+
+        A lane that ran five times and failed five times is not that, and the
+        difference is the whole point of the check: this class's own docstring
+        cites "the sast lane failed on every run for a day while the
+        capability simply looked un-scanned" as the gap it was built to close.
+        It then reported exactly that, in the state name.
+
+        Found on keel on 2026-08-29. sast, secrets and atlas had each run and
+        failed, the last on 2026-08-14, and every view said `not_run` - which
+        reads as "nobody has triggered it yet" and invites no action for a
+        fortnight.
+
+        `built_at` stays unset for a failed build, because it means "when did
+        a SUCCESSFUL build last happen" and the lake is measured against it.
+        The lane having run at all is a separate fact and now travels
+        separately.
+        """
         [row] = reconcile([self._job("sast", status="failed")], {})
 
+        assert row.state == "failed"
+
+    def test_a_lane_that_truly_never_ran_still_reads_not_run(self) -> None:
+        """The state `failed` displaced it from, which must still work."""
+        [row] = reconcile([self._job("sast", status=None)], {})
+
         assert row.state == "not_run"
+
+    def test_a_cancelled_build_is_not_a_lane_that_never_ran_either(self) -> None:
+        """`aborted` is not a fault, but it is not a successful build.
+
+        The question this feeds is "does this lane have something to report
+        from", not "whose fault is it", so a cancelled run reads `failed`
+        rather than inventing a fourth answer or falling back to the false
+        one.
+        """
+        [row] = reconcile([self._job("sast", status="aborted")], {})
+
+        assert row.state == "failed"
 
     def test_the_job_names_that_do_not_match_their_capability(self) -> None:
         """`dependencies` uploads as atlas and `cloud-posture` as cloud. Both

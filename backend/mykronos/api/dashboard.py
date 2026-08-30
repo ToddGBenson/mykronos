@@ -1358,7 +1358,11 @@ class CiReportingOut(BaseModel):
             "capability's newest scan run is older than that build, so "
             "something ran and did not report. never_reported: the job has "
             "succeeded and the lake has no successful run for it at all. "
-            "not_run: no successful build to compare against."
+            "failed: the lane ran and its last build did not succeed, so "
+            "there is no successful build to measure the lake against - "
+            "distinct from not_run, which used to absorb it and reads as "
+            "'nobody has triggered this yet'. not_run: the job exists and "
+            "has never run."
         )
     )
 
@@ -1371,8 +1375,8 @@ class StageCoverageOut(BaseModel):
             "not_enabled: nobody asked for this stage here. no_job: enabled, "
             "and nothing in the pipeline produces it - the gap hardest to see "
             "otherwise, because the repository believes it is covered and no "
-            "job disagrees. reporting / silent / never_reported / not_run "
-            "carry their meaning from the cross-check."
+            "job disagrees. reporting / silent / never_reported / failed / "
+            "not_run carry their meaning from the cross-check."
         )
     )
     problem: bool

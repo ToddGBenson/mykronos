@@ -210,6 +210,7 @@ Per repository, every capability in the standard set resolves to one state:
 | `silent` | The job succeeded and nothing arrived — green pipeline, stale data, and this row is the only thing that says those two facts disagree. |
 | `never_reported` | Enabled, the job runs, and no scan run has ever landed. |
 | `no_job` | Enabled and nothing in the pipeline produces it — the repository believes it is covered and no job disagrees, because no job exists. |
+| `failed` | The lane ran and its last build did not succeed, so there is no successful build to measure the lake against. Cancelled counts here too: not a fault, but equally not a successful build. |
 | `not_run` | The job exists and has never run (a paused lane reads this way). |
 | `event_driven` | Aegis, Oracle and Patchwork never produce a ScanRun from a pipeline lane — webhooks, decisions and fix PRs respectively — so the job-versus-scan comparison has no sides. Not a gap. |
 
@@ -225,7 +226,7 @@ Three rules the first implementation got wrong, kept here so they stay right:
   does not vouch for a DAST upload that failed.
 - **These states are two tiers, not a ranking.** `reporting` and
   `event_driven` mean findings from this capability are in the lake.
-  `no_job`, `not_run`, `never_reported`, `silent` and `not_enabled` all mean
+  `no_job`, `not_run`, `failed`, `never_reported`, `silent` and `not_enabled` all mean
   they are not. Within that second group there is no order: the states differ
   in what a human should go look at, not in how covered the repository is.
   The parity check (spec 32 §9) ranked all seven on a line, which put

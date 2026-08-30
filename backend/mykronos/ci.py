@@ -182,9 +182,22 @@ class Reporting:
     capability: str
     built_at: datetime | None
     scanned_at: datetime | None
+    last_build_failed: bool = False
+    """The lane ran and its last build did not succeed.
+
+    Separate from `built_at` rather than folded into it, because the two
+    answer different questions and this check needs both: `built_at` is "when
+    did a SUCCESSFUL build last happen", which is what the lake is measured
+    against, and this is "did the lane run at all".
+    """
 
     @property
     def state(self) -> str:
+        # Before the built_at check, because a failed build leaves built_at
+        # unset - that is the whole reason a failing lane used to read as one
+        # that had never run.
+        if self.last_build_failed:
+            return "failed"
         built = _utc(self.built_at)
         scanned = _utc(self.scanned_at)
         if built is None:
@@ -799,6 +812,19 @@ def compare(before: list[StageCoverage], after: list[StageCoverage]) -> list[Par
     ]
 
 
+#: Terminal statuses that mean the lane ran and produced no successful build.
+#:
+#: `aborted` is here with the two failures. A cancelled run is not a fault,
+#: but it is equally not a successful build, and the question this feeds is
+#: "does this lane have something to report from" rather than "whose fault is
+#: it". Calling a cancelled run "never ran" is the same false statement.
+#:
+#: In-progress statuses (`started`, `pending`) are deliberately absent: a lane
+#: mid-flight has not failed, and `ActionsClient` never sees them anyway
+#: because it reads completed runs only.
+_DID_NOT_SUCCEED: frozenset[str] = frozenset({"failed", "errored", "aborted"})
+
+
 def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
@@ -829,6 +855,7 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
                     capability=capability,
                     built_at=job.finished_at if job.status == "succeeded" else None,
                     scanned_at=last_scan_at.get(capability),
+                    last_build_failed=job.status in _DID_NOT_SUCCEED,
                 )
             )
     return out
