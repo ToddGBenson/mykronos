@@ -322,13 +322,27 @@ class Settings(BaseSettings):
     mykronos_package_spec: str = Field(
         default=(
             "mykronos @ git+https://github.com/ToddGBenson/mykronos"
-            "@v1#subdirectory=backend"
+            "@cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
+            "#subdirectory=backend"
         ),
         description=(
-            "pip requirement the Aegis and Atlas workflows install to get the "
-            "signal collectors and adapters (spec 04 §4). Pinned to a tag for "
-            "the same reason the upload action is: every onboarded repo "
-            "depends on it, so it must never resolve to a moving branch."
+            "pip requirement the Aegis, Atlas, AI and SAST workflows install "
+            "to get the signal collectors and adapters (spec 04 §4). Pinned "
+            "to a tag for the same reason the upload action is: every "
+            "onboarded repo depends on it, so it must never resolve to a "
+            "moving branch. "
+            "This sat at `v1` while the pipelines had moved to `v7` and the "
+            "tag series had reached `v7` - the second half of D-051, in a "
+            "setting nobody thought to look at. The cost was specific: the "
+            "four templates that install this do so BEFORE the upload action "
+            "runs, and `pip install` of an already-present package is a "
+            "no-op, so a `v1` install here silently downgraded the uploader "
+            "the action had been pinned to. `ai` and `atlas` then died on "
+            "`--capability: invalid choice` - two capabilities that did not "
+            "exist in v1 - while `sast` and `aegis` survived because v1 "
+            "happened to know them. "
+            "Keep this and `upload_action_ref` on the same tag. They install "
+            "the same package into the same job, and the first one wins."
         ),
     )
 
@@ -435,7 +449,7 @@ class Settings(BaseSettings):
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"
-            "353503081aaf6437398b7558e3c116de787dc380"  # v3
+            "cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
         ),
         description=(
             "Commit-pinned reference to the shared upload composite action "

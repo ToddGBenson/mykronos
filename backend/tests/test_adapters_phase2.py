@@ -534,6 +534,63 @@ class TestRegistry:
             "must not be a tag."
         )
 
+    def test_the_package_spec_and_the_upload_action_pin_the_same_commit(
+        self,
+    ) -> None:
+        """Two settings install the same package into the same job.
+
+        `upload_action_ref` is what the shared upload action is resolved at.
+        `mykronos_package_spec` is what the aegis, atlas, ai and sast templates
+        pip-install for their collectors and adapters -- and they do it in a
+        step BEFORE the upload action runs.
+
+        `pip install` of an already-satisfied requirement is a no-op. It does
+        not compare versions and it does not warn. So whichever of these two
+        installs first is the one that wins, and the second silently does
+        nothing. If the package spec is older, it quietly downgrades the
+        uploader the action was carefully pinned to, and the pin above becomes
+        decorative.
+
+        That is not hypothetical. `upload_action_ref` was moved forward
+        repeatedly while this setting sat at `v1` and the tag series reached
+        `v7`. The `ai` and `atlas` lanes failed on
+
+            argument --capability: invalid choice: 'ai'
+            (choose from 'sast','dast','secrets','containers','iac','cloud',
+             'aegis','atlas','patchwork','oracle')
+
+        -- v1's Capability enum, running inside a job whose action had been
+        pinned to a commit that knew both. `sast` and `aegis` were unaffected
+        only because v1 happened to already know those two names, which is why
+        this went unnoticed: the failure looked capability-specific rather than
+        like a version pin.
+
+        Requiring the same 40-character commit in both makes that class of
+        drift a test failure instead of a red lane. Update them together.
+        """
+        from mykronos.config import Settings
+
+        def _default(name: str) -> str:
+            value = Settings.model_fields[name].default
+            return value() if callable(value) else value
+
+        _, _, action_rev = _default("upload_action_ref").rpartition("@")
+        spec = _default("mykronos_package_spec")
+        spec_rev = spec.rpartition("@")[2].partition("#")[0]
+
+        assert re.fullmatch(r"[0-9a-f]{40}", spec_rev), (
+            f"mykronos_package_spec is pinned to {spec_rev!r}, which is not a "
+            "40-character commit SHA. A tag here can be moved, and this "
+            "requirement is installed into every onboarded repository."
+        )
+        assert spec_rev == action_rev, (
+            "mykronos_package_spec and upload_action_ref install the same "
+            "package into the same job, and the first install wins -- so they "
+            f"must pin the same commit. The package spec is at {spec_rev!r} "
+            f"and the upload action is at {action_rev!r}. Whichever is older "
+            "is what actually runs. See this test's docstring."
+        )
+
     def test_the_upload_action_pins_no_version_of_its_own(self) -> None:
         """The composite action installs the `mykronos` package, and which
         version it installs must follow the ref the action was resolved at.
