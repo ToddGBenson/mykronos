@@ -344,6 +344,23 @@ class GitHubClient(Protocol):
         Completed only, matching Concourse's `finished_build`: a run in
         progress has no outcome, and reporting one as anything would invent
         a result.
+
+        **Known limitation: one page, and the page is repository-wide.** The
+        100 newest completed runs across ALL workflows, so an infrequent lane
+        in a busy repository falls off the end and comes back with no run at
+        all - indistinguishable here from a workflow that has never run.
+
+        Seen on ToddGBenson/keel on 2026-08-29: `pr-governance` and `ci`
+        accounted for 66 of the 100, the oldest entry was 2026-08-13, and
+        `mykronos-atlas` last ran on 2026-08-12. It had run five times and
+        failed five times, and read `not_run`.
+
+        Not fixed by paginating, which spends the request budget this single
+        call exists to protect (§7.1). The honest fix is the per-workflow
+        `runs` endpoint for lanes missing from the page - one extra request
+        each, only for the lanes that need it. Left undone deliberately
+        rather than unknowingly: a lane can still read as never-run when it
+        has merely been quiet, and this is the reason.
         """
 
     async def set_workflow_state(
