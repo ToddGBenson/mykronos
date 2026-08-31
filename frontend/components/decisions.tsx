@@ -41,7 +41,7 @@ export function DecisionsTab({
   if (decisions.length === 0) {
     return (
       <EmptyState
-        title="Oracle has not judged this repository"
+        title="No risk decision for this repository yet"
         detail={
           <>
             Enable the <span className="font-mono">oracle</span> capability to

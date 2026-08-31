@@ -547,7 +547,7 @@ function GroupTable({
                   {group.fixable ? (
                     <span
                       className="ml-1"
-                      title="Patchwork produced a fix for this — open the row to review it."
+                      title="Auto-remediation produced a fix for this — open the row to review it."
                     >
                       <Pill tone="pass">fix</Pill>
                     </span>

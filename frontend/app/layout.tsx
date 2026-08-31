@@ -43,7 +43,7 @@ const NAV: {
     section: "Manage",
     items: [
       { label: "Repositories", href: "/" },
-      { label: "Oracle policy", href: "/decisions#policy" },
+      { label: "Risk decision policy", href: "/decisions#policy" },
       { label: "Knowledge", href: "/retro" },
     ],
   },

@@ -141,9 +141,9 @@ export const CAPABILITY_META = {
   cloud: { icon: "☁️", label: "Cloud posture" },
   network: { icon: "🌐", label: "Network scanning" },
   ai: { icon: "✨", label: "AI checks" },
-  aegis: { icon: "🛡️", label: "Insider risk (Aegis)" },
-  oracle: { icon: "⚖️", label: "Risk decisions (Oracle)" },
-  patchwork: { icon: "🩹", label: "Auto-remediation (Patchwork)" },
+  aegis: { icon: "🛡️", label: "Insider risk" },
+  oracle: { icon: "⚖️", label: "Risk decisions" },
+  patchwork: { icon: "🩹", label: "Auto-remediation" },
 } as const;
 
 export const ALL_CAPABILITIES = Object.keys(
@@ -407,7 +407,7 @@ export function Verdict({
     return (
       <span
         className="font-mono text-[10px] text-ink-3"
-        title="Oracle is opt-in and has not judged this repository"
+        title="Risk decisions are opt-in - this repository has not been judged"
       >
         not assessed
       </span>

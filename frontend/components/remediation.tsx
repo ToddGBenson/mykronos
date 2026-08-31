@@ -63,7 +63,7 @@ export function RemediationTab({
   if (events.length === 0) {
     return (
       <EmptyState
-        title="Patchwork has not run here"
+        title="Auto-remediation has not run here"
         detail={
           <>
             Enable the <span className="font-mono">patchwork</span> capability

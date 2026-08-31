@@ -134,8 +134,8 @@ function GovernanceNote({
         }`}
       >
         {blocking
-          ? "Aegis is BLOCKING for this repository — a score at or above the threshold fails the pull request."
-          : "Aegis is advisory for this repository — it never fails a pull request."}
+          ? "Insider risk is BLOCKING for this repository — a score at or above the threshold fails the pull request."
+          : "Insider risk is advisory for this repository — it never fails a pull request."}
       </p>
       {!detailIncluded ? (
         <p className="mt-1.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
