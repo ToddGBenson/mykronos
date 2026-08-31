@@ -57,7 +57,7 @@ export default async function PortfolioPage({
         />
         <StatTile label="Open high" value={summary.open_high} />
         <StatTile
-          label="Oracle: no go"
+          label="Risk decision: no go"
           value={summary.repos_no_go}
           sub={
             summary.repos_not_assessed
@@ -103,7 +103,7 @@ export default async function PortfolioPage({
           <table className="w-full min-w-[860px] border-collapse bg-paper-2 font-mono text-[11px]">
             <thead>
               <tr className="border-b-2 border-ink-2 text-left">
-                {["Repository", "Capabilities", "Risk", "Oracle", "Open", "Last scan"].map(
+                {["Repository", "Capabilities", "Risk", "Risk decision", "Open", "Last scan"].map(
                   (heading) => (
                     <th
                       key={heading}
