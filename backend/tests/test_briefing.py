@@ -8,7 +8,10 @@ hand, so what is asserted is what a real scan would produce.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from mykronos import briefing
+from mykronos.schemas import utcnow as _utcnow
 from tests.conftest import finding_payload, post_findings, post_scan
 
 
@@ -79,6 +82,65 @@ class TestStalledLanes:
         assert lane.streak_capped is True
         assert lane.last_success is None, "nothing ever succeeded here"
         assert "at least" in briefing.render(briefing.build(catalog))
+
+    def test_a_lane_that_stopped_running_is_reported(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The shape that was nearly missed, and the worse of the two.
+
+        TheHub's lanes all *succeeded* and then simply never ran again after
+        2026-08-27. A check that reads `scan_status` sees nothing wrong: there
+        is no error to notice. 316 findings were frozen behind that silence,
+        against 115 behind the one lane that was visibly failing.
+        """
+        for index in range(4):
+            _scan(client, auth, f"run-{index}", [finding_payload()])
+        run_compaction()
+
+        report = briefing.build(catalog, now=_utcnow() + timedelta(days=30))
+
+        assert report.stalled, "a lane that stopped running must be reported"
+        lane = report.stalled[0]
+        assert lane.reason == "silent"
+        assert lane.consecutive_failures == 0, "nothing failed; it stopped"
+        assert lane.open_findings == 1
+
+    def test_silence_is_measured_against_the_lane_s_own_cadence(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """This estate mixes daily and weekly schedules.
+
+        Any fixed threshold either misses a stopped daily lane or cries wolf
+        at every weekly one, so the gap is measured from the lane's own
+        history. A few minutes of quiet is not an outage.
+        """
+        for index in range(4):
+            _scan(client, auth, f"run-{index}", [finding_payload()])
+        run_compaction()
+
+        # Just after the last run: quiet, not silent.
+        assert briefing.build(catalog, now=_utcnow() + timedelta(minutes=5)).stalled == []
+        # `SILENCE_FLOOR_DAYS` is the floor, so a lane that runs constantly
+        # still gets two days before anyone is told.
+        assert briefing.build(catalog, now=_utcnow() + timedelta(hours=6)).stalled == []
+
+    def test_a_silent_lane_is_told_to_re_run_without_the_repair_caveat(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """A silent lane was working when it stopped, so dispatch *is* the fix.
+
+        Flattening this into the failing lane's wording would make the button
+        a lie half the time — and telling somebody to repair a job that has
+        nothing wrong with it is how a briefing gets ignored.
+        """
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+
+        lane = briefing.build(catalog, now=_utcnow() + timedelta(days=30)).stalled[0]
+
+        assert lane.reason == "silent"
+        assert "Repair the job first" not in lane.action.effect
+        assert "was working when it stopped" in lane.action.effect
 
     def test_a_healthy_estate_says_so(self, client, auth, catalog, run_compaction) -> None:
         _scan(client, auth, "run-1", [finding_payload()])

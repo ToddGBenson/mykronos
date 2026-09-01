@@ -130,12 +130,37 @@ CLASS_ACTIONS: dict[str, Action] = {
 }
 
 
+#: A lane is silent when it has not run for this many times its own usual gap
+#: between runs. Self-calibrating on purpose: the schedules in this estate are
+#: a mix of daily and weekly, so any fixed threshold either misses a daily lane
+#: that stopped or cries wolf at every weekly one.
+SILENCE_MULTIPLE = 3.0
+
+#: ...but never sooner than this, so a lane that runs on every push does not
+#: report as silent an hour after a quiet afternoon.
+SILENCE_FLOOR_DAYS = 2.0
+
+
 @dataclass
 class StalledLane:
-    """A capability that cannot close findings, and what it is holding open."""
+    """A capability that cannot close findings, and what it is holding open.
+
+    Two shapes, one consequence. A lane can be **failing** — running and
+    erroring, which is what mykronos DAST did seventeen times. Or it can be
+    **silent** — succeeding, and then simply never running again, which is
+    what every one of TheHub's lanes did after 2026-08-27.
+
+    Silence is the worse of the two and was nearly missed here, because a
+    check that reads `scan_status` sees nothing wrong with a lane whose last
+    run succeeded. There is no error to notice. The findings are frozen just
+    the same: no scan, no observed absence, no closure.
+    """
 
     repo_full_name: str
     capability: str
+    #: "failing" or "silent" — see the class docstring. Both freeze findings;
+    #: they need different fixes, so the briefing must not conflate them.
+    reason: str
     consecutive_failures: int
     #: True when the streak filled the whole read window, so the real streak
     #: is at least `consecutive_failures` and possibly longer. The lake held
@@ -145,6 +170,11 @@ class StalledLane:
     last_success: datetime | None
     detail: str
     open_findings: int
+    #: How long since this lane ran at all, and the gap it usually runs at.
+    #: Both are needed to read the first: five days is an outage for a daily
+    #: lane and unremarkable for a weekly one.
+    days_since_run: float = 0.0
+    usual_gap_days: float = 0.0
     #: Set in `__post_init__` rather than exposed as a property, because
     #: `--json` serialises with `dataclasses.asdict` and a property is
     #: silently absent from it. The action is the part a pipeline step wants.
@@ -154,18 +184,28 @@ class StalledLane:
         """Re-run the lane. This is the button, and it already exists.
 
         A stalled lane is the one group in the whole briefing where a single
-        request genuinely does the work: once the underlying job is repaired,
-        dispatching the capability produces the successful scan the findings
-        have been waiting on, and two of them close the lot.
+        request genuinely does the work: dispatching the capability produces
+        the successful scan the findings have been waiting on, and two of them
+        close the lot.
+
+        The caveat differs by reason, and flattening the two would make this
+        button a lie half the time. A **silent** lane was working when it
+        stopped, so dispatching it is the whole fix. A **failing** lane will
+        fail again — re-running it closes nothing and looks like action.
         """
+        caveat = (
+            "The lane was working when it stopped, so this is the fix."
+            if self.reason == "silent"
+            else "Repair the job first — a re-run of a broken workflow fails "
+            "again and closes nothing."
+        )
         self.action = Action(
             label=f"Re-run {self.capability} for {self.repo_full_name}",
             method="POST",
             path=f"/api/repos/{self.repo_full_name}/scan?capabilities={self.capability}",
             effect=(
-                f"Dispatches the lane. Repair the job first — a re-run of a "
-                f"broken workflow fails again and closes nothing. Two "
-                f"successful runs then close up to {self.open_findings} finding(s)."
+                f"Dispatches the lane. {caveat} Two successful runs then "
+                f"close up to {self.open_findings} finding(s)."
             ),
         )
 
@@ -210,15 +250,25 @@ def _open_by_capability(catalog: Catalog) -> dict[tuple[str, str], int]:
     return {(str(repo), str(capability)): int(n) for repo, capability, n in rows}
 
 
-def stalled_lanes(catalog: Catalog) -> list[StalledLane]:
-    """Lanes whose most recent runs all failed.
+def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[StalledLane]:
+    """Lanes that cannot close findings, failing or silent.
 
-    Consecutive from the newest run backwards, so a lane that failed twice and
-    then recovered is not reported — it is working, and reporting it would
-    make this section the thing people stop reading.
+    **Failing** is counted consecutively from the newest run backwards, so a
+    lane that failed twice and then recovered is not reported — it is working,
+    and reporting it would make this section the thing people stop reading.
+
+    **Silent** is measured against the lane's own cadence rather than a fixed
+    threshold, because this estate mixes daily and weekly schedules and any
+    single number would either miss a stopped daily lane or cry wolf at every
+    weekly one. Five days of silence is an outage for one and a Tuesday for
+    the other.
     """
+    from mykronos.schemas import utcnow
+
     if not catalog.all_files("scan_runs"):
         return []
+
+    stamp = now or utcnow()
 
     rows = catalog.query(
         f"""
@@ -252,26 +302,59 @@ def stalled_lanes(catalog: Catalog) -> list[StalledLane]:
                 break
             failures += 1
             detail = detail or run_detail
-        if failures == 0:
+
+        # `runs` is newest-first, so this is the most recent run of any kind.
+        since = (stamp - runs[0][2]).total_seconds() / 86400
+        gap = _usual_gap_days(runs)
+        silent = since > max(SILENCE_MULTIPLE * gap, SILENCE_FLOOR_DAYS)
+
+        if failures == 0 and not silent:
             continue
 
-        last_success = _last_success(catalog, repo, capability)
         stalled.append(
             StalledLane(
                 repo_full_name=repo,
                 capability=capability,
+                # A lane can be both; failing is the more actionable label,
+                # because it names a job somebody has to go and read.
+                reason="failing" if failures else "silent",
                 consecutive_failures=failures,
-                streak_capped=failures >= min(RECENT_RUNS, len(runs)),
-                last_success=last_success,
+                streak_capped=bool(failures) and failures >= min(RECENT_RUNS, len(runs)),
+                last_success=_last_success(catalog, repo, capability),
                 detail=detail,
                 open_findings=open_counts.get((repo, capability), 0),
+                days_since_run=round(since, 1),
+                usual_gap_days=round(gap, 1),
             )
         )
 
-    # Worst first: what is holding the most open, then the longest run of
-    # failures. A lane blocking nothing is real but not urgent.
-    stalled.sort(key=lambda lane: (-lane.open_findings, -lane.consecutive_failures))
+    # Worst first: what is holding the most open, then how long it has been
+    # stuck. A lane blocking nothing is real but not urgent.
+    stalled.sort(key=lambda lane: (-lane.open_findings, -lane.days_since_run))
     return stalled
+
+
+def _usual_gap_days(runs: list[tuple[str, str, Any]]) -> float:
+    """How often this lane normally runs, from its own history.
+
+    The median gap rather than the mean: a lane that runs on every push has a
+    handful of enormous gaps around holidays, and a mean would let it go dark
+    for a fortnight before anybody was told.
+
+    A lane with only one run on record has no cadence to measure. It gets 1.0,
+    which combined with `SILENCE_FLOOR_DAYS` means it must be quiet for two
+    days before it is called silent — cautious, and the right way round.
+    """
+    # The timestamps arrive from DuckDB as `Any`; naming the type here is what
+    # keeps the median a float rather than propagating Any to the caller.
+    times: list[datetime] = sorted((run[2] for run in runs), reverse=True)
+    gaps: list[float] = sorted(
+        (times[i] - times[i + 1]).total_seconds() / 86400 for i in range(len(times) - 1)
+    )
+    if not gaps:
+        return 1.0
+    middle = len(gaps) // 2
+    return gaps[middle] if len(gaps) % 2 else (gaps[middle - 1] + gaps[middle]) / 2
 
 
 def _last_success(catalog: Catalog, repo: str, capability: str) -> datetime | None:
@@ -351,12 +434,25 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
-        stalled=stalled_lanes(catalog),
+        stalled=stalled_lanes(catalog, now=stamp),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
         # secrets fixer needs a credential in source rather than a reference.
         auto_fixable=totals.get("atlas", 0),
     )
+
+
+def _cadence(days: float) -> str:
+    """A gap in the unit a person would say it in.
+
+    Push-triggered lanes run several times an hour, and "every 0.2 days" is
+    a number nobody converts in their head — the cadence is only in the line
+    to make the silence beside it mean something.
+    """
+    if days >= 1:
+        return f"{days:.0f} day" + ("s" if days >= 2 else "")
+    hours = days * 24
+    return f"{hours:.0f} hours" if hours >= 1 else "few minutes"
 
 
 def render(briefing: Briefing) -> str:
@@ -371,27 +467,50 @@ def render(briefing: Briefing) -> str:
         lines += [
             "LANES THAT CANNOT CLOSE FINDINGS",
             "  A finding closes only after two consecutive successful scans see",
-            "  it gone. These lanes are failing, so their findings cannot close",
-            "  however thoroughly the defect was fixed.",
+            "  it gone. These lanes are not producing them, so their findings",
+            "  cannot close however thoroughly the defect was fixed.",
             "",
         ]
-        for lane in briefing.stalled:
-            since = (
-                f"last success {lane.last_success:%Y-%m-%d}"
-                if lane.last_success
-                else "no successful run on record"
-            )
-            streak = ("at least " if lane.streak_capped else "") + str(
-                lane.consecutive_failures
-            )
-            lines.append(
-                f"  {lane.capability:<11} {lane.repo_full_name}"
-                f"  — {streak} consecutive failures, {since}"
-            )
+        # A lane holding nothing open is still broken and still worth knowing
+        # about, but it must not push a lane holding 213 findings down the
+        # page. One line for all of them, at the bottom.
+        holding = [lane for lane in briefing.stalled if lane.open_findings]
+        idle = [lane for lane in briefing.stalled if not lane.open_findings]
+
+        for lane in holding:
+            if lane.reason == "failing":
+                since = (
+                    f"last success {lane.last_success:%Y-%m-%d}"
+                    if lane.last_success
+                    else "no successful run on record"
+                )
+                streak = ("at least " if lane.streak_capped else "") + str(
+                    lane.consecutive_failures
+                )
+                state = f"{streak} consecutive failures, {since}"
+            else:
+                # Silence needs the cadence beside it or the number means
+                # nothing: five days is an outage for a daily lane and
+                # unremarkable for a weekly one.
+                state = (
+                    f"silent for {lane.days_since_run:.0f} days "
+                    f"(usually every {_cadence(lane.usual_gap_days)})"
+                )
+            lines.append(f"  {lane.capability:<11} {lane.repo_full_name}  — {state}")
             lines.append(f"      holding {lane.open_findings} finding(s) open")
             if lane.detail:
                 lines.append(f"      {lane.detail[:110]}")
             lines.append(f"      → {lane.action.method} {lane.action.path}")
+
+        if idle:
+            names = ", ".join(f"{lane.repo_full_name} {lane.capability}" for lane in idle)
+            lines.append("")
+            lines += textwrap.wrap(
+                f"  Also stalled, holding nothing open: {names}. Nothing is "
+                f"stuck behind these, but they are not watching either.",
+                72,
+                subsequent_indent="  ",
+            )
         lines.append("")
     else:
         lines += ["Every lane is reporting. Findings can close.", ""]
