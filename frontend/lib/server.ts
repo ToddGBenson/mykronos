@@ -36,6 +36,7 @@ import {
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
+  type Briefing,
   type VulnerabilityManagement,
   type WorkflowsPage,
 } from "./api";
@@ -514,6 +515,29 @@ export async function getVulnerabilityManagement(): Promise<
       };
     }
     return { ok: true, data: data as VulnerabilityManagement };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The post-deployment briefing (D-098).
+ *
+ * Its first section is why it exists: a finding closes only after two
+ * consecutive *successful* scans see it gone, so a lane that is failing — or
+ * that quietly stopped running — freezes its findings open however thoroughly
+ * the defect was fixed. On 2026-09-01 that was 431 of 475 open findings, and
+ * every other surface reported them as work somebody was neglecting.
+ */
+export async function getBriefing(): Promise<Result<Briefing>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/briefing", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the briefing") };
+    }
+    return { ok: true, data: data as Briefing };
   } catch (error) {
     return failure(error);
   }

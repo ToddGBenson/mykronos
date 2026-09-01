@@ -214,6 +214,24 @@ class TestActions:
         for capability, action in briefing.CLASS_ACTIONS.items():
             assert action.effect, f"{capability} offers a button with no stated effect"
 
+    def test_the_endpoint_serves_what_the_cli_prints(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """One source, two surfaces. A dashboard that disagreed with the
+        terminal about which lanes are broken would be worse than either."""
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+        response = client.get("/api/dashboard/briefing", headers=admin_auth)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["blocked_findings"] == 1
+        assert body["stalled"][0]["reason"] == "failing"
+        # The action is the part a UI renders as a button; it must survive
+        # serialisation, which a `@property` would not have.
+        assert body["stalled"][0]["action"]["method"] == "POST"
+
     def test_every_class_with_findings_has_a_stated_route(self) -> None:
         """`ROUTES` and the fixers must not describe different worlds."""
         from mykronos.patchwork import fixers
