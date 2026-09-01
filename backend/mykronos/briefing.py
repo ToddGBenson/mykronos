@@ -8,12 +8,19 @@ most of them?*
 That question has a different answer per class, and almost none of the answers
 are "let auto-remediation handle it":
 
-- A container CVE is fixed by moving base image, which is one action closing
-  scores of findings and is not an edit to any file.
 - A DAST header finding is fixed once in a config and closes across every
   route it was reported on.
 - A SAST finding is usually a judgement, and sometimes a false positive that
   needs dispositioning rather than fixing.
+- A container CVE frequently has **no fix to take at all**, and the honest
+  answer is an acceptance with a review date rather than any edit.
+
+That last one was written here as "rebuild on a current base image and one
+rebuild closes them together" until 2026-09-01, when `guidance` read what Trivy
+had been reporting all along: 231 of 234 with no published fix. This module now
+takes the count from the scan rather than the category, because advice invented
+from a class of finding is how a page confidently sends somebody to do a day of
+work that cannot close anything (B-026).
 
 **The first section is the one that earns this module.** A finding closes only
 after two consecutive *successful* scans observe its absence
@@ -35,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from mykronos import guidance
 from mykronos.lake.catalog import Catalog
 
 #: How many recent runs to read per (repo, capability) when deciding whether a
@@ -46,9 +54,18 @@ RECENT_RUNS = 10
 #: not the answer for most of them. Keyed to the same classes
 #: `fixers.NOT_COVERED` names, so the two cannot describe different worlds.
 ROUTES: dict[str, str] = {
+    # This said "rebuild on a current base image and one rebuild closes them
+    # together" until 2026-09-01, when reading what Trivy actually reported
+    # showed 231 of 234 with no published fix at all — and a freshly pulled
+    # `python:3.13-slim` shipping byte-identical package versions to the
+    # deployed one. The advice was confidently sending somebody to do a day of
+    # work that could not close a single finding (B-026).
     "containers": (
-        "Rebuild on a current base image. These are OS packages in the image, "
-        "not edits to any file, and one rebuild closes them together."
+        "Check whether a fix exists before rebuilding. Most of these are OS "
+        "packages with no patched version published, so a rebuild closes "
+        "nothing — accept those with `no_vendor_fix` and a review date, which "
+        "re-opens automatically when a vendor ships. /remediate names the few "
+        "that do have a fixed version."
     ),
     "dast": (
         "Usually one response header or config value, fixed once and closing "
@@ -241,6 +258,11 @@ class ClassSummary:
     #: is a Dockerfile change, not an API call, and pretending otherwise
     #: would be a dead button.
     action: Action | None = None
+    #: How many of these the scanner says have no published fix. Advice is
+    #: cheap and a count is not: 231 of 234 container findings had nothing to
+    #: upgrade to, which is the difference between a day of work and a
+    #: dispositioning pass (B-026).
+    no_fix_available: int = 0
 
 
 @dataclass
@@ -504,6 +526,15 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
     stamp = now or utcnow()
     open_counts = _open_by_capability(catalog)
 
+    # From the scan rather than from a category. `guidance` reads what each
+    # tool actually said; this is the one number out of it the terminal
+    # briefing needs.
+    no_fix = {
+        summary.capability: summary.unactionable
+        for summary in guidance.by_rule(catalog)
+        if summary.unactionable
+    }
+
     totals: dict[str, int] = {}
     for (_, capability), count in open_counts.items():
         totals[capability] = totals.get(capability, 0) + count
@@ -515,6 +546,7 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
             route=ROUTES.get(capability, "No standing route recorded for this class."),
             concentrated_in=_concentration(catalog, capability),
             action=CLASS_ACTIONS.get(capability),
+            no_fix_available=no_fix.get(capability, 0),
         )
         for capability, count in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
@@ -620,6 +652,11 @@ def render(briefing: Briefing) -> str:
                 # for, which is the only reason anyone reads this line.
                 break_long_words=False,
                 break_on_hyphens=False,
+            )
+        if entry.no_fix_available:
+            lines.append(
+                f"        {entry.no_fix_available} of these have no published fix — "
+                "nothing to upgrade to."
             )
         if entry.action:
             lines.append(f"        → {entry.action.method} {entry.action.path}")
