@@ -2160,6 +2160,17 @@ export interface components {
              */
             detail: string;
         };
+        /** AwaitingClosureOut */
+        AwaitingClosureOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Findings */
+            findings: number;
+            /** Scans Needed */
+            scans_needed: number;
+        };
         /**
          * BatchRequest
          * @description One action over a selection (spec 27 §3.1).
@@ -2232,12 +2243,16 @@ export interface components {
             total_open: number;
             /** Blocked Findings */
             blocked_findings: number;
+            /** Closing Soon */
+            closing_soon: number;
             /** Auto Fixable */
             auto_fixable: number;
             /** Stalled */
             stalled: components["schemas"]["StalledLaneOut"][];
             /** Classes */
             classes: components["schemas"]["BriefingClassOut"][];
+            /** Awaiting */
+            awaiting: components["schemas"]["AwaitingClosureOut"][];
         };
         /**
          * Capability

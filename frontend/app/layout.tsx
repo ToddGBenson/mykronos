@@ -39,6 +39,11 @@ const NAV: {
         label: "Vulnerability management",
         href: "/vulnerability-management",
       },
+      // Directly after it, because it is the same backlog asked a different
+      // question. Vulnerability management reports what is outstanding;
+      // this answers which of it is work *today* — and on the day it was
+      // written the honest split was 109 free, 316 frozen, 0 auto-fixable.
+      { label: "Remediate today", href: "/remediate" },
       { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", href: "/remediation" },

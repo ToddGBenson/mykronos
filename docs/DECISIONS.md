@@ -4147,3 +4147,22 @@ somebody to repair a job that has nothing wrong with it is how a briefing gets
 ignored.
 
 Filed as B-024. Tests: `tests/test_briefing.py`.
+
+**A page for the question people actually ask, added 2026-09-01.**
+`/remediate` answers *how do I remediate the open findings today*, and it is
+ordered by **what it costs you** rather than by severity. That inversion is the
+whole design: a critical nobody can close today belongs below a hundred
+findings that close for free.
+
+The section that makes it work is the one added last — **findings already gone,
+waiting only on a sweep.** Separating those from the open count is what stops a
+backlog looking larger than the work in it. Measured on the day: 593 open, of
+which 109 needed nothing at all, 316 could not be touched because their lanes
+were not producing scans, and 0 were auto-fixable. That leaves 168 that were
+actually work, and no surface in the platform had ever said so.
+
+`awaiting_closure` deliberately mirrors `reconcile_absences` — the same
+`CONFIRMING_STATUSES`, the same "not among the most recent runs" test, the same
+`asset_id`/`repo_full_name` join — and a test asserts the two agree on the same
+estate. A page that promised something would close on a different rule from the
+one that closes it would be worse than saying nothing.
