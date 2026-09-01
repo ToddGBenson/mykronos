@@ -26,7 +26,7 @@ roadmap closed is tracked as decisions and retros rather than phases:
 | The standard set: 15 checks per repo, icons, one-click enable/disable, coverage cross-check | **Done** — spec 10 §2.1, spec 15 §4a |
 | Concourse as the primary execution environment (spec 15/16); Actions retained for Actions-scanned repos | **Done** — uploader pinned at `v2` (D-051) |
 | Quality lanes as ScanRuns: unit, functional, QA docs (D-046); AI checks (D-047) | **Done** |
-| Network scanning (spec 14) | Built; awaiting an authorized CIDR to scan |
+| Network scanning (spec 14) | **Not started** — the authorization model and the ingest path exist; no scanner does. Nothing in the platform emits a network scan, so no CIDR would be scanned if one were authorized (spec 14 §0) |
 | DAST | Paused platform-wide until the scan has a resource budget (D-053) |
 | Harness/Findings tabs, threat intel (KEV/EPSS), exploitability in Oracle, scan-now dispatch, `ai` capability's first tool, i2i grooming, Triage-queue KEV badges / `min_epss`/`kev_only` filters (spec 17) | **Done** — no reachability engine; honestly `unknown` in Oracle, real call-graph analysis is separate work (D-057, D-058, D-059, #15) |
 | 8-tab repo page (Dashboard = capability manager/scan health/jobs, Findings, Harness = a real unit/functional/qa test runner, Threat Model, Supply chain, Insider Threat, Risk Decision, Remediation), portfolio/Findings count-mismatch fix, `triage`/Found-By filters, per-finding remediation preview + on-demand PR, SBOM download (spec 18) | **Done** — Threat Model is capability-level, not CWE-level (no `Finding` carries a structured CWE); its narrative layer is honest plumbing, no LLM wired. Harness's "run tests" reaches Concourse-scanned repos only — no GitHub Actions workflow template exists yet for unit/functional/qa (D-061, D-062, D-063) |
@@ -34,7 +34,9 @@ roadmap closed is tracked as decisions and retros rather than phases:
 Implementation decisions the specs do not settle — and the ones that became spec
 changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
 lessons worth carrying between projects are promoted to [`docs/lessons/`](docs/lessons/),
-and incident-scale days get a retro in [`docs/retros/`](docs/retros/).
+and incident-scale days get a retro in [`docs/retros/`](docs/retros/). Work that
+is known and not yet done — including gaps where a spec claims more than the code
+delivers — is [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 The shape every Concourse pipeline conforms to — eleven numbered rules, the
 failure each one prevents, and a per-capability conformance table for both
