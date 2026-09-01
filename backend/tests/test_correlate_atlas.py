@@ -108,3 +108,98 @@ class TestMultiCapabilityRequirements:
 
         assert correlate._matches(requirement, finding("x", "CVE-1", "containers"))
         assert not correlate._matches(requirement, finding("x", "CVE-1", "atlas"))
+
+
+#: Titles taken verbatim from ZAP output in this estate on 2026-09-01, not
+#: invented. The rule matched none of the 147 open DAST findings before this,
+#: while the suite passed — because every test above pairs against
+#: `"Server leaks version information via banner"`, a sentence ZAP does not
+#: produce. A rule tested only against its own vocabulary is a rule tested
+#: against nothing.
+REAL_ZAP_TITLES = {
+    "discloses_what_runs": [
+        'Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s) at GET /repos',
+    ],
+    "hardening_gap": [
+        "X-Content-Type-Options Header Missing at GET /triage",
+        "Missing Anti-clickjacking Header at GET /",
+        "Content Security Policy (CSP) Header Not Set at GET /decisions",
+        "Information Disclosure - Suspicious Comments at GET /frontend/js/dashboard",
+        "ZAP is Out of Date at GET /api/dashboard/portfolio",
+    ],
+}
+
+
+def _dast_requirement():
+    rule = next(
+        r
+        for r in correlate.BUILT_IN_RULES
+        if r.rule_id == "vulnerable-image-and-live-service"
+    )
+    return rule.requires[1]
+
+
+class TestTheRuleMatchesTheScannerActuallyRun:
+    """The vocabulary has to be the scanner's, not the spec author's.
+
+    ZAP is the only DAST scanner this platform runs. The rule asked for
+    `banner|version|fingerprint`; ZAP says "Server Leaks Information via
+    X-Powered-By". Measured on 2026-09-01: zero of 147 open DAST findings
+    matched, so the rule could not fire on the estate it was written for.
+    """
+
+    def test_it_matches_a_service_disclosing_what_it_runs(self) -> None:
+        requirement = _dast_requirement()
+
+        for title in REAL_ZAP_TITLES["discloses_what_runs"]:
+            assert correlate._matches(
+                requirement,
+                finding("d", "ZAP-10037-CWE-497", "dast", title=title, severity="low"),
+            ), f"the rule should match ZAP's own phrasing: {title!r}"
+
+    def test_it_does_not_match_a_hardening_gap(self) -> None:
+        """These are most of ZAP's output. Matching them would fire this rule
+        on every repository that serves HTTP, which is the definition of a
+        rule nobody reads.
+
+        `Information Disclosure - Suspicious Comments` is here deliberately: a
+        leaked developer comment says nothing about which component is
+        running, so pairing one with a high CVE would be a combination in name
+        only. A first pass at this fix matched it and was narrowed.
+
+        `ZAP is Out of Date` is about the scanner, not the service.
+        """
+        requirement = _dast_requirement()
+
+        for title in REAL_ZAP_TITLES["hardening_gap"]:
+            assert not correlate._matches(
+                requirement,
+                finding("d", "ZAP-10021-CWE-693", "dast", title=title, severity="low"),
+            ), f"the rule should not fire on {title!r}"
+
+    def test_a_ghsa_advisory_counts_as_a_known_exploitable_component(self) -> None:
+        """The same class of risk as a CVE, and frequently the only identifier
+        a finding carries. Matching one and not the other excluded findings
+        for the way their id happened to be issued."""
+        combinations = correlate.detect(
+            [
+                finding("c1", "GHSA-6v7p-g79w-8964", "containers", severity="high"),
+                finding(
+                    "d1",
+                    "ZAP-10037",
+                    "dast",
+                    title=REAL_ZAP_TITLES["discloses_what_runs"][0],
+                    severity="low",
+                ),
+            ]
+        )
+
+        assert [c.rule_id for c in combinations] == [
+            "vulnerable-image-and-live-service"
+        ]
+
+    def test_the_dast_half_has_no_severity_floor(self) -> None:
+        """Deliberate: a version banner is information whatever severity the
+        scanner assigns it, and ZAP rates most disclosure findings low or
+        info. A floor here would reintroduce the bug this fixes."""
+        assert _dast_requirement().min_severity is None

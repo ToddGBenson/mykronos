@@ -332,11 +332,39 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
             # dependency behind a reachable service is the same shape of risk
             # as a vulnerable image layer, and was simply never matched
             # (spec 22 §4).
+            # `GHSA-` as well as `CVE-`: a GitHub advisory is the same class
+            # of known-exploitable component and frequently the only
+            # identifier a finding carries, so matching one and not the other
+            # excluded findings for the way their id happened to be issued.
             Requirement(
-                r"CVE-", capability=("containers", "atlas"), min_severity="high"
+                r"CVE-|GHSA-",
+                capability=("containers", "atlas"),
+                min_severity="high",
             ),
+            # The vocabulary has to be the scanner's, not the spec author's.
+            # ZAP is the only DAST scanner this platform runs, and it says
+            # "Server Leaks Information via X-Powered-By" where this pattern
+            # said `banner|version|fingerprint` -- so the rule could not fire
+            # on a single finding in the estate it was written for. Measured:
+            # zero of 147 open DAST findings matched.
+            #
+            # Deliberately narrow even so, and narrowed once already. The
+            # missing-header findings that make up most of ZAP's output --
+            # anti-clickjacking, CSP, X-Content-Type-Options -- are hardening
+            # gaps rather than the service disclosing what it runs, and
+            # matching them would fire this rule on every repository serving
+            # HTTP.
+            #
+            # A first attempt also matched "information disclosure", which
+            # pulled in ZAP's "Information Disclosure - Suspicious Comments":
+            # leaked developer comments say nothing about which component is
+            # running, so pairing one with a high CVE would be a combination
+            # in name only. "Leaks Information" and "X-Powered-By" name the
+            # technology, which is the half this rule actually needs.
             Requirement(
-                r"auth|exposed|version|banner|outdated|fingerprint", capability="dast"
+                r"auth|exposed|version|banner|outdated|fingerprint"
+                r"|leaks information|x-powered-by",
+                capability="dast",
             ),
         ),
         scope="repo",

@@ -490,6 +490,39 @@ _EFFICACY_SELECT = """
 """
 
 
+def _unfixed_by_rule(catalog: Any, limit: int = 10) -> list[dict[str, Any]]:
+    """Which rules keep reaching `no_fix_available`, worst first.
+
+    `coverage` says which classes have a fixer in the abstract. This says what
+    is actually piling up without one, which is the number that tells somebody
+    whether writing a fixer would repay the effort -- 26 findings of one rule
+    is an argument, one finding of twenty-six rules is not.
+
+    Only `true_positive`: a `likely_false_positive` with no fixer does not
+    need one, it needs dispositioning (B-020).
+    """
+    if not catalog.all_files("remediation_events"):
+        return []
+    rows = catalog.query(
+        """
+        SELECT f.capability, f.rule_id, count(DISTINCT e.finding_id)
+        FROM remediation_events e
+        JOIN findings f ON f.finding_id = e.finding_id
+        WHERE e.pipeline_stage_reached = 'no_fix_available'
+          AND e.triage_classification = 'true_positive'
+          AND f.status = 'open'
+        GROUP BY 1, 2
+        ORDER BY 3 DESC
+        LIMIT ?
+        """,
+        [limit],
+    )
+    return [
+        {"capability": str(capability), "rule_id": str(rule_id), "findings": int(count)}
+        for capability, rule_id, count in rows
+    ]
+
+
 def _efficacy_rows(catalog: Any, *, key: str, join: str, filter_: str) -> list[EfficacyRowOut]:
     rows = catalog.query(_EFFICACY_SELECT.format(key=key, join=join, filter=filter_))
     return [
@@ -532,7 +565,10 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
                 "`coverage` says which finding classes have a deterministic "
                 "fixer and which do not."
             ),
-            coverage=fixers.coverage_summary(),
+            coverage={
+                **fixers.coverage_summary(),
+                "unfixed_by_rule": _unfixed_by_rule(catalog),
+            },
             measured=False,
         )
 
@@ -557,7 +593,10 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
         by_fixer=by_fixer,
         by_rule=by_rule,
         measured=measured,
-        coverage=fixers.coverage_summary(),
+        coverage={
+            **fixers.coverage_summary(),
+            "unfixed_by_rule": _unfixed_by_rule(catalog),
+        },
         note=(
             "`verified` means the finding was gone from a scan of the merge "
             "commit — the only column here that says risk was removed. "

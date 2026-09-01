@@ -1162,6 +1162,33 @@ class TestRemediationCoverageIsStated:
         assert body["coverage"]["covered"]
         assert body["coverage"]["not_covered"]
 
+    def test_coverage_names_what_is_actually_piling_up(
+        self, client, admin_auth
+    ) -> None:
+        """`covered`/`not_covered` say which classes have a fixer in the
+        abstract. `unfixed_by_rule` says what is accumulating without one,
+        which is the number that tells somebody whether writing a fixer would
+        repay the effort — 26 findings of one rule is an argument, one finding
+        of twenty-six rules is not."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert "unfixed_by_rule" in body["coverage"]
+        assert isinstance(body["coverage"]["unfixed_by_rule"], list)
+
+    def test_the_unfixable_breakdown_is_true_positives_only(
+        self, catalog, buffer, run_compaction
+    ) -> None:
+        """A `likely_false_positive` with no fixer does not need one — it
+        needs dispositioning (B-020). Counting it here would argue for writing
+        a fixer for findings that are not defects."""
+        from mykronos.api.patchwork import _unfixed_by_rule
+
+        source = inspect.getsource(_unfixed_by_rule)
+        assert "triage_classification = 'true_positive'" in source
+        assert "f.status = 'open'" in source, (
+            "a rule whose findings are all closed is not piling up"
+        )
+
     def test_coverage_is_carried_whether_or_not_anything_was_measured(
         self, client, admin_auth
     ) -> None:
@@ -1169,4 +1196,9 @@ class TestRemediationCoverageIsStated:
         when the table is empty, and it must not vanish once it fills."""
         body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
 
-        assert set(body["coverage"]) == {"covered", "not_covered", "fixer_count"}
+        assert set(body["coverage"]) == {
+            "covered",
+            "not_covered",
+            "fixer_count",
+            "unfixed_by_rule",
+        }
