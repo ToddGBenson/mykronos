@@ -103,6 +103,23 @@ def age_token(db: Database, repo: str, days: int = 91) -> None:
         token.rotate_after = utcnow() - timedelta(days=days - 90)
 
 
+class FakeConcourse:
+    """Answers only the question the rotation job asks.
+
+    Three states, because the real client has three: a pipeline exists, it
+    does not, or Concourse could not be reached. The third is why this is not
+    a bool (D-097).
+    """
+
+    def __init__(self, *, has_pipeline: bool | None) -> None:
+        self._has_pipeline = has_pipeline
+        self.asked: list[str] = []
+
+    def has_pipeline_for(self, repo_full_name: str) -> bool | None:
+        self.asked.append(repo_full_name)
+        return self._has_pipeline
+
+
 class TestRotation:
     async def test_rotates_a_due_token_and_writes_the_secret(
         self, db: Database, factory, github: FakeGitHubClient
@@ -137,6 +154,106 @@ class TestRotation:
         assert result.deferred == [REPO]
         assert result.rotated == []
         assert DEFAULT_SECRET_NAME not in github.repos[REPO].secrets
+
+    async def test_a_repo_scanned_by_both_systems_is_deferred(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """D-097, and the outage it came from. `scanned_by` holds one value,
+        so a repository migrating from Concourse to Actions declares
+        `github_actions` while a Concourse pipeline goes on reading the same
+        token from Vault. It passed D-086's guard, rotated, delivered to
+        Actions only, and broke four lanes on 2026-08-31 when the overlap
+        expired. The question is who reads the token, not what the repo
+        declares."""
+        onboard(db, scanned_by="github_actions")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(
+            db, factory, concourse=FakeConcourse(has_pipeline=True)
+        )
+
+        assert result.deferred == [REPO]
+        assert result.rotated == []
+        assert DEFAULT_SECRET_NAME not in github.repos[REPO].secrets
+
+    async def test_an_actions_only_repo_still_rotates(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """The check has to stay narrow. A repository with no Concourse
+        pipeline has one reader, the job can reach it, and deferring every
+        rotation would quietly end 90-day rotation altogether."""
+        onboard(db, scanned_by="github_actions")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(
+            db, factory, concourse=FakeConcourse(has_pipeline=False)
+        )
+
+        assert result.rotated == [REPO]
+        assert DEFAULT_SECRET_NAME in github.repos[REPO].secrets
+
+    async def test_an_unreachable_concourse_defers_rather_than_assumes(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """"Could not check" is not "nobody else reads it", and only one of
+        those is safe to rotate on. Failing open here would reproduce the
+        outage on any day Concourse happened to be down."""
+        onboard(db, scanned_by="github_actions")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(
+            db, factory, concourse=FakeConcourse(has_pipeline=None)
+        )
+
+        assert result.deferred == [REPO]
+        assert result.rotated == []
+
+    async def test_the_unsynced_sweep_cannot_rotate_a_both_systems_repo(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """The faster of the two triggers. An active token with
+        `secret_synced = 0` is swept up and rotated *again* as a resync, on
+        the job's ordinary interval rather than the 90-day clock — so a manual
+        repair that reaches Vault but not Actions would arm the recurrence by
+        itself."""
+        onboard(db, scanned_by="github_actions")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)  # never marked synced
+        # Deliberately not aged: this is the unsynced path, not the due path.
+
+        result = await rotate_ingestion_tokens(
+            db, factory, concourse=FakeConcourse(has_pipeline=True)
+        )
+
+        assert result.deferred == [REPO]
+        assert result.rotated == []
+        assert result.resynced == []
+
+    async def test_without_a_concourse_client_the_old_behaviour_stands(
+        self, db: Database, factory, github: FakeGitHubClient
+    ) -> None:
+        """The parameter is optional so existing callers keep working. It is
+        wired at both real call sites; this pins the default so a caller that
+        forgets is a rotation that happens, not a silent deferral of every
+        repository forever."""
+        onboard(db, scanned_by="github_actions")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        result = await rotate_ingestion_tokens(db, factory)
+
+        assert result.rotated == [REPO]
 
     async def test_a_deferred_repo_keeps_a_working_token(
         self, db: Database, factory
