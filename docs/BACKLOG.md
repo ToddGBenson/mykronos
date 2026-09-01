@@ -45,59 +45,19 @@ already shipped.
 
 ## Open
 
-Three. Two from the 2026-09-01 monitoring sweep, and B-024 from
-`mykronos briefing` on the day the briefing was written. Everything else from
-that sweep, and all three gaps that writing
-[`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed.
-Every one was reproduced against the live system before it was written; the
-evidence is in each entry rather than a link to a dashboard that will have
-moved on.
+Two, and **both need the operator rather than code.** Everything else from the
+2026-09-01 monitoring sweep, and all three gaps that writing
+[`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed. Every one
+was reproduced against the live system before it was written; the evidence is
+in each entry rather than a link to a dashboard that will have moved on.
 
-B-016 and B-018 need somebody other than me: a credential this session is not
-permitted to write, and a decision that is the operator's. B-024 is workable
-and is the largest single thing holding the estate's findings open.
+- **B-024** is the largest single thing holding the estate's findings open —
+  316 of them — and the next step is reading a billing page this session
+  cannot reach.
+- **B-018** is a decision. Both answers are defensible and only the operator
+  knows which is true; writing code before that choice would be guessing.
 
-### B-025 — The API serves no security headers — **done**
-
-**Size:** S **Verified:** 2026-09-01 **Closed:** 2026-09-01
-
-Found by repairing B-023, and it corrects something I had asserted.
-
-I said the DAST header findings were stale — that the headers were fixed and
-the lane was the only problem. Half right. `next.config.ts` does set them and
-the **frontend** serves them on every route including its 404. But the first
-successful DAST run after the lane was repaired returned 86 findings, of which
-69 reproduce, and their paths are `/healthz` and `/api/dashboard/trends`.
-Those are FastAPI, not Next.js.
-
-The functional suite proxies backend traffic through ZAP, so ZAP's site tree
-covers the API — and `curl -D- http://localhost:8100/healthz` returns a bare
-`200 OK` with no security headers at all. The backend never had them. It was
-invisible because the lane had been failing for a fortnight, which is B-023's
-whole point arriving from the other direction.
-
-**An API's headers are not a page's headers.** This service returns JSON to
-programs: no markup to sandbox, no styles to allow, no fonts to fetch. Its CSP
-is `default-src 'none'`, stricter than the frontend's — permitting `'self'`
-scripts on an endpoint that never serves a script is permitting a script to
-run. `Strict-Transport-Security` is deliberately not set, because TLS
-terminates at the proxy in front and serving it here over plain HTTP on the
-LAN would pin a browser to a scheme this port does not speak.
-
-Two details that would have been bugs:
-
-- The middleware is added **last**, so it is outermost. `add_middleware`
-  inserts at the front of the stack, so an earlier call would have put it
-  *behind* the perimeter gate — and the gate's 401, the 404s and the 405s are
-  exactly the responses ZAP counted.
-- `/docs` and `/redoc` are exempted. `default-src 'none'` renders both blank;
-  they load a script and a stylesheet from jsdelivr. Two exempted paths beats
-  shipping a policy that breaks the docs, and beats weakening the policy
-  everywhere to accommodate them.
-
-Closed by `mykronos/headers.py`; tests in `tests/test_headers.py`.
-
----
+Nothing here is blocked on engineering.
 
 ### B-024 — TheHub stopped scanning five days ago and nothing said so
 
@@ -177,51 +137,6 @@ whose last run succeeded looks healthy, and there is no error to notice.
 
 ---
 
-### B-016 — personal-soc files nothing, and its token is missing
-
-**Size:** S **State:** open — blocked on a credential write **Verified:** 2026-09-01
-
-The applied `personal-soc` pipeline carries `MYKRONOS_TOKEN: ""`.
-`PERSONAL_SOC_INGESTION_TOKEN` is absent from `deploy/concourse/.env`, and the
-repository's newest scan run is **2026-08-12**.
-
-**A correction to this entry as first written.** It claimed
-`set-personal-soc-pipeline.ps1` should refuse to apply with an empty token. It
-should not: the script's own comment says empty is allowed on purpose — *"the
-scan still runs and still gates, and says loudly in the build log that nothing
-was filed"* — and names the command to mint one. That is a deliberate decision,
-and the criterion asking to reverse it was written before reading the comment
-beside the line it was about.
-
-**What is actually wrong is narrower**: the token is missing when it need not
-be. The repository has an active token; its plaintext survives only inside the
-GitHub Actions secret, which is write-only, so restoring the Concourse copy
-means rotating once and delivering to both readers in the same run — the rule
-D-097 exists to enforce.
-
-**And the platform did surface it.** The portfolio flags personal-soc
-`is_stale`, and `repos_with_stale_scans: 1` is on the summary. The original
-claim that nothing outside a build log says this repository stopped reporting
-was wrong. What is not said is *why* it went stale, which is a smaller gap than
-the entry first described.
-
-**Blocked, deliberately.** The repair writes a credential to
-`deploy/concourse/.env`, which this session is not permitted to do. It was not
-run partially: rotating without delivering everywhere is precisely the mistake
-that caused D-097 three times over, and a half-finished rotation here would
-break the GitHub Actions lane too.
-
-**Acceptance criteria**
-
-- The token is rotated once and delivered to both readers — the Actions secret
-  and `deploy/concourse/.env` — then the pipeline re-applied.
-- `secret_synced` is set afterwards, so the unsynced sweep cannot rotate it
-  again (D-097).
-- personal-soc files scan results again and stops reading `is_stale`.
-- **Not** a change to the script's optional handling. That is deliberate.
-
----
-
 ### B-018 — `cloud` is enabled on a repository and its lane cannot run
 
 **Size:** S **State:** open **Verified:** 2026-09-01
@@ -277,13 +192,13 @@ into entries here:
 
 ## Closed
 
-Fifteen entries, over two days.
+Seventeen entries, over two days.
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
 working tree before it was touched and every one still reproduced.
 
-**2026-09-01 — seven.** B-013 from the outage that day, then B-008 and B-010
+**2026-09-01 — nine.** B-013 from the outage that day, then B-008 and B-010
 rescoped from the import, then B-011 and B-012, which had been iceboxed and were
 built rather than left waiting. B-012's trigger turned out to have fired
 already, which is the argument for re-reading an icebox rather than trusting it
@@ -293,6 +208,91 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-016 — personal-soc filed nothing because its token was empty — **done**
+
+**Size:** S **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+The applied `personal-soc` pipeline carried `MYKRONOS_TOKEN: ""` and the
+repository's newest scan run was **2026-08-12**.
+
+**A correction to this entry as first written.** It claimed
+`set-personal-soc-pipeline.ps1` should refuse to apply with an empty token. It
+should not: the script's own comment says empty is allowed on purpose — *"the
+scan still runs and still gates, and says loudly in the build log that nothing
+was filed"* — and names the command to mint one. The criterion asking to
+reverse that was written before reading the comment beside the line it was
+about, and the deliberate behaviour is unchanged.
+
+**And the platform did surface it.** The portfolio flagged personal-soc
+`is_stale`. What it did not say was *why*, which is a smaller gap than the
+entry first described.
+
+The token's plaintext survived only inside the write-only GitHub Actions
+secret, so restoring the Concourse copy meant rotating — and rotating is
+exactly the operation D-097 exists to constrain. personal-soc has **two**
+readers, so the automatic rotation job correctly defers it forever rather than
+half-fixing it, which is why this needed a deliberate one-shot repair.
+
+Closed by `deploy/concourse/repair-personal-soc-token.ps1`, which does it in
+the only safe order: **prove every reader is writable, then rotate, then
+deliver to both, then mark synced, then re-apply.** A check that runs after the
+rotation is not a check, it is a post-mortem. And because the rotation precedes
+the writes, a delivery failure leaves the previous token valid for its overlap
+window — recoverable by re-running, rather than an outage.
+
+**Verified end to end:** the delivered token authenticates
+(`/api/ingest/health` → 200), the applied pipeline carries a 43-character
+`MYKRONOS_TOKEN` instead of `""`, and `personal-soc/secrets` ran and uploaded.
+Newest scan run is now 2026-09-01, not 2026-08-12.
+
+One bug found by running it: the closing hint used `\"` to escape a quote.
+PowerShell escapes with a backtick, so the string terminated early and the
+remainder parsed as commands. Fixed.
+
+---
+
+### B-025 — The API serves no security headers — **done**
+
+**Size:** S **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+Found by repairing B-023, and it corrects something I had asserted.
+
+I said the DAST header findings were stale — that the headers were fixed and
+the lane was the only problem. Half right. `next.config.ts` does set them and
+the **frontend** serves them on every route including its 404. But the first
+successful DAST run after the lane was repaired returned 86 findings, of which
+69 reproduce, and their paths are `/healthz` and `/api/dashboard/trends`.
+Those are FastAPI, not Next.js.
+
+The functional suite proxies backend traffic through ZAP, so ZAP's site tree
+covers the API — and `curl -D- http://localhost:8100/healthz` returns a bare
+`200 OK` with no security headers at all. The backend never had them. It was
+invisible because the lane had been failing for a fortnight, which is B-023's
+whole point arriving from the other direction.
+
+**An API's headers are not a page's headers.** This service returns JSON to
+programs: no markup to sandbox, no styles to allow, no fonts to fetch. Its CSP
+is `default-src 'none'`, stricter than the frontend's — permitting `'self'`
+scripts on an endpoint that never serves a script is permitting a script to
+run. `Strict-Transport-Security` is deliberately not set, because TLS
+terminates at the proxy in front and serving it here over plain HTTP on the
+LAN would pin a browser to a scheme this port does not speak.
+
+Two details that would have been bugs:
+
+- The middleware is added **last**, so it is outermost. `add_middleware`
+  inserts at the front of the stack, so an earlier call would have put it
+  *behind* the perimeter gate — and the gate's 401, the 404s and the 405s are
+  exactly the responses ZAP counted.
+- `/docs` and `/redoc` are exempted. `default-src 'none'` renders both blank;
+  they load a script and a stylesheet from jsdelivr. Two exempted paths beats
+  shipping a policy that breaks the docs, and beats weakening the policy
+  everywhere to accommodate them.
+
+Closed by `mykronos/headers.py`; tests in `tests/test_headers.py`.
+
+---
 
 ### B-023 — 115 findings were fixed and could never close — **done** (D-098)
 
