@@ -60,7 +60,7 @@ and is the largest single thing holding the estate's findings open.
 ### B-024 — TheHub stopped scanning five days ago and nothing said so
 
 **Size:** M **State:** open **Verified:** 2026-09-01
-**Specs:** [05 §5](../specs/05-data-lake.md), [15 §4a](../specs/15-portfolio.md)
+**Specs:** [05 §5](../specs/05-datalake.md), [17 §2.5](../specs/17-harness-threat-intel-and-i2i.md)
 
 Found by `mykronos briefing` on the day it was written, which is the argument
 for the briefing.
