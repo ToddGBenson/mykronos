@@ -100,6 +100,7 @@ async def rotate_ingestion_tokens(
     *,
     secret_name: str = DEFAULT_SECRET_NAME,
     overlap_hours: int = 24,
+    concourse: ConcourseClient | None = None,
 ) -> RotationResult:
     """Rotate tokens past their 90-day mark, and repair any that never synced.
 
@@ -158,6 +159,38 @@ async def rotate_ingestion_tokens(
             )
             result.deferred.append(repo)
             continue
+
+        # `scanned_by` records intent and holds one value, so it cannot
+        # describe a repository scanned by both systems - and this repository
+        # is exactly that during the spec 32 migration: 14 Actions workflows
+        # active and a Concourse pipeline reading the same token from Vault.
+        # It declared `github_actions`, passed the check above, and every
+        # rotation desynchronised Vault anyway. That is D-086's failure in the
+        # one shape D-086 did not cover, and it broke four lanes on
+        # 2026-08-31 (D-097).
+        #
+        # So the question is not what the repository declares but who reads
+        # the token. A Concourse pipeline is a second reader this job cannot
+        # write to, and `None` - Concourse unreachable or not configured - is
+        # deferred too: "could not check" is not "nobody else reads it", and
+        # only one of those is safe to rotate on.
+        if concourse is not None:
+            has_pipeline = concourse.has_pipeline_for(repo)
+            if has_pipeline is not False:
+                logger.warning(
+                    "%s is due for token rotation and %s. This job can only "
+                    "write a GitHub Actions secret, so rotating would leave "
+                    "Vault serving the old value until a human runs "
+                    "set-pipeline. Rotate it by hand instead.",
+                    repo,
+                    (
+                        "also has a Concourse pipeline reading its token"
+                        if has_pipeline
+                        else "Concourse could not be reached to rule one out"
+                    ),
+                )
+                result.deferred.append(repo)
+                continue
 
         github = github_factory.for_installation(onboarding.github_installation_id)
 

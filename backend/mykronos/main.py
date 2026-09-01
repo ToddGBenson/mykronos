@@ -23,7 +23,7 @@ from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
-from mykronos.ci import StatusCache
+from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.digest import send_all as send_digests
@@ -215,6 +215,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db,
                 app.state.github_factory,
                 overlap_hours=settings.token_overlap_hours,
+                # Without this the job cannot tell whether a repository has a
+                # second reader it is unable to deliver to (D-097).
+                concourse=ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
             )
 
         async def _installations() -> None:

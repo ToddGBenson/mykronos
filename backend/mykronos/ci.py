@@ -272,6 +272,27 @@ class ConcourseClient:
             return None
         return [str(p["name"]) for p in payload if isinstance(p, dict) and "name" in p]
 
+    def has_pipeline_for(self, repo_full_name: str) -> bool | None:
+        """Is there a Concourse pipeline for this repository?
+
+        Three answers, and the third is the point: `True`, `False`, or `None`
+        for "could not be established" — Concourse unreachable, or not
+        configured for this deployment at all. A caller deciding whether it is
+        safe to rotate a credential has to be able to tell "no other reader"
+        from "could not check", because those warrant opposite actions
+        (D-097).
+
+        Distinct from `status_for`, which asks how the pipeline is *doing*.
+        This asks only whether it exists, which is a question about who reads
+        the repository's ingestion token.
+        """
+        if not self.configured:
+            return None
+        available = self.pipelines()
+        if available is None:
+            return None
+        return pipeline_name_for(repo_full_name) in available
+
     def status_for(self, repo_full_name: str) -> PipelineStatus:
         """Pipeline state for one repository. Never raises."""
         if not self.configured:

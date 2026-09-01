@@ -601,3 +601,50 @@ class TestTriggerJob:
         client.trigger_job("thehub", "sast", token="secret-token")
 
         assert seen["headers"] == {"Authorization": "Bearer secret-token"}
+
+
+class TestWhoReadsTheToken:
+    """`has_pipeline_for` exists for one caller: the rotation job deciding
+    whether it can deliver a new credential everywhere it is read (D-097).
+
+    That makes the three-state answer load-bearing rather than stylistic. A
+    bool would collapse "no pipeline" into "could not ask", and the job must
+    treat those oppositely — rotate on the first, defer on the second.
+    """
+
+    def test_a_pipeline_that_exists_is_true(self, concourse) -> None:
+        client, routes = concourse
+        routes["/api/v1/pipelines"] = [{"name": "mykronos"}, {"name": "thehub"}]
+
+        assert client.has_pipeline_for("ToddGBenson/mykronos") is True
+
+    def test_no_matching_pipeline_is_false(self, concourse) -> None:
+        client, routes = concourse
+        routes["/api/v1/pipelines"] = [{"name": "thehub"}]
+
+        assert client.has_pipeline_for("ToddGBenson/mykronos") is False
+
+    def test_an_unreachable_concourse_is_none_not_false(self, concourse) -> None:
+        """The distinction the rotation job rests on. Returning False here
+        would tell it "nobody else reads this token" on any day Concourse
+        happened to be down, which is how the credential desynchronised in the
+        first place."""
+        client, routes = concourse
+        routes["/api/v1/pipelines"] = RuntimeError("connection refused")
+
+        assert client.has_pipeline_for("ToddGBenson/mykronos") is None
+
+    def test_an_unconfigured_concourse_is_none(self) -> None:
+        """A deployment with no Concourse at all cannot rule out a reader it
+        has no way to enumerate."""
+        assert ConcourseClient("").has_pipeline_for("ToddGBenson/mykronos") is None
+
+    def test_it_matches_on_the_same_name_status_for_uses(self, concourse) -> None:
+        """Both derive the pipeline from `pipeline_name_for`. If they ever
+        disagreed, one of them would be answering about a different pipeline
+        than the operator sees on the repository page."""
+        client, routes = concourse
+        routes["/api/v1/pipelines"] = [{"name": "personal-soc"}]
+
+        assert client.has_pipeline_for("ToddGBenson/personal-soc") is True
+        assert client.has_pipeline_for("ToddGBenson/Personal-SOC") is True

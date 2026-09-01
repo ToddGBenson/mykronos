@@ -403,7 +403,19 @@ def main(argv: list[str] | None = None) -> int:
             factory = _github_factory(settings)
             if args.command == "rotate-due":
                 rotation = asyncio.run(
-                    rotate_ingestion_tokens(db, factory, overlap_hours=settings.token_overlap_hours)
+                    rotate_ingestion_tokens(
+                        db,
+                        factory,
+                        overlap_hours=settings.token_overlap_hours,
+                        # Same reader check the scheduled job makes (D-097):
+                        # a hand-run rotation must not desynchronise Vault
+                        # either.
+                        concourse=ConcourseClient(
+                            settings.concourse_url,
+                            team=settings.concourse_team,
+                            external_url=settings.concourse_external_url,
+                        ),
+                    )
                 )
                 print(f"Token rotation: {rotation.summary()}")
                 for repo, reason in rotation.failed:

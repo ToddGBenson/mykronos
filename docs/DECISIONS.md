@@ -3999,3 +3999,70 @@ this is a named exception rather than a hole in `extra="forbid"`.
 Regression tests: `tests/test_patchwork.py::TestTheHardConstraint::test_no_fix_generator_setting_exists_anywhere`,
 `::test_a_config_still_carrying_the_withdrawn_key_can_be_saved`,
 `::test_an_unknown_key_is_still_refused`.
+
+---
+
+## D-097 — Rotate only when the job can reach every reader, not when one field says so
+
+**Status:** Decided and shipped
+**Spec:** [15 §7](../specs/15-concourse-pipeline.md), supersedes nothing — extends [D-086](#d-086--rotation-wrote-the-new-token-where-nothing-reads-it-and-reported-green)
+**Trigger:** four lanes down on 2026-08-31
+
+`rotate_ingestion_tokens` now also asks Concourse whether a pipeline exists for
+the repository, and defers when one does — or when the answer cannot be
+established.
+
+**Why D-086 was not enough.** Its guard is `scanned_by != "github_actions"`.
+`scanned_by` holds one value and, by its own docstring, "records intent, not
+coverage". A repository migrating from Concourse to Actions under spec 32 is
+scanned by *both*: `ToddGBenson/mykronos` declares `github_actions`, has 14
+active Actions workflows, and has a Concourse pipeline reading the same
+ingestion token from Vault.
+
+So it passed D-086's check. A rotation on 2026-08-30 issued a new token, wrote
+it to the Actions secret, marked the repo synced and reported green — while
+Vault kept the old value. When the 24-hour overlap expired, `unit`,
+`lint-and-types`, `qa-spec-links` and `frontend` all began failing on the
+ingest preflight with a 401, each inside two minutes. This is D-086's own
+failure mode in the one shape D-086 did not cover, which is the third time a
+lesson has been applied to one lane and not the other (D-051, D-083, D-086).
+
+**The question is who reads the token, not what the repository declares.** The
+job's only delivery path is a GitHub Actions secret, so it may rotate only when
+that reaches everybody. A Concourse pipeline is a second reader it cannot write
+to. `ConcourseClient.has_pipeline_for` answers from the server rather than from
+a declaration, so a repository cannot be wrong about itself.
+
+**Three answers, and the third is the point.** `True`, `False`, or `None` for
+"could not be established" — Concourse unreachable, or not configured. `None`
+defers. Failing open would tell the job "nobody else reads this" on any day
+Concourse happened to be down, which is exactly how the credential
+desynchronised; and D-086's reasoning applies unchanged — an un-rotated token
+keeps working, a rotated-and-undelivered one breaks the repository when the
+overlap ends.
+
+**What this does not do.** It still cannot deliver to Vault. Concourse-scanned
+repositories still do not rotate automatically, and D-086's note that this is a
+real regression against a 90-day rotation stands. This decision makes the
+deferral *correct*, not unnecessary. The actual fix remains a Vault client in
+the backend, which spec 15 §7 treats as a boundary worth arguing about rather
+than crossing quietly.
+
+**A second trigger, faster than the 90-day clock.** An active token with
+`secret_synced = 0` is picked up by the unsynced sweep and rotated *again* as a
+resync, on the job's ordinary interval. A manual repair that delivers to Vault
+and `.env` but not to Actions leaves precisely that state, so the repair arms
+the recurrence unless the flag is set. The new guard covers that path too.
+
+**What the tests were doing, again.** D-086 recorded that all four rotation
+tests asserted against a configuration this estate does not run. The equivalent
+gap here was that none of them described a repository scanned by both systems —
+the only configuration in which the bug appears. There is now a test for it,
+and one asserting an Actions-only repository still rotates, so the guard cannot
+quietly end rotation altogether.
+
+Regression tests: `tests/test_jobs.py::TestRotation::test_a_repo_scanned_by_both_systems_is_deferred`,
+`::test_an_actions_only_repo_still_rotates`,
+`::test_an_unreachable_concourse_defers_rather_than_assumes`,
+`::test_the_unsynced_sweep_cannot_rotate_a_both_systems_repo`,
+`tests/test_ci.py::TestWhoReadsTheToken`.
