@@ -4072,6 +4072,29 @@ keel for an unrelated reason. Repaired by rotating and delivering to *both*
 readers in one operation, which is the practice this decision exists to make
 the job follow.
 
+**A fourth instance, found 2026-09-01 — and the guard was a day too late.**
+`ToddGBenson/TheHub` rotated on 2026-08-31. The GitHub Actions secret was
+updated and the Vault copy Concourse resolves `((thehub-ingestion-token))` from
+was not. TheHub is `scanned_by=concourse`, so the only reader that mattered was
+the broken one: every Concourse job failed its preflight on a bare 401, nothing
+scanned after 2026-08-27, and **316 findings froze open** because closure needs
+two consecutive successful scans. The guard above was written on 2026-09-01,
+one day after the rotation it would have stopped.
+
+It also cost a wrong diagnosis worth recording. TheHub is private and had a
+GitHub Actions run queued for **336 hours**, which is the exact signature of an
+exhausted Actions-minutes quota — so that is what this was reported as, and the
+operator was asked to check a billing page. The evidence was real and the
+conclusion did not follow: Actions was never TheHub's scanning path. *Which
+system reads the token* was the question in the first instance and it was still
+the question in the fourth.
+
+So the reader map is now written down rather than inferred.
+`deploy/concourse/repair-ingestion-token.ps1` carries a `$READERS` table naming
+every reader of every repository's token — Actions secret, Vault path, `.env`
+key — and refuses to rotate a repository that is not in it. Being implicit is
+what broke four lanes; a script that rotates blind would make a fifth.
+
 Regression tests: `tests/test_jobs.py::TestRotation::test_a_repo_scanned_by_both_systems_is_deferred`,
 `::test_an_actions_only_repo_still_rotates`,
 `::test_an_unreachable_concourse_defers_rather_than_assumes`,

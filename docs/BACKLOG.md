@@ -45,97 +45,18 @@ already shipped.
 
 ## Open
 
-Two, and **both need the operator rather than code.** Everything else from the
+One, and it needs the operator rather than code. Everything else from the
 2026-09-01 monitoring sweep, and all three gaps that writing
 [`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed. Every one
 was reproduced against the live system before it was written; the evidence is
 in each entry rather than a link to a dashboard that will have moved on.
 
-- **B-024** is the largest single thing holding the estate's findings open —
-  316 of them — and the next step is reading a billing page this session
-  cannot reach.
-- **B-018** is a decision. Both answers are defensible and only the operator
-  knows which is true; writing code before that choice would be guessing.
-
-Nothing here is blocked on engineering.
-
-### B-024 — TheHub stopped scanning five days ago and nothing said so
-
-**Size:** M **State:** open **Verified:** 2026-09-01
-**Specs:** [05 §5](../specs/05-datalake.md), [17 §2.5](../specs/17-harness-threat-intel-and-i2i.md)
-
-Found by `mykronos briefing` on the day it was written, which is the argument
-for the briefing.
-
-**No Mykronos scan has run against `ToddGBenson/TheHub` since 2026-08-27.**
-Not a failure — a silence. Every one of its lanes succeeded and then simply
-never ran again. `gh run list --repo ToddGBenson/TheHub` shows nothing but
-Dependabot for five days.
-
-The consequence is that **316 open findings cannot close**: 213 containers, 69
-sast, 32 dast, 2 secrets. `reconcile_absences` needs two consecutive successful
-scans to observe an absence (spec 05 §5), and there are no scans. Whatever has
-been fixed in TheHub since 2026-08-27 is still recorded as open and will stay
-that way.
-
-Together with mykronos's DAST lane (B-023), **431 of 475 open findings across
-the estate — 91% — are currently unable to close.** That number is the reason
-this is filed at M rather than S.
-
-Two things are known and one is not:
-
-- The workflows exist and are `active`: `mykronos-sast.yml`,
-  `mykronos-secrets.yml`, `mykronos-containers.yml`, `mykronos-atlas.yml`,
-  `mykronos-aegis.yml`.
-- Their last actual runs were 2026-08-14 and **failed in five seconds** with
-  no step logs recorded — a job that did not start rather than a scan that
-  went wrong. The 08-15 to 08-27 scan_runs came from Concourse, which was
-  retired for this repo (see the 2026-08-29 retro).
-- Why they fail in five seconds is not known and the logs have expired.
-
-**A dispatched run does not fail. It never starts.** `workflow_dispatch` on
-`mykronos-secrets.yml` (run 33535920294, 2026-09-01 17:07 UTC) sat `queued` for
-over fifteen minutes and had still not been assigned a runner. The workflow
-asks for `ubuntu-latest` and the repo has no self-hosted runners, so this is
-not a missing label.
-
-The difference between TheHub and the repo that scans fine:
-
-| | mykronos | TheHub |
-|---|---|---|
-| visibility | public | **private** |
-| Actions | run normally | queue indefinitely |
-
-A private repository draws GitHub-hosted minutes from the account quota; a
-public one does not. An exhausted quota queues runs rather than failing them,
-which is the symptom. **This is a hypothesis, not a finding** — confirming it
-needs the billing page, which this session cannot read (`gh api
-users/ToddGBenson/settings/billing/actions` returns 404 without the `user`
-scope, and refreshing the token is the operator's call).
-
-Check that first. If it is right, the fix is a billing decision rather than
-anything in this repository, and the 2026-08-14 five-second failures are a
-separate older problem that also needs a look. If it is wrong, D-097 — a token
-delivered to one reader and not another — is the next thing to rule out.
-
-**Acceptance criteria**
-
-- A Mykronos scan runs successfully against TheHub.
-- The reason runs queue without starting is confirmed rather than assumed,
-  and recorded. If it is Actions minutes, say so — that is an operator
-  decision and the platform should stop implying it is a code defect.
-- The cause of the separate 2026-08-14 five-second failure is recorded, not
-  just cleared by a later green run.
-- If it is a token, D-097's guard is checked against this case — a third
-  instance of the same bug would mean the guard does not cover it.
-- The 316 findings either close or are shown to be genuinely still open. Both
-  are acceptable outcomes; the present state, where nobody can tell, is not.
-
-**Provenance:** `mykronos briefing`, 2026-09-01. Silent-lane detection exists
-because this was invisible to a check that only reads `scan_status`: a lane
-whose last run succeeded looks healthy, and there is no error to notice.
-
----
+**B-018** is a decision, not a defect. Both answers are defensible and only the
+operator knows which is true — whether the Azure principal was lost with the
+rest of `.env` on 2026-08-23 or deliberately never set — so writing code before
+that choice would be guessing. It was deferred on 2026-09-01 with the capability
+left enabled and inert, which this entry itself calls the one indefensible
+state; that is a deliberate hold, not an oversight.
 
 ### B-018 — `cloud` is enabled on a repository and its lane cannot run
 
@@ -192,13 +113,13 @@ into entries here:
 
 ## Closed
 
-Eighteen entries, over two days.
+Nineteen entries, over two days.
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
 working tree before it was touched and every one still reproduced.
 
-**2026-09-01 — ten.** B-013 from the outage that day, then B-008 and B-010
+**2026-09-01 — eleven.** B-013 from the outage that day, then B-008 and B-010
 rescoped from the import, then B-011 and B-012, which had been iceboxed and were
 built rather than left waiting. B-012's trigger turned out to have fired
 already, which is the argument for re-reading an icebox rather than trusting it
@@ -208,6 +129,59 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-024 — TheHub stopped scanning, and it was not the billing — **done**
+
+**Size:** M **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+No Mykronos scan ran against `ToddGBenson/TheHub` between 2026-08-27 and
+2026-09-01, freezing **316 open findings**: a finding closes only after two
+consecutive successful scans (spec 05 §5), and there were none.
+
+**The first diagnosis was wrong and is worth keeping.** A `workflow_dispatch`
+sat `queued` for 2h47m with `updatedAt` never moving off `createdAt`, and a
+second run had been queued since 2026-08-18 — **336 hours**. TheHub is private,
+`mykronos` is public and had zero queued runs, and an exhausted Actions-minutes
+quota queues rather than fails. The evidence was real and the conclusion did
+not follow: **TheHub is `scanned_by=concourse`.** GitHub Actions was never its
+scanning path, so its quota could not be why scanning stopped. The queued runs
+are a genuine second problem and not this one.
+
+**The actual cause was D-097, a fourth time.** TheHub's ingestion token rotated
+on 2026-08-31. The GitHub Actions secret was updated; the Vault copy Concourse
+resolves `((thehub-ingestion-token))` from was left behind. Every Concourse job
+then failed its preflight on a bare `curl: (22) ... 401` — proved by reading
+the Vault value and putting it against `/api/ingest/health` directly. The guard
+that prevents exactly this was written on 2026-09-01, one day too late for that
+rotation.
+
+Closed by `deploy/concourse/repair-ingestion-token.ps1`, which generalises
+B-016's script: a `$READERS` table naming every reader of every repository's
+token — Actions secret, Vault path, `.env` key — and the same order, **prove
+every reader writable, then rotate, then deliver to all, then mark synced, then
+re-apply.** The table is the point. Which places hold a copy was implicit, and
+being implicit is what broke four lanes.
+
+The Vault write pipes with `printf %s` and no trailing newline: a CRLF inside
+an `Authorization: Bearer` header is a 401 nothing in the logs explains. It is
+read back and compared byte-for-byte afterwards.
+
+**Measured after the repair:**
+
+| | before | after |
+|---|---|---|
+| findings blocked by a stalled lane | 316 | **32** |
+| open findings | 596 | **472** |
+
+Five TheHub lanes ran green (containers, sast, secrets, iac, dependencies) and
+the closure sweep took 124. The 32 that remain are TheHub `dast`, whose
+`functional-dast` job is paused under D-053.
+
+**Not fixed here:** the queued Actions runs. TheHub does not need Actions to
+scan, so this is no longer urgent, but a run queued for two weeks is still
+worth someone reading the billing page for.
+
+---
 
 ### B-026 — Remediation advice was invented here, and was wrong — **done**
 
