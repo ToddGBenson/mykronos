@@ -53,72 +53,84 @@ moved on.
 Ordered by consequence. What remains is one credential, one set of failing
 jobs, and one decision that is the operator's rather than mine.
 
-### B-016 — personal-soc has been scanning and filing nothing since 2026-08-12
+### B-016 — personal-soc files nothing, and its token is missing
 
-**Size:** S **State:** open **Verified:** 2026-09-01
-**Specs:** [15 §6](../specs/15-concourse-pipeline.md)
+**Size:** S **State:** open — blocked on a credential write **Verified:** 2026-09-01
 
-The applied `personal-soc` pipeline carries, verbatim:
+The applied `personal-soc` pipeline carries `MYKRONOS_TOKEN: ""`.
+`PERSONAL_SOC_INGESTION_TOKEN` is absent from `deploy/concourse/.env`, and the
+repository's newest scan run is **2026-08-12**.
 
-```yaml
-params:
-  MYKRONOS_TOKEN: ""
-```
+**A correction to this entry as first written.** It claimed
+`set-personal-soc-pipeline.ps1` should refuse to apply with an empty token. It
+should not: the script's own comment says empty is allowed on purpose — *"the
+scan still runs and still gates, and says loudly in the build log that nothing
+was filed"* — and names the command to mint one. That is a deliberate decision,
+and the criterion asking to reverse it was written before reading the comment
+beside the line it was about.
 
-`PERSONAL_SOC_INGESTION_TOKEN` is **absent from `deploy/concourse/.env`**, and
-`set-personal-soc-pipeline.ps1:187` reads it with `Read-EnvValueOptional` — so
-a missing credential applies cleanly as an empty string. The `.env` files were
-rebuilt from running containers on 2026-08-23 after being lost; this key was not
-among what came back.
+**What is actually wrong is narrower**: the token is missing when it need not
+be. The repository has an active token; its plaintext survives only inside the
+GitHub Actions secret, which is write-only, so restoring the Concourse copy
+means rotating once and delivering to both readers in the same run — the rule
+D-097 exists to enforce.
 
-The lake agrees: personal-soc's newest scan run is **2026-08-12**, twenty days
-before this was measured, and the portfolio flags it `is_stale`.
+**And the platform did surface it.** The portfolio flags personal-soc
+`is_stale`, and `repos_with_stale_scans: 1` is on the summary. The original
+claim that nothing outside a build log says this repository stopped reporting
+was wrong. What is not said is *why* it went stale, which is a smaller gap than
+the entry first described.
 
-**The pipeline is honest about it and nobody is listening.** Each task checks
-for an empty token and prints `NO MYKRONOS TOKEN — RESULTS WERE NOT FILED`,
-with a comment saying that beats a green tick implying otherwise. It is right,
-and it is buried in a build log: the job still goes green, so nothing on any
-dashboard says this repository stopped reporting.
-
-**Acceptance criteria**
-
-- The token is restored and the pipeline re-applied, so results file again.
-- `set-personal-soc-pipeline.ps1` refuses to apply with an empty ingestion
-  token rather than treating it as optional — an unset credential is a
-  configuration error, not a setting.
-- A repository that stops reporting is visible without reading a build log.
-  The reporting cross-check (spec 15 §4a) is the existing home for this.
-- Note for whoever takes this: the same rotation family that caused D-097 also
-  touched this token (`rotation-resync`, 2026-08-21). Deliver to every reader
-  in one operation.
-
----
-
-### B-017 — Three personal-soc jobs have been failing for a week
-
-**Size:** M **State:** open **Verified:** 2026-09-01
-
-`netassess-ingest`, `netassess-freshness` and `package` are all red and not
-paused. `netassess-ingest` has failed since 2026-08-24, `package` since
-2026-08-31 — its last success was 2026-08-12, the same day the repository
-stopped filing results.
-
-Not yet root-caused. `netassess-ingest`'s log reaches the failure-notify hook
-with almost no task output before it, which points at an early exit rather than
-a check that ran and reported. Whether these share a cause with B-016's empty
-token is exactly the question to answer first — the dates line up and the same
-pipeline holds both.
+**Blocked, deliberately.** The repair writes a credential to
+`deploy/concourse/.env`, which this session is not permitted to do. It was not
+run partially: rotating without delivering everywhere is precisely the mistake
+that caused D-097 three times over, and a half-finished rotation here would
+break the GitHub Actions lane too.
 
 **Acceptance criteria**
 
-- Each of the three has a named cause, or is retired if the job no longer has a
-  job to do.
-- Whether B-016 is the cause is answered explicitly rather than assumed either
-  way.
-- `personal-soc` reaches a state where every unpaused job is green or is
-  deliberately paused with the reason recorded, as `demo-and-dast` is.
+- The token is rotated once and delivered to both readers — the Actions secret
+  and `deploy/concourse/.env` — then the pipeline re-applied.
+- `secret_synced` is set afterwards, so the unsynced sweep cannot rotate it
+  again (D-097).
+- personal-soc files scan results again and stops reading `is_stale`.
+- **Not** a change to the script's optional handling. That is deliberate.
 
 ---
+
+### B-017 — `netassess-ingest` fails before it produces any output
+
+**Size:** S **State:** open **Verified:** 2026-09-01 (rescoped — two of three resolved)
+
+Filed as three failing jobs. Two were stale, and re-running them was enough:
+
+- **`netassess-freshness`** — failed on 2026-08-23 with *"no network scan
+  published in 13 days"*. The host's `personal-soc Weekly Network Scan`
+  scheduled task has since run (2026-08-31, result 0), so the check now reads
+  *"newest run: 2026-08-31 (1 days old, limit 10)"* and passes.
+- **`package`** — failed on 2026-08-31 at 18:02 with *"no install
+  acknowledgement within 8 min"*, inside the same window as the token outage
+  and the sealed Vault. The host's `personal-soc Skill Install` task polls
+  every five minutes and is healthy; re-run, the job succeeds in 22 seconds.
+
+Neither was the empty token of B-016, which is worth recording because the
+dates lined up and the temptation to assume one cause was real.
+
+**What remains is one job.** `netassess-ingest` fails reproducibly and produces
+essentially no task output before the failure-notify hook — no `::error::`
+line, none of the `Run accepted.` / `Run rejected.` its own script ends with.
+That points at an exit before the script body runs rather than a check that ran
+and reported, which is a different kind of problem from the two above and is
+why it did not clear when they did.
+
+**Acceptance criteria**
+
+- `netassess-ingest` has a named cause.
+- Whatever it is, the job says something before it dies. A task that fails with
+  no output is a task nobody can diagnose from the build page, which is where
+  anyone will look first.
+- If it depends on B-016's token, that is stated — it was ruled out for the
+  other two and has not been ruled out for this one.
 
 ### B-018 — `cloud` is enabled on a repository and its lane cannot run
 
