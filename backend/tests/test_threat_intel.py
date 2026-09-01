@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 
@@ -260,3 +261,57 @@ def test_refresh_result_ok_requires_both_feeds_to_have_answered() -> None:
     assert RefreshResult(written=1).ok
     assert not RefreshResult(written=0, kev_error="boom").ok
     assert not RefreshResult(written=0, epss_error="boom").ok
+
+class TestTheFeedsAreActuallyReachable:
+    """The bug that made this whole page decorative.
+
+    EPSS answers `302 Found` with a relative Location naming the day's file,
+    and httpx does not follow redirects unless asked — so `raise_for_status()`
+    raised on the redirect and every refresh stored a `fetched_at` with no
+    score. 110 CVEs matched to open findings, 0 with an EPSS score, for as long
+    as it had been deployed. Fixing it scored 96 of them and surfaced one at
+    73% into a band nobody could previously see.
+    """
+
+    def _capture(self, monkeypatch, module):
+        seen: dict[str, object] = {}
+
+        class _Response:
+            content = gzip.compress(
+                b"cve,epss,percentile\nCVE-2026-1000,0.5,0.9\n"
+            )
+            text = ""
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> object:
+                return {"vulnerabilities": []}
+
+        def fake_get(url, **kwargs):
+            seen["url"] = url
+            seen.update(kwargs)
+            return _Response()
+
+        monkeypatch.setattr(module.httpx2, "get", fake_get)
+        return seen
+
+    def test_epss_follows_redirects(self, monkeypatch) -> None:
+        from mykronos import threat_intel
+
+        seen = self._capture(monkeypatch, threat_intel)
+        threat_intel.default_fetch_epss()
+
+        assert seen.get("follow_redirects") is True, (
+            "EPSS 302s to a dated file; without this every score is silently absent"
+        )
+
+    def test_kev_follows_redirects(self, monkeypatch) -> None:
+        """KEV serves 200 today. There is no reason to be the one that breaks
+        when it stops."""
+        from mykronos import threat_intel
+
+        seen = self._capture(monkeypatch, threat_intel)
+        threat_intel.default_fetch_kev()
+
+        assert seen.get("follow_redirects") is True
