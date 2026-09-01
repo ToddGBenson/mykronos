@@ -107,6 +107,64 @@ class TestPortfolio:
             "granted capabilities get a per-capability state row"
         )
 
+    def test_every_capability_gets_a_row_not_only_the_enabled_ones(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """B-008. The list was built from `sorted(enabled)`, so a capability
+        nobody turned on was simply absent — and so was one that was enabled
+        and had never reported. Two different answers, one empty space."""
+        from mykronos.schemas import Capability
+
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        named = {s["capability"] for s in row["capability_states"]}
+
+        assert named >= {c.value for c in Capability}, (
+            f"missing rows for {sorted({c.value for c in Capability} - named)}; "
+            "a stage with no row is a stage nobody can see is unconfigured"
+        )
+
+    def test_not_enabled_is_distinguishable_from_enabled_and_silent(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """The distinction the entry was filed for. Both show no scan; only
+        one of them is somebody's problem."""
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        # The auth fixture grants sast, and nothing has scanned yet.
+        assert states["sast"]["enabled"] is True
+        assert states["sast"]["has_scanned"] is False
+
+        # dast was never granted for this repo.
+        assert states["dast"]["enabled"] is False
+        assert states["dast"]["has_scanned"] is False
+
+        assert states["sast"] != states["dast"], (
+            "the two states must not be identical, or the page cannot tell "
+            "'enabled and silent' from 'not configured here'"
+        )
+
+    def test_a_capability_that_scanned_is_reported_however_it_was_enabled(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """`has_scanned` is read for every capability rather than assumed
+        false for the disabled ones: a repo can report under a capability its
+        installer ledger never listed, and dropping that row would hide a scan
+        that actually happened."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        post_scan(client, auth)
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["sast"]["has_scanned"] is True
+        assert states["sast"]["last_scan_at"] is not None
+
     def test_an_actions_repo_still_reads_from_the_installer_ledger(
         self, client: TestClient, admin_auth: dict[str, str], auth
     ) -> None:
@@ -1577,3 +1635,163 @@ def test_severity_enum_covers_every_portfolio_bucket() -> None:
     from mykronos.dashboard import SEVERITIES
 
     assert set(SEVERITIES) == {s.value for s in Severity}
+
+
+class TestVulnerabilityManagement:
+    """The management half of vulnerability management (B-010, PIP-9).
+
+    "What is open" was answerable from the beginning. "How long has it been
+    open, what did we decide not to fix, and on what grounds" is the part a
+    programme is actually made of, and the grounds are the part that decays.
+    """
+
+    def _page(self, client: TestClient, admin_auth: dict[str, str]) -> Any:
+        response = client.get(
+            "/api/dashboard/vulnerability-management", headers=admin_auth
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    def test_aging_carries_the_capability(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Severity and age say how bad; capability says where to go. Sixty
+        high findings older than ninety days is a number to be alarmed by;
+        "they are all container CVEs from one base image" is the thing to
+        act on, and without this the reader opens every one to find out."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="high")])
+        run_compaction()
+
+        page = self._page(client, admin_auth)
+
+        assert page["aging"], "an open finding should produce an aging row"
+        row = page["aging"][0]
+        assert set(row) == {"severity", "capability", "age_band", "count"}
+        assert row["capability"] == "sast"
+
+    def test_an_acceptance_is_listed_with_its_grounds_not_just_counted(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """Counts cannot say what was accepted or why, and the why is the
+        half that stops being true."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload()])
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "no upstream patch yet",
+                "accepted_reason_code": "no_vendor_fix",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        page = self._page(client, admin_auth)
+
+        assert page["accepted_risk"], "the count breakdown still stands"
+        detail = page["accepted_risk_detail"]
+        assert len(detail) == 1
+        assert detail[0]["accepted_reason_code"] == "no_vendor_fix"
+        assert str(detail[0]["accepted_until"]).startswith("2027-01-01")
+        assert detail[0]["finding_id"] == finding_id
+
+    def test_an_acceptance_whose_premise_expired_is_flagged_fixable(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """`no_vendor_fix` is the one premise a scan can contradict, which is
+        why the sweep re-opens that and nothing else (spec 24 §3.2). A row
+        here is mid-flight or on grounds the sweep cannot check — either way
+        it is what a person should be looking at."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    package_name="lodash",
+                    # The advisory's fix travels in the raw record, not as a
+                    # column -- which is where the sweep reads it from too.
+                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                )
+            ],
+        )
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "no upstream patch",
+                "accepted_reason_code": "no_vendor_fix",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        detail = self._page(client, admin_auth)["accepted_risk_detail"]
+
+        assert detail[0]["fixed_version"] == "4.17.22"
+        assert detail[0]["now_fixable"] is True
+
+    def test_an_acceptance_on_other_grounds_is_not_called_fixable(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """A fix existing does not contradict "not exploitable here". Calling
+        it fixable would send somebody to re-litigate a decision that is still
+        true, which is how a review queue becomes noise."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    package_name="lodash",
+                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                )
+            ],
+        )
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "the parser is never reached from an entry point",
+                "accepted_reason_code": "not_exploitable_here",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        detail = self._page(client, admin_auth)["accepted_risk_detail"]
+
+        assert detail[0]["fixed_version"] == "4.17.22"
+        assert detail[0]["now_fixable"] is False
+
+    def test_a_viewer_may_read_it(
+        self, client: TestClient, admin_auth: dict[str, str], viewer_auth
+    ) -> None:
+        """A read. The person asking what is outstanding is not always an
+        admin, and making them one to answer it would be the wrong trade."""
+        onboard(client, admin_auth)
+
+        assert (
+            client.get(
+                "/api/dashboard/vulnerability-management", headers=viewer_auth
+            ).status_code
+            == 200
+        )
