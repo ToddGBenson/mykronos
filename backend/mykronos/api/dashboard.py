@@ -27,6 +27,7 @@ from mykronos import (
     incident,
     regression,
     supply_chain,
+    surfaces,
     worklist,
 )
 from mykronos.adminauth import PrincipalDep
@@ -2346,6 +2347,171 @@ async def repo_threat_model(
         declared = controls.for_repo(session, repo_full_name)
         page = _queries(request).threat_model(repo_full_name, controls=declared)
     return ThreatModelOut.model_validate(page)
+
+
+class SurfaceOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    description: str
+    exposure: str
+    sensitivity: str
+    evidence_ref: str
+    declared_by: str
+    declared_at: datetime
+
+
+class SurfacesOut(BaseModel):
+    assets: list[SurfaceOut]
+    entry_points: list[SurfaceOut]
+    trust_boundaries: list[SurfaceOut]
+    total: int
+    internet_facing: int
+    #: Declared rows still carrying an unanswered question. The number that
+    #: says how much of this is a model rather than an inventory.
+    unknowns: int
+    #: All three parts present. Entry points without assets describe how
+    #: somebody gets in and never what they reach.
+    complete: bool
+
+
+class SurfaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(max_length=32, description="asset | entry_point | trust_boundary")
+    name: str = Field(max_length=255)
+    description: str = Field(default="", max_length=2_000)
+    exposure: str = Field(
+        default="unknown",
+        max_length=32,
+        description=(
+            "internet | internal | local | unknown. `unknown` is the default "
+            "and a real answer — guessing `internal` would understate risk by "
+            "default, which is the wrong direction to be wrong in."
+        ),
+    )
+    sensitivity: str = Field(
+        default="unknown",
+        max_length=32,
+        description=(
+            "pii | financial | credentials | source | public | unknown. Only "
+            "meaningful for an asset; ignored for the other kinds rather than "
+            "stored as a guess."
+        ),
+    )
+    evidence_ref: str = Field(default="", max_length=512)
+
+
+def _surface_out(surface: Any) -> SurfaceOut:
+    return SurfaceOut(
+        id=surface.id,
+        kind=surface.kind,
+        name=surface.name,
+        description=surface.description,
+        exposure=surface.exposure,
+        sensitivity=surface.sensitivity,
+        evidence_ref=surface.evidence_ref,
+        declared_by=surface.declared_by,
+        declared_at=surface.declared_at,
+    )
+
+
+@router.get("/repos/{repo_id}/surfaces", response_model=SurfacesOut)
+async def repo_surfaces(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> SurfacesOut:
+    """Assets, entry points and trust boundaries (B-029).
+
+    The three quarters of a threat model the platform did not hold. Findings
+    say what was found; these say what is at stake, and without them "twelve
+    mediums in the payments service" and "twelve mediums in the internal
+    changelog renderer" are the same row.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    with request.app.state.db.session() as session:
+        summary = surfaces.for_repo(session, repo_full_name)
+        return SurfacesOut(
+            assets=[_surface_out(s) for s in summary.assets],
+            entry_points=[_surface_out(s) for s in summary.entry_points],
+            trust_boundaries=[_surface_out(s) for s in summary.trust_boundaries],
+            total=summary.total,
+            internet_facing=summary.internet_facing,
+            unknowns=summary.unknowns,
+            complete=summary.complete,
+        )
+
+
+@router.post("/repos/{repo_id}/surfaces", response_model=SurfaceOut)
+async def declare_surface(
+    request: Request, repo_id: str, body: SurfaceRequest, principal: PrincipalDep
+) -> SurfaceOut:
+    """Declare one asset, entry point or trust boundary.
+
+    Admin-authored, and the response never dresses that up as more. Nothing in
+    this platform can confirm that a database holds customer records — a row
+    here is a person asserting it, which is weaker and clearer than a machine
+    implying it, and useful the day somebody types it.
+    """
+    _require_writer(principal, "Declaring a surface")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            surface = surfaces.declare(
+                session,
+                repo_full_name,
+                kind=body.kind,
+                name=body.name,
+                description=body.description,
+                exposure=body.exposure,
+                sensitivity=body.sensitivity,
+                evidence_ref=body.evidence_ref,
+                declared_by=principal.actor,
+            )
+        except surfaces.SurfaceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="surface.declare",
+            entity_type="repo_surface",
+            entity_id=surface.id,
+            repo_full_name=repo_full_name,
+            kind=surface.kind,
+            exposure=surface.exposure,
+        )
+        return _surface_out(surface)
+
+
+@router.delete("/repos/{repo_id}/surfaces/{surface_id}", status_code=204)
+async def remove_surface(
+    request: Request, repo_id: str, surface_id: str, principal: PrincipalDep
+) -> None:
+    """Withdraw a declaration that turned out to be wrong.
+
+    A correction, not a deletion of evidence: this register is a statement
+    about the present, which is exactly why it is operational rather than in
+    the append-only lake.
+    """
+    _require_writer(principal, "Removing a surface")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        if not surfaces.remove(session, repo_full_name, surface_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No such surface on this repository.",
+            )
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="surface.remove",
+            entity_type="repo_surface",
+            entity_id=surface_id,
+            repo_full_name=repo_full_name,
+        )
 
 
 class ControlRequest(BaseModel):

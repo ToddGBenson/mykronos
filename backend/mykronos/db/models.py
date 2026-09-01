@@ -476,6 +476,65 @@ class TriageState(Base):
         )
 
 
+class RepoSurface(Base):
+    """An asset, an entry point, or a trust boundary this repository has
+    (B-029).
+
+    **The three quarters of a threat model the platform did not hold.**
+    `RepoControl`'s own docstring says a threat model is made of assets, entry
+    points, trust boundaries and mitigations, and that the tab had one of the
+    four. It has had mitigations since spec 28 §3. This is the other three.
+
+    Why it matters is the same argument that produced controls, one step
+    earlier: a tab built only from findings can say what was found and never
+    what is *at stake*. "Twelve mediums in the payments service" and "twelve
+    mediums in the internal changelog renderer" are the same row today, and
+    they are not the same risk.
+
+    **Declared, never verified, and the wording never blurs the two.** The same
+    rule `RepoControl` follows. A row here is a person asserting something,
+    which is weaker and clearer than a machine implying it, and it is useful
+    the day somebody types it. Nothing in this platform can currently confirm
+    that a database holds customer records; pretending otherwise would make
+    the tab confidently wrong about the thing it exists to be right about.
+
+    Operational rather than lake, for the reason `RepoControl` gives: this is
+    an editable statement about the present, corrected in place when it turns
+    out to be wrong, not an append-only observation whose history is evidence.
+    """
+
+    __tablename__ = "repo_surfaces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: Denormalised for the same two reasons as `RepoControl.repo_full_name`.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    #: asset | entry_point | trust_boundary. One row is one of them: a thing
+    #: that is both an asset and an entry point is two facts about the same
+    #: subsystem, and declaring it twice is honest and separately reviewable —
+    #: the same argument `RepoControl.stride` makes for not taking a list.
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    #: How exposed this is: internet | internal | local | unknown. `unknown` is
+    #: the default and is a real answer — a platform that guessed "internal"
+    #: would be understating risk by default, which is the wrong direction to
+    #: be wrong in.
+    exposure: Mapped[str] = mapped_column(String(32), default="unknown")
+    #: What is at stake: pii | financial | credentials | source | public |
+    #: unknown. Only meaningful for an asset, and empty elsewhere rather than
+    #: defaulted to something that reads as a claim.
+    sensitivity: Mapped[str] = mapped_column(String(32), default="unknown")
+    #: A route, a file, an ADR, a diagram. Optional for the reason
+    #: `RepoControl.evidence_ref` is: requiring it means the register only ever
+    #: holds what somebody had time to document.
+    evidence_ref: Mapped[str] = mapped_column(String(512), default="")
+    declared_by: Mapped[str] = mapped_column(String(255), default="")
+    declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
 class RepoControl(Base):
     """A mitigation somebody declared for this repository (spec 28 §3).
 

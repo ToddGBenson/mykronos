@@ -877,6 +877,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/surfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Surfaces
+         * @description Assets, entry points and trust boundaries (B-029).
+         *
+         *     The three quarters of a threat model the platform did not hold. Findings
+         *     say what was found; these say what is at stake, and without them "twelve
+         *     mediums in the payments service" and "twelve mediums in the internal
+         *     changelog renderer" are the same row.
+         */
+        get: operations["repo_surfaces_api_dashboard_repos__repo_id__surfaces_get"];
+        put?: never;
+        /**
+         * Declare Surface
+         * @description Declare one asset, entry point or trust boundary.
+         *
+         *     Admin-authored, and the response never dresses that up as more. Nothing in
+         *     this platform can confirm that a database holds customer records — a row
+         *     here is a person asserting it, which is weaker and clearer than a machine
+         *     implying it, and useful the day somebody types it.
+         */
+        post: operations["declare_surface_api_dashboard_repos__repo_id__surfaces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/surfaces/{surface_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Surface
+         * @description Withdraw a declaration that turned out to be wrong.
+         *
+         *     A correction, not a deletion of evidence: this register is a statement
+         *     about the present, which is exactly why it is operational rather than in
+         *     the append-only lake.
+         */
+        delete: operations["remove_surface_api_dashboard_repos__repo_id__surfaces__surface_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/controls": {
         parameters: {
             query?: never;
@@ -4604,6 +4662,79 @@ export interface components {
             /** Packages */
             packages: components["schemas"]["VulnerablePackageOut"][];
         };
+        /** SurfaceOut */
+        SurfaceOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Exposure */
+            exposure: string;
+            /** Sensitivity */
+            sensitivity: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Declared By */
+            declared_by: string;
+            /**
+             * Declared At
+             * Format: date-time
+             */
+            declared_at: string;
+        };
+        /** SurfaceRequest */
+        SurfaceRequest: {
+            /**
+             * Kind
+             * @description asset | entry_point | trust_boundary
+             */
+            kind: string;
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Exposure
+             * @description internet | internal | local | unknown. `unknown` is the default and a real answer — guessing `internal` would understate risk by default, which is the wrong direction to be wrong in.
+             * @default unknown
+             */
+            exposure: string;
+            /**
+             * Sensitivity
+             * @description pii | financial | credentials | source | public | unknown. Only meaningful for an asset; ignored for the other kinds rather than stored as a guess.
+             * @default unknown
+             */
+            sensitivity: string;
+            /**
+             * Evidence Ref
+             * @default
+             */
+            evidence_ref: string;
+        };
+        /** SurfacesOut */
+        SurfacesOut: {
+            /** Assets */
+            assets: components["schemas"]["SurfaceOut"][];
+            /** Entry Points */
+            entry_points: components["schemas"]["SurfaceOut"][];
+            /** Trust Boundaries */
+            trust_boundaries: components["schemas"]["SurfaceOut"][];
+            /** Total */
+            total: number;
+            /** Internet Facing */
+            internet_facing: number;
+            /** Unknowns */
+            unknowns: number;
+            /** Complete */
+            complete: boolean;
+        };
         /**
          * ThreatIntelEntryOut
          * @description One CVE, matched against every open finding that names it (spec 17 §4.4).
@@ -6015,6 +6146,102 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ThreatModelOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_surfaces_api_dashboard_repos__repo_id__surfaces_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfacesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_surface_api_dashboard_repos__repo_id__surfaces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SurfaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfaceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_surface_api_dashboard_repos__repo_id__surfaces__surface_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                surface_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

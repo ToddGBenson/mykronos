@@ -22,6 +22,7 @@ import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
+import { Surfaces } from "@/components/surfaces";
 import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
@@ -47,6 +48,7 @@ import {
   getScanHealth,
   getScanRunTrend,
   getSscs,
+  getSurfaces,
   getVulnerablePackages,
   getThreatModel,
   getWorkflows,
@@ -671,11 +673,32 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
 }
 
 async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
-  const result = await getThreatModel(repoId);
+  // Concurrently, and the register is allowed to fail on its own: the STRIDE
+  // view was the whole tab before this and must not go down with an addition
+  // to it.
+  const [result, surfaces] = await Promise.all([
+    getThreatModel(repoId),
+    getSurfaces(repoId),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Threat model unavailable" detail={result.error} />;
   }
-  return <ThreatModelTab repoId={repoId} page={result.data} />;
+  return (
+    <div className="flex flex-col gap-5">
+      {/* What this repository *is*, above what was found in it. A threat model
+          is assets, entry points, trust boundaries and mitigations; the tab
+          had the last one and the findings, and read as an inventory of
+          problems with nothing at stake (B-029). */}
+      {surfaces.ok ? (
+        <Surfaces repoId={repoId} data={surfaces.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+          {surfaces.error}
+        </p>
+      )}
+      <ThreatModelTab repoId={repoId} page={result.data} />
+    </div>
+  );
 }
 
 async function AegisTab({ repoId }: { repoId: string }) {
