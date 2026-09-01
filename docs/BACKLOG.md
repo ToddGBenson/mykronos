@@ -45,13 +45,13 @@ already shipped.
 
 ## Open
 
-Three entries from a monitoring sweep of the running platform on 2026-09-01. Two more (B-014, B-015) came from the same sweep and were fixed the same day; they are in Closed.
+Two entries from a monitoring sweep of the running platform on 2026-09-01. Three more from the same sweep (B-014, B-015, B-017) were fixed the same day and are in Closed.
 Every one was reproduced against the live system before it was written; the
 evidence is in each entry rather than a link to a dashboard that will have
 moved on.
 
-Ordered by consequence. What remains is one credential, one set of failing
-jobs, and one decision that is the operator's rather than mine.
+What remains is one credential this session is not permitted to write, and
+one decision that is the operator's rather than mine.
 
 ### B-016 — personal-soc files nothing, and its token is missing
 
@@ -97,40 +97,6 @@ break the GitHub Actions lane too.
 - **Not** a change to the script's optional handling. That is deliberate.
 
 ---
-
-### B-017 — `netassess-ingest` fails before it produces any output
-
-**Size:** S **State:** open **Verified:** 2026-09-01 (rescoped — two of three resolved)
-
-Filed as three failing jobs. Two were stale, and re-running them was enough:
-
-- **`netassess-freshness`** — failed on 2026-08-23 with *"no network scan
-  published in 13 days"*. The host's `personal-soc Weekly Network Scan`
-  scheduled task has since run (2026-08-31, result 0), so the check now reads
-  *"newest run: 2026-08-31 (1 days old, limit 10)"* and passes.
-- **`package`** — failed on 2026-08-31 at 18:02 with *"no install
-  acknowledgement within 8 min"*, inside the same window as the token outage
-  and the sealed Vault. The host's `personal-soc Skill Install` task polls
-  every five minutes and is healthy; re-run, the job succeeds in 22 seconds.
-
-Neither was the empty token of B-016, which is worth recording because the
-dates lined up and the temptation to assume one cause was real.
-
-**What remains is one job.** `netassess-ingest` fails reproducibly and produces
-essentially no task output before the failure-notify hook — no `::error::`
-line, none of the `Run accepted.` / `Run rejected.` its own script ends with.
-That points at an exit before the script body runs rather than a check that ran
-and reported, which is a different kind of problem from the two above and is
-why it did not clear when they did.
-
-**Acceptance criteria**
-
-- `netassess-ingest` has a named cause.
-- Whatever it is, the job says something before it dies. A task that fails with
-  no output is a task nobody can diagnose from the build page, which is where
-  anyone will look first.
-- If it depends on B-016's token, that is stated — it was ruled out for the
-  other two and has not been ruled out for this one.
 
 ### B-018 — `cloud` is enabled on a repository and its lane cannot run
 
@@ -203,6 +169,61 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-017 — netassess-ingest died on an unzip warning — **done**
+
+Filed as three failing jobs. Two were stale and cleared by re-running them:
+
+- **`netassess-freshness`** had failed on 2026-08-23 with *"no network scan
+  published in 13 days"*. The host's `personal-soc Weekly Network Scan` task
+  has since run, so it now reads *"newest run: 2026-08-31 (1 days old, limit
+  10)"* and passes.
+- **`package`** had failed at 18:02 on 2026-08-31 with *"no install
+  acknowledgement within 8 min"*, inside the same window as the token outage
+  and the sealed Vault. The host's install task polls every five minutes and is
+  healthy; re-run, it succeeds in 22 seconds.
+
+Neither was B-016's empty token, which the dates made tempting to assume.
+
+**The third was a real bug, and it had hidden two security findings.**
+
+`netassess-ingest` produced no output past `run under test:` and then failed.
+The line after it was the diagnosis:
+
+```
+warning:  netassess-run/netassess-2026.8.31.zip appears to use backslashes
+          as path separators
+```
+
+The archive is written by a Windows scheduled task, so its entries carry
+backslash separators. `unzip` calls that a warning and **exits 1** — and
+Concourse runs the task as `bash -ec`, so `-e` made a warning fatal. The job
+died on the unzip, having printed nothing anybody could act on.
+
+`unzip`'s contract is 0 clean, 1 warning with the files extracted anyway, 2 and
+above a real error. An `unpack` helper now distinguishes them at both extract
+sites: a warning is noted and execution continues, anything higher still stops
+the job. Verified under `bash -e` against all three exit codes, since the shell
+flag is the half of the bug that made it silent.
+
+**What was behind it.** With the task running to completion, it reaches its own
+verdict and reports:
+
+```
+::error:: NAS is exporting NFS shares
+::error:: an open Wi-Fi AP is broadcasting
+```
+
+That is the check working. `netassess-ingest` has **never once succeeded** —
+every build since it was created on 2026-08-12 has failed — so those two
+findings have never been visible to anyone reading the pipeline. They are real,
+current as of the 2026-08-31 scan, and they are the operator's to act on rather
+than the platform's: an open access point and an NFS export are network posture,
+not a defect in Mykronos.
+
+That is the whole argument for the fix. A job that fails silently is not a
+failing job, it is an invisible one, and this one was hiding exactly the sort of
+thing it was built to find.
 
 ### B-014 — self-check tells the truth about Vault now — **done**
 

@@ -1286,8 +1286,30 @@ jobs:
                 CUR_KEY=$(basename "$CUR_ZIP")
                 echo "run under test: $CUR_KEY"
 
+                # The archive is written on Windows, so its entries carry
+                # backslash path separators and unzip warns about it. A
+                # warning is exit status 1, this task runs under `bash -ec`,
+                # and so the job died on the unzip having printed nothing
+                # after "run under test" -- a failure with no diagnosis on the
+                # page anybody looks at first (B-017).
+                #
+                # unzip's contract: 0 is clean, 1 is a warning and the files
+                # are extracted anyway, 2 and above are real errors. Only the
+                # last of those should stop this job.
+                unpack() {
+                  local archive=$1 target=$2 status=0
+                  unzip -q "$archive" -d "$target" || status=$?
+                  if [ "$status" -eq 1 ]; then
+                    echo "note: unzip warned on $(basename "$archive") (exit 1) and extracted it anyway - the archive is written on Windows."
+                  elif [ "$status" -ne 0 ]; then
+                    echo "::error:: unzip failed on $(basename "$archive") with exit $status."
+                    return "$status"
+                  fi
+                  return 0
+                }
+
                 mkdir -p current
-                unzip -q "$CUR_ZIP" -d current
+                unpack "$CUR_ZIP" current
 
                 echo ""
                 echo "== contents =="
@@ -1348,7 +1370,8 @@ jobs:
                   echo "== host changes vs $PREV_KEY =="
                   mkdir -p previous
                   mc --quiet cp "store/$BUCKET/runs/$PREV_KEY" prev.zip
-                  unzip -q prev.zip -d previous
+                  # Same archive shape, same warning, same reason.
+                  unpack prev.zip previous
 
                   # Field 2 is MAC, ahead of Vendor - so a vendor string
                   # containing a comma cannot shift the column being read.
