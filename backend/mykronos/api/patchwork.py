@@ -21,7 +21,7 @@ from sqlalchemy import select
 from mykronos.adminauth import PrincipalDep
 from mykronos.api.ingest import TokenDep, _installation_client, _require_capability
 from mykronos.db.models import RepoOnboarding, capability_config_for
-from mykronos.patchwork import PatchworkPipeline
+from mykronos.patchwork import PatchworkPipeline, fixers
 from mykronos.patchwork.pipeline import DEFAULT_SOURCE_CAPABILITIES
 from mykronos.schemas import Capability
 
@@ -166,6 +166,25 @@ class EfficacyPage(BaseModel):
     by_fixer: list[EfficacyRowOut]
     by_rule: list[EfficacyRowOut]
     note: str
+    coverage: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Which finding classes have a deterministic fixer and which do "
+            "not, with the reason (B-021). Carried beside the numbers because "
+            "an empty efficacy table means one of two opposite things -- "
+            "nothing was fixable, or fixes were attempted and did not work -- "
+            "and the table alone cannot say which."
+        ),
+    )
+    measured: bool = Field(
+        default=False,
+        description=(
+            "Whether there is anything to measure yet. False means no fix has "
+            "reached a pull request, so the rates below are absent rather than "
+            "zero -- the same not-measured versus measured-zero distinction "
+            "`stale_dependencies` draws (B-004)."
+        ),
+    )
 
 
 class RemediationPreviewOut(BaseModel):
@@ -505,7 +524,16 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
     catalog = request.app.state.catalog
     if not catalog.all_files("remediation_events"):
         return EfficacyPage(
-            by_fixer=[], by_rule=[], note="Auto-remediation has not run yet."
+            by_fixer=[],
+            by_rule=[],
+            note=(
+                "Auto-remediation has not run yet, so there is nothing to "
+                "measure — which is not the same as fixes that did not work. "
+                "`coverage` says which finding classes have a deterministic "
+                "fixer and which do not."
+            ),
+            coverage=fixers.coverage_summary(),
+            measured=False,
         )
 
     by_fixer = _efficacy_rows(
@@ -520,14 +548,28 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
         join="JOIN findings f ON f.finding_id = e.finding_id",
         filter_="e.fixer_name IS NOT NULL",
     )
+    # No rows is not a rate of zero. Nothing has reached a pull request, so
+    # there is no efficacy to report -- distinct from fixes that were made and
+    # did not remove risk, which is what an all-zero table would otherwise be
+    # read as (B-021).
+    measured = bool(by_fixer or by_rule)
     return EfficacyPage(
         by_fixer=by_fixer,
         by_rule=by_rule,
+        measured=measured,
+        coverage=fixers.coverage_summary(),
         note=(
             "`verified` means the finding was gone from a scan of the merge "
             "commit — the only column here that says risk was removed. "
             "`unverified` is merged-but-not-established, which is not a "
             "failure: the scan did not answer."
+            if measured
+            else "No fix has reached a pull request, so there is nothing to "
+            "measure yet — which is not the same as fixes that did not work. "
+            "`coverage` says which finding classes have a deterministic fixer "
+            "and which do not; on an estate whose open findings are mostly "
+            "outside those classes, an empty table here is the pipeline "
+            "declining to guess rather than failing."
         ),
     )
 

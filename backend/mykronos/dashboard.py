@@ -1438,6 +1438,8 @@ class DashboardQueries:
         policy: Any = None,
         include_snoozed: bool = False,
         claimed_by: str | None = None,
+        triage: str | None = None,
+        store: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
 
@@ -1568,6 +1570,32 @@ class DashboardQueries:
             for item in queue:
                 item["rank"], item["rank_terms"] = rank_terms(item, policy)
             queue.sort(key=lambda item: (-float(item["rank"]), item["first_seen_at"]))
+
+        # Stamped on every row, not only when filtering - the same contract
+        # the KEV badge above has, so a caller can render "the machine could
+        # not judge this" whether or not it is also filtering by it (B-019).
+        #
+        # Computed rather than read from `remediation_events`, matching
+        # `open_findings`: the classification is a function of the rule, the
+        # severity and what the Knowledge Store has learned, and a finding
+        # Patchwork has not reached yet still has one.
+        learned = [] if store is None else store.active_entries()
+        for item in queue:
+            classification, rationale = classify(
+                {
+                    "rule_id": item["rule_id"],
+                    "severity": item["severity"],
+                    "capability": item["capability"],
+                },
+                str(item["repo_full_name"]),
+                entries=learned,
+            )
+            item["triage"] = classification
+            item["triage_rationale"] = rationale
+
+
+        if triage:
+            queue = [item for item in queue if item["triage"] == triage]
 
         if kev_only:
             queue = [item for item in queue if item["in_kev"]]

@@ -50,6 +50,11 @@ SOURCE_TYPES = (
     "decision_override",
     "remediation_outcome",
     "retro_note",
+    #: A person disagreed with the classifier (B-020). Deliberately its own
+    #: type rather than a dismissal: it teaches about the classifier, not the
+    #: rule, and dampening reads `finding_dismissal` only. Recording a "this
+    #: is real" as a dismissal would quieten the rule that correctly fired.
+    "classification_rejected",
 )
 SENSITIVITIES = ("public", "restricted")
 

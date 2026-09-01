@@ -328,6 +328,89 @@ FIXERS: list[tuple[str, Fixer]] = [
 ]
 
 
+#: What the deterministic fixers can actually fix, in the words a reader of the
+#: Remediation tab needs (B-021).
+#:
+#: Stated rather than inferred, because the alternative is a page reporting
+#: zero fixes with nothing saying whether that means "nothing was fixable" or
+#: "the fixer is broken". Across 560 remediation events on this estate nothing
+#: has ever reached `fix_generated`, and that is correct: the open backlog is
+#: overwhelmingly container, DAST and SAST findings, and none of those is a
+#: class any fixer here covers.
+#:
+#: `test_coverage_names_every_fixer` fails if a fixer is added without a line
+#: here, so the page cannot silently fall behind the code.
+COVERAGE: tuple[dict[str, str], ...] = (
+    {
+        "fixer": "pin-python-requirement",
+        "capability": "atlas",
+        "handles": "A vulnerable Python dependency with a known fixed version, "
+        "declared in a requirements file.",
+    },
+    {
+        "fixer": "pin-npm-dependency",
+        "capability": "atlas",
+        "handles": "A vulnerable npm dependency with a known fixed version, "
+        "declared in package.json.",
+    },
+    {
+        "fixer": "pin-go-module",
+        "capability": "atlas",
+        "handles": "A vulnerable Go module with a known fixed version, "
+        "declared in go.mod.",
+    },
+    {
+        "fixer": "remove-committed-secret",
+        "capability": "secrets",
+        "handles": "A credential committed to the repository, replaced with an "
+        "environment lookup.",
+    },
+)
+
+#: Capabilities with no deterministic fixer at all, and why not.
+#:
+#: An absence stated is a different thing from an absence inferred from a blank
+#: table. Each of these is a class where a correct fix needs a judgement the
+#: platform will not make on its own -- which is the same reason spec 08 §2
+#: ships deterministic fixers only.
+NOT_COVERED: tuple[dict[str, str], ...] = (
+    {
+        "capability": "sast",
+        "why": "A code defect's fix depends on what the code is for. A "
+        "deterministic rewrite that compiles is not thereby correct.",
+    },
+    {
+        "capability": "dast",
+        "why": "A finding against a running service names a symptom at an "
+        "endpoint, not a line to change.",
+    },
+    {
+        "capability": "containers",
+        "why": "A CVE in a base image is fixed by moving image, which is a "
+        "decision about the platform rather than an edit to a file.",
+    },
+    {
+        "capability": "iac",
+        "why": "Infrastructure defaults are frequently deliberate. Changing "
+        "one without knowing why it was set is how a fix causes an outage.",
+    },
+    {
+        "capability": "cloud",
+        "why": "A live cloud posture finding is remediated in the cloud "
+        "account, which this platform deliberately cannot reach.",
+    },
+)
+
+
+def coverage_summary() -> dict[str, Any]:
+    """What can and cannot be auto-fixed, for the Remediation tab."""
+    return {
+        "covered": [dict(entry) for entry in COVERAGE],
+        "not_covered": [dict(entry) for entry in NOT_COVERED],
+        "fixer_count": len(FIXERS),
+    }
+
+
 def generate(finding: dict[str, Any], content: str) -> tuple[str, ProposedFix] | None:
     """Try every fixer. Returns (fixer_name, fix) or None."""
     for name, fixer in FIXERS:

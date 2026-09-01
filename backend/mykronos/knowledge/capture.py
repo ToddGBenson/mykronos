@@ -78,6 +78,56 @@ def capture_dismissal(
     return result
 
 
+def capture_classification_rejected(
+    store: KnowledgeStore,
+    *,
+    repo_full_name: str,
+    rule_id: str,
+    finding_id: str,
+    classification: str,
+    reason: str,
+    actor: str = "",
+) -> AddResult | None:
+    """Record that a person disagreed with the classifier (B-020).
+
+    The counterweight to `capture_dismissal`. Agreement already leaves a trace
+    -- the finding changes status and the rule earns a dismissal observation --
+    while disagreement left none at all, so a classifier calling real findings
+    `likely_false_positive` would look exactly like a classifier nobody had
+    got round to. A verdict nothing ever contradicts is a verdict nobody is
+    checking.
+
+    Deliberately does **not** dampen anything, and is not in
+    `TEACHES_ABOUT_THE_RULE`. It teaches about the *classifier*, not about the
+    rule: the finding is real and stays open, and quietening the rule on the
+    strength of somebody saying it was real would invert the meaning of the
+    whole loop.
+    """
+    cleaned = reason.strip()
+    detail = f" — {cleaned}" if cleaned else " with no reason given"
+    text = (
+        f"{rule_id} in {repo_full_name} was classified {classification} and a "
+        f"person disagreed{detail}"
+    )
+
+    result = store.add_entry(
+        source_type="classification_rejected",
+        subject=rule_id,
+        source_ref=finding_id,
+        text=text,
+        repo_full_name=repo_full_name,
+        reason=cleaned,
+    )
+    logger.info(
+        "Knowledge: %s classifier rejection for %s in %s (observations=%s)",
+        "recorded" if result.created else "reconfirmed",
+        rule_id,
+        repo_full_name,
+        result.entry.observations,
+    )
+    return result
+
+
 def capture_override(
     store: KnowledgeStore,
     *,
