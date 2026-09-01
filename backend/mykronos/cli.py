@@ -11,6 +11,7 @@
     mykronos compact
     mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
     mykronos self-check
+    mykronos briefing [--json]
     mykronos parity <owner/repo>
     mykronos workflows <owner/repo>
     mykronos enable-workflow <owner/repo> <capability>
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import sys
@@ -38,6 +40,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import briefing as briefing_report
 from mykronos.auth import TokenRegistry
 from mykronos.ci import (
     ActionsClient,
@@ -155,6 +158,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "self-check",
         help="Ask the internet whether this platform is reachable (spec 32 §8)",
+    )
+
+    briefing = sub.add_parser(
+        "briefing",
+        help="What to do next about the open backlog. Run this after a deploy.",
+    )
+    briefing.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the briefing as JSON, for a pipeline step rather than a person.",
     )
 
     parity = sub.add_parser(
@@ -891,6 +904,20 @@ def main(argv: list[str] | None = None) -> int:
                     ["buffered segments", buffer.count_sealed()],
                 ],
             )
+            return 0
+
+        if args.command == "briefing":
+            # Run after every deploy. The first section is the point of it:
+            # a finding closes only after two consecutive *successful* scans
+            # observe its absence, so a failing lane freezes its findings
+            # open however well the defect was fixed — and nothing else in
+            # the platform says so. On 2026-09-01 that was 115 DAST findings
+            # against headers that had already shipped and were being served.
+            report = briefing_report.build(catalog)
+            if args.json:
+                print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
+            else:
+                print(briefing_report.render(report))
             return 0
 
         if args.command == "query":
