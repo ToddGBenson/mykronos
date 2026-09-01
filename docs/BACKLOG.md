@@ -263,15 +263,22 @@ into entries here:
 
 ## Closed
 
-Eight entries closed on 2026-08-31. Seven were built: each was re-verified
-against the working tree before it was touched, every one still reproduced, and
-each is recorded where the repo already looks — a decision for the two that
-changed what the platform promises, a spec amendment for the four that made a
-document match the code. The eighth, B-009, was closed without code because the
-decision it asked for already existed.
+Thirteen entries, over two days.
 
-Backend after all seven: 2277 tests pass, mypy clean over 107 files, ruff
-clean. Frontend `tsc --noEmit` clean. `api-types.d.ts` regenerated.
+**2026-08-31 — eight.** Seven built and one, B-009, closed without code because
+the decision it asked for already existed. Each was re-verified against the
+working tree before it was touched and every one still reproduced.
+
+**2026-09-01 — five.** B-013 from the outage that day, then B-008 and B-010
+rescoped from the import, then B-011 and B-012, which had been iceboxed and were
+built rather than left waiting. B-012's trigger turned out to have fired
+already, which is the argument for re-reading an icebox rather than trusting it
+to announce itself.
+
+Everything is recorded where this repo already looks: a decision for the four
+that changed what the platform promises, a spec amendment for those that made a
+document match the code. Final state: 2311 backend tests, mypy over 108 files,
+ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
 
 ### B-011 — A fix pull request can produce a regression link — **done**
 
