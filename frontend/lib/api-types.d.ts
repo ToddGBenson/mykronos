@@ -784,6 +784,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/briefing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Post Deployment Briefing
+         * @description What to do next about the open backlog (D-098).
+         *
+         *     The same view `mykronos briefing` prints after every deploy, for the
+         *     surfaces that want it rendered rather than in a terminal.
+         *
+         *     Its first section is the one that earns it. A finding closes only after
+         *     two consecutive *successful* scans observe its absence (spec 05 §5), so a
+         *     lane that is failing — or that quietly stopped running — freezes its
+         *     findings open however thoroughly the defect was fixed. Nothing else in the
+         *     platform joins "this lane is broken" to "so these findings cannot close":
+         *     the portfolio ranks repositories, the worklist ranks findings, the CI view
+         *     shows job status, and all three were correct while 91% of the backlog sat
+         *     unable to move.
+         *
+         *     A read. The actions it names are existing routes, and a person triggers
+         *     them.
+         */
+        get: operations["post_deployment_briefing_api_dashboard_briefing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/threat-model": {
         parameters: {
             query?: never;
@@ -2159,6 +2194,50 @@ export interface components {
             refused?: {
                 [key: string]: string;
             };
+        };
+        /** BriefingActionOut */
+        BriefingActionOut: {
+            /** Label */
+            label: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Effect */
+            effect: string;
+        };
+        /** BriefingClassOut */
+        BriefingClassOut: {
+            /** Capability */
+            capability: string;
+            /** Open Findings */
+            open_findings: number;
+            /** Route */
+            route: string;
+            /** Concentrated In */
+            concentrated_in: [
+                string,
+                number
+            ][];
+            action: components["schemas"]["BriefingActionOut"] | null;
+        };
+        /** BriefingOut */
+        BriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Total Open */
+            total_open: number;
+            /** Blocked Findings */
+            blocked_findings: number;
+            /** Auto Fixable */
+            auto_fixable: number;
+            /** Stalled */
+            stalled: components["schemas"]["StalledLaneOut"][];
+            /** Classes */
+            classes: components["schemas"]["BriefingClassOut"][];
         };
         /**
          * Capability
@@ -4334,6 +4413,30 @@ export interface components {
             /** Problem */
             problem: boolean;
         };
+        /** StalledLaneOut */
+        StalledLaneOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Reason */
+            reason: string;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /** Streak Capped */
+            streak_capped: boolean;
+            /** Last Success */
+            last_success: string | null;
+            /** Detail */
+            detail: string;
+            /** Open Findings */
+            open_findings: number;
+            /** Days Since Run */
+            days_since_run: number;
+            /** Usual Gap Days */
+            usual_gap_days: number;
+            action: components["schemas"]["BriefingActionOut"];
+        };
         /** StatusChange */
         StatusChange: {
             status: components["schemas"]["FindingStatus"];
@@ -5704,6 +5807,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_deployment_briefing_api_dashboard_briefing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingOut"];
                 };
             };
         };

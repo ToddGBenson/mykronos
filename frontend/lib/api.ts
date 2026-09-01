@@ -36,6 +36,16 @@ export type Portfolio =
   paths["/api/dashboard/portfolio"]["get"]["responses"]["200"]["content"]["application/json"];
 export type PortfolioRow = Portfolio["repos"][number];
 export type PortfolioSummary = Portfolio["summary"];
+/**
+ * The post-deployment briefing (D-098). Derived from the schema rather than
+ * hand-declared, because this endpoint has a `response_model` — the
+ * hand-written types further down exist only for the endpoints that return a
+ * plain dict, and adding to that list when it is avoidable is how they drift.
+ */
+export type Briefing =
+  paths["/api/dashboard/briefing"]["get"]["responses"]["200"]["content"]["application/json"];
+export type StalledLane = Briefing["stalled"][number];
+export type BriefingClass = Briefing["classes"][number];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];
 /**

@@ -17,10 +17,21 @@ export async function POST(
 ) {
   const { repoId } = await context.params;
 
+  // Forwarded, not dropped. The briefing's stalled-lane button scopes to the
+  // one capability that is stuck (D-098), and re-running every lane in the
+  // repository because DAST is broken is both wasteful and noisy. Absent —
+  // the old behaviour and still the default — dispatches everything enabled.
+  const capabilities = new URL(request.url).searchParams.getAll("capabilities");
+
   try {
     const { data, error, response } = await backendClient().POST(
       "/api/repos/{repo_id}/scan",
-      { params: { path: { repo_id: repoId } } },
+      {
+        params: {
+          path: { repo_id: repoId },
+          query: capabilities.length ? { capabilities } : {},
+        },
+      },
     );
 
     if (!data) {

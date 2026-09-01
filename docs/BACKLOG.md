@@ -89,17 +89,41 @@ Two things are known and one is not:
   no step logs recorded — a job that did not start rather than a scan that
   went wrong. The 08-15 to 08-27 scan_runs came from Concourse, which was
   retired for this repo (see the 2026-08-29 retro).
-- Why they fail in five seconds is not yet known. The logs have expired.
-  `workflow_dispatch` one and read it.
+- Why they fail in five seconds is not known and the logs have expired.
 
-Worth suspecting first: this is a repo whose scanning moved from Concourse to
-Actions, and D-097 is the standing lesson that a token can be delivered to one
-reader and not another. Suspecting is not knowing; dispatch a run and look.
+**A dispatched run does not fail. It never starts.** `workflow_dispatch` on
+`mykronos-secrets.yml` (run 33535920294, 2026-09-01 17:07 UTC) sat `queued` for
+over fifteen minutes and had still not been assigned a runner. The workflow
+asks for `ubuntu-latest` and the repo has no self-hosted runners, so this is
+not a missing label.
+
+The difference between TheHub and the repo that scans fine:
+
+| | mykronos | TheHub |
+|---|---|---|
+| visibility | public | **private** |
+| Actions | run normally | queue indefinitely |
+
+A private repository draws GitHub-hosted minutes from the account quota; a
+public one does not. An exhausted quota queues runs rather than failing them,
+which is the symptom. **This is a hypothesis, not a finding** — confirming it
+needs the billing page, which this session cannot read (`gh api
+users/ToddGBenson/settings/billing/actions` returns 404 without the `user`
+scope, and refreshing the token is the operator's call).
+
+Check that first. If it is right, the fix is a billing decision rather than
+anything in this repository, and the 2026-08-14 five-second failures are a
+separate older problem that also needs a look. If it is wrong, D-097 — a token
+delivered to one reader and not another — is the next thing to rule out.
 
 **Acceptance criteria**
 
 - A Mykronos scan runs successfully against TheHub.
-- The cause of the five-second failure is recorded, not just cleared.
+- The reason runs queue without starting is confirmed rather than assumed,
+  and recorded. If it is Actions minutes, say so — that is an operator
+  decision and the platform should stop implying it is a code defect.
+- The cause of the separate 2026-08-14 five-second failure is recorded, not
+  just cleared by a later green run.
 - If it is a token, D-097's guard is checked against this case — a third
   instance of the same bug would mean the guard does not cover it.
 - The 316 findings either close or are shown to be genuinely still open. Both

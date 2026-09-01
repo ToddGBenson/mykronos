@@ -8,6 +8,7 @@ policy — which is why it demands a reason.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from datetime import date, datetime
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import controls, governance, incident, regression, worklist
+from mykronos import briefing, controls, governance, incident, regression, worklist
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import (
     ActionsClient,
@@ -2065,6 +2066,88 @@ async def incident_lookup(
     with request.app.state.db.session() as session:
         view = incident.look_up(request.app.state.catalog, session, q)
     return IncidentOut.model_validate(incident.as_dict(view))
+
+
+class BriefingActionOut(BaseModel):
+    label: str
+    method: str
+    path: str
+    effect: str
+
+
+class StalledLaneOut(BaseModel):
+    repo_full_name: str
+    capability: str
+    #: "failing" or "silent". Both freeze findings and they need different
+    #: fixes, so the UI must not render them the same.
+    reason: str
+    consecutive_failures: int
+    streak_capped: bool
+    last_success: datetime | None
+    detail: str
+    open_findings: int
+    days_since_run: float
+    usual_gap_days: float
+    action: BriefingActionOut
+
+
+class BriefingClassOut(BaseModel):
+    capability: str
+    open_findings: int
+    route: str
+    concentrated_in: list[tuple[str, int]]
+    #: Null where no single request acts on the group. Render the absence
+    #: rather than a disabled button (D-098).
+    action: BriefingActionOut | None
+
+
+class BriefingOut(BaseModel):
+    generated_at: datetime
+    total_open: int
+    #: Open findings that cannot close until a lane is repaired. This is the
+    #: number the page exists for: on 2026-09-01 it was 431 of 475.
+    blocked_findings: int
+    auto_fixable: int
+    stalled: list[StalledLaneOut]
+    classes: list[BriefingClassOut]
+
+
+@router.get("/briefing", response_model=BriefingOut)
+async def post_deployment_briefing(
+    request: Request,
+    principal: PrincipalDep,
+) -> BriefingOut:
+    """What to do next about the open backlog (D-098).
+
+    The same view `mykronos briefing` prints after every deploy, for the
+    surfaces that want it rendered rather than in a terminal.
+
+    Its first section is the one that earns it. A finding closes only after
+    two consecutive *successful* scans observe its absence (spec 05 §5), so a
+    lane that is failing — or that quietly stopped running — freezes its
+    findings open however thoroughly the defect was fixed. Nothing else in the
+    platform joins "this lane is broken" to "so these findings cannot close":
+    the portfolio ranks repositories, the worklist ranks findings, the CI view
+    shows job status, and all three were correct while 91% of the backlog sat
+    unable to move.
+
+    A read. The actions it names are existing routes, and a person triggers
+    them.
+    """
+    report = briefing.build(request.app.state.catalog)
+    return BriefingOut(
+        generated_at=report.generated_at,
+        total_open=report.total_open,
+        blocked_findings=report.blocked_findings,
+        auto_fixable=report.auto_fixable,
+        stalled=[
+            StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled
+        ],
+        classes=[
+            BriefingClassOut.model_validate(dataclasses.asdict(entry))
+            for entry in report.classes
+        ],
+    )
 
 
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)
