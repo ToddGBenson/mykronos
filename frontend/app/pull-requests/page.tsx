@@ -49,6 +49,10 @@ export default async function PullRequestsPage() {
   const { pull_requests, unreachable } = result.data;
   const fixes = pull_requests.filter((pr) => pr.kind === "fix");
   const installs = pull_requests.filter((pr) => pr.kind === "install");
+  // Everything this platform did not open. It used to be invisible here,
+  // which made a page called Pull requests show nothing for a repository with
+  // fifteen of them.
+  const others = pull_requests.filter((pr) => pr.kind === "other");
 
   return (
     <div className="flex flex-col gap-5">
@@ -65,9 +69,10 @@ export default async function PullRequestsPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
         <StatTile label="Fixes" value={fixes.length} alert={fixes.length > 0} />
         <StatTile label="Installs" value={installs.length} />
+        <StatTile label="Everyone else" value={others.length} />
         <StatTile
           label="Checks failing"
           value={pull_requests.filter((pr) => (pr.checks?.failed ?? 0) > 0).length}
@@ -131,7 +136,9 @@ export default async function PullRequestsPage() {
                   className="border-b border-rule-soft last:border-b-0 align-top hover:bg-paper-3"
                 >
                   <td className="whitespace-nowrap px-2 py-2">
-                    <Pill tone={pr.kind === "fix" ? "warn" : "muted"}>{pr.kind}</Pill>
+                    <Pill tone={pr.kind === "fix" ? "warn" : pr.kind === "install" ? "accent" : "muted"}>
+                      {pr.kind === "other" ? "theirs" : pr.kind}
+                    </Pill>
                     {pr.draft ? (
                       <span className="ml-1 text-[9px] text-ink-3">draft</span>
                     ) : null}

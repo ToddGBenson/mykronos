@@ -244,6 +244,19 @@ class GitHubClient(Protocol):
         in the list looking like outstanding work forever.
         """
 
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        """Every open pull request on a repository, whoever opened it.
+
+        The dashboard listed only the ones Mykronos itself opened — installs
+        and Patchwork fixes — which made a page named "Pull requests" show
+        nothing for a repository with fifteen open. A security platform that
+        cannot see the changes people are actually proposing is looking at the
+        wrong half of the repository.
+        """
+        ...
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary: ...
@@ -562,6 +575,10 @@ class FakeGitHubClient:
             url=f"https://github.com/{repo_full_name}/pull/{self._next_pr_number}",
             head_branch=head,
             draft=draft,
+            # Recorded rather than discarded. The fake took a title and threw
+            # it away, so every pull request it produced had an empty one and
+            # any test asserting on titles was quietly asserting against "".
+            title=title,
         )
         self._next_pr_number += 1
         repo.pull_requests.append(pr)
@@ -577,6 +594,16 @@ class FakeGitHubClient:
             if pr.number == number:
                 return pr
         raise GitHubError(f"Pull request #{number} not found", status=404)
+
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        self.calls.append(("list_open_pull_requests", repo_full_name))
+        return [
+            pr
+            for pr in self._repo(repo_full_name).pull_requests
+            if pr.state == "open" and not pr.merged
+        ][:limit]
 
     async def get_pull_request(
         self, repo_full_name: str, number: int
@@ -1103,6 +1130,50 @@ class RestGitHubClient:
             ),
             head_sha=str((item.get("head") or {}).get("sha", "")),
         )
+
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        """Open pull requests, newest first.
+
+        One page only. A repository with more than a hundred open pull
+        requests has a problem this view cannot help with, and paginating for
+        it would slow the common case for every other repository.
+
+        `changed_files` is deliberately absent: the list endpoint does not
+        return it, and fetching it would mean a second call per pull request.
+        The detail view has it for the one somebody opens.
+        """
+        # Errors propagate. A repository the App cannot see is a real answer
+        # for this view and the caller reports it as unreachable — swallowing
+        # it here would render "no open pull requests", which is the one thing
+        # it definitely does not mean.
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/pulls",
+            params={
+                "state": "open",
+                "sort": "created",
+                "direction": "desc",
+                "per_page": min(limit, 100),
+            },
+        )
+        items = payload if isinstance(payload, list) else []
+        return [
+            PullRequest(
+                number=int(item["number"]),
+                url=str(item["html_url"]),
+                head_branch=(item.get("head") or {}).get("ref", ""),
+                state=str(item.get("state", "open")),
+                merged=bool(item.get("merged_at")),
+                draft=bool(item.get("draft", False)),
+                title=str(item.get("title", "")),
+                created_at=_parse_time(item.get("created_at")),
+                changed_files=None,
+                head_sha=str((item.get("head") or {}).get("sha", "")),
+            )
+            for item in items[:limit]
+        ]
 
     async def get_checks_summary(
         self, repo_full_name: str, ref: str

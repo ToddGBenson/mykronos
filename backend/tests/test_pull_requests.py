@@ -159,18 +159,79 @@ class TestFixPullRequests:
         assert result.pull_requests == []
 
 
+class TestEverybodyElsesPullRequests:
+    """The defect this view had: it could only ever show its own work."""
+
+    @pytest.mark.anyio
+    async def test_a_pull_request_mykronos_did_not_open_is_listed(
+        self, client, admin_auth, github
+    ) -> None:
+        """The whole point. A repository with a human's pull request open used
+        to render as empty on a page called Pull requests."""
+        install_pr(client, admin_auth)
+        await github.create_pull_request(
+            REPO,
+            title="Rewrite the payments reconciler",
+            body="Nothing to do with Mykronos.",
+            head="feature/reconciler",
+            base="main",
+        )
+
+        result = await listing(client)
+
+        titles = {row.title for row in result.pull_requests}
+        assert "Rewrite the payments reconciler" in titles
+
+    @pytest.mark.anyio
+    async def test_ours_and_theirs_stay_distinguishable(
+        self, client, admin_auth, github
+    ) -> None:
+        """Listing everything must not blur what this platform is answerable
+        for. An install turns scanning on; somebody else's branch does not."""
+        install_pr(client, admin_auth)
+        await github.create_pull_request(
+            REPO, title="Unrelated", body="", head="feature/x", base="main"
+        )
+
+        rows = {row.title: row for row in (await listing(client)).pull_requests}
+
+        assert rows["Unrelated"].kind == "other"
+        assert rows["Unrelated"].summary == "", "no rationale to claim for it"
+        ours = [row for row in rows.values() if row.kind == "install"]
+        assert ours and ours[0].capabilities == ["secrets"]
+
+    @pytest.mark.anyio
+    async def test_our_work_sorts_above_work_we_only_report_on(
+        self, client, admin_auth, github
+    ) -> None:
+        install_pr(client, admin_auth)
+        await github.create_pull_request(
+            REPO, title="Unrelated", body="", head="feature/x", base="main"
+        )
+
+        kinds = [row.kind for row in (await listing(client)).pull_requests]
+
+        assert kinds.index("install") < kinds.index("other")
+
+
 class TestDegrading:
     @pytest.mark.anyio
     async def test_an_unreachable_repo_is_reported_not_dropped(
         self, client, admin_auth, github, monkeypatch
     ) -> None:
-        """A shorter list of outstanding work looks exactly like progress."""
+        """A shorter list of outstanding work looks exactly like progress.
+
+        Patched at `list_open_pull_requests` rather than `get_pull_request`:
+        the view now asks GitHub for every open pull request per repository
+        instead of asking about each one it remembers opening, so that is where
+        an unreachable repository now fails.
+        """
         install_pr(client, admin_auth)
 
-        async def boom(*args: object, **kwargs: object) -> PullRequest | None:
+        async def boom(*args: object, **kwargs: object) -> list[PullRequest]:
             raise GitHubError("upstream is having a day", status=502)
 
-        monkeypatch.setattr(github, "get_pull_request", boom)
+        monkeypatch.setattr(github, "list_open_pull_requests", boom)
 
         result = await listing(client)
 
