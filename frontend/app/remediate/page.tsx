@@ -36,8 +36,15 @@ export default async function RemediatePage() {
     return <ErrorPanel title="Cannot answer that right now" detail={briefing.error} />;
   }
 
-  const { total_open, blocked_findings, closing_soon, auto_fixable, stalled, classes, awaiting } =
-    briefing.data;
+  const {
+    total_open,
+    blocked_findings,
+    closing_soon,
+    auto_fixable,
+    stalled,
+    awaiting,
+    guidance,
+  } = briefing.data;
 
   // What is left once the free ones and the frozen ones are set aside. This
   // is the only number on the page that means "work a person has to do".
@@ -118,38 +125,68 @@ export default async function RemediatePage() {
         )}
       </section>
 
-      {/* 3 — real work, grouped so one action covers many findings. */}
+      {/* 3 — the scanners' own remediation, grouped on the rule because that
+          is the unit the fix has. Forty alerts across forty URLs are one
+          policy line, and listing them as forty rows is how a five-minute
+          change looks like a sprint. */}
       <section className="flex flex-col gap-2">
-        <Label>3 · Real work, grouped by what would fix it</Label>
-        {classes.length === 0 ? (
+        <Label>3 · What the scanners said to do</Label>
+        {guidance.length === 0 ? (
           <EmptyState title="Nothing open" detail="No open findings in scope." />
         ) : (
-          <div className="flex flex-col gap-3">
-            {classes.map((entry) => (
-              <div key={entry.capability} className="border-l-2 border-rule pl-3">
+          <div className="flex flex-col gap-4">
+            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+              Taken from the scan itself — ZAP&apos;s <code>solution</code>,
+              Trivy&apos;s <code>Fixed Version</code> — not from a general sense
+              of what a class of finding usually needs. Each row says which,
+              because &ldquo;the tool told us&rdquo; and &ldquo;we think&rdquo;
+              do not deserve equal trust.
+            </p>
+            {guidance.map((cap) => (
+              <div key={cap.capability} className="flex flex-col gap-1">
                 <div className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="font-mono text-[11px] text-ink">{entry.open_findings}</span>
-                  <span className="font-mono text-[10px] text-ink-2">{entry.capability}</span>
+                  <span className="font-mono text-[11px] font-bold text-ink">
+                    {cap.capability}
+                  </span>
+                  <span className="font-mono text-[10px] text-ink-2">{cap.count} open</span>
+                  {cap.unactionable > 0 ? (
+                    <span className="font-mono text-[9px] text-ink-3">
+                      — {cap.unactionable} with no fix published
+                    </span>
+                  ) : null}
                 </div>
-                <p className="mt-0.5 max-w-prose text-[10px] leading-relaxed text-ink-3">
-                  {entry.route}
-                </p>
-                {entry.concentrated_in.length > 0 ? (
-                  <p className="mt-0.5 max-w-prose text-[9px] leading-snug text-ink-3">
-                    Concentrated in:{" "}
-                    {entry.concentrated_in.map(([name, n]) => `${name} (${n})`).join(", ")} — which
-                    is what turns a count into one action.
-                  </p>
-                ) : null}
-                {entry.action ? (
-                  <p className="mt-1 font-mono text-[9px] text-accent">
-                    → {entry.action.method} {entry.action.path}
-                  </p>
-                ) : (
-                  <p className="mt-1 text-[9px] text-ink-3">
-                    No single request does this one — see above for what does.
-                  </p>
-                )}
+                <div className="scroll-x">
+                  <table className="w-full min-w-[680px] border-collapse font-mono text-[10px]">
+                    <thead>
+                      <tr className="text-left text-ink-3">
+                        <th className="px-2 py-1 text-right font-normal">Count</th>
+                        <th className="px-2 py-1 font-normal">Finding</th>
+                        <th className="px-2 py-1 font-normal">Fix</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cap.rules.map((rule) => (
+                        <tr key={rule.rule_id} className="border-t border-rule align-top">
+                          <td className="px-2 py-1 text-right text-ink">{rule.count}</td>
+                          <td className="px-2 py-1 text-ink-2">
+                            {rule.title}
+                            <span className="ml-1 text-[8px] uppercase tracking-wide text-ink-3">
+                              {rule.effort}
+                            </span>
+                          </td>
+                          <td className="max-w-[46ch] px-2 py-1 leading-snug text-ink-3">
+                            {rule.fix}
+                            {rule.source === "standing" ? (
+                              <span className="ml-1 text-[8px] uppercase tracking-wide text-ink-3">
+                                · ours, not the scanner&apos;s
+                              </span>
+                            ) : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ))}
           </div>
