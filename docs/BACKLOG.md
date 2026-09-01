@@ -170,6 +170,38 @@ that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
 
+### B-022 — The review loop has a UI, so it can actually be used — **done**
+
+B-019 and B-020 made the loop *possible*: the queue could be filtered to what
+the classifier concluded, and one endpoint could confirm or reject it. Neither
+made it *usable* — confirming a false positive still meant issuing a POST by
+hand, which is the same shape as B-010's endpoint that existed for months with
+nothing rendering it.
+
+The triage queue now carries a **Classifier** column and filter. Every row
+shows what the machine concluded, with its rationale on hover, and a `review`
+control offering both answers.
+
+**Both answers are offered on every row, and neither is the default.**
+Confirming is only shown for `likely_false_positive` — agreeing with
+`needs_human_judgment` would dismiss a finding the classifier explicitly
+declined to judge, which the backend refuses with a 409, so the affordance is
+not offered rather than offered and rejected. Disagreeing is shown everywhere,
+because the row the classifier got *wrong* is exactly the one nobody could say
+so about before.
+
+Confirming demands a reason and the button stays disabled without one — the
+same rule the backend enforces, said earlier and more kindly, because dampening
+reads the reason rather than the click.
+
+**The rollout window is handled, and it had to be.** Verified against the
+currently-deployed backend, which predates B-019 and returns no classification
+at all: `item.triage` is typed `string` and is `undefined` at runtime, which is
+precisely the gap that took the vulnerability-management page down between two
+deploys. The cell renders `—` and offers no review button rather than a control
+that would 404. Confirmed by loading the page against that backend: 200, zero
+review buttons, no server errors.
+
 ### B-019 / B-020 / B-021 — The three handoffs in the finding lifecycle — **done**
 
 All three came from writing the lifecycle down end to end, and all three sat at

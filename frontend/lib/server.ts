@@ -207,6 +207,7 @@ export async function getTriage(query: {
   min_epss?: number;
   owner?: string;
   order?: string;
+  triage?: string;
 }): Promise<Result<TriageQueue>> {
   try {
     const { data, response } = await backendClient().GET("/api/dashboard/triage", {
@@ -219,6 +220,7 @@ export async function getTriage(query: {
           min_epss: query.min_epss as never,
           owner: query.owner as never,
           order: query.order as never,
+          triage: query.triage as never,
           limit: 100,
         },
       },
