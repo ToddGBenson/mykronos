@@ -1106,3 +1106,67 @@ class TestOracleSeesFixesInFlight:
         )
 
         assert engine.evaluate(REPO).overall_risk_score > 0
+
+
+class TestRemediationCoverageIsStated:
+    """B-021. Across 560 remediation events on this estate, nothing has ever
+    reached `fix_generated`. That is correct -- four deterministic fixers
+    against a backlog of container, DAST and SAST findings -- and it looks
+    exactly like a broken capability.
+
+    An empty efficacy table means one of two opposite things: nothing was
+    fixable, or fixes were attempted and did not remove risk. The table alone
+    cannot say which, so the page says it.
+    """
+
+    def test_coverage_names_every_fixer(self) -> None:
+        """The page cannot silently fall behind the code: a fixer added
+        without a coverage line would be invisible to a reader."""
+        from mykronos.patchwork.fixers import COVERAGE, FIXERS
+
+        assert {entry["fixer"] for entry in COVERAGE} == {name for name, _ in FIXERS}
+
+    def test_every_coverage_entry_says_what_it_handles(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
+
+        for entry in COVERAGE:
+            assert entry["handles"].strip()
+            assert entry["capability"].strip()
+        for entry in NOT_COVERED:
+            assert entry["why"].strip(), (
+                "an absence stated is different from an absence inferred from "
+                "a blank table, and the difference is the reason"
+            )
+
+    def test_a_capability_is_not_both_covered_and_not_covered(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
+
+        covered = {entry["capability"] for entry in COVERAGE}
+        uncovered = {entry["capability"] for entry in NOT_COVERED}
+
+        assert not (covered & uncovered), (
+            f"{sorted(covered & uncovered)} is listed as both, so the page "
+            "would contradict itself"
+        )
+
+    def test_with_nothing_to_measure_the_page_says_so(
+        self, client, admin_auth
+    ) -> None:
+        """The state this estate is actually in."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert body["measured"] is False
+        assert "nothing to measure" in body["note"]
+        assert "not the same as fixes that did not work" in body["note"]
+        assert body["coverage"]["fixer_count"] == 4
+        assert body["coverage"]["covered"]
+        assert body["coverage"]["not_covered"]
+
+    def test_coverage_is_carried_whether_or_not_anything_was_measured(
+        self, client, admin_auth
+    ) -> None:
+        """Beside the numbers, not instead of them: a reader needs it most
+        when the table is empty, and it must not vanish once it fills."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert set(body["coverage"]) == {"covered", "not_covered", "fixer_count"}

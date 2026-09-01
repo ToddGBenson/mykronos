@@ -193,28 +193,48 @@ consequences of fixer coverage, not bugs in either.
 
 ---
 
-## Where the process actually breaks
+## Where the process broke, and what closed it
 
-Three gaps, all at handoffs rather than inside a stage. Filed as B-019, B-020
-and B-021.
+Three gaps, all at handoffs rather than inside a stage. All three are now
+closed (B-019, B-020, B-021); they are kept here because the shape of them is
+the useful part.
 
-**The machine's proposals reach nobody.** 22 findings are labelled
-`likely_false_positive` and 399 `needs_human_judgment`, and the ranked triage
-queue cannot filter by classification at all — only the per-repository findings
-view can. So the platform has done the analysis and there is no portfolio-wide
-way to act on it.
+**The machine's proposals reached nobody.** 22 findings were labelled
+`likely_false_positive` and 399 `needs_human_judgment`, and the ranked queue
+could not filter by classification at all — only the per-repository findings
+view could. So "show me everything the machine could not judge" meant one
+request per repository, which is not a worklist. The queue now takes a
+`triage` filter and carries the classification and its rationale on every row,
+whether or not anybody filters.
 
-**The false-positive funnel has no confirmation step.** A `likely_false_positive`
-sits at `triaged` for ever unless somebody opens the right repository, finds it
-and dispositions it by hand. The dampening loop that depends on those
-dispositions is therefore fed by whoever happens to look.
+**The false-positive funnel had no confirmation step.** A
+`likely_false_positive` sat at `triaged` until somebody opened the right
+repository and dispositioned it by hand, and the dampening loop that depends on
+those dispositions was fed by whoever happened to look. The evidence it was not
+working: 43 dismissals ever recorded, all sast and secrets, against 234 open
+container findings.
 
-**Remediation coverage is unstated.** That four fixers cover four narrow
-classes is true, defensible, and written down nowhere a reader of the
-Remediation tab would find it. A tab reporting zero fixes looks like a broken
-capability rather than an honest one.
+`POST /api/dashboard/findings/{id}/classification-review` makes it one action,
+and records **both** answers. Agreement already left a trace — the status
+changes and the rule earns a dismissal observation. Disagreement left none, so
+a classifier calling real findings false positives was indistinguishable from
+one nobody had got to. A verdict nothing ever contradicts is a verdict nobody
+is checking.
 
----
+Rejection is its own knowledge type and deliberately does not dampen: it
+teaches about the classifier, not the rule, and quietening a rule because
+somebody said its finding was real would invert the loop. Agreement is
+delegated to the disposition endpoint rather than reimplemented, so the two
+routes to the same decision cannot drift apart — and agreeing with
+`needs_human_judgment` is refused outright, because that is the one thing this
+endpoint must not become a shortcut for.
+
+**Remediation coverage was unstated.** That four fixers cover four narrow
+classes is true, defensible, and was written down nowhere a reader of the
+Remediation tab would find it. The efficacy response now carries `coverage` —
+what has a fixer and what does not, with the reason — and `measured`, which
+separates "no fix has reached a pull request" from "fixes were made and did not
+remove risk". An all-zero table meant both, and a reader could not tell which.
 
 ## Re-measuring
 

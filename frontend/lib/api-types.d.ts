@@ -1022,6 +1022,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/classification-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Classification
+         * @description Confirm or reject what the classifier concluded (B-020).
+         *
+         *     The classifier labels findings `likely_false_positive` and
+         *     `needs_human_judgment` and deliberately cannot act on either: a machine
+         *     that could set `false_positive` would eventually dismiss a real finding,
+         *     silently. So the label waits for a person — and until this existed, the
+         *     only way to answer it was to open the right repository, find the row and
+         *     disposition it by hand, which is why 43 false positives have ever been
+         *     recorded and all of them are sast or secrets.
+         *
+         *     **Both answers are recorded, and that is the point.** Agreeing already
+         *     left a trace: the finding changes status and the rule earns a dismissal
+         *     observation that feeds dampening. Disagreeing left none, so a classifier
+         *     calling real findings false positives was indistinguishable from one
+         *     nobody had reviewed yet. A verdict nothing ever contradicts is a verdict
+         *     nobody is checking.
+         *
+         *     Rejection does not dampen anything and does not change the finding: it is
+         *     a fact about the classifier, not about the rule. Quietening a rule because
+         *     somebody said its finding was real would invert the loop.
+         */
+        post: operations["review_classification_api_dashboard_findings__finding_id__classification_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/findings/{finding_id}/status": {
         parameters: {
             query?: never;
@@ -2275,6 +2314,34 @@ export interface components {
             by: string;
         };
         /**
+         * ClassificationReview
+         * @description A person's verdict on what the classifier concluded (B-020).
+         */
+        ClassificationReview: {
+            /**
+             * Agrees
+             * @description True confirms the classifier and dispositions the finding. False records that it was wrong and leaves the finding open.
+             */
+            agrees: boolean;
+            /**
+             * Reason
+             * @description Why. Required when agreeing, because a dismissal without one is recorded as low-confidence and barred from promotion (spec 11 §4) -- and dampening, which these dispositions feed, needs the reason rather than the click.
+             * @default
+             */
+            reason: string;
+        };
+        /** ClassificationReviewResult */
+        ClassificationReviewResult: {
+            /** Finding Id */
+            finding_id: string;
+            /** Agreed */
+            agreed: boolean;
+            /** Status */
+            status: string;
+            /** Recorded */
+            recorded: string;
+        };
+        /**
          * ControlOut
          * @description A declared mitigation (spec 28 §3).
          */
@@ -2497,6 +2564,19 @@ export interface components {
             by_rule: components["schemas"]["EfficacyRowOut"][];
             /** Note */
             note: string;
+            /**
+             * Coverage
+             * @description Which finding classes have a deterministic fixer and which do not, with the reason (B-021). Carried beside the numbers because an empty efficacy table means one of two opposite things -- nothing was fixable, or fixes were attempted and did not work -- and the table alone cannot say which.
+             */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Measured
+             * @description Whether there is anything to measure yet. False means no fix has reached a pull request, so the rates below are absent rather than zero -- the same not-measured versus measured-zero distinction `stale_dependencies` draws (B-004).
+             * @default false
+             */
+            measured: boolean;
         };
         /**
          * EfficacyRowOut
@@ -4467,6 +4547,18 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /**
+             * Triage
+             * @description What the classifier concluded about this row, and why. Carried on every row rather than only when filtered, so a queue can show it without a second request (B-019).
+             * @default needs_human_judgment
+             */
+            triage: string;
+            /**
+             * Triage Rationale
+             * @description The sentence behind the classification. spec 01 §6 makes an unexplained verdict a bug, and a row labelled 'needs human judgment' with nothing saying why is one.
+             * @default
+             */
+            triage_rationale: string;
             /** First Seen At */
             first_seen_at?: string | null;
             /**
@@ -5027,6 +5119,8 @@ export interface operations {
                 order?: "severity" | "rank";
                 include_snoozed?: boolean;
                 claimed_by?: string | null;
+                /** @description What the classifier concluded. The per-repository findings view has had this filter; the queue did not, so 'show me everything the machine could not judge' meant one request per repository (B-019). Every row carries `triage` whether or not this is set. */
+                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 limit?: number;
             };
             header?: never;
@@ -5913,6 +6007,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_classification_api_dashboard_findings__finding_id__classification_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClassificationReview"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClassificationReviewResult"];
                 };
             };
             /** @description Validation Error */

@@ -37,7 +37,11 @@ from mykronos.db.models import (
     RepoOnboarding,
     capability_config_for,
 )
-from mykronos.knowledge.capture import capture_dismissal, safe_capture
+from mykronos.knowledge.capture import (
+    capture_classification_rejected,
+    capture_dismissal,
+    safe_capture,
+)
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
@@ -226,6 +230,22 @@ class TriageItem(BaseModel):
     line_start: int | None = None
     package_name: str | None = None
     package_version: str | None = None
+    triage: str = Field(
+        default="needs_human_judgment",
+        description=(
+            "What the classifier concluded about this row, and why. Carried "
+            "on every row rather than only when filtered, so a queue can show "
+            "it without a second request (B-019)."
+        ),
+    )
+    triage_rationale: str = Field(
+        default="",
+        description=(
+            "The sentence behind the classification. spec 01 §6 makes an "
+            "unexplained verdict a bug, and a row labelled 'needs human "
+            "judgment' with nothing saying why is one."
+        ),
+    )
     first_seen_at: datetime | None = None
     repo_recommendation: str | None = Field(
         default=None,
@@ -732,6 +752,36 @@ AcceptanceReason = Literal[
 ]
 
 
+class ClassificationReview(BaseModel):
+    """A person's verdict on what the classifier concluded (B-020)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agrees: bool = Field(
+        description=(
+            "True confirms the classifier and dispositions the finding. False "
+            "records that it was wrong and leaves the finding open."
+        )
+    )
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Why. Required when agreeing, because a dismissal without one is "
+            "recorded as low-confidence and barred from promotion (spec 11 "
+            "§4) -- and dampening, which these dispositions feed, needs the "
+            "reason rather than the click."
+        ),
+    )
+
+
+class ClassificationReviewResult(BaseModel):
+    finding_id: str
+    agreed: bool
+    status: str
+    recorded: str
+
+
 class StatusChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -949,6 +999,24 @@ async def triage(
     order: Annotated[Literal["severity", "rank"], Query()] = "severity",
     include_snoozed: Annotated[bool, Query()] = False,
     claimed_by: Annotated[str | None, Query(max_length=255)] = None,
+    triage: Annotated[
+        Literal[
+            "true_positive",
+            "likely_false_positive",
+            "needs_human_judgment",
+            "toxic_combination",
+        ]
+        | None,
+        Query(
+            description=(
+                "What the classifier concluded. The per-repository findings "
+                "view has had this filter; the queue did not, so 'show me "
+                "everything the machine could not judge' meant one request "
+                "per repository (B-019). Every row carries `triage` whether "
+                "or not this is set."
+            )
+        ),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -977,6 +1045,8 @@ async def triage(
             policy=request.app.state.oracle_policy,
             include_snoozed=include_snoozed,
             claimed_by=claimed_by,
+            triage=triage,
+            store=request.app.state.knowledge,
         )
 
     return TriageQueue(
@@ -2306,6 +2376,129 @@ async def finding_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
     return FindingOut.model_validate(record)
+
+
+@router.post(
+    "/findings/{finding_id}/classification-review",
+    response_model=ClassificationReviewResult,
+)
+async def review_classification(
+    request: Request,
+    finding_id: str,
+    body: ClassificationReview,
+    principal: PrincipalDep,
+) -> ClassificationReviewResult:
+    """Confirm or reject what the classifier concluded (B-020).
+
+    The classifier labels findings `likely_false_positive` and
+    `needs_human_judgment` and deliberately cannot act on either: a machine
+    that could set `false_positive` would eventually dismiss a real finding,
+    silently. So the label waits for a person — and until this existed, the
+    only way to answer it was to open the right repository, find the row and
+    disposition it by hand, which is why 43 false positives have ever been
+    recorded and all of them are sast or secrets.
+
+    **Both answers are recorded, and that is the point.** Agreeing already
+    left a trace: the finding changes status and the rule earns a dismissal
+    observation that feeds dampening. Disagreeing left none, so a classifier
+    calling real findings false positives was indistinguishable from one
+    nobody had reviewed yet. A verdict nothing ever contradicts is a verdict
+    nobody is checking.
+
+    Rejection does not dampen anything and does not change the finding: it is
+    a fact about the classifier, not about the rule. Quietening a rule because
+    somebody said its finding was real would invert the loop.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Reviewing a classification requires the 'admin' role; you "
+                f"have '{principal.role.value}'."
+            ),
+        )
+
+    record = _queries(request).finding(finding_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No finding {finding_id!r}.",
+        )
+
+    repo_full_name = str(record.get("repo_full_name") or "")
+    rule_id = str(record.get("rule_id") or "")
+    from mykronos.patchwork.triage import classify
+
+    classification, _ = classify(
+        {
+            "rule_id": rule_id,
+            "severity": record.get("severity"),
+            "capability": record.get("capability"),
+        },
+        repo_full_name,
+        store=request.app.state.knowledge,
+    )
+
+    if not body.agrees:
+        safe_capture(
+            capture_classification_rejected,
+            request.app.state.knowledge,
+            repo_full_name=repo_full_name,
+            rule_id=rule_id,
+            finding_id=finding_id,
+            classification=classification,
+            reason=body.reason,
+            actor=principal.actor,
+        )
+        return ClassificationReviewResult(
+            finding_id=finding_id,
+            agreed=False,
+            # Untouched, deliberately. The person said it is real.
+            status=str(record.get("status") or "open"),
+            recorded="classifier rejection",
+        )
+
+    if classification != "likely_false_positive":
+        # Agreeing with `needs_human_judgment` would mean dismissing a finding
+        # the machine explicitly declined to judge, which is the one thing
+        # this endpoint must not become a shortcut for.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This finding is classified {classification!r}, not "
+                "'likely_false_positive'. Agreeing here would dismiss a "
+                "finding the classifier did not call a false positive; use "
+                "the disposition endpoint and say why."
+            ),
+        )
+
+    if not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Confirming a false positive needs a reason. A bare click is "
+                "recorded as low-confidence and barred from promotion (spec 11 "
+                "§4), and dampening reads the reason rather than the count."
+            ),
+        )
+
+    # Delegated rather than reimplemented. The disposition path already does
+    # the update, the audit entry, the knowledge capture and the retro signal,
+    # and a second copy here is a second thing to keep in step -- this
+    # endpoint's whole purpose is to be a shorter route to the same decision,
+    # not a different one.
+    await set_finding_status(
+        request,
+        finding_id,
+        StatusChange(status=FindingStatus.FALSE_POSITIVE, reason=body.reason),
+        principal,
+    )
+    return ClassificationReviewResult(
+        finding_id=finding_id,
+        agreed=True,
+        status=FindingStatus.FALSE_POSITIVE.value,
+        recorded="disposition and dismissal learning",
+    )
 
 
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)

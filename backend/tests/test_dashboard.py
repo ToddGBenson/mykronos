@@ -1892,3 +1892,279 @@ class TestCapabilitiesThatReportElsewhere:
         # The auth fixture posts a sast run; sast is not in REPORTS_ELSEWHERE
         # and must keep its real status rather than gaining a synthetic one.
         assert states["sast"]["last_scan_status"] == "success"
+
+
+class TestTheQueueCarriesTheClassification:
+    """B-019. The ranked, portfolio-wide queue took nine filters and not the
+    one that says what the machine concluded.
+
+    The per-repository findings view has had a `triage` filter since spec 18.
+    So the classification existed, was displayed and was filterable — on the
+    one surface that can only show a single repository at a time. "Show me
+    everything the machine could not judge" meant one request per repository,
+    which is not a worklist.
+    """
+
+    @staticmethod
+    def _activate(client: TestClient) -> None:
+        """The queue only shows repositories whose status is `active`, and
+        `onboard` leaves one pending. Same step `test_worklist_state` takes."""
+        from sqlalchemy import select as _select
+
+        from mykronos.db.models import RepoOnboarding as _RepoOnboarding
+
+        with client.app.state.db.session() as session:
+            row = session.execute(
+                _select(_RepoOnboarding).where(
+                    _RepoOnboarding.github_repo_full_name == REPO
+                )
+            ).scalars().one()
+            row.status = "active"
+
+    def _queue(self, client: TestClient, admin_auth: dict[str, str], **params):
+        response = client.get(
+            "/api/dashboard/triage", headers=admin_auth, params=params
+        )
+        assert response.status_code == 200
+        return response.json()["items"]
+
+    def test_every_row_carries_a_classification_and_a_reason(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Stamped whether or not anybody filtered, the same contract the KEV
+        badge has. A caller should not need a second request to render it."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        items = self._queue(client, admin_auth)
+
+        assert items, "expected the seeded finding in the queue"
+        for item in items:
+            assert item["triage"]
+            assert item["triage_rationale"], (
+                "spec 01 §6 makes an unexplained verdict a bug, and a row "
+                "labelled 'needs human judgment' with no reason is one"
+            )
+
+    def test_it_filters_to_one_classification(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        everything = self._queue(client, admin_auth)
+        classification = everything[0]["triage"]
+        filtered = self._queue(client, admin_auth, triage=classification)
+
+        assert filtered
+        assert {i["triage"] for i in filtered} == {classification}
+
+    def test_filtering_to_another_classification_excludes_it(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """The filter has to exclude as well as include, or it is decoration."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        mine = self._queue(client, admin_auth)[0]["triage"]
+        other = (
+            "true_positive" if mine != "true_positive" else "likely_false_positive"
+        )
+
+        assert self._queue(client, admin_auth, triage=other) == []
+
+    def test_an_unknown_classification_is_refused(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """A typo must not silently return the whole queue, which is what an
+        unvalidated filter does — the same fall-through B-006 fixed on the
+        repo page's tab parameter."""
+        onboard(client, admin_auth)
+        self._activate(client)
+
+        response = client.get(
+            "/api/dashboard/triage",
+            headers=admin_auth,
+            params={"triage": "definitely-not-a-classification"},
+        )
+
+        assert response.status_code == 422
+
+    def test_the_filter_composes_with_ranking(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Filtering must narrow the queue, not replace its order. A
+        needs-human-judgment critical should still outrank a low."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(severity="critical", symbol="a", code_snippet="a"),
+                finding_payload(severity="low", symbol="b", code_snippet="b"),
+            ],
+        )
+        run_compaction()
+
+        ranked = self._queue(client, admin_auth, order="rank")
+        classification = ranked[0]["triage"]
+        filtered = self._queue(
+            client, admin_auth, order="rank", triage=classification
+        )
+
+        assert filtered
+        assert [i["finding_id"] for i in filtered] == [
+            i["finding_id"] for i in ranked if i["triage"] == classification
+        ]
+
+
+class TestReviewingWhatTheClassifierConcluded:
+    """B-020. The classifier labels findings and deliberately cannot act on
+    them: a machine that could set `false_positive` would eventually dismiss a
+    real finding, silently.
+
+    So the label waits for a person, and until this existed the only way to
+    answer it was to open the right repository and disposition by hand. The
+    evidence that this was not happening: 43 false positives ever recorded,
+    all of them sast and secrets, against 234 open container findings.
+    """
+
+    def _seed(self, client, admin_auth, auth, run_compaction, **overrides):
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(**overrides)])
+        run_compaction()
+        return str(
+            client.app.state.catalog.query("SELECT finding_id FROM findings")[0][0]
+        )
+
+    def _review(self, client, admin_auth, finding_id, **body):
+        return client.post(
+            f"/api/dashboard/findings/{finding_id}/classification-review",
+            json=body,
+            headers=admin_auth,
+        )
+
+    def _status(self, client, finding_id) -> str:
+        return str(
+            client.app.state.catalog.query(
+                "SELECT status FROM findings WHERE finding_id = ?", [finding_id]
+            )[0][0]
+        )
+
+    def test_rejecting_the_classifier_leaves_the_finding_open(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """The half that recorded nothing before. Agreement already left a
+        trace; disagreement did not, so a classifier calling real findings
+        false positives looked exactly like one nobody had reviewed."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(
+            client, admin_auth, finding_id, agrees=False, reason="reachable from the API"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["agreed"] is False
+        assert response.json()["recorded"] == "classifier rejection"
+        assert self._status(client, finding_id) == "open"
+
+    def test_a_rejection_is_written_to_the_knowledge_store(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """A verdict nothing ever contradicts is a verdict nobody is
+        checking, so the contradiction has to be recorded somewhere."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        self._review(
+            client, admin_auth, finding_id, agrees=False, reason="reachable from the API"
+        )
+
+        entries = client.app.state.knowledge.active_entries()
+        assert any(
+            entry.source_type == "classification_rejected" for entry, _ in entries
+        )
+
+    def test_a_rejection_does_not_dampen_the_rule(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """It teaches about the classifier, not about the rule. Quietening a
+        rule because somebody said its finding was real would invert the whole
+        loop."""
+        from mykronos.knowledge.capture import TEACHES_ABOUT_THE_RULE
+
+        assert "classification_rejected" not in TEACHES_ABOUT_THE_RULE
+
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+        self._review(client, admin_auth, finding_id, agrees=False, reason="real")
+
+        entries = {
+            entry.source_type for entry, _ in client.app.state.knowledge.active_entries()
+        }
+        assert "finding_dismissal" not in entries, (
+            "a rejection must not be recorded as a dismissal, which is what "
+            "dampening reads"
+        )
+
+    def test_agreeing_needs_a_reason(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """A bare click is recorded low-confidence and barred from promotion
+        (spec 11 §4), and dampening reads the reason rather than the count."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(client, admin_auth, finding_id, agrees=True, reason="  ")
+
+        assert response.status_code in (409, 422)
+        assert self._status(client, finding_id) == "open"
+
+    def test_it_refuses_to_dismiss_what_the_machine_declined_to_judge(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """The one thing this endpoint must not become a shortcut for.
+        Agreeing with `needs_human_judgment` would dismiss a finding the
+        classifier explicitly did not call a false positive."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(
+            client, admin_auth, finding_id, agrees=True, reason="looks fine to me"
+        )
+
+        assert response.status_code == 409
+        assert "not 'likely_false_positive'" in response.json()["detail"]
+        assert self._status(client, finding_id) == "open"
+
+    def test_a_viewer_cannot_review(
+        self, client: TestClient, admin_auth, viewer_auth, auth, run_compaction
+    ) -> None:
+        """No path lets a classification become a disposition without a person
+        entitled to make one."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = client.post(
+            f"/api/dashboard/findings/{finding_id}/classification-review",
+            json={"agrees": False, "reason": "real"},
+            headers=viewer_auth,
+        )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_finding_is_a_404(
+        self, client: TestClient, admin_auth
+    ) -> None:
+        onboard(client, admin_auth)
+
+        assert self._review(
+            client, admin_auth, "f" * 64, agrees=False, reason="x"
+        ).status_code == 404
