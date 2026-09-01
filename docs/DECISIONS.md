@@ -4120,4 +4120,30 @@ reads as a bad afternoon rather than a two-day outage. Last-success is queried
 over all history instead, or a lane that failed more times than the window is
 wide would report as having never worked.
 
-Tests: `tests/test_briefing.py`.
+**A lane can stall in two ways, and the second was nearly missed.** The first
+version only looked at `scan_status`, so it caught mykronos DAST failing
+seventeen times and reported the estate otherwise fine. It was not fine.
+`ToddGBenson/TheHub` had not scanned since 2026-08-27 — every lane *succeeded*
+and then simply never ran again. A check that reads `scan_status` sees nothing
+wrong with that: there is no error to notice.
+
+Silence is the worse of the two, and by some distance. 316 TheHub findings were
+frozen behind it against 115 behind the lane that was visibly broken. Together
+that is 431 of 475 open findings across the estate — **91% of the backlog could
+not close**, and the platform reported a healthy dashboard.
+
+So silence is detected too, measured against **each lane's own cadence** rather
+than a fixed threshold. This estate mixes daily and weekly schedules and runs
+some lanes on every push; any single number either misses a stopped daily lane
+or cries wolf at every weekly one. The median gap between a lane's own runs,
+times three, floored at two days. Median rather than mean, because a
+push-triggered lane has a few enormous gaps around holidays and a mean would
+let it go dark for a fortnight before anybody was told.
+
+The two reasons get different wording on the button, and flattening them would
+make it a lie half the time: a silent lane was working when it stopped, so
+dispatching it *is* the fix, while a failing lane will just fail again. Telling
+somebody to repair a job that has nothing wrong with it is how a briefing gets
+ignored.
+
+Filed as B-024. Tests: `tests/test_briefing.py`.

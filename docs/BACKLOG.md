@@ -45,13 +45,71 @@ already shipped.
 
 ## Open
 
-Two, both from the 2026-09-01 monitoring sweep. Everything else from that sweep, and all three gaps that writing [`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed.
+Three. Two from the 2026-09-01 monitoring sweep, and B-024 from
+`mykronos briefing` on the day the briefing was written. Everything else from
+that sweep, and all three gaps that writing
+[`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed.
 Every one was reproduced against the live system before it was written; the
 evidence is in each entry rather than a link to a dashboard that will have
 moved on.
 
-Both need somebody other than me: a credential this session is not
-permitted to write, and a decision that is the operator's.
+B-016 and B-018 need somebody other than me: a credential this session is not
+permitted to write, and a decision that is the operator's. B-024 is workable
+and is the largest single thing holding the estate's findings open.
+
+### B-024 — TheHub stopped scanning five days ago and nothing said so
+
+**Size:** M **State:** open **Verified:** 2026-09-01
+**Specs:** [05 §5](../specs/05-data-lake.md), [15 §4a](../specs/15-portfolio.md)
+
+Found by `mykronos briefing` on the day it was written, which is the argument
+for the briefing.
+
+**No Mykronos scan has run against `ToddGBenson/TheHub` since 2026-08-27.**
+Not a failure — a silence. Every one of its lanes succeeded and then simply
+never ran again. `gh run list --repo ToddGBenson/TheHub` shows nothing but
+Dependabot for five days.
+
+The consequence is that **316 open findings cannot close**: 213 containers, 69
+sast, 32 dast, 2 secrets. `reconcile_absences` needs two consecutive successful
+scans to observe an absence (spec 05 §5), and there are no scans. Whatever has
+been fixed in TheHub since 2026-08-27 is still recorded as open and will stay
+that way.
+
+Together with mykronos's DAST lane (B-023), **431 of 475 open findings across
+the estate — 91% — are currently unable to close.** That number is the reason
+this is filed at M rather than S.
+
+Two things are known and one is not:
+
+- The workflows exist and are `active`: `mykronos-sast.yml`,
+  `mykronos-secrets.yml`, `mykronos-containers.yml`, `mykronos-atlas.yml`,
+  `mykronos-aegis.yml`.
+- Their last actual runs were 2026-08-14 and **failed in five seconds** with
+  no step logs recorded — a job that did not start rather than a scan that
+  went wrong. The 08-15 to 08-27 scan_runs came from Concourse, which was
+  retired for this repo (see the 2026-08-29 retro).
+- Why they fail in five seconds is not yet known. The logs have expired.
+  `workflow_dispatch` one and read it.
+
+Worth suspecting first: this is a repo whose scanning moved from Concourse to
+Actions, and D-097 is the standing lesson that a token can be delivered to one
+reader and not another. Suspecting is not knowing; dispatch a run and look.
+
+**Acceptance criteria**
+
+- A Mykronos scan runs successfully against TheHub.
+- The cause of the five-second failure is recorded, not just cleared.
+- If it is a token, D-097's guard is checked against this case — a third
+  instance of the same bug would mean the guard does not cover it.
+- The 316 findings either close or are shown to be genuinely still open. Both
+  are acceptable outcomes; the present state, where nobody can tell, is not.
+
+**Provenance:** `mykronos briefing`, 2026-09-01. Silent-lane detection exists
+because this was invisible to a check that only reads `scan_status`: a lane
+whose last run succeeded looks healthy, and there is no error to notice.
+
+---
 
 ### B-016 — personal-soc files nothing, and its token is missing
 
