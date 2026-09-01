@@ -161,13 +161,23 @@ def parse_epss_csv(text: str) -> list[EpssEntry]:
 
 
 def default_fetch_kev() -> object:
-    response = httpx2.get(KEV_URL, timeout=TIMEOUT)
+    # `follow_redirects` on both feeds — see `default_fetch_epss`. KEV serves
+    # 200 today and there is no reason to be the one that breaks when it stops.
+    response = httpx2.get(KEV_URL, timeout=TIMEOUT, follow_redirects=True)
     response.raise_for_status()
     return response.json()
 
 
 def default_fetch_epss() -> str:
-    response = httpx2.get(EPSS_URL, timeout=TIMEOUT)
+    # `follow_redirects=True`, and it is the whole reason EPSS ever worked.
+    # The feed answers `302 Found` with a relative `Location` naming the day's
+    # file — `epss_scores-2026-09-01.csv.gz` — and httpx does not follow
+    # redirects unless asked, so `raise_for_status()` raised on the redirect
+    # itself. Every refresh recorded a `fetched_at` and stored no score: 110
+    # CVEs matched to open findings, 0 with an EPSS score, for as long as this
+    # has been deployed. The old page rendered that as a dash at the bottom of
+    # a list sorted by score, which is exactly where nobody looks.
+    response = httpx2.get(EPSS_URL, timeout=TIMEOUT, follow_redirects=True)
     response.raise_for_status()
     # The feed is gzip-compressed; a plain `.text` would be the compressed
     # bytes decoded as if they were already the CSV.
