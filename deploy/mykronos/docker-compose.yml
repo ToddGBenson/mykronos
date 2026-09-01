@@ -48,6 +48,12 @@ services:
       # browser, which is the sort of thing that looks fine until somebody
       # clicks it.
       MYKRONOS_CONCOURSE_URL: ${MYKRONOS_CONCOURSE_URL:-http://concourse:8080}
+      # Read-only and unauthenticated: /v1/sys/health needs no token and says
+      # whether Vault is sealed. Defaulted rather than left to .env because an
+      # unset value silently disables the one check that notices a sealed
+      # Vault -- which is the state this deployment comes back in after every
+      # restart, and which took a day to notice on 2026-08-28 (B-014).
+      MYKRONOS_VAULT_URL: ${MYKRONOS_VAULT_URL:-http://vault:8200}
       MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
       MYKRONOS_CONCOURSE_TEAM: ${MYKRONOS_CONCOURSE_TEAM:-main}
 

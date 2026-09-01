@@ -73,6 +73,15 @@ class ReachabilityResult:
     reachable: bool = False
     status_code: int | None = None
     detail: str = ""
+    #: Whether this deployment has the dependency at all (B-014).
+    #:
+    #: A dependency nobody configured is not a dependency that failed, and
+    #: rendering the two the same way is how a check stops being read. Vault
+    #: sat `FAILED` on every run of this command because `vault_url` was
+    #: blank, which is the permanent red this platform refuses everywhere
+    #: else — `available: false` versus a real zero, "not enabled" versus
+    #: "enabled and silent".
+    configured: bool = True
 
 
 @dataclass
@@ -933,7 +942,12 @@ async def check_vault(vault_url: str, *, timeout: float = 10.0) -> ReachabilityR
     url = vault_url.rstrip("/") + "/v1/sys/health"
     result = ReachabilityResult(url=url)
     if not vault_url:
-        result.detail = "No Vault is configured for this deployment."
+        result.configured = False
+        result.detail = (
+            "No Vault is configured for this deployment (MYKRONOS_VAULT_URL). "
+            "Nothing is wrong; nothing is being checked either — a sealed "
+            "Vault would not be noticed here."
+        )
         return result
 
     try:

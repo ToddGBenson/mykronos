@@ -90,11 +90,42 @@ class TestVault:
 
     @pytest.mark.asyncio
     async def test_unconfigured_is_not_a_failure_to_report_loudly(self, respond) -> None:
-        """A deployment with no Vault is a valid deployment."""
+        """A deployment with no Vault is a valid deployment.
+
+        This test's name asserted the distinction from the day it was written
+        and its body never did — it checked `not reachable`, which is the same
+        thing a sealed Vault returns. So the command rendered `FAILED` for a
+        dependency nobody had configured, on every run, and the test agreed
+        (B-014). `configured` is what the two states actually differ on.
+        """
         result = await jobs.check_vault("")
 
         assert not result.reachable
+        assert result.configured is False
         assert "No Vault is configured" in result.detail
+        assert "nothing is being checked either" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_a_configured_vault_is_marked_configured(self, respond) -> None:
+        """The other half. A real failure must stay a failure, or fixing the
+        false alarm would have hidden the alarm."""
+        respond(FakeResponse(503, {"sealed": True, "initialized": True}))
+
+        result = await jobs.check_vault("http://vault:8200")
+
+        assert result.configured is True
+        assert not result.reachable
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_configured_vault_is_still_a_failure(
+        self, respond
+    ) -> None:
+        respond(OSError("no such host"))
+
+        result = await jobs.check_vault("http://vault:8200")
+
+        assert result.configured is True
+        assert not result.reachable
 
 
 class TestConcourse:

@@ -381,6 +381,24 @@ class PortfolioSummary:
     overdue_findings: int = 0
 
 
+#: Capabilities that report through a table other than `scan_runs`, and the
+#: column that says when they last did (B-015).
+#:
+#: These are not gaps. Aegis assesses a pull request and writes an
+#: `InsiderRiskSignal` (spec 06 §3); Oracle writes a `RiskDecision`; Patchwork
+#: writes a `RemediationEvent`. None of them scans a tree, so none of them has
+#: a ScanRun to write — measured across the whole lake, all three sit at
+#: exactly zero while `sast` sits at 365.
+#:
+#: Add to this when a capability starts reporting through a table of its own.
+#: `test_no_capability_is_permanently_silent` fails if one does not.
+REPORTS_ELSEWHERE: dict[str, tuple[str, str]] = {
+    "aegis": ("insider_risk_signals", "evaluated_at"),
+    "oracle": ("risk_decisions", "evaluated_at"),
+    "patchwork": ("remediation_events", "created_at"),
+}
+
+
 class DashboardQueries:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
@@ -585,6 +603,42 @@ class DashboardQueries:
                 "status": str(scan_status),
                 "open_findings": by_pair.get((str(repo), str(capability)), 0),
             }
+
+        # Three capabilities never write a ScanRun and never will, so reading
+        # only `scan_runs` reports them silent on every repository for ever
+        # (B-015). `last_successful_scan_at` already makes this exception for
+        # aegis, with a comment about the kind of permanent false alarm that
+        # trains people to ignore the panel; the same reasoning covers all
+        # three, and it belongs here too now that B-008 made "enabled and
+        # silent" a state a caller acts on rather than an absence it infers.
+        for capability, (table, column) in REPORTS_ELSEWHERE.items():
+            if not self.catalog.all_files(table):
+                continue
+            rows = self.catalog.query(
+                f"""
+                SELECT repo_full_name, max({column})
+                FROM {table}
+                WHERE repo_full_name IS NOT NULL
+                GROUP BY 1
+                """
+            )
+            for repo, latest in rows:
+                if latest is None:
+                    continue
+                # Never overwrites a real ScanRun. If one of these ever starts
+                # writing runs too, the run is the better answer and this is
+                # the weaker one.
+                state.setdefault(str(repo), {}).setdefault(
+                    capability,
+                    {
+                        "last_scan_at": latest,
+                        # Not a scan, so not a scan status. The row exists to
+                        # say "this has reported", and inventing `success`
+                        # would claim a run that never happened.
+                        "status": "reported",
+                        "open_findings": by_pair.get((str(repo), capability), 0),
+                    },
+                )
         return state
 
     # -- findings -------------------------------------------------------
