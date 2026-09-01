@@ -21,10 +21,17 @@ import json
 import logging
 from typing import Any
 
+from mykronos import regression
 from mykronos.knowledge.capture import safe_capture
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
+from mykronos.patchwork.regression_prompt import (
+    UNSTATED as REGRESSION_UNSTATED,
+)
+from mykronos.patchwork.regression_prompt import (
+    parse_regression_test,
+)
 from mykronos.patchwork.rejection import UNSTATED, capture_reason, parse_rejection
 from mykronos.schemas import utcnow
 
@@ -122,6 +129,23 @@ def record_pr_outcome(
             merged=merged,
         )
 
+    # The regression link, from the line Patchwork put in the body (spec 31
+    # §2, B-011). Only on a merge: a test named on a fix nobody took is a
+    # claim about code that is not in the repository.
+    #
+    # Failure here must not cost the outcome row. The webhook has already
+    # recorded the merge by this point, and losing that to a link nobody
+    # asked for would be the wrong trade -- the same posture the rejection
+    # capture above takes.
+    if merged:
+        _link_regression_test(
+            buffer,
+            repo_full_name=repo_full_name,
+            finding_id=finding_id,
+            pr_body=pr_body,
+            pr_number=pr_number,
+        )
+
     logger.info(
         "Patchwork PR %s#%s %s (finding %s)",
         repo_full_name,
@@ -130,6 +154,66 @@ def record_pr_outcome(
         finding_id,
     )
     return event_id
+
+
+def _link_regression_test(
+    buffer: WriteAheadBuffer,
+    *,
+    repo_full_name: str,
+    finding_id: str,
+    pr_body: str,
+    pr_number: int,
+) -> str | None:
+    """Pin the test the merger named, if they named one.
+
+    `asserted`, never `demonstrated`, and that is the honest grade rather than
+    a shortfall: the test arrives *in* this pull request, so it does not exist
+    on the parent commit and no ordinary lane run there can have exercised it.
+    Spec 31 §2 defines `demonstrated` as having watched the test fail against
+    the vulnerable code and pass against the fixed code, which needs a lane
+    invocation that takes a ref. `regression_prompt.py` sets out why that is
+    not reachable from here.
+
+    Idempotent by construction: `regression.record` keys the row on
+    (repo, finding, test), so a redelivered webhook updates one link instead
+    of inflating the count.
+    """
+    identifier, lane = parse_regression_test(pr_body)
+    if identifier == REGRESSION_UNSTATED:
+        return None
+
+    try:
+        link = regression.record(
+            buffer,
+            repo_full_name=repo_full_name,
+            finding_id=finding_id,
+            test_identifier=identifier,
+            capability=lane,
+            evidence=regression.ASSERTED,
+            linked_by=f"patchwork-pr-{pr_number}",
+        )
+    except regression.RegressionError as exc:
+        # A lane this platform does not run, or an empty identifier that got
+        # past the parser. Logged and dropped: the merge is recorded either
+        # way, and a webhook that fails often enough is a webhook GitHub
+        # disables.
+        logger.warning(
+            "Could not link regression test %r from %s#%s: %s",
+            identifier,
+            repo_full_name,
+            pr_number,
+            exc,
+        )
+        return None
+
+    logger.info(
+        "Pinned regression test %r to finding %s from %s#%s (asserted)",
+        identifier,
+        finding_id,
+        repo_full_name,
+        pr_number,
+    )
+    return link
 
 
 def _capture_outcome(

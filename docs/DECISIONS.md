@@ -4061,6 +4061,17 @@ the only configuration in which the bug appears. There is now a test for it,
 and one asserting an Actions-only repository still rotates, so the guard cannot
 quietly end rotation altogether.
 
+**A third reader, found 2026-09-01.** After the `mykronos` and `.env` copies
+were repaired, keel's Concourse pipeline was still failing all three of its
+`mykronos-*` jobs on the same 401. It holds its own copy at
+`concourse/main/keel/mykronos_ingestion_token`, and keel is
+`scanned_by=github_actions` — so the rotation job wrote its new token to the
+GitHub Actions secret and left Vault behind, exactly as it did for mykronos.
+Same bug, third instance, found only because B-012's inventory went looking at
+keel for an unrelated reason. Repaired by rotating and delivering to *both*
+readers in one operation, which is the practice this decision exists to make
+the job follow.
+
 Regression tests: `tests/test_jobs.py::TestRotation::test_a_repo_scanned_by_both_systems_is_deferred`,
 `::test_an_actions_only_repo_still_rotates`,
 `::test_an_unreachable_concourse_defers_rather_than_assumes`,
