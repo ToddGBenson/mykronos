@@ -45,6 +45,10 @@ export type PortfolioSummary = Portfolio["summary"];
 export type Briefing =
   paths["/api/dashboard/briefing"]["get"]["responses"]["200"]["content"]["application/json"];
 export type StalledLane = Briefing["stalled"][number];
+/** Vulnerable packages for one repository, with what can be upgraded (B-027). */
+export type SupplyChainPackages =
+  paths["/api/dashboard/repos/{repo_id}/sscs/packages"]["get"]["responses"]["200"]["content"]["application/json"];
+export type VulnerablePackage = SupplyChainPackages["packages"][number];
 export type BriefingClass = Briefing["classes"][number];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];

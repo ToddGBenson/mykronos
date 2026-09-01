@@ -819,6 +819,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/sscs/packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Vulnerable Packages
+         * @description Which packages are vulnerable, and which you can act on (B-027).
+         *
+         *     The Supply chain tab reported a trust score and advisory counts and never
+         *     named a package. "You have 234 container advisories" is a fact nobody can
+         *     act on; "setuptools has 2 and both are fixed in 78.1.1, libc6 has 18 and
+         *     none of them have a published fix" is two different decisions.
+         *
+         *     KEV is read from the operational store and passed in, so the lake query
+         *     itself stays a pure read.
+         */
+        get: operations["repo_vulnerable_packages_api_dashboard_repos__repo_id__sscs_packages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/threat-model": {
         parameters: {
             query?: never;
@@ -4540,6 +4568,21 @@ export interface components {
              */
             rationale: string;
         };
+        /** SupplyChainPackagesOut */
+        SupplyChainPackagesOut: {
+            /** Total */
+            total: number;
+            /** Advisories */
+            advisories: number;
+            /** Fixable */
+            fixable: number;
+            /** Kev Packages */
+            kev_packages: number;
+            /** Unfixable Advisories */
+            unfixable_advisories: number;
+            /** Packages */
+            packages: components["schemas"]["VulnerablePackageOut"][];
+        };
         /**
          * ThreatIntelEntryOut
          * @description One CVE, matched against every open finding that names it (spec 17 §4.4).
@@ -4823,6 +4866,29 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VulnerablePackageOut */
+        VulnerablePackageOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Installed Version */
+            installed_version: string;
+            /** Advisories */
+            advisories: number;
+            /** Worst Severity */
+            worst_severity: string;
+            /** Fixed Version */
+            fixed_version: string;
+            /** Fixable */
+            fixable: boolean;
+            /** Direct */
+            direct: boolean | null;
+            /** Kev Count */
+            kev_count: number;
+            /** Cves */
+            cves: string[];
         };
         /**
          * WorkflowState
@@ -5874,6 +5940,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefingOut"];
+                };
+            };
+        };
+    };
+    repo_vulnerable_packages_api_dashboard_repos__repo_id__sscs_packages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplyChainPackagesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

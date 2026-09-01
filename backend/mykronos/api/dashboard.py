@@ -26,6 +26,7 @@ from mykronos import (
     guidance,
     incident,
     regression,
+    supply_chain,
     worklist,
 )
 from mykronos.adminauth import PrincipalDep
@@ -2206,6 +2207,90 @@ async def post_deployment_briefing(
                 rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
             )
             for g in guidance.by_rule(request.app.state.catalog)
+        ],
+    )
+
+
+class VulnerablePackageOut(BaseModel):
+    package_name: str
+    ecosystem: str
+    installed_version: str
+    advisories: int
+    worst_severity: str
+    #: Empty when no patched version has been published.
+    fixed_version: str
+    fixable: bool
+    #: Null where the SBOM did not distinguish direct from transitive. Not
+    #: false — those are different facts and the second is a claim this
+    #: platform cannot make.
+    direct: bool | None
+    kev_count: int
+    cves: list[str]
+
+
+class SupplyChainPackagesOut(BaseModel):
+    total: int
+    advisories: int
+    fixable: int
+    kev_packages: int
+    #: Advisories with nothing to upgrade to. The number that decides whether
+    #: this is an afternoon of version bumps or a dispositioning pass, and the
+    #: one the old severity counts hid entirely.
+    unfixable_advisories: int
+    packages: list[VulnerablePackageOut]
+
+
+@router.get("/repos/{repo_id}/sscs/packages", response_model=SupplyChainPackagesOut)
+async def repo_vulnerable_packages(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> SupplyChainPackagesOut:
+    """Which packages are vulnerable, and which you can act on (B-027).
+
+    The Supply chain tab reported a trust score and advisory counts and never
+    named a package. "You have 234 container advisories" is a fact nobody can
+    act on; "setuptools has 2 and both are fixed in 78.1.1, libc6 has 18 and
+    none of them have a published fix" is two different decisions.
+
+    KEV is read from the operational store and passed in, so the lake query
+    itself stays a pure read.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    with request.app.state.db.session() as session:
+        rows = catalog.query(
+            """
+            SELECT rule_id, title FROM findings
+            WHERE status = 'open' AND asset_id = ?
+              AND capability IN ('atlas', 'containers')
+            """,
+            [repo_full_name],
+        ) if catalog.all_files("findings") else []
+        kev = DashboardQueries._kev_cve_ids(
+            session, [{"rule_id": r[0], "title": r[1]} for r in rows]
+        )
+
+    analysis = supply_chain.vulnerable_packages(catalog, repo_full_name, kev_cves=kev)
+    return SupplyChainPackagesOut(
+        total=analysis.total,
+        advisories=analysis.advisories,
+        fixable=analysis.fixable,
+        kev_packages=analysis.kev_packages,
+        unfixable_advisories=analysis.unfixable_advisories,
+        packages=[
+            VulnerablePackageOut(
+                package_name=p.package_name,
+                ecosystem=p.ecosystem,
+                installed_version=p.installed_version,
+                advisories=p.advisories,
+                worst_severity=p.worst_severity,
+                fixed_version=p.fixed_version,
+                fixable=p.fixable,
+                direct=p.direct,
+                kev_count=p.kev_count,
+                cves=p.cves,
+            )
+            for p in analysis.packages
         ],
     )
 
