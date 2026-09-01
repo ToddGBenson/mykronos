@@ -21,6 +21,7 @@ import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { SscsTab } from "@/components/sscs";
+import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
@@ -46,6 +47,7 @@ import {
   getScanHealth,
   getScanRunTrend,
   getSscs,
+  getVulnerablePackages,
   getThreatModel,
   getWorkflows,
 } from "@/lib/server";
@@ -638,16 +640,33 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
 }
 
 async function SupplyChainTab({ repoId }: { repoId: string }) {
-  const result = await getSscs(repoId);
+  // Concurrently: the trust score and the package list are two reads of
+  // different things, and in series the tab waits for the slower one twice.
+  const [result, packages] = await Promise.all([
+    getSscs(repoId),
+    getVulnerablePackages(repoId),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Supply-chain evidence unavailable" detail={result.error} />;
   }
   return (
-    <SscsTab
-      repoId={repoId}
-      evidence={result.data.evidence}
-      latest={result.data.latest ?? null}
-    />
+    <div className="flex flex-col gap-5">
+      <SscsTab
+        repoId={repoId}
+        evidence={result.data.evidence}
+        latest={result.data.latest ?? null}
+      />
+      {/* The scores above say how trustworthy the tree is; this says which
+          packages are the reason and what can be done about each (B-027). A
+          failure here loses the table, not the whole tab. */}
+      {packages.ok ? (
+        <VulnerablePackages data={packages.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+          {packages.error}
+        </p>
+      )}
+    </div>
   );
 }
 

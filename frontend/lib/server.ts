@@ -37,6 +37,7 @@ import {
   type TrendSeries,
   type TriageQueue,
   type Briefing,
+  type SupplyChainPackages,
   type VulnerabilityManagement,
   type WorkflowsPage,
 } from "./api";
@@ -361,6 +362,28 @@ export async function getInsiderRisk(
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load insider risk") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * Which packages are vulnerable and which of them have somewhere to go
+ * (B-027). Separate from `getSscs` on purpose: the trust score is a summary
+ * that renders instantly, and this joins two lake tables per repository.
+ */
+export async function getVulnerablePackages(
+  repoId: string,
+): Promise<Result<SupplyChainPackages>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/sscs/packages",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load vulnerable packages") };
     }
     return { ok: true, data };
   } catch (error) {
