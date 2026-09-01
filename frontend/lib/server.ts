@@ -36,6 +36,7 @@ import {
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
+  type VulnerabilityManagement,
   type WorkflowsPage,
 } from "./api";
 import type { paths } from "./api-types";
@@ -491,6 +492,26 @@ export async function getMaturity(): Promise<Result<MaturityReport>> {
     });
     if (!data) return { ok: false, error: describe(response, "Could not load maturity") };
     return { ok: true, data: data as MaturityReport };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getVulnerabilityManagement(): Promise<
+  Result<VulnerabilityManagement>
+> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/vulnerability-management",
+      { cache: "no-store" },
+    );
+    if (!data) {
+      return {
+        ok: false,
+        error: describe(response, "Could not load vulnerability management"),
+      };
+    }
+    return { ok: true, data: data as VulnerabilityManagement };
   } catch (error) {
     return failure(error);
   }

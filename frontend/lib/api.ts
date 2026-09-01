@@ -231,6 +231,46 @@ export type MaturityReport = {
   repos: MaturityRepo[];
 };
 
+/**
+ * The management half of vulnerability management (spec 27, B-010).
+ *
+ * Hand-declared, like `MaturityReport` above: the endpoint returns a plain
+ * dict so the generated schema types it as `unknown`, and a page cannot be
+ * written against that.
+ */
+export type VulnerabilityManagement = {
+  scope: string;
+  aging: {
+    severity: string;
+    capability: string;
+    age_band: string;
+    count: number;
+  }[];
+  accepted_risk: { capability: string; severity: string; count: number }[];
+  accepted_risk_detail: {
+    finding_id: string;
+    capability: string;
+    severity: string;
+    title: string;
+    package_name: string;
+    accepted_reason_code: string;
+    /** Null is an indefinite acceptance, which is a decision, not an omission. */
+    accepted_until: string | null;
+    first_seen_at: string | null;
+    fixed_version: string;
+    /** Accepted for want of a fix, and a fix now exists. */
+    now_fixable: boolean;
+  }[];
+  oldest_open: {
+    finding_id: string;
+    severity: string;
+    capability: string;
+    title: string;
+    first_seen_at: string | null;
+  }[];
+  toxic_combinations: number;
+};
+
 export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];

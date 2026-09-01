@@ -65,6 +65,17 @@ HUMAN_DISPOSITIONS = {
 class CapabilityStateOut(BaseModel):
     capability: str
     has_scanned: bool
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this repository asked for the capability. Every "
+            "capability the platform has gets a row, so a stage nobody "
+            "enabled is named rather than missing — `enabled: false` and "
+            "`has_scanned: false` is 'not configured here', while "
+            "`enabled: true` with `has_scanned: false` is enabled and silent, "
+            "which is somebody's problem. They used to be the same absence."
+        ),
+    )
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0

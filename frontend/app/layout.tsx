@@ -32,6 +32,13 @@ const NAV: {
       // Beside threat intelligence, because that is where somebody
       // arrives from: a KEV row raises the question this page answers.
       { label: "Incident lookup", href: "/incident" },
+      // Beside the triage queue, not the portfolio: the queue is what to do
+      // next, and this is the standing account of what is outstanding and
+      // what was decided against — the two halves of the same job.
+      {
+        label: "Vulnerability management",
+        href: "/vulnerability-management",
+      },
       { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
       { label: "Remediation", href: "/remediation" },

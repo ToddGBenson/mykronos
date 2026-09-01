@@ -45,7 +45,7 @@ from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
-from mykronos.schemas import Severity, utcnow
+from mykronos.schemas import Capability, Severity, utcnow
 from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
@@ -303,10 +303,22 @@ class CapabilityState:
 
     spec 10 §7: a freshly-onboarded repo must show "awaiting first scan"
     rather than "0 findings", which would read as clean.
+
+    **One row per capability the platform has, not per capability this repo
+    enabled** (B-008). The list used to be built from `sorted(enabled)`, which
+    made "not enabled here" an *absence* — indistinguishable from a capability
+    that was enabled and had never reported, because both were simply missing
+    from the row. `enabled` and `has_scanned` together name the three states
+    that matter, and a caller no longer has to infer one of them from a gap.
     """
 
     capability: str
     has_scanned: bool
+    #: Whether this repository asked for the capability at all. False rows are
+    #: the point of emitting every capability: "nobody enabled this" is a
+    #: different answer from "enabled and silent", and only one of them is
+    #: somebody's problem.
+    enabled: bool = True
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
@@ -408,15 +420,24 @@ class DashboardQueries:
             if onboarding.scanned_by != "github_actions":
                 enabled |= grants_by_repo.get(repo, set())
 
+            # Every capability, not only the enabled ones (B-008). A stage the
+            # repository never turned on is named as not configured rather
+            # than left out, so "no row" stops meaning two different things.
+            #
+            # A capability can be absent from `enabled` and still have
+            # scanned — a Concourse repo whose grants are the ledger, or one
+            # disabled after reporting — so `has_scanned` is read for all of
+            # them rather than assumed false for the disabled.
             capability_states = [
                 CapabilityState(
                     capability=capability,
+                    enabled=capability in enabled,
                     has_scanned=capability in scan_state,
                     last_scan_at=scan_state.get(capability, {}).get("last_scan_at"),
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
                 )
-                for capability in sorted(enabled)
+                for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
             ]
 
             last_scan_values = [
@@ -1692,9 +1713,15 @@ class DashboardQueries:
         scope = "AND asset_id = ?" if repo_full_name else ""
         params: list[Any] = [repo_full_name] if repo_full_name else []
 
+        # Capability as well as severity and age (B-008's sibling gap in
+        # B-010): "sixty high findings older than ninety days" is a number to
+        # be alarmed by, and "they are all container CVEs from one base image"
+        # is the thing to actually do something about. Without the capability
+        # the reader has to open every one to find that out.
         aging = self.catalog.query(
             f"""
             SELECT severity,
+                   capability,
                    CASE
                      WHEN first_seen_at > now() - INTERVAL 7 DAY  THEN '0-7'
                      WHEN first_seen_at > now() - INTERVAL 30 DAY THEN '8-30'
@@ -1704,7 +1731,7 @@ class DashboardQueries:
                    count(*)
             FROM findings
             WHERE status = 'open' {scope}
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3
             """,
             params,
         )
@@ -1720,6 +1747,37 @@ class DashboardQueries:
             WHERE status = 'accepted_risk' {scope}
             GROUP BY 1, 2
             ORDER BY 3 DESC
+            """,
+            params,
+        )
+
+        # Counts say how much was accepted; they cannot say what was accepted
+        # *on what grounds*, and the grounds are the part that decays. This
+        # repository carries acceptances that each said "no vendor fix", and
+        # that stops being true the day a vendor ships one (spec 24 §3).
+        #
+        # `now_fixable` is the decay made visible: an acceptance whose
+        # advisory has since named a fixed version. The daily sweep already
+        # re-opens those automatically, so a row here is either mid-flight or
+        # an acceptance on grounds the sweep cannot check — which is exactly
+        # what a person should be looking at.
+        accepted_detail = self.catalog.query(
+            f"""
+            SELECT finding_id,
+                   capability,
+                   severity,
+                   title,
+                   package_name,
+                   accepted_reason_code,
+                   accepted_until,
+                   first_seen_at,
+                   coalesce(
+                       json_extract_string(raw_finding_json, '$.fixed_version'), ''
+                   ) AS fixed_version
+            FROM findings
+            WHERE status = 'accepted_risk' {scope}
+            ORDER BY accepted_until NULLS LAST, first_seen_at
+            LIMIT 200
             """,
             params,
         )
@@ -1751,12 +1809,39 @@ class DashboardQueries:
         return {
             "scope": repo_full_name or "portfolio",
             "aging": [
-                {"severity": str(sev), "age_band": str(band), "count": int(n)}
-                for sev, band, n in aging
+                {
+                    "severity": str(sev),
+                    "capability": str(cap),
+                    "age_band": str(band),
+                    "count": int(n),
+                }
+                for sev, cap, band, n in aging
             ],
             "accepted_risk": [
                 {"capability": str(cap), "severity": str(sev), "count": int(n)}
                 for cap, sev, n in accepted
+            ],
+            "accepted_risk_detail": [
+                {
+                    "finding_id": str(fid),
+                    "capability": str(cap),
+                    "severity": str(sev),
+                    "title": str(title),
+                    "package_name": str(pkg or ""),
+                    #: Why it was accepted. A code rather than prose, so a
+                    #: later scan can contradict it (spec 24 3).
+                    "accepted_reason_code": str(code or ""),
+                    #: When somebody said they would look again. Null is an
+                    #: indefinite acceptance, which is a decision rather than
+                    #: an omission - the disposition endpoint refuses one
+                    #: without either a date or an explicit `indefinite`.
+                    "accepted_until": until,
+                    "first_seen_at": seen,
+                    "fixed_version": str(fix or ""),
+                    #: Accepted for want of a fix, and a fix now exists.
+                    "now_fixable": bool(fix) and str(code or "") == "no_vendor_fix",
+                }
+                for fid, cap, sev, title, pkg, code, until, seen, fix in accepted_detail
             ],
             "oldest_open": [
                 {

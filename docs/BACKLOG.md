@@ -43,99 +43,8 @@ already shipped.
 
 ## Open
 
-### B-008 — Name every expected stage, including the ones with no job
-
-**Size:** S **State:** open **Verified:** 2026-08-31 (rescoped)
-**Was:** TheHub #47125 (blocked 2026-08-18), PIP-6
-
-**The premise was stale and is corrected here.** The story said "AI, functional
-and unit do not exist as stages at all". They do: `ai`, `functional`, `unit`
-and `qa` are all `Capability` members, all have workflow templates in
-`workflow-templates/`, and all appear in `CAPABILITY_BY_JOB`. That was true of
-TheHub when the story was written, not of this repo — D-046 landed the quality
-lanes and D-047 landed `ai`.
-
-Twelve of the thirteen named stages exist and report:
-
-| Stage | Here | Stage | Here |
-|---|---|---|---|
-| SAST | `sast` | insider threat | `aegis` |
-| DAST | `dast` (paused, D-053) | risk | `oracle` |
-| SBOM | `atlas` | AI | `ai` (D-047) |
-| container | `containers` | functional | `functional` |
-| IaC | `iac` | unit | `unit` |
-| cloud | `cloud` | vulnerability management | see B-010 |
-| secrets | `secrets` | | |
-
-`qa` and `network` exist besides, and are not on the thirteen.
-
-**What is actually missing**, located precisely:
-
-1. The cross-check is **job-driven**, not stage-driven. `ci.py`'s
-   `CAPABILITY_BY_JOB` maps a pipeline job to a capability, so a stage with no
-   job produces no row — it is absent rather than flagged. "Absent" is the
-   state the story wanted made visible.
-2. `dashboard.py:411` builds `capability_states` by iterating
-   **`sorted(enabled)`**. So *enabled and silent* is expressible today
-   (`has_scanned=False`), and *not enabled* is an absence. The portfolio row
-   cannot say "not enabled" because the capability simply is not in the list.
-
-Note the frontend already renders all fifteen via `ALL_CAPABILITIES` and shows
-`off` for the ones not enabled — so the dots are honest and the API row is not.
-Whichever way this is fixed, those two should end up agreeing.
-
-**Acceptance criteria** (unchanged in intent, narrowed in scope)
-
-- Every stage in the list is either reporting, or visibly named as not
-  configured for that repository.
-- A stage that runs and does not report is flagged, not silently missing.
-- The portfolio row distinguishes "not enabled" from "enabled and silent" —
-  which means emitting a state for capabilities that are *not* enabled, not
-  only for those that are.
-
-**Deliberately still out:** the story's framing invited building AI, functional
-and unit as new stages. They exist; do not rebuild them.
-
----
-
-### B-010 — Finish the vulnerability management view
-
-**Size:** S **State:** open **Verified:** 2026-08-31 (rescoped — mostly built)
-**Specs:** [24 §3](../specs/24-ownership-deadlines-and-acceptance-review.md)
-**Was:** TheHub #47128 (blocked 2026-08-18), PIP-9
-
-**This is largely built, and TheHub's block note was about TheHub.** That note
-read "no accepted_risk/toxic_combination model or cross-repo aggregation exists
-in backend/" — true of that backend. Here, `GET /api/dashboard/vulnerability-management`
-(`api/dashboard.py:1425`, query at `dashboard.py:1677`) exists and its docstring
-cites PIP-9 by name.
-
-Scored against the four criteria, read from the code:
-
-| Criterion | State |
-|---|---|
-| Open findings by age, severity **and capability**, per repo and portfolio | **Partial** — `aging` groups by severity × age band (0-7/8-30/31-90/90+) and scopes to a repo or the portfolio, but carries no capability dimension |
-| Accepted risks **listed with their rationale**, and which became fixable since | **Missing as a view** — `accepted_risk` returns capability × severity *counts* only. See the note below: the decay itself is already automated |
-| Toxic combinations as one item, not their members | **Met** — counts `DISTINCT toxic_combination_id` |
-| Mean time to fix excludes dismissals | **Met** — `maturity.py:743` counts only `status = 'fixed'`, with the reasoning written down |
-
-**The decay concern is already handled, better than a view would.** The data
-the story assumed was missing is all modelled: `first_seen_at`, `due_at`/
-`due_source`, `accepted_until` (a review date) and `accepted_reason_code` (a
-machine-checkable premise, designed so "a later scan can contradict" it). And
-`acceptance_sweep_interval_seconds` runs a daily job that expires acceptances
-past their review date and **re-opens any accepted as "no vendor fix" once a
-scan reports one** (spec 24 §3). So "nothing surfaces that revisit" is wrong
-here — the revisit is automatic.
-
-**What is left**
-
-- Add the capability dimension to the aging breakdown.
-- A listing of accepted risks carrying `accepted_reason_code` and
-  `accepted_until` per finding, not just counts — the "243 acceptances that
-  each said no vendor fix" case the endpoint's own docstring names.
-- **No frontend consumes this endpoint.** It is API-only; nothing renders it.
-  That is most of the remaining value.
+None. B-008 and B-010 landed on 2026-09-01; B-013 the same day. What remains
+is two entries deferred on triggers that have not fired.
 
 ---
 
@@ -233,6 +142,67 @@ decision it asked for already existed.
 
 Backend after all seven: 2277 tests pass, mypy clean over 107 files, ruff
 clean. Frontend `tsc --noEmit` clean. `api-types.d.ts` regenerated.
+
+### B-008 — Every expected stage is named, including the ones with no job — **done**
+
+The premise needed correcting before the work did. The story said AI,
+functional and unit "do not exist as stages at all"; all four of those plus
+`qa` are capabilities with workflow templates here. That was true of TheHub,
+not of this repo, and twelve of the thirteen named stages already existed and
+reported.
+
+What was actually wrong was narrower: `capability_states` was built from
+`sorted(enabled)`, so a capability nobody turned on was an *absence* — and so
+was one that was enabled and had never reported. Two different answers, one
+empty space. Every capability now gets a row carrying `enabled`, so
+`enabled: false` ("not configured here") and `enabled: true, has_scanned:
+false` ("enabled and silent") are distinguishable, and only one of them is
+somebody's problem.
+
+`has_scanned` is read for every capability rather than assumed false for the
+disabled ones: a Concourse repo's grants are its ledger, and a capability can
+report without appearing in the installer's list. Dropping those rows would
+have hidden scans that actually happened.
+
+**Already correct, and left alone:** the frontend renders all fifteen
+capabilities with a "not enabled" tooltip, so the UI half of the criterion was
+met before this. The API row was the half that disagreed with it, and now it
+does not.
+
+### B-010 — The vulnerability management view is finished — **done**
+
+Most of this was already built and cited PIP-9 by name; the endpoint had simply
+never been rendered. Three gaps closed:
+
+**Aging carries the capability.** "Sixty high findings older than ninety days"
+is a number to be alarmed by; "they are all container CVEs from one base image"
+is the thing to act on. Without it the reader opens every finding to learn that.
+
+**Acceptances are listed, not counted.** Counts cannot say what was accepted or
+on what grounds, and the grounds are the part that decays. Each row now carries
+`accepted_reason_code` and `accepted_until`, plus `now_fixable` — accepted for
+want of a fix, and a fix now exists. That flag is deliberately narrow: it fires
+only for `no_vendor_fix`, the one premise a scan can contradict and the only
+one the daily sweep re-opens (spec 24 §3.2). A fix existing does not contradict
+"not exploitable here", and calling that fixable would send somebody to
+re-litigate a decision that is still true.
+
+**A page renders it**, at `/vulnerability-management`, which was most of the
+remaining value.
+
+Building it surfaced a defect the type checker could not: rendered against the
+currently-deployed backend the page 500s, because that backend has no
+`accepted_risk_detail` and `undefined.filter` throws. During any rollout the
+frontend is briefly newer than the backend, so the page now defaults its
+sections and skips the capability tally when a row carries none — otherwise the
+column read "undefined 205", which is the wrong-but-plausible render this repo
+treats as worse than an empty one. Both were found by loading the page, not by
+building it.
+
+**Not done, and not needed:** the story asked for "a way to see which have
+become fixable since". The daily acceptance sweep already re-opens those
+automatically, so the page surfaces the state rather than adding a second
+mechanism to chase it.
 
 ### B-013 — Rotation would have desynced Vault again — **done** (D-097)
 
