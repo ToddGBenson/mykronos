@@ -153,6 +153,22 @@ try {
 
     if ($backend -ne "healthy") { throw "Backend did not become healthy: docker compose logs backend" }
     Write-Host "`nDeployed. http://localhost:3100 and http://localhost:8100" -ForegroundColor Green
+
+    # The briefing, every time, because "it deployed" is not the same fact as
+    # "the backlog is moving". Its first section reports lanes whose scans are
+    # failing — and a finding closes only after two consecutive *successful*
+    # scans see it gone, so a broken lane freezes its findings open however
+    # well the code was fixed. On 2026-09-01 that was 115 DAST findings
+    # against security headers that had already shipped and were being served
+    # on the wire, and nothing anywhere said so.
+    #
+    # Never fatal. A deploy that worked did work, and a briefing that cannot
+    # read the lake must not retract that.
+    Write-Host ""
+    docker exec mykronos-backend mykronos briefing
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "The briefing did not run. The deploy itself is fine; run 'docker exec mykronos-backend mykronos briefing' to see why." -ForegroundColor Yellow
+    }
 } finally {
     Pop-Location
 }

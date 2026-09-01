@@ -218,20 +218,44 @@ jobs:
             done
           }
 
+          # `|| true` on every poll, and the report written whatever they
+          # returned. GitHub runs `run:` steps under `bash -e`, so a poll that
+          # timed out killed the step before the report was written -- and ZAP
+          # had already collected passive findings for the 29 seeded URLs by
+          # then. Seventeen consecutive runs failed this way from 2026-08-30,
+          # each uploading nothing.
+          #
+          # Losing the report is far worse than an incomplete scan. A finding
+          # closes only after two consecutive *successful* scans observe its
+          # absence (`reconcile.REQUIRED_ABSENCES`), so a lane that reports
+          # nothing cannot close anything: 115 DAST findings stayed open here
+          # against an application that had already been fixed, because the
+          # evidence of the fix was thrown away every run.
           zap_api "/JSON/spider/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" >/dev/null
-          poll "/JSON/spider/view/status/" 600
+          SPIDER_OK=1
+          poll "/JSON/spider/view/status/" 600 || SPIDER_OK=0
 
           AFTER=$(zap_api "/JSON/core/view/urls/" | python -c 'import json,sys; print(len(json.load(sys.stdin)["urls"]))')
           echo "Site tree: ${AFTER} URL(s) after spidering, from ${SEEDED} seeded by the tests."
 
+          ACTIVE_OK=1
           if [ "$ACTIVE" = "true" ]; then
             zap_api "/JSON/ascan/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" >/dev/null
-            poll "/JSON/ascan/view/status/" 2400
+            poll "/JSON/ascan/view/status/" 2400 || ACTIVE_OK=0
           else
             echo "::notice::Passive scan only (D-053). Re-run with active_scan to include it."
           fi
 
+          # Always. This is the line the whole step exists to produce.
           zap_api "/OTHER/core/other/jsonreport/" > "$RUNNER_TEMP/dast/zap.json"
+
+          # Said out loud, and not as an error: an incomplete crawl is a
+          # narrower scan, not a broken one, and the findings it did produce
+          # are real. Reporting it as a failure is what made the platform
+          # discard them.
+          if [ "$SPIDER_OK" -eq 0 ] || [ "$ACTIVE_OK" -eq 0 ]; then
+            echo "::warning::The crawl did not finish inside its budget. The ""report covers the ${AFTER} URL(s) reached, which is a narrower scan rather ""than a failed one."
+          fi
 
       # Measure everything first, then report. The first live run put this
       # upload before the scan, the upload failed on a 502 from the ingestion
