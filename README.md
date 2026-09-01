@@ -38,6 +38,12 @@ and incident-scale days get a retro in [`docs/retros/`](docs/retros/). Work that
 is known and not yet done — including gaps where a spec claims more than the code
 delivers — is [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
+How a finding travels from a scanner to a closed record — deduplication,
+false-positive elimination, triage, remediation, and what each stage guarantees
+— is [`docs/finding-lifecycle.md`](docs/finding-lifecycle.md). The mechanisms
+are spread across fifteen specs; that document is the only place they are
+stated end to end, and it measures the estate against them.
+
 The shape every Concourse pipeline conforms to — eleven numbered rules, the
 failure each one prevents, and a per-capability conformance table for both
 pipelines — is [`docs/pipeline-standard.md`](docs/pipeline-standard.md).

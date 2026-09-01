@@ -45,13 +45,112 @@ already shipped.
 
 ## Open
 
-Two entries from a monitoring sweep of the running platform on 2026-09-01. Three more from the same sweep (B-014, B-015, B-017) were fixed the same day and are in Closed.
+Five entries. Three (B-019, B-020, B-021) came from writing the finding lifecycle down end to end for the first time — see [`finding-lifecycle.md`](finding-lifecycle.md) — and all three are at handoffs between stages rather than inside one. Two remain from the 2026-09-01 monitoring sweep; three more from that sweep (B-014, B-015, B-017) were fixed the same day and are in Closed.
 Every one was reproduced against the live system before it was written; the
 evidence is in each entry rather than a link to a dashboard that will have
 moved on.
 
-What remains is one credential this session is not permitted to write, and
-one decision that is the operator's rather than mine.
+The two sweep entries are a credential this session is not permitted to
+write and a decision that is the operator's rather than mine.
+
+### B-019 — The triage queue cannot filter by what the machine concluded
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+**Specs:** [19 §3.2](../specs/19-harness-triage-and-remediation-depth.md), [27](../specs/27-the-worklist.md)
+
+`GET /api/dashboard/triage` — the ranked, claimable, portfolio-wide queue —
+takes `severity`, `capability`, `rule_id`, `kev_only`, `min_epss`, `owner`,
+`order`, `include_snoozed` and `claimed_by`. It does not take `triage`.
+
+The per-repository findings view does (`/open-findings` has a `triage` filter,
+spec 18). So the classification exists, is displayed, and is filterable — on the
+one surface that can only show a single repository at a time.
+
+The consequence, measured: **399 findings are classified
+`needs_human_judgment` and 22 `likely_false_positive`**, and there is no way to
+pull either set up as a worklist across the estate. The platform has done the
+analysis and cannot route the result.
+
+**Acceptance criteria**
+
+- The triage queue accepts a `triage` filter, matching `/open-findings`.
+- "Show me everything the machine could not judge" is one request, not one per
+  repository.
+- The filter composes with ranking rather than replacing it — a
+  `needs_human_judgment` critical in a `no_go` repository should still outrank
+  a low elsewhere.
+
+---
+
+### B-020 — A `likely_false_positive` has nowhere to go
+
+**Size:** M **State:** open **Verified:** 2026-09-01
+**Specs:** [11 §4, §6.1](../specs/11-knowledge-rag-learning.md)
+
+22 findings are labelled `likely_false_positive` by `patchwork/triage.classify`
+and sit at stage `triaged`. Nothing routes them anywhere, and nothing ever
+will: the classification is advisory by design — a machine that could set
+`false_positive` would eventually dismiss a real finding silently — so the
+label waits for a person who has no list to work from.
+
+That is a real gap and not a small one, because the dampening loop depends on
+exactly these dispositions. `knowledge/dampening.py` needs a human reason,
+`min_observations` times, before it will quieten a rule. Its input is whoever
+happens to open the right repository and look.
+
+The evidence that this is not working: **43 false positives ever recorded, all
+of them sast (29) and secrets (14)**. Not one container, DAST or IaC finding
+has ever been dismissed, against 234, 147 and 7 open. Either those three
+capabilities have never produced a false positive, or nobody has been in a
+position to say so.
+
+**Deliberately not proposed: auto-dismissal.** The machine's job here is to
+shorten the queue a person reads, not to empty it.
+
+**Acceptance criteria**
+
+- A `likely_false_positive` reaches somebody as work, with its rationale.
+- Confirming or rejecting one is a single action that writes the disposition
+  and its reason — the reason being what dampening needs.
+- Rejecting the machine's guess is recorded too. A classifier nobody ever
+  contradicts is a classifier nobody is checking.
+- No path lets a classification become a disposition without a person.
+
+---
+
+### B-021 — The Remediation tab reports zero and does not say why
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+**Specs:** [08 §2](../specs/08-patchwork-integration.md), [25 §3](../specs/25-fix-efficacy-and-verification.md)
+
+Across 560 remediation events, **nothing has ever reached `fix_generated` or
+`pr_opened`**. Zero pull requests, zero verifications.
+
+This is correct behaviour and it looks like a broken capability. There are four
+deterministic fixers — Python requirement pinning, npm pinning, Go module
+pinning, committed-secret removal — and the open backlog is 234 container, 147
+DAST, 88 SAST, 7 IaC, 4 secrets. Almost nothing in it is a class any fixer
+covers, so the pipeline declines and records `no_fix_available`, which is what
+it is for.
+
+What is missing is that a reader cannot tell that from the page. A tab showing
+no fixes, an efficacy view with nothing to measure (spec 25) and a
+regression-coverage number that cannot move (B-011) all look like faults, and
+all three are the same honest fact about coverage.
+
+**Acceptance criteria**
+
+- The Remediation tab states which finding classes have a fixer and which do
+  not, so zero reads as coverage rather than failure.
+- The efficacy view distinguishes "no fixes to measure" from "fixes that did
+  not work" — the same not-measured versus measured-zero distinction B-004
+  drew for `stale_dependencies`.
+- If a class is expected and has no fixer, that is visible as an absence rather
+  than inferred from a blank table.
+- Explicitly out of scope: writing new fixers. That is expansion and needs its
+  own decision about which classes deserve one.
+
+---
 
 ### B-016 — personal-soc files nothing, and its token is missing
 
