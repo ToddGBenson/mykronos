@@ -49,6 +49,10 @@ export type StalledLane = Briefing["stalled"][number];
 export type SupplyChainPackages =
   paths["/api/dashboard/repos/{repo_id}/sscs/packages"]["get"]["responses"]["200"]["content"]["application/json"];
 export type VulnerablePackage = SupplyChainPackages["packages"][number];
+/** Assets, entry points and trust boundaries for one repository (B-029). */
+export type RepoSurfaces =
+  paths["/api/dashboard/repos/{repo_id}/surfaces"]["get"]["responses"]["200"]["content"]["application/json"];
+export type Surface = RepoSurfaces["assets"][number];
 export type BriefingClass = Briefing["classes"][number];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];

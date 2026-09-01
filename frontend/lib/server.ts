@@ -37,6 +37,7 @@ import {
   type TrendSeries,
   type TriageQueue,
   type Briefing,
+  type RepoSurfaces,
   type SupplyChainPackages,
   type VulnerabilityManagement,
   type WorkflowsPage,
@@ -384,6 +385,22 @@ export async function getVulnerablePackages(
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load vulnerable packages") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** What this repository is, so the threat model can say what is at stake. */
+export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/surfaces",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the surface register") };
     }
     return { ok: true, data };
   } catch (error) {
