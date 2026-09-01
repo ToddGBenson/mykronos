@@ -25,6 +25,7 @@ from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate, fixers
+from mykronos.patchwork.regression_prompt import regression_prompt
 from mykronos.patchwork.rejection import is_dampened, rejection_prompt
 from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
 from mykronos.patchwork.triage import classify
@@ -708,6 +709,10 @@ def render_pr_body(
     lines += [f"- `{path}`" for path in fix.touched]
 
     lines += [
+        "",
+        # Asked before the rejection block, because it is the question a
+        # merger answers and the rejection block is the one a closer answers.
+        regression_prompt(),
         "",
         rejection_prompt(),
         "",

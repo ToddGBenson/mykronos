@@ -11,7 +11,9 @@ decision noted, rather than being deleted outright.
 **States:** `open` — scoped and actionable. `icebox` — deferred on a named
 trigger; the trigger is recorded so it can be watched for. (`needs scoping`
 existed briefly for the three cross-repo entries; the scoping was done on
-2026-08-31 and none of them needed the state afterwards.)
+2026-08-31 and none of them needed the state afterwards. Nothing is iceboxed
+today — and B-012 is why the state deserves a periodic re-read: its trigger had
+fired without anybody noticing.)
 
 Every entry carries a **Verified** date. That means the defect was reproduced
 against this codebase on that date — not that the entry was merely read.
@@ -43,91 +45,13 @@ already shipped.
 
 ## Open
 
-None. B-008 and B-010 landed on 2026-09-01; B-013 the same day. What remains
-is two entries deferred on triggers that have not fired.
+None. Every entry from the TheHub import is closed, and so is B-013, which came
+from an outage rather than the import.
 
----
-
-## Icebox
-
-Deferred on a named trigger. The trigger is recorded so it can be watched for
-rather than rediscovered.
-
-### B-011 — Only a test fixture can produce a demonstrated regression link
-
-**Size:** M **State:** icebox **Verified:** 2026-08-31
-**Specs:** [26 §2](../specs/26-oracle-as-adviser.md), [31 §6](../specs/31-regression-coverage.md)
-**Was:** TheHub #58498
-
-Spec 31 defines three sources for a finding-to-test link. Only one exists, and
-the one carrying the reward does not. `demonstrated` is written in exactly one
-place: `backend/tests/test_regression_coverage.py:149`. Every non-test mention in
-`backend/mykronos/` reads or coalesces the grade — `regression.py:48` defines the
-constant, `regression.py:238` compares against it, `lake/compaction.py:195`
-preserves it — and none writes it. The Patchwork-PR-body source has no production
-code at all.
-
-Specs 26 §2 and 31 §6 both describe "demonstrated outweighs asserted" as the
-point of the design. The winning grade is unreachable outside the test suite, so
-the incentive the whole scoring model rests on cannot fire.
-
-**Why iceboxed:** the reward mechanism cannot be exercised without production
-Patchwork traffic. Building the producer now ships code nothing can exercise —
-the exact defect this entry was written to fix.
-
-**Brings it back:** Patchwork producing real PRs in MyKronos.
-
-**Acceptance criteria**
-
-- A production code path writes `link_source=demonstrated` — the Patchwork
-  PR-body parser from spec 31.
-- A test asserts the producer is **not** under `backend/tests/`, so a fixture can
-  never again be the only writer.
-- The portfolio regression-coverage number changes when a real Patchwork PR lands.
-- Existing `asserted` links are left intact and are not silently upgraded.
-
----
-
-### B-012 — Export keel's 26 jobs so it can be read, then review it here
-
-**Size:** M **State:** icebox **Verified:** 2026-08-31 (evidence is TheHub's, not re-measured here)
-**Specs:** [32 §1–2](../specs/32-github-actions-delivery.md) **Was:** TheHub #58537
-
-keel is ours: a separate GitHub repo, self-setting from `ToddGBenson/keel`
-(`pipelines.parent_job_id = 931`, job 931 being `set-pipeline` inside keel
-itself), paused by the `mykronos` user, claimed as a migration subject in spec 32
-and D-093, and named as not-TheHub's by TheHub's
-`concourse/pipelines/README.md`. It is absent from our own drift checker
-(`scripts/check_applied_pipelines.py:59-63`) because there is no local file.
-
-TheHub's records of keel are wrong — its runbook lists 11 jobs in 3 groups; the
-server has **26 jobs in 7 groups** (`commit`, `security`, `mykronos`,
-`governance`, `ai`, `scheduled`, `release`). Fifteen jobs are written down in
-neither repo, including an existing `agent-assurance` job anyone planning this
-work would want to know about. keel's `release` group has never executed at all.
-
-It is readable today: the Concourse database holds 28 readable job configs for
-keel totalling 10,494 bytes, unencrypted, and TheHub's existing exporter already
-takes `--pipeline` and resolves any pipeline by name.
-
-**Correction carried over:** D-079 covers `thehub` and `mykronos` and does not
-name keel, so it neither exonerates nor implicates it.
-
-**Why iceboxed:** keel is paused and migrating to Actions per D-093.
-**Brings it back:** keel is unpaused, or the Actions migration needs the inventory.
-
-**Acceptance criteria**
-
-- keel's live configuration is exported and readable, using the existing exporter
-  unmodified where possible.
-- All 26 jobs and 7 groups are recorded accurately, including the 15 currently
-  undocumented.
-- The paused state, `paused_by`, `paused_at` and the three never-run jobs are
-  recorded as findings alongside the inventory.
-- The finding that keel self-sets from `ToddGBenson/keel` is recorded, so the
-  next reader does not repeat the "no definition in any repo" diagnosis.
-- Nothing in this entry sets, unpauses, modifies or triggers any pipeline; it is
-  read-only against the Concourse database and API.
+The two that had been iceboxed were built on 2026-09-01 rather than left
+waiting. One of them, B-012, turned out to have had its trigger fire already —
+which is the argument for re-reading an icebox occasionally instead of trusting
+that the trigger will announce itself.
 
 ---
 
@@ -142,6 +66,76 @@ decision it asked for already existed.
 
 Backend after all seven: 2277 tests pass, mypy clean over 107 files, ruff
 clean. Frontend `tsc --noEmit` clean. `api-types.d.ts` regenerated.
+
+### B-011 — A fix pull request can produce a regression link — **done**
+
+The producer spec 31 §2 describes existed nowhere. Every link in a running
+system had been written by `tests/test_regression_coverage.py` hand-crafting an
+HTTP request, so the number the whole incentive design rests on could not move
+outside the suite.
+
+Patchwork's PR body now carries the block spec 31 asks for — *"if you add a
+regression test, name it here"* — and `outcomes._link_regression_test` parses it
+on merge, keyed so a redelivered webhook updates one link rather than inflating
+the count. Same shape as `rejection.py`, which already asks the closer of an
+unmerged draft why: the person writing the regression test is the person merging
+the fix, and that is the cheapest moment anyone will ever be asked.
+
+**It produces `asserted`, and that is the honest grade rather than a shortfall.**
+The entry asked for a production path writing `demonstrated`. Building it showed
+why the spec does not put `demonstrated` here: the test arrives *in* the fix pull
+request, so it does not exist on the parent commit, and no ordinary lane run
+there can have exercised it. A lane that went red-to-green across the merge is
+evidence about the lane, not about this test. `demonstrated` needs the new test
+run against the *old source* — a lane invocation taking a ref, and
+`dispatch(repo_full_name, capability)` takes no commit. Spec 31 §8 already
+contemplates exactly this: *"`demonstrated` cannot be established; the link
+stays `asserted` and says why."*
+
+Claiming otherwise would have been the worst available outcome. Oracle weights
+`demonstrated` above `asserted` precisely because it means more (spec 26 §2,
+spec 31 §6), so a fabricated grade would corrupt the one number spec 31 exists
+to make trustworthy.
+
+**What remains, precisely:** commit-targeted lane dispatch. That is
+infrastructure — GitHub Actions `workflow_dispatch` takes a ref, Concourse does
+not without a pipeline change in every repository — and it is its own entry
+whenever somebody wants it.
+
+The entry's other criterion is now a test: `TestTheProducerIsNotAFixture`
+asserts the linker's source file is not under `backend/tests/`, so a fixture can
+never again be the only writer.
+
+### B-012 — keel is exported, inventoried, and its findings recorded — **done**
+
+Read-only, into
+[`docs/current-state/keel-pipeline-inventory.md`](current-state/keel-pipeline-inventory.md)
+with the config beside it. Deliberately not in `deploy/concourse/pipelines/`:
+that directory is what this repo *applies*, and putting keel there would claim
+ownership of a definition that lives in `ToddGBenson/keel`.
+
+**Its icebox trigger had already fired, and nobody noticed.** The entry was
+deferred until "keel is unpaused". keel is not paused — `paused: false`,
+`paused_by` and `paused_at` both null. Two other premises also needed
+correcting: eight groups rather than seven (the eighth is an `all` wildcard,
+and groups overlap, so seven real groups over 26 *distinct* jobs is the right
+reading).
+
+Confirmed as filed: 26 jobs, fifteen written down nowhere, three never-run
+(`container-scan`, `release-preflight`, `authorize-release`), the entire
+`release` group never executed, and keel self-setting from its own
+`set-pipeline` job — so the "no definition in any repo" diagnosis does not
+apply and the next reader will not repeat it.
+
+**It also found a live outage.** All three `mykronos-*` jobs were failing on the
+same 401 that took four `mykronos` lanes down on 2026-08-31 — a third stale
+copy of the ingestion token, at `concourse/main/keel/mykronos_ingestion_token`,
+that the earlier repair never reached. Repaired by rotating and delivering to
+both readers at once; all three now succeed. Recorded under D-097.
+
+Nothing in the inventory set, unpaused, modified or triggered any pipeline. The
+three keel jobs that *were* triggered belong to the credential repair, not to
+the inventory, and the document says so rather than folding them in.
 
 ### B-008 — Every expected stage is named, including the ones with no job — **done**
 
