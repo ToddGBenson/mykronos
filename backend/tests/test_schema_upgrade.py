@@ -237,6 +237,21 @@ GRANDFATHERED = {
     "repo_controls.repo_full_name",
     "repo_controls.stride",
     "repo_controls.kind",
+    # The surface register's three required columns (B-029) — assets, entry
+    # points and trust boundaries, the parts of a threat model `repo_controls`
+    # does not cover. New table, so nothing has rows these would be added to,
+    # and the argument against defaults is the one directly above, one step
+    # stronger: a surface with no repository belongs to every repository; one
+    # defaulted to `asset` asserts that something *is* an asset when nobody
+    # said so; and an unnamed surface cannot be reviewed, which is why
+    # `surfaces.declare` refuses one outright.
+    #
+    # `exposure` and `sensitivity` are deliberately absent from this list.
+    # Both default to `unknown`, which is a real answer rather than a guess —
+    # so both can be added to a populated table without asserting anything.
+    "repo_surfaces.repo_full_name",
+    "repo_surfaces.kind",
+    "repo_surfaces.name",
 }
 
 
