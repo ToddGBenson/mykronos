@@ -235,7 +235,13 @@ jobs:
           SPIDER_OK=1
           poll "/JSON/spider/view/status/" 600 || SPIDER_OK=0
 
-          AFTER=$(zap_api "/JSON/core/view/urls/" | python -c 'import json,sys; print(len(json.load(sys.stdin)["urls"]))')
+          # Non-fatal, and this is the same lesson as the report itself: this
+          # is a progress line, and under `bash -e` a progress line that fails
+          # kills the step before the report is written. A count nobody could
+          # read is not worth the artefact.
+          AFTER=$(zap_api "/JSON/core/view/urls/" \
+            | python -c 'import json,sys; print(len(json.load(sys.stdin)["urls"]))' \
+            || echo "unknown")
           echo "Site tree: ${AFTER} URL(s) after spidering, from ${SEEDED} seeded by the tests."
 
           ACTIVE_OK=1
@@ -254,7 +260,7 @@ jobs:
           # are real. Reporting it as a failure is what made the platform
           # discard them.
           if [ "$SPIDER_OK" -eq 0 ] || [ "$ACTIVE_OK" -eq 0 ]; then
-            echo "::warning::The crawl did not finish inside its budget. The ""report covers the ${AFTER} URL(s) reached, which is a narrower scan rather ""than a failed one."
+            echo "::warning::The crawl did not finish inside its budget. The report covers the ${AFTER} URL(s) reached, which is a narrower scan rather than a failed one."
           fi
 
       # Measure everything first, then report. The first live run put this
