@@ -10,6 +10,7 @@ import {
   StatTile,
   Verdict,
 } from "@/components/primitives";
+import { ClassificationReview } from "@/components/classification-review";
 import { SEVERITY_ORDER, type Severity } from "@/lib/api";
 import { getTriage } from "@/lib/server";
 
@@ -32,6 +33,36 @@ export const dynamic = "force-dynamic";
  */
 const CAPABILITIES = ["sast", "dast", "secrets", "containers", "iac", "cloud", "atlas"];
 
+const CLASSIFICATIONS = [
+  {
+    value: "likely_false_positive",
+    label: "likely FP",
+    hint: "The classifier thinks this is not a defect. It cannot act on that — confirm or reject it here.",
+  },
+  {
+    value: "needs_human_judgment",
+    label: "needs a human",
+    hint: "The classifier declined to judge. Nothing will happen to these until somebody looks.",
+  },
+  {
+    value: "true_positive",
+    label: "true positive",
+    hint: "The classifier believes this is real.",
+  },
+  {
+    value: "toxic_combination",
+    label: "toxic combo",
+    hint: "Only dangerous together with something else, and cannot be judged alone.",
+  },
+] as const;
+
+const CLASSIFICATION_LABEL: Record<string, string> = {
+  likely_false_positive: "likely FP",
+  needs_human_judgment: "needs a human",
+  true_positive: "true positive",
+  toxic_combination: "toxic combo",
+};
+
 export default async function TriagePage({
   searchParams,
 }: {
@@ -43,6 +74,7 @@ export default async function TriagePage({
     min_epss?: string;
     owner?: string;
     order?: string;
+    triage?: string;
   }>;
 }) {
   const query = await searchParams;
@@ -54,6 +86,7 @@ export default async function TriagePage({
     min_epss: query.min_epss ? Number(query.min_epss) : undefined,
     owner: query.owner,
     order: query.order === "rank" ? "rank" : undefined,
+    triage: query.triage,
   });
 
   if (!result.ok) {
@@ -132,6 +165,28 @@ export default async function TriagePage({
             }`}
           >
             {capability}
+          </Link>
+        ))}
+        <span className="mx-2 h-3 w-px bg-rule" />
+        {/* What the classifier concluded (B-019). The per-repo findings view
+            has had this filter since spec 18; the queue did not, so "show me
+            everything the machine could not judge" meant one request per
+            repository. */}
+        <Label>Classifier</Label>
+        {CLASSIFICATIONS.map((entry) => (
+          <Link
+            key={entry.value}
+            href={filterHref({
+              triage: query.triage === entry.value ? undefined : entry.value,
+            })}
+            title={entry.hint}
+            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+              query.triage === entry.value
+                ? "border-accent bg-accent-wash text-accent"
+                : "border-rule text-ink-3 hover:border-accent"
+            }`}
+          >
+            {entry.label}
           </Link>
         ))}
       </div>
@@ -243,6 +298,7 @@ export default async function TriagePage({
                   "Cap",
                   "Effort",
                   ...(query.order === "rank" ? ["Rank"] : []),
+                  "Classifier",
                   "Age",
                 ].map(
                   (heading) => (
@@ -317,7 +373,38 @@ export default async function TriagePage({
                       {item.rank?.toFixed(0) ?? "—"}
                     </td>
                   ) : null}
-                  <td className="whitespace-nowrap px-2 py-2 text-ink-2">
+                  <td className="px-2 py-2 align-top">
+                    {/* During a rollout the backend is briefly the previous
+                        one, which returns no classification at all -- the type
+                        says `string` and the runtime says undefined, the same
+                        gap that took the vulnerability-management page down
+                        between two deploys. An empty cell is the honest render
+                        of "this backend does not report that yet"; a review
+                        button that would 404 is not. */}
+                    {!item.triage ? (
+                      <span className="font-mono text-[9px] text-ink-3">—</span>
+                    ) : (
+                    <div className="flex flex-col gap-1">
+                      <span
+                        className="font-mono text-[9px] text-ink-3"
+                        title={item.triage_rationale}
+                      >
+                        {CLASSIFICATION_LABEL[item.triage] ?? item.triage}
+                      </span>
+                      {/* Offered on every row, not only the machine's
+                          false-positive guesses: disagreeing is the half that
+                          recorded nothing before, and it is exactly the row
+                          the classifier got wrong that nobody could say so
+                          about (B-020). */}
+                      <ClassificationReview
+                        findingId={item.finding_id}
+                        classification={item.triage}
+                        rationale={item.triage_rationale ?? ""}
+                      />
+                    </div>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2 align-top text-ink-2">
                     <RelativeTime value={item.first_seen_at} />
                   </td>
                 </tr>

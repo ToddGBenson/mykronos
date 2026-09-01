@@ -215,7 +215,8 @@ working: 43 dismissals ever recorded, all sast and secrets, against 234 open
 container findings.
 
 `POST /api/dashboard/findings/{id}/classification-review` makes it one action,
-and records **both** answers. Agreement already left a trace — the status
+and records **both** answers. The triage queue renders it: a Classifier column
+and filter, the rationale on hover, and a review control on every row (B-022). Agreement already left a trace — the status
 changes and the rule earns a dismissal observation. Disagreement left none, so
 a classifier calling real findings false positives was indistinguishable from
 one nobody had got to. A verdict nothing ever contradicts is a verdict nobody
