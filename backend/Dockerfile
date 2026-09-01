@@ -110,5 +110,12 @@ EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/healthz', timeout=3).status == 200 else 1)"]
 
+# `--no-server-header` because the application cannot win this one from
+# middleware. Uvicorn appends `server: uvicorn` *after* the app returns, so an
+# app-level header does not replace it — it sits alongside, and the response
+# carries two `Server` headers, one of which still names the server. Seen on a
+# live container, which is the only place it is visible: Starlette's TestClient
+# never adds uvicorn's copy, so the test passed while production did not (B-025).
 CMD ["python", "-m", "uvicorn", "mykronos.main:app", \
-     "--host", "0.0.0.0", "--port", "8100", "--log-level", "info"]
+     "--host", "0.0.0.0", "--port", "8100", "--log-level", "info", \
+     "--no-server-header"]

@@ -57,6 +57,48 @@ B-016 and B-018 need somebody other than me: a credential this session is not
 permitted to write, and a decision that is the operator's. B-024 is workable
 and is the largest single thing holding the estate's findings open.
 
+### B-025 — The API serves no security headers — **done**
+
+**Size:** S **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+Found by repairing B-023, and it corrects something I had asserted.
+
+I said the DAST header findings were stale — that the headers were fixed and
+the lane was the only problem. Half right. `next.config.ts` does set them and
+the **frontend** serves them on every route including its 404. But the first
+successful DAST run after the lane was repaired returned 86 findings, of which
+69 reproduce, and their paths are `/healthz` and `/api/dashboard/trends`.
+Those are FastAPI, not Next.js.
+
+The functional suite proxies backend traffic through ZAP, so ZAP's site tree
+covers the API — and `curl -D- http://localhost:8100/healthz` returns a bare
+`200 OK` with no security headers at all. The backend never had them. It was
+invisible because the lane had been failing for a fortnight, which is B-023's
+whole point arriving from the other direction.
+
+**An API's headers are not a page's headers.** This service returns JSON to
+programs: no markup to sandbox, no styles to allow, no fonts to fetch. Its CSP
+is `default-src 'none'`, stricter than the frontend's — permitting `'self'`
+scripts on an endpoint that never serves a script is permitting a script to
+run. `Strict-Transport-Security` is deliberately not set, because TLS
+terminates at the proxy in front and serving it here over plain HTTP on the
+LAN would pin a browser to a scheme this port does not speak.
+
+Two details that would have been bugs:
+
+- The middleware is added **last**, so it is outermost. `add_middleware`
+  inserts at the front of the stack, so an earlier call would have put it
+  *behind* the perimeter gate — and the gate's 401, the 404s and the 405s are
+  exactly the responses ZAP counted.
+- `/docs` and `/redoc` are exempted. `default-src 'none'` renders both blank;
+  they load a script and a stylesheet from jsdelivr. Two exempted paths beats
+  shipping a policy that breaks the docs, and beats weakening the policy
+  everywhere to accommodate them.
+
+Closed by `mykronos/headers.py`; tests in `tests/test_headers.py`.
+
+---
+
 ### B-024 — TheHub stopped scanning five days ago and nothing said so
 
 **Size:** M **State:** open **Verified:** 2026-09-01
@@ -235,13 +277,13 @@ into entries here:
 
 ## Closed
 
-Fourteen entries, over two days.
+Fifteen entries, over two days.
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
 working tree before it was touched and every one still reproduced.
 
-**2026-09-01 — six.** B-013 from the outage that day, then B-008 and B-010
+**2026-09-01 — seven.** B-013 from the outage that day, then B-008 and B-010
 rescoped from the import, then B-011 and B-012, which had been iceboxed and were
 built rather than left waiting. B-012's trigger turned out to have fired
 already, which is the argument for re-reading an icebox rather than trusting it
