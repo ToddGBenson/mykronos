@@ -193,6 +193,44 @@ consequences of fixer coverage, not bugs in either.
 
 ---
 
+## The stage that has no owner: closure
+
+A finding becomes `fixed` when `reconcile_absences` sees it absent from **two
+consecutive successful scans**. That rule is deliberate — it is flap protection
+for `resolved_at` and every metric built on it — and it has a consequence that
+belongs written down next to it:
+
+> **A capability whose lane is failing cannot close anything.**
+
+Not slowly. At all, for ever, however thoroughly the defect was fixed. The
+scans that would observe the absence never run, so the absence is never
+observed.
+
+This is not a hypothetical. On 2026-09-01 this repository held **115 open DAST
+findings naming security headers that were already set** in
+`frontend/next.config.ts` and verifiably being served. The DAST lane had failed
+seventeen times running since 2026-08-30 — the ZAP spider hit its 600s budget,
+`bash -e` killed the step, and the JSON report was never written. The dashboard
+showed 115 open findings and was correct. The number had been meaningless for
+two days.
+
+Nothing reported it, because every existing surface answers a different
+question. The portfolio ranks repositories, the worklist ranks findings, the CI
+view shows job status per repository — and none of them joins "this lane is
+broken" to "so these findings are frozen".
+
+`mykronos briefing` does, and `deploy.ps1` runs it after every deploy (D-098).
+Its first section is stalled lanes and what each is holding open; the rest
+groups open findings by what would fix them. **Fix the lane before the
+finding** — re-running a broken workflow fails again and closes nothing.
+
+```bash
+docker exec mykronos-backend mykronos briefing
+docker exec mykronos-backend mykronos briefing --json   # for a pipeline step
+```
+
+---
+
 ## Where the process broke, and what closed it
 
 Three gaps, all at handoffs rather than inside a stage. All three are now
@@ -261,4 +299,4 @@ docker exec mykronos-backend mykronos query \
 | False positive | 10 §2.2, 11 §4 §6.1 | `api/dashboard.py` disposition, `knowledge/dampening.py`, `patchwork/triage.py`, `patchwork/rejection.py` |
 | Triage | 19, 24, 27 | `dashboard.py` ranking, `worklist.py`, `ownership.py` |
 | Remediate | 08, 25, 31 | `patchwork/pipeline.py`, `patchwork/verification.py`, `regression.py` |
-| Closure | 05 §5a | `lake/reconcile.py` |
+| Closure | 05 §5a | `lake/reconcile.py`, `briefing.py` |

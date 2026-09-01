@@ -4077,3 +4077,47 @@ Regression tests: `tests/test_jobs.py::TestRotation::test_a_repo_scanned_by_both
 `::test_an_unreachable_concourse_defers_rather_than_assumes`,
 `::test_the_unsynced_sweep_cannot_rotate_a_both_systems_repo`,
 `tests/test_ci.py::TestWhoReadsTheToken`.
+
+## D-098 — A briefing after every deploy, led by the lanes that cannot close
+
+**2026-09-01.** The dashboard reported 115 open DAST findings against
+`ToddGBenson/mykronos` and was correct. The findings were also fixed: the
+security headers they name are set in `frontend/next.config.ts` and served on
+the wire. The number had been meaningless for two days and nothing said so.
+
+The mechanism is `reconcile_absences` requiring `REQUIRED_ABSENCES = 2`
+consecutive **successful** scans before a finding becomes `fixed` (spec 05 §5).
+That rule is right — it is flap protection for `resolved_at` and every metric
+built on it — and it has a consequence nobody had stated: **a capability whose
+lane is failing cannot close anything.** The DAST lane had failed seventeen
+times running. However thoroughly the defect was fixed, no scan would ever
+observe its absence.
+
+So the decision: **every deploy ends with a briefing, and its first section is
+lanes that cannot close findings.** Not severity, not the worst repository —
+those surfaces already exist and neither would have caught this. `deploy.ps1`
+runs `mykronos briefing` after health passes, and never fatally: a deploy that
+worked did work, and a briefing that cannot read the lake must not retract it.
+
+Three constraints the implementation holds to.
+
+**A group gets a button only where a route already exists.** A stalled lane
+gets `POST /api/repos/{repo}/scan?capabilities={cap}`, which is real. Sast gets
+the classifier queue. Containers, secrets and iac get nothing, because a
+base-image rebuild is a Dockerfile change and a committed secret needs rotating
+before anything else. This is B-021's lesson applied before the fact rather
+than after: an affordance that looks like capability and is not is worse than
+an absence, and the Remediation tab already taught us that once.
+
+**A stalled lane's button says "repair the job first".** Re-running a broken
+workflow fails again and closes nothing, and a one-button remediation that
+quietly does nothing is the failure mode this whole entry is about.
+
+**The numbers must not overstate what was read.** The failure streak is counted
+over a ten-run window, so it reads "at least 10" when it fills that window —
+printing a bare count said ten failures where the truth was seventeen, which
+reads as a bad afternoon rather than a two-day outage. Last-success is queried
+over all history instead, or a lane that failed more times than the window is
+wide would report as having never worked.
+
+Tests: `tests/test_briefing.py`.
