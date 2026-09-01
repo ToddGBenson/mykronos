@@ -520,13 +520,42 @@ def main(argv: list[str] | None = None) -> int:
                 [
                     [
                         name,
-                        "ok" if result.reachable else "FAILED",
+                        (
+                            "ok"
+                            if result.reachable
+                            # Three states, not two (B-014). A dependency this
+                            # deployment does not have is not one that failed,
+                            # and a command that is permanently red reports
+                            # nothing at all -- every run of this said FAILED
+                            # because `vault_url` was blank.
+                            else "not configured"
+                            if not result.configured
+                            else "FAILED"
+                        ),
                         result.detail or result.url,
                     ]
                     for name, result in checks
                 ],
             )
-            broken = [name for name, result in checks if not result.reachable]
+            broken = [
+                name
+                for name, result in checks
+                if not result.reachable and result.configured
+            ]
+            unconfigured = [
+                name for name, result in checks if not result.configured
+            ]
+            if unconfigured:
+                # Said out loud rather than left as a blank line. "Not
+                # checked" is a fact about coverage, and the whole reason
+                # this command exists is that a thing nobody was watching
+                # broke for a day.
+                print()
+                print(
+                    f"Not checked: {', '.join(unconfigured)} — "
+                    "configured for nothing, so a failure there would not "
+                    "appear here."
+                )
             if not broken:
                 print()
                 print("All dependencies reachable.")

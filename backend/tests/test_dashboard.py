@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from mykronos.schemas import Severity
+from mykronos.schemas import Severity, utcnow
 from tests.conftest import (
     CAPABILITY,
     REPO,
@@ -1795,3 +1795,100 @@ class TestVulnerabilityManagement:
             ).status_code
             == 200
         )
+
+
+class TestCapabilitiesThatReportElsewhere:
+    """Three capabilities never write a ScanRun, and never will (B-015).
+
+    Aegis assesses a pull request and writes an `InsiderRiskSignal` (spec 06
+    §3); Oracle writes a `RiskDecision`; Patchwork writes a
+    `RemediationEvent`. Reading only `scan_runs` reported all three silent on
+    every repository for ever — the kind of permanent false alarm the codebase
+    already names in `last_successful_scan_at`, which special-cases aegis for
+    exactly this reason.
+
+    It became worth fixing when B-008 turned "enabled and silent" from an
+    absence a caller inferred into a state a caller is invited to act on.
+    """
+
+    def test_aegis_reports_through_its_own_table(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, buffer
+    ) -> None:
+        onboard(client, admin_auth, scanned_by="concourse")
+        buffer.append(
+            "insider_risk_signals",
+            [
+                {
+                    "signal_id": "s1",
+                    "repo_full_name": REPO,
+                    "pr_number": 7,
+                    "evaluated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["aegis"]["has_scanned"] is True, (
+            "aegis assessed a pull request and the portfolio still reports it "
+            "as having never reported"
+        )
+        assert states["aegis"]["last_scan_at"] is not None
+
+    def test_a_capability_with_nothing_recorded_is_still_silent(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """The fix must not make everything look busy. `cloud` genuinely has
+        produced nothing, and that zero has to keep reading as a real zero
+        (B-018)."""
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["cloud"]["has_scanned"] is False
+        assert states["aegis"]["has_scanned"] is False, (
+            "with no signal recorded, aegis is silent like anything else"
+        )
+
+    def test_no_capability_is_permanently_silent(self) -> None:
+        """The guard that survives the next capability.
+
+        Every capability must be able to set `has_scanned` *somehow* — either
+        by writing a ScanRun, or by appearing in `REPORTS_ELSEWHERE`. A new
+        capability that reports through a table of its own and is not listed
+        here would be silent for ever, which is the defect this class exists
+        to close, and it would be silent quietly.
+        """
+        from mykronos.adapters.registry import supported_tools
+        from mykronos.dashboard import REPORTS_ELSEWHERE
+        from mykronos.schemas import Capability
+
+        for capability in Capability:
+            name = capability.value
+            writes_scan_runs = bool(supported_tools(name))
+            if writes_scan_runs or name in REPORTS_ELSEWHERE:
+                continue
+            raise AssertionError(
+                f"{name!r} has no adapter (so writes no ScanRun) and is not in "
+                "REPORTS_ELSEWHERE, so the portfolio will report it silent on "
+                "every repository for ever. Add the table it does write."
+            )
+
+    def test_a_real_scan_run_wins_over_the_weaker_signal(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, buffer
+    ) -> None:
+        """If one of these ever starts writing runs too, the run is the better
+        answer. The overlay must not overwrite it."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        post_scan(client, auth)
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        # The auth fixture posts a sast run; sast is not in REPORTS_ELSEWHERE
+        # and must keep its real status rather than gaining a synthetic one.
+        assert states["sast"]["last_scan_status"] == "success"

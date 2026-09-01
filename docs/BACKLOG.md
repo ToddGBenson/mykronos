@@ -45,101 +45,13 @@ already shipped.
 
 ## Open
 
-Five entries from a monitoring sweep of the running platform on 2026-09-01.
+Three entries from a monitoring sweep of the running platform on 2026-09-01. Two more (B-014, B-015) came from the same sweep and were fixed the same day; they are in Closed.
 Every one was reproduced against the live system before it was written; the
 evidence is in each entry rather than a link to a dashboard that will have
 moved on.
 
-Ordered by consequence. The first two are the platform being wrong about its
-own health, which is worse than the thing it is wrong about.
-
-### B-014 — The one check that would have caught a sealed Vault is inert, and reports FAILED anyway
-
-**Size:** S **State:** open **Verified:** 2026-09-01
-**Specs:** [32 §8.1](../specs/32-github-actions-delivery.md)
-
-`mykronos self-check` reports:
-
-```
-vault   FAILED   No Vault is configured for this deployment.
-Not reachable: vault
-```
-
-**`vault_url` is empty, and is set nowhere** — not in `backend/.env`, not in
-`deploy/`. `jobs.check_vault` returns `reachable=False` with that detail when
-the URL is blank, and the CLI renders that as `FAILED`.
-
-Two separate defects, and the second is the expensive one:
-
-1. **A deliberate absence is reported as a failure.** The backend has no Vault
-   client on purpose — D-086 treats giving it one as a boundary to argue about
-   rather than cross quietly. A permanent `FAILED` on a dependency the platform
-   has decided not to have is the "permanent false alarm that trains people to
-   ignore the panel" this codebase already names in `last_successful_scan_at`.
-   Every `self-check` run has been red since it shipped, so the command cannot
-   report anything else going wrong.
-
-2. **`check_vault` already detects a sealed Vault, and never runs.** It reads
-   `/v1/sys/health`, distinguishes sealed from unreachable, and its message
-   even names the fix script. Vault sealed on 2026-09-01 and nothing surfaced
-   it — the pipelines would have failed on unresolvable vars in a way that
-   looks like a credentials bug, which is exactly what that detail exists to
-   prevent. The detection is written, correct, and unreachable.
-
-**Acceptance criteria**
-
-- `vault_url` is configured for this deployment, so the seal check runs.
-- An unconfigured dependency reports as unavailable or skipped, never
-  `FAILED` — the same distinction this platform draws between "not enabled"
-  and "enabled and silent" everywhere else.
-- A sealed Vault makes `self-check` say so, with the unseal script named.
-- A test covers all three states: unconfigured, sealed, healthy.
-
----
-
-### B-015 — Three capabilities are permanently "enabled and silent", by design
-
-**Size:** S **State:** open **Verified:** 2026-09-01
-**Specs:** [06 §3](../specs/06-aegis-integration.md), [10 §7](../specs/10-jded-dashboard.md)
-
-`aegis`, `oracle` and `patchwork` show `has_scanned: false` on every repository
-that enables them, for ever. Measured across the whole lake:
-
-```
-sast 365 · secrets 282 · atlas 234 · qa 209 · iac 141
-unit 137 · containers 130 · ai 82 · dast 40 · functional 16
-aegis 0 · oracle 0 · patchwork 0 · cloud 0 · network 0
-```
-
-The first three are zero **by design and always will be**: aegis writes an
-`InsiderRiskSignal`, oracle writes a `RiskDecision`, patchwork writes a
-`RemediationEvent`. None of them writes a `ScanRun`, and
-`_capability_scan_state` reads `scan_runs` and nothing else.
-
-`last_successful_scan_at` already solves exactly this, with a comment saying
-why: *"Looking for it in scan_runs reports every insider job as having reported
-nothing, which is both wrong and the kind of permanent false alarm that trains
-people to ignore the panel."* `capability_states` never got the same treatment.
-
-**This became consequential with B-008**, which is why it is filed now rather
-than left. Before that change, "enabled and silent" was an absence a caller had
-to infer; now it is a named state a caller is invited to act on — so three of
-fifteen capabilities permanently assert a problem that does not exist. The
-field made the platform more honest about one thing and more wrong about
-another.
-
-**Acceptance criteria**
-
-- A capability that reports through a table other than `scan_runs` is read from
-  the table it actually writes, as `last_successful_scan_at` does.
-- Its state on the portfolio distinguishes "has reported" from "cannot report
-  this way", rather than reporting silence.
-- A test asserts each of the three is not permanently silent, so the next
-  capability that reports differently is caught when it is added.
-- `cloud` and `network` are genuinely at zero and must keep reporting as such —
-  see B-018 for `cloud`.
-
----
+Ordered by consequence. What remains is one credential, one set of failing
+jobs, and one decision that is the operator's rather than mine.
 
 ### B-016 — personal-soc has been scanning and filing nothing since 2026-08-12
 
@@ -279,6 +191,68 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-014 — self-check tells the truth about Vault now — **done**
+
+Two defects, both fixed.
+
+**The check runs.** `MYKRONOS_VAULT_URL` is set in `backend/.env` and defaulted
+in `deploy/mykronos/docker-compose.yml`, so `check_vault` now reaches
+`/v1/sys/health` — read-only, unauthenticated, no token needed. Verified live:
+`vault ok`, where every previous run of the command said `FAILED`.
+
+Defaulted in compose rather than left to `.env` deliberately. An unset value
+silently disables the one check that notices a sealed Vault, and this
+deployment comes back sealed after every restart.
+
+**A dependency nobody configured is no longer a failure.** `ReachabilityResult`
+gained `configured`, and the CLI renders three states rather than two —
+`ok`, `not configured`, `FAILED` — with unconfigured dependencies excluded from
+the exit-status set and named on their own line: *"Not checked: vault —
+configured for nothing, so a failure there would not appear here."* Coverage is
+a fact worth stating, and the whole reason this command exists is that
+something nobody was watching broke for a day.
+
+**What the tests were doing.** `test_unconfigured_is_not_a_failure_to_report_loudly`
+had asserted the distinction in its *name* since the day it was written and
+never in its body: it checked `not reachable`, which is exactly what a sealed
+Vault also returns. So the false alarm was tested into place. It now asserts
+`configured is False`, and two new tests assert a real failure keeps
+`configured is True` — otherwise fixing the false alarm would have hidden the
+alarm.
+
+The sealed-Vault detection was already written, already correct, and already
+named the unseal script. It had simply never had a URL to run against. It would
+have caught the seal on 2026-09-01, which was found by hand instead.
+
+### B-015 — Capabilities that report elsewhere are read where they report — **done**
+
+`aegis`, `oracle` and `patchwork` write an `InsiderRiskSignal`, a
+`RiskDecision` and a `RemediationEvent`. None writes a `ScanRun`, so reading
+only `scan_runs` reported all three silent on every repository for ever.
+
+`_capability_scan_state` now overlays `REPORTS_ELSEWHERE` — a capability to
+`(table, column)` map — after the scan-run query. The overlay never overwrites
+a real run: if one of these ever starts writing runs, the run is the better
+answer and this is the weaker one. Their status reads `reported` rather than
+`success`, because inventing a scan status would claim a run that never
+happened.
+
+**The guard matters more than the fix.**
+`test_no_capability_is_permanently_silent` walks every `Capability` and fails
+unless it either has an adapter (so writes runs) or appears in
+`REPORTS_ELSEWHERE`. The split is exact today — the three without adapters are
+the three in the map — so the next capability that reports through a table of
+its own is caught when it is added, rather than being silent quietly. Confirmed
+by removing `oracle` from the map and watching it fail.
+
+`cloud` and `network` keep reading as genuinely silent, which they are, and a
+test pins that so the fix cannot make everything look busy.
+
+**Why it was filed against my own change.** B-008 turned "enabled and silent"
+from an absence a caller inferred into a state a caller is invited to act on.
+The underlying gap predated it; B-008 is what made three of fifteen
+capabilities permanently assert a problem that did not exist.
 
 ### B-011 — A fix pull request can produce a regression link — **done**
 
