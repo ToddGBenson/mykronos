@@ -44,6 +44,7 @@ export default async function RemediatePage() {
     stalled,
     awaiting,
     guidance,
+    fixes,
   } = briefing.data;
 
   // What is left once the free ones and the frozen ones are set aside. This
@@ -125,12 +126,74 @@ export default async function RemediatePage() {
         )}
       </section>
 
+      {/* 3 — one level above the rule: the change itself. Two ZAP plugins
+          that both want a Content-Security-Policy value are one edit, and
+          showing them as two rows asks for the work twice (B-028). */}
+      <section className="flex flex-col gap-2">
+        <Label>3 · Step by step, one entry per change</Label>
+        {fixes.length === 0 ? (
+          <EmptyState title="Nothing open" detail="No open findings in scope." />
+        ) : (
+          <div className="flex flex-col gap-3">
+            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+              Grouped by the change rather than the finding or the rule. Where
+              two scanner rules are answered by one edit, they appear once —
+              derived from what the scanner said to do, never from a list kept
+              here of which rules are &ldquo;really the same&rdquo;.
+            </p>
+            {fixes.slice(0, 12).map((fix) => (
+              <details
+                key={fix.fix_id}
+                className="border-l-2 border-rule pl-3"
+                open={fix.effort === "config" || fix.effort === "upgrade"}
+              >
+                <summary className="cursor-pointer list-none">
+                  <span className="font-mono text-[11px] text-ink">{fix.action}</span>
+                  <span className="ml-2 font-mono text-[10px] text-ink-2">
+                    closes {fix.findings}
+                  </span>
+                  {fix.rules.length > 1 ? (
+                    <span className="ml-2 font-mono text-[9px] text-accent">
+                      across {fix.rules.length} rules
+                    </span>
+                  ) : null}
+                  <span className="ml-2 text-[8px] uppercase tracking-wide text-ink-3">
+                    {fix.effort}
+                  </span>
+                </summary>
+                {fix.steps.length > 0 ? (
+                  <ol className="mt-1 flex list-decimal flex-col gap-1 pl-4">
+                    {fix.steps.map((step) => (
+                      <li
+                        key={step.slice(0, 32)}
+                        className="max-w-prose text-[10px] leading-relaxed text-ink-2"
+                      >
+                        {step}
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="mt-1 max-w-prose text-[10px] leading-relaxed text-ink-3">
+                    No standing procedure for this class — it is a judgement
+                    about this finding, and the scanner&rsquo;s own text is in
+                    the table below.
+                  </p>
+                )}
+                <p className="mt-1 font-mono text-[9px] text-ink-3">
+                  {fix.repos.join(", ")}
+                </p>
+              </details>
+            ))}
+          </div>
+        )}
+      </section>
+
       {/* 3 — the scanners' own remediation, grouped on the rule because that
           is the unit the fix has. Forty alerts across forty URLs are one
           policy line, and listing them as forty rows is how a five-minute
           change looks like a sprint. */}
       <section className="flex flex-col gap-2">
-        <Label>3 · What the scanners said to do</Label>
+        <Label>4 · What the scanners said to do, rule by rule</Label>
         {guidance.length === 0 ? (
           <EmptyState title="Nothing open" detail="No open findings in scope." />
         ) : (
@@ -196,7 +259,7 @@ export default async function RemediatePage() {
       {/* 4 — the honest zero. B-021's lesson: state coverage, or a blank
           table reads as a broken feature. */}
       <section className="flex flex-col gap-2">
-        <Label>4 · What auto-remediation can take off you</Label>
+        <Label>5 · What auto-remediation can take off you</Label>
         <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
           <strong className="text-ink">
             {auto_fixable} of {total_open}
