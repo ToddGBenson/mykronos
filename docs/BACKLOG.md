@@ -153,13 +153,13 @@ into entries here:
 
 ## Closed
 
-Thirteen entries, over two days.
+Fourteen entries, over two days.
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
 working tree before it was touched and every one still reproduced.
 
-**2026-09-01 — five.** B-013 from the outage that day, then B-008 and B-010
+**2026-09-01 — six.** B-013 from the outage that day, then B-008 and B-010
 rescoped from the import, then B-011 and B-012, which had been iceboxed and were
 built rather than left waiting. B-012's trigger turned out to have fired
 already, which is the argument for re-reading an icebox rather than trusting it
@@ -169,6 +169,42 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-023 — 115 findings were fixed and could never close — **done** (D-098)
+
+**Size:** M **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+Filed and closed the same day, because the investigation *was* the fix.
+
+The task was to add security headers to the frontend. They were already there:
+`frontend/next.config.ts` sets X-Frame-Options, X-Content-Type-Options,
+Referrer-Policy, Permissions-Policy and a CSP, `poweredByHeader` is false, and
+all of it is served on the wire. The 115 open mykronos DAST findings naming
+those headers were against a defect that no longer existed.
+
+They could not close, and would not have closed if the headers were fixed a
+hundred times. `reconcile_absences` needs a finding absent from two consecutive
+**successful** scans (spec 05 §5). The DAST lane had failed seventeen times
+running since 2026-08-30 — the ZAP spider hitting its 600s budget, `bash -e`
+killing the step on the non-zero exit, and the report the step exists to
+produce never written. No successful scan, no observed absence, no closure.
+
+Two fixes, one narrow and one general.
+
+- The ZAP report is now written unconditionally. A crawl that ran out of budget
+  still saw most of the site, and a timeout is recorded as a warning on the run
+  rather than thrown away along with the output.
+- `mykronos briefing`, run by `deploy.ps1` after every deploy. Its first
+  section is lanes that cannot close findings, because that is the class of
+  defect nothing in the platform reported — the dashboard showed 115 open DAST
+  findings and was correct, and the number had been meaningless for two days.
+
+The briefing also groups open findings by what would fix them, with the
+packages or rules each class concentrates in, and offers the one request that
+acts on each group **only where one already exists**. Three classes get no
+button on purpose; see D-098.
+
+---
 
 ### B-022 — The review loop has a UI, so it can actually be used — **done**
 
