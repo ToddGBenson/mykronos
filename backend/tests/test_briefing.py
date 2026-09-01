@@ -150,6 +150,67 @@ class TestStalledLanes:
         assert "Findings can close." in briefing.render(briefing.build(catalog))
 
 
+class TestAwaitingClosure:
+    """"You need do nothing" is a promise, so it must use the closing rule."""
+
+    def test_a_finding_absent_from_both_recent_scans_is_counted(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """Absent from BOTH of the last two successful scans, which is the
+        rule `reconcile_absences` applies. One absence is a flaky scanner."""
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        report = briefing.build(catalog)
+
+        assert report.closing_soon == 1
+        assert report.awaiting[0].scans_needed == 0
+
+    def test_one_absence_is_not_yet_counted(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The flap protection, restated here so the page cannot promise
+        something the closing rule would not deliver."""
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _scan(client, auth, "run-2", [])
+        run_compaction()
+
+        assert briefing.build(catalog).closing_soon == 0
+
+    def test_it_agrees_with_the_thing_that_actually_closes(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The page says these need no work. `reconcile_absences` is what makes
+        that true, so the two must not answer on different rules — a promise
+        computed one way and kept another is worse than no promise."""
+        from mykronos.lake import reconcile_absences
+
+        _scan(client, auth, "run-1", [finding_payload(), finding_payload(file_path="b.py")])
+        run_compaction()
+        _scan(client, auth, "run-2", [finding_payload()])
+        _scan(client, auth, "run-3", [finding_payload()])
+        run_compaction()
+
+        promised = briefing.build(catalog).closing_soon
+        delivered = len(reconcile_absences(catalog).fixed)
+
+        assert promised == delivered == 1, "the page promised what the sweep delivers"
+
+    def test_a_lane_with_one_scan_promises_nothing(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """A lane that has run once cannot confirm an absence however long the
+        finding has been gone."""
+        _scan(client, auth, "run-1", [])
+        run_compaction()
+
+        assert briefing.build(catalog).closing_soon == 0
+
+
 class TestGrouping:
     def test_findings_are_grouped_by_what_would_fix_them(
         self, client, auth, catalog, run_compaction

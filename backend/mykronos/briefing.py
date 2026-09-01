@@ -211,6 +211,25 @@ class StalledLane:
 
 
 @dataclass
+class AwaitingClosure:
+    """Findings already gone, waiting only for scans to say so.
+
+    The single most useful thing to separate out of an open count. These need
+    **no work at all** — the defect is fixed and absent from the newest
+    successful scan; closure is arithmetic from here
+    (`reconcile.REQUIRED_ABSENCES`). Presenting them beside findings that need
+    a person is what makes a backlog look larger than the work in it.
+    """
+
+    repo_full_name: str
+    capability: str
+    findings: int
+    #: How many more successful scans of this lane before they close. Zero
+    #: means the next `reconcile_absences` sweep takes them.
+    scans_needed: int
+
+
+@dataclass
 class ClassSummary:
     capability: str
     open_findings: int
@@ -231,11 +250,80 @@ class Briefing:
     stalled: list[StalledLane] = field(default_factory=list)
     classes: list[ClassSummary] = field(default_factory=list)
     auto_fixable: int = 0
+    #: Already fixed, waiting only for scans to confirm. Needs no work.
+    awaiting: list[AwaitingClosure] = field(default_factory=list)
+
+    @property
+    def closing_soon(self) -> int:
+        """Findings that will close with no work at all."""
+        return sum(a.findings for a in self.awaiting)
 
     @property
     def blocked_findings(self) -> int:
         """Open findings that cannot close until a lane is repaired."""
         return sum(lane.open_findings for lane in self.stalled)
+
+
+def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
+    """Open findings absent from their lane's most recent successful scan.
+
+    Deliberately mirrors `reconcile_absences` rather than approximating it: the
+    same `CONFIRMING_STATUSES`, the same "not among the most recent runs" test,
+    the same `asset_id`/`repo_full_name` join. A page that promised something
+    would close on a different rule from the one that closes it would be worse
+    than not saying anything.
+
+    The difference is only that this counts what is *on its way* out, where
+    reconcile acts on what has already arrived.
+    """
+    from mykronos.lake.reconcile import CONFIRMING_STATUSES, REQUIRED_ABSENCES
+
+    if not catalog.all_files("findings") or not catalog.all_files("scan_runs"):
+        return []
+
+    statuses = ", ".join(f"'{s}'" for s in CONFIRMING_STATUSES)
+    rows = catalog.query(
+        f"""
+        WITH recent AS (
+            SELECT repo_full_name, capability, scan_run_id, rn FROM (
+                SELECT repo_full_name, capability, scan_run_id,
+                       row_number() OVER (
+                           PARTITION BY repo_full_name, capability
+                           ORDER BY coalesce(completed_at, started_at) DESC
+                       ) AS rn
+                FROM scan_runs WHERE scan_status IN ({statuses})
+            ) WHERE rn <= {REQUIRED_ABSENCES}
+        ),
+        depth AS (
+            SELECT repo_full_name, capability, count(*) AS runs
+            FROM recent GROUP BY 1, 2
+        )
+        SELECT f.asset_id, f.capability, d.runs, count(*)
+        FROM findings f
+        JOIN depth d
+          ON d.repo_full_name = f.asset_id AND d.capability = f.capability
+        WHERE f.status = 'open'
+          AND f.last_seen_scan_run_id NOT IN (
+              SELECT r.scan_run_id FROM recent r
+              WHERE r.repo_full_name = f.asset_id AND r.capability = f.capability
+          )
+        GROUP BY 1, 2, 3
+        """
+    )
+
+    out = [
+        AwaitingClosure(
+            repo_full_name=str(repo),
+            capability=str(capability),
+            findings=int(count),
+            # A lane with fewer than the required runs on record cannot confirm
+            # yet, however long the finding has been absent.
+            scans_needed=max(0, REQUIRED_ABSENCES - int(runs)),
+        )
+        for repo, capability, runs, count in rows
+    ]
+    out.sort(key=lambda a: -a.findings)
+    return out
 
 
 def _open_by_capability(catalog: Catalog) -> dict[tuple[str, str], int]:
@@ -435,6 +523,7 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
         generated_at=stamp,
         total_open=sum(totals.values()),
         stalled=stalled_lanes(catalog, now=stamp),
+        awaiting=awaiting_closure(catalog),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
         # secrets fixer needs a credential in source rather than a reference.

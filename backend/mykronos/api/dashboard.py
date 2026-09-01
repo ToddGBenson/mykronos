@@ -2091,6 +2091,14 @@ class StalledLaneOut(BaseModel):
     action: BriefingActionOut
 
 
+class AwaitingClosureOut(BaseModel):
+    repo_full_name: str
+    capability: str
+    findings: int
+    #: 0 means the next `reconcile_absences` sweep closes them.
+    scans_needed: int
+
+
 class BriefingClassOut(BaseModel):
     capability: str
     open_findings: int
@@ -2107,9 +2115,14 @@ class BriefingOut(BaseModel):
     #: Open findings that cannot close until a lane is repaired. This is the
     #: number the page exists for: on 2026-09-01 it was 431 of 475.
     blocked_findings: int
+    #: Already fixed and absent from the newest successful scan. Needs no work
+    #: — closure is arithmetic from here. Separating this from the open count
+    #: is what stops a backlog looking larger than the work in it.
+    closing_soon: int
     auto_fixable: int
     stalled: list[StalledLaneOut]
     classes: list[BriefingClassOut]
+    awaiting: list[AwaitingClosureOut]
 
 
 @router.get("/briefing", response_model=BriefingOut)
@@ -2139,6 +2152,7 @@ async def post_deployment_briefing(
         generated_at=report.generated_at,
         total_open=report.total_open,
         blocked_findings=report.blocked_findings,
+        closing_soon=report.closing_soon,
         auto_fixable=report.auto_fixable,
         stalled=[
             StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled
@@ -2146,6 +2160,9 @@ async def post_deployment_briefing(
         classes=[
             BriefingClassOut.model_validate(dataclasses.asdict(entry))
             for entry in report.classes
+        ],
+        awaiting=[
+            AwaitingClosureOut.model_validate(dataclasses.asdict(a)) for a in report.awaiting
         ],
     )
 
