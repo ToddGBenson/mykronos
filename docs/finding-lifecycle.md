@@ -224,6 +224,14 @@ Its first section is stalled lanes and what each is holding open; the rest
 groups open findings by what would fix them. **Fix the lane before the
 finding** — re-running a broken workflow fails again and closes nothing.
 
+**And repairing a lane can tell you something you were wrong about.** The
+first successful DAST run after this one was fixed returned 86 findings, 69 of
+which reproduced — at `/healthz` and `/api/dashboard/trends`. Those are
+FastAPI paths. The headers were fixed on the *frontend* and the **backend had
+never had them at all**, which nobody could see while the lane that would have
+said so was down. A stalled lane does not only freeze the record; it hides
+what the record would have said next (B-025).
+
 ```bash
 docker exec mykronos-backend mykronos briefing
 docker exec mykronos-backend mykronos briefing --json   # for a pipeline step

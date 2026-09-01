@@ -34,6 +34,7 @@ from mykronos.github.factory import (
     GitHubClientFactory,
     RestGitHubClientFactory,
 )
+from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     close_superseded_fixes,
@@ -380,9 +381,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(triage_router)
     app.include_router(webhooks_router)
 
-    # Outermost, so it runs before routing: a request that cannot present the
-    # perimeter token should not reach a handler at all, and should not be
-    # able to learn which paths exist by the shape of the error.
+    # Runs before routing: a request that cannot present the perimeter token
+    # should not reach a handler at all, and should not be able to learn which
+    # paths exist by the shape of the error.
     if resolved.gate_token:
         app.add_middleware(PerimeterGate, token=resolved.gate_token)
         logger.info("Perimeter gate enabled (X-Hub-Token)")
@@ -391,6 +392,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "Perimeter gate disabled — no MYKRONOS_GATE_TOKEN set. Fine "
             "locally; set it before exposing this host."
         )
+
+    # Added last and therefore outermost — `add_middleware` inserts at the
+    # front of the stack, so this wraps the gate rather than sitting behind
+    # it. That is the whole point: the gate's own 401 is a response a browser
+    # renders, and the scan that found this counted 404s and 405s among the
+    # offending paths (B-025).
+    app.add_middleware(SecurityHeaders)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
     async def healthz() -> dict[str, str]:
