@@ -24,6 +24,8 @@
 
 import Link from "next/link";
 
+import { FilterSelect } from "@/components/filter-select";
+
 import { DispositionForm } from "@/components/disposition";
 import { GroomButton } from "@/components/groom-button";
 import { RemediationAction } from "@/components/remediation-action";
@@ -247,24 +249,21 @@ function Filters({
   const status = query.status ?? "open";
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Status</Label>
-        {STATUSES.map((entry) => (
-          <Link
-            key={entry.id}
-            href={href({
-              status: entry.id === "open" ? undefined : entry.id,
-              ...CLEAR_SELECTION,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              status === entry.id
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {entry.label}
-          </Link>
-        ))}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* `open` is the default rather than an option that reads as a filter:
+            selecting it removes the parameter, which is what every link into
+            this view already produces. */}
+        <FilterSelect
+          label="Status"
+          name="status"
+          value={query.status}
+          anyLabel="open (default)"
+          clears={["group", "finding"]}
+          options={STATUSES.filter((entry) => entry.id !== "open").map((entry) => ({
+            value: entry.id,
+            label: entry.label,
+          }))}
+        />
         {/* The three numbers are different facts and all three get said: how
             much is outstanding, how much the filters kept, and how much of
             that the grouping collapsed. A single number here would be read as
@@ -277,24 +276,23 @@ function Filters({
         </span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Severity</Label>
-        {(["critical", "high", "medium", "low", "info"] as Severity[]).map((severity) => (
-          <Link
-            key={severity}
-            href={href({
-              severity: query.severity === severity ? undefined : severity,
-              ...CLEAR_SELECTION,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              query.severity === severity
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {severity} {page.by_severity[severity] ?? 0}
-          </Link>
-        ))}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* The counts move into the option labels rather than being lost:
+            "how many criticals" is the question that made the chips worth
+            reading, and a bare dropdown would have thrown it away. */}
+        <FilterSelect
+          label="Severity"
+          name="severity"
+          value={query.severity}
+          anyLabel="Any severity"
+          clears={["group", "finding"]}
+          options={(["critical", "high", "medium", "low", "info"] as Severity[]).map(
+            (severity) => ({
+              value: severity,
+              label: `${severity} (${page.by_severity[severity] ?? 0})`,
+            }),
+          )}
+        />
         {query.capability ? (
           <Link
             href={href({ capability: undefined, ...CLEAR_SELECTION })}

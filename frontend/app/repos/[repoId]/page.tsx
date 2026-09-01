@@ -25,7 +25,9 @@ import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
   Crumb,
+  EmptyState,
   ErrorPanel,
+  Label,
   Pill,
   Section,
 } from "@/components/primitives";
@@ -312,6 +314,93 @@ function DashboardTab({
  *  comment has the full story). Said here rather than left to look broken. */
 const TEST_CAPABILITIES = ["unit", "functional", "qa"] as const;
 
+/** The security scans this tab can also start, in the order somebody reaches
+ *  for them: the code, then the running application, then what it is built
+ *  from. Every one is in `DISPATCHABLE_CAPABILITIES` on the backend, so none
+ *  of these buttons can be offered for something the dispatch endpoint would
+ *  refuse.
+ *
+ *  Kept apart from the tests above, and labelled apart, because the two differ
+ *  in the way that matters: a test produces a run and a count (D-046), while a
+ *  scan produces findings that enter Oracle's risk score and stay open until
+ *  two consecutive successful scans see them gone. Starting one is a heavier
+ *  act than re-running a test suite and the tab should not imply otherwise. */
+const SECURITY_CAPABILITIES = [
+  { id: "sast", label: "SAST", detail: "static analysis of the source" },
+  { id: "dast", label: "DAST", detail: "against the running application" },
+  { id: "secrets", label: "Secrets", detail: "credentials in git history" },
+  { id: "containers", label: "Containers", detail: "OS packages in the image" },
+  { id: "iac", label: "IaC", detail: "infrastructure definitions" },
+  { id: "atlas", label: "Dependencies", detail: "advisories against the tree" },
+] as const;
+
+/**
+ * Start a security scan from the Harness tab.
+ *
+ * **Only what is enabled.** A repository without a DAST lane gets no DAST
+ * button rather than a button that returns "not enabled" — the same rule the
+ * remediation surfaces follow, and for the same reason: an affordance that
+ * looks like capability and is not is worse than an absence (B-021).
+ *
+ * Each capability dispatches on its own. Re-running every lane because one is
+ * stale is wasteful on a runner and noisy in the record, and the endpoint has
+ * taken a capability scope since spec 17 §2.5 — it simply was not offered
+ * anywhere a person could reach it.
+ */
+function SecurityScans({
+  repoId,
+  enabled,
+  reported,
+}: {
+  repoId: string;
+  enabled: string[];
+  reported: string[];
+}) {
+  const available = SECURITY_CAPABILITIES.filter(
+    (capability) =>
+      enabled.includes(capability.id) || reported.includes(capability.id),
+  );
+
+  return (
+    <section className="flex flex-col gap-2 border-t border-rule pt-3">
+      <Label>Security scans</Label>
+      <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">
+        <strong className="text-ink">These produce findings, not a score.</strong>{" "}
+        A scan started here writes findings that enter this repository&rsquo;s risk
+        decision and stay open until two consecutive successful scans see them
+        gone. That is a heavier act than re-running a test suite, which is why
+        they sit apart from the lanes above.
+      </p>
+
+      {available.length === 0 ? (
+        <EmptyState
+          title="No scanning capability is enabled"
+          detail="Enable one on the Dashboard tab. Only enabled capabilities are offered here, so a button always corresponds to a lane that exists."
+        />
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {available.map((capability) => (
+            <div
+              key={capability.id}
+              className="flex flex-wrap items-center justify-between gap-2 border-b border-rule-soft pb-1.5 last:border-0"
+            >
+              <span className="font-mono text-[10px] text-ink-2">
+                <strong className="text-ink">{capability.label}</strong>
+                <span className="ml-2 text-ink-3">{capability.detail}</span>
+              </span>
+              <ScanNowButton
+                repoId={repoId}
+                capabilities={[capability.id]}
+                label={`run ${capability.id}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 async function TestHarnessTab({
   repoId,
   enabled,
@@ -352,6 +441,8 @@ async function TestHarnessTab({
           label="run tests"
         />
       </div>
+
+      <SecurityScans repoId={repoId} enabled={enabled} reported={reported} />
 
       <Section title="Test health" detail="pass/fail, most recent run">
         {scanHealth.ok ? (

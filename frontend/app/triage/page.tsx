@@ -11,6 +11,7 @@ import {
   Verdict,
 } from "@/components/primitives";
 import { ClassificationReview } from "@/components/classification-review";
+import { FilterSelect } from "@/components/filter-select";
 import { SEVERITY_ORDER, type Severity } from "@/lib/api";
 import { getTriage } from "@/lib/server";
 
@@ -133,62 +134,46 @@ export default async function TriagePage({
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Severity</Label>
-        {SEVERITY_ORDER.map((severity: Severity) => (
-          <Link
-            key={severity}
-            href={filterHref({
-              severity: query.severity === severity ? undefined : severity,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              query.severity === severity
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {severity}
-          </Link>
-        ))}
-        <span className="mx-2 h-3 w-px bg-rule" />
-        <Label>Capability</Label>
-        {CAPABILITIES.map((capability) => (
-          <Link
-            key={capability}
-            href={filterHref({
-              capability: query.capability === capability ? undefined : capability,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              query.capability === capability
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {capability}
-          </Link>
-        ))}
-        <span className="mx-2 h-3 w-px bg-rule" />
+      {/* Dropdowns rather than chips. Thirteen capabilities and five
+          severities on one line meant reading eighteen controls to find the
+          one that was on; the URL is still the state, so a filtered view is
+          still a link. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <FilterSelect
+          label="Severity"
+          name="severity"
+          value={query.severity}
+          anyLabel="Any severity"
+          options={SEVERITY_ORDER.map((severity: Severity) => ({
+            value: severity,
+            label: severity,
+          }))}
+        />
+        <FilterSelect
+          label="Capability"
+          name="capability"
+          value={query.capability}
+          anyLabel="Any capability"
+          options={CAPABILITIES.map((capability) => ({
+            value: capability,
+            label: capability,
+          }))}
+        />
         {/* What the classifier concluded (B-019). The per-repo findings view
             has had this filter since spec 18; the queue did not, so "show me
             everything the machine could not judge" meant one request per
             repository. */}
-        <Label>Classifier</Label>
-        {CLASSIFICATIONS.map((entry) => (
-          <Link
-            key={entry.value}
-            href={filterHref({
-              triage: query.triage === entry.value ? undefined : entry.value,
-            })}
-            title={entry.hint}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              query.triage === entry.value
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {entry.label}
-          </Link>
-        ))}
+        <FilterSelect
+          label="Classifier"
+          name="triage"
+          value={query.triage}
+          anyLabel="Any verdict"
+          options={CLASSIFICATIONS.map((entry) => ({
+            value: entry.value,
+            label: entry.label,
+            hint: entry.hint,
+          }))}
+        />
       </div>
 
       {/* Same GET-form pattern as the per-repo Findings tab (spec 17 §3) —

@@ -45,7 +45,17 @@
   schedule:
     # New advisories land against dependencies that have not changed, which is
     # the one way this capability's answer goes stale without a commit.
-    - cron: "<< config.schedule_cron | default('23 4 * * 1') >>"
+    #
+    # Daily, not weekly. That rationale above argues for the shortest cadence
+    # the budget allows and the default contradicted it: a Monday-only run
+    # meant an advisory published on a Tuesday sat unseen for six days against
+    # a dependency nobody had touched. Every other input to a risk decision
+    # here refreshes at least daily, so the dependency answer was the stalest
+    # thing in the score.
+    #
+    # 04:23 rather than on the hour, and away from the containers lane's 02:41,
+    # so the two do not contend for a runner.
+    - cron: "<< config.schedule_cron | default('23 4 * * *') >>"
   workflow_dispatch:
 {% endblock %}
 
