@@ -280,7 +280,11 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             f"affects {item.get('blast_radius_repos')} repositories",
         )
     if item.get("repo_recommendation") == "no_go":
-        add("repo_is_no_go", rank.repo_is_no_go, "in a repository Oracle already refuses")
+        add(
+            "repo_is_no_go",
+            rank.repo_is_no_go,
+            "in a repository the risk decision already refuses",
+        )
     if item.get("orphaned"):
         add(
             "orphaned",
@@ -288,7 +292,7 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             "in a file nothing in the repository imports (Python only)",
         )
     if item.get("effort") == "one_click":
-        add("fixable", rank.fixable_bonus, "Patchwork has produced a fix for this")
+        add("fixable", rank.fixable_bonus, "auto-remediation has produced a fix for this")
 
     return (sum(term["points"] for term in terms), terms)
 

@@ -22,6 +22,19 @@ Four rules, each of which is a specific mistake it refuses to let happen:
    note naming who authorised this and when. It travels onto every resulting
    finding, because "who said this was allowed" is the first question asked
    afterwards and the hardest to reconstruct later.
+
+**Dormant: nothing in the platform calls this yet (B-007).** The only importer
+is `tests/test_network_authorization.py`. There is no scanner to enforce the
+boundary *for* — no scheduled scan, no container, no workflow template, no
+pipeline job — so `resolve` and `audit_record` have never run against a real
+target. Spec 14 §0 has the full inventory of what exists and what does not.
+
+Kept rather than deleted because the boundary is the part worth having written
+before the scanner exists, not after: it is the piece that has to be right
+first, and reviewing it under deadline alongside a working scanner is how the
+octet-to-the-left mistake gets made. Whoever builds the scanner calls `resolve`
+immediately before emitting packets — rule 2 above is why that placement
+matters, and it is the whole reason this module is not a config validator.
 """
 
 from __future__ import annotations

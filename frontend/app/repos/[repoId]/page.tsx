@@ -81,6 +81,21 @@ export default async function RepoPage({
   const query = await searchParams;
   const tab = query.tab ?? "dashboard";
 
+  // An unknown id used to fall through the ternary below and render Dashboard,
+  // so a wrong link looked like a working one. The incident page shipped with
+  // `?tab=supply-chain` — not a tab id; the id is `sscs` — and nothing said so
+  // for as long as it was wrong.
+  if (!TABS.some((entry) => entry.id === tab)) {
+    return (
+      <ErrorPanel
+        title="No such tab"
+        detail={`'${tab}' is not a tab on this page. Valid ids: ${TABS.map(
+          (entry) => entry.id,
+        ).join(", ")}.`}
+      />
+    );
+  }
+
   const repo = await getRepo(repoId);
   if (!repo.ok) {
     return <ErrorPanel title="Repository unavailable" detail={repo.error} />;

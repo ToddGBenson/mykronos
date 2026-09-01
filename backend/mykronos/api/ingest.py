@@ -636,7 +636,7 @@ def _safe_segment(value: str) -> str:
     return cleaned.strip(".-") or "unknown"
 
 
-@router.post("/aegis", response_model=AegisAccepted)
+@router.post("/aegis", response_model=AegisAccepted, summary="Ingest insider risk")
 async def ingest_aegis(
     request: Request, body: InsiderRiskSubmission, token: TokenDep
 ) -> AegisAccepted:
@@ -737,7 +737,9 @@ async def ingest_aegis(
     )
 
 
-@router.post("/atlas", response_model=AtlasAccepted)
+@router.post(
+    "/atlas", response_model=AtlasAccepted, summary="Ingest dependencies (SCA)"
+)
 async def ingest_atlas(
     request: Request, body: SscsEvidenceSubmission, token: TokenDep
 ) -> AtlasAccepted:
@@ -909,8 +911,9 @@ async def ingest_capability_payload(
 ) -> IngestAccepted:
     """Capability-specific tables that do not have an endpoint yet.
 
-    Declared here because spec 05 §4 defines the route. Aegis and Atlas have
-    their own handlers above — registered first, so this catch-all cannot
+    Declared here because spec 05 §4 defines the route. Insider risk and
+    dependencies (SCA) have their own handlers above — registered first, so
+    this catch-all cannot
     shadow them. Returning 501 rather than 404 keeps the contract visible
     instead of looking like a routing bug.
     """
@@ -919,7 +922,7 @@ async def ingest_capability_payload(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=(
             f"Ingestion for '{capability.value}' is not implemented yet. "
-            "Patchwork arrives in Phase 6 (specs/13-build-roadmap.md §3)."
+            "Auto-remediation arrives in Phase 6 (specs/13-build-roadmap.md §3)."
         ),
     )
 

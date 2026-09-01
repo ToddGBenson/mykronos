@@ -141,7 +141,6 @@ class RepoOnboarding(Base):
     pending_pr_number: Mapped[int | None] = mapped_column(Integer, default=None)
 
     default_branch: Mapped[str] = mapped_column(String(255), default="main")
-    auto_merge_workflow_prs: Mapped[bool] = mapped_column(Boolean, default=False)
 
     onboarded_by: Mapped[str] = mapped_column(String(255), default="")
     onboarded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -131,12 +131,18 @@ async function Results({ query }: { query: string }) {
                     className="border-t border-rule-soft first:border-t-0 align-baseline"
                   >
                     <td className="px-2 py-1.5">
-                      <Link
-                        href={`/repos/${encodeURIComponent(item.repo_full_name)}?tab=supply-chain`}
-                        className="font-semibold text-ink hover:text-accent"
-                      >
-                        {item.repo_full_name}
-                      </Link>
+                      {item.repo_id ? (
+                        <Link
+                          href={`/repos/${encodeURIComponent(item.repo_id)}?tab=sscs`}
+                          className="font-semibold text-ink hover:text-accent"
+                        >
+                          {item.repo_full_name}
+                        </Link>
+                      ) : (
+                        <span className="font-semibold text-ink">
+                          {item.repo_full_name}
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 text-ink-2">
                       {(item.versions ?? []).join(", ") || "version not recorded"}

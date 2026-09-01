@@ -92,10 +92,10 @@ def record_human_edit(
     the one thing both events share.
     """
     if not is_patchwork_branch(branch):
-        return EditResult(reason="not a Patchwork branch")
+        return EditResult(reason="not an auto-remediation branch")
 
     if all(commit_is_ours(commit, bot_logins) for commit in commits):
-        return EditResult(reason="every commit is Patchwork's own")
+        return EditResult(reason="every commit is auto-remediation's own")
 
     short = branch.removeprefix("refs/heads/").removeprefix(BRANCH_PREFIX)
     rows = catalog.query(

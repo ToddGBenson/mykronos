@@ -139,7 +139,15 @@ export const CAPABILITY_META = {
   functional: { icon: "🧭", label: "Functional tests" },
   dast: { icon: "🕷️", label: "Dynamic analysis (DAST)" },
   cloud: { icon: "☁️", label: "Cloud posture" },
-  network: { icon: "🌐", label: "Network scanning" },
+  // No scanner exists behind this one (spec 14 §0, B-007). Enabling it is
+  // still meaningful — nmap/nuclei output produced elsewhere ingests normally
+  // — but the platform will not run the scan, and a bare "Network scanning"
+  // label says the opposite.
+  network: {
+    icon: "🌐",
+    label: "Network scanning",
+    note: "Ingest only — Mykronos does not run network scans yet (spec 14 §0).",
+  },
   ai: { icon: "✨", label: "AI checks" },
   aegis: { icon: "🛡️", label: "Insider risk" },
   oracle: { icon: "⚖️", label: "Risk decisions" },
@@ -182,7 +190,7 @@ export function CapabilityDots({
         return (
           <span
             key={capability}
-            title={`${meta.label}${
+            title={`${meta.label}${"note" in meta ? ` (${meta.note})` : ""}${
               isLive
                 ? " — live"
                 : isOn

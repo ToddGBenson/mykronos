@@ -115,7 +115,7 @@ class TestHumanEdits:
 
         response = push(client, "feature/someone-elses-work", author="octocat")
 
-        assert response.json()["ignored"] == "not a Patchwork branch"
+        assert response.json()["ignored"] == "not an auto-remediation branch"
 
     def test_the_pipeline_stops_touching_an_edited_branch(
         self, client, with_draft, auth, run_compaction, catalog, github

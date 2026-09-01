@@ -491,7 +491,7 @@ def merge_counts(
     decided that question and this agrees with it.
     """
     if not catalog.all_files("insider_risk_signals"):
-        return {"available": False, "reason": "Aegis has not assessed anything here."}
+        return {"available": False, "reason": "Insider risk has not assessed anything here."}
 
     since = (now or utcnow()) - timedelta(days=days)
     rows = catalog.query(

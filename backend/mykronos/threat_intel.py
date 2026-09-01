@@ -2,10 +2,11 @@
 
 Two feeds, both public, both unauthenticated, both about vulnerabilities in
 general rather than about any repository's own content — which is the
-distinction that matters here. `ai_classifier_url` and `fix_generator_url`
-(spec 06 §5, spec 08 §5, spec 12 §5.2) are opt-in because using them means a
-repository's source or diff leaves the platform; fetching a public catalog of
-CVEs sends nothing anywhere, and this module needs no equivalent gate.
+distinction that matters here. `ai_classifier_url` (spec 06 §5, spec 12 §5.2)
+is opt-in because using it means a repository's source or diff leaves the
+platform; fetching a public catalog of CVEs sends nothing anywhere, and this
+module needs no equivalent gate. (`fix_generator_url` was the other example
+until D-096 withdrew it — it never made a call to withhold.)
 
 - **CISA KEV** — the Known Exploited Vulnerabilities catalog: a boolean,
   "is this CVE known to be actively exploited."

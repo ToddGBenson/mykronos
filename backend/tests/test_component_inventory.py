@@ -468,6 +468,53 @@ class TestTheEndpoint:
         assert body["kind"] == "package"
         assert body["affected"][0]["repo_full_name"] == REPO
 
+    def test_the_drill_down_link_resolves_to_the_supply_chain_tab(
+        self, client: TestClient, admin_auth, run_compaction
+    ) -> None:
+        """The incident page linked `/repos/<repo_full_name>?tab=supply-chain`
+        and both halves were wrong: the segment is an onboarding id, never an
+        owner/repo name, and the tab id is `sscs`. Incident mode is the one
+        surface that matters on the worst day, and its drill-down had never
+        worked.
+
+        Asserted against the id the response actually carries, so a row that
+        stops carrying one fails here rather than in an outage.
+        """
+        onboard(client, admin_auth)
+        seed_components(client, run_compaction, cyclonedx(component()))
+
+        body = client.get(
+            "/api/dashboard/incident", params={"q": "lodash"}, headers=admin_auth
+        ).json()
+        repo_id = body["affected"][0]["repo_id"]
+
+        assert repo_id, "an affected row with no repo_id cannot be linked to"
+        assert repo_id != REPO, "the link takes the onboarding id, not owner/repo"
+
+        # The page's Supply chain tab reads this endpoint. A 404 here is
+        # exactly what the broken link produced.
+        landing = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs", headers=admin_auth
+        )
+
+        assert landing.status_code == 200
+
+    def test_the_old_broken_link_shape_still_404s(
+        self, client: TestClient, admin_auth, run_compaction
+    ) -> None:
+        """Guards the reason the fix was needed, not the fix. `_resolve_repo`
+        is id-only by design (spec 29 §2); if a name ever starts resolving,
+        the id-carrying contract above stops being load-bearing and somebody
+        should decide that deliberately."""
+        onboard(client, admin_auth)
+        seed_components(client, run_compaction, cyclonedx(component()))
+
+        r = client.get(
+            f"/api/dashboard/repos/{REPO.replace('/', '%2F')}/sscs", headers=admin_auth
+        )
+
+        assert r.status_code == 404
+
     def test_an_empty_query_is_refused(
         self, client: TestClient, admin_auth
     ) -> None:

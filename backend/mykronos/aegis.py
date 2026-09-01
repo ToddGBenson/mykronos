@@ -153,7 +153,7 @@ def assess(
                 "(spec 06 §5)."
                 if not ai_classifier_configured
                 else "A classifier is configured but did not return a result; "
-                "Aegis scored the remaining signals (spec 06 §7)."
+                "the remaining signals were scored (spec 06 §7)."
             ),
         }
     else:
@@ -225,8 +225,8 @@ def render_check_run_summary(
         f"insider-risk score {assessment.insider_risk_score}/100",
         "",
         "This is a **prompt to review this change carefully**, not a judgement "
-        "about the person who wrote it. Aegis cannot block, merge or close a "
-        "pull request, and it never changes anyone's access.",
+        "about the person who wrote it. This check cannot block, merge or close "
+        "a pull request, and it never changes anyone's access.",
         "",
     ]
 

@@ -149,7 +149,9 @@ export function CapabilityManager({
               title={
                 tone === "bad"
                   ? `${meta.label} — enabled and not answering. Click to see why.`
-                  : `${meta.label} — click to ${isOn ? "disable" : "enable"}`
+                  : `${meta.label} — click to ${isOn ? "disable" : "enable"}${
+                      "note" in meta ? `. ${meta.note}` : ""
+                    }`
               }
               className={`flex items-center gap-1 border px-2 py-1 font-mono text-[10px] transition-opacity ${
                 working ? "opacity-40" : ""

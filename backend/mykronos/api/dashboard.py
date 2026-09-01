@@ -101,10 +101,10 @@ class PortfolioRowOut(BaseModel):
     risk_score: int | None = Field(
         default=None,
         description=(
-            "Oracle's standing score from the latest portfolio decision. Null "
+            "The standing risk score from the latest portfolio decision. Null "
             "means not judged — deliberately not 0, which would read as "
-            "'assessed, no risk'. Oracle is opt-in, so a repo that never "
-            "enabled it stays null."
+            "'assessed, no risk'. Risk decisions are opt-in, so a repo that "
+            "never enabled them stays null."
         ),
     )
     recommendation: str | None = None
@@ -219,7 +219,7 @@ class TriageItem(BaseModel):
     repo_recommendation: str | None = Field(
         default=None,
         description=(
-            "The repo's standing Oracle verdict, carried per row so the queue "
+            "The repo's standing risk verdict, carried per row so the queue "
             "reads without cross-referencing the portfolio. The same critical "
             "means something different in a repo already called no_go."
         ),
@@ -391,7 +391,7 @@ class FindingGroupOut(BaseModel):
     age_days: int | None = None
     triage: str = Field(
         description=(
-            "Patchwork's own classification (`patchwork/triage.py`), plus "
+            "The auto-remediation classification (`patchwork/triage.py`), plus "
             "`toxic_combination` for a group that cannot be judged alone."
         )
     )
@@ -413,7 +413,7 @@ class FindingGroupOut(BaseModel):
     fixable: bool | None = Field(
         default=None,
         description=(
-            "Whether Patchwork produced a fix for any occurrence in this "
+            "Whether auto-remediation produced a fix for any occurrence in this "
             "group (spec 19 §3.2). Read from what it actually did, not "
             "predicted — a fixer cannot say whether it applies without the "
             "file content, and a prediction would never self-correct. Null "
@@ -557,7 +557,7 @@ class InsiderRiskPage(BaseModel):
     blocking: bool = Field(
         default=False,
         description=(
-            "Whether this repository's Aegis Check Run can fail a pull "
+            "Whether this repository's insider-risk Check Run can fail a pull "
             "request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, "
             "and off by default. Stated here rather than left to the reader "
             "because the gap between what an admin configured and what a "
@@ -583,7 +583,7 @@ class SscsEvidenceOut(BaseModel):
         default=None,
         description=(
             "Pre-clamp. Ranking has to survive the floor at 0, the same way "
-            "Oracle's raw_score survives the ceiling at 100 (D-018)."
+            "the risk decision's raw_score survives the ceiling at 100 (D-018)."
         ),
     )
     provenance_json: Any = None
@@ -888,7 +888,7 @@ async def pull_requests(request: Request, principal: PrincipalDep) -> PullReques
 
     Read-only, and deliberately so. Each row links out to GitHub to review and
     merge; the platform offers no merge of its own. That is the same constraint
-    spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+    spec 08 §3 makes structural for auto-remediation, applied to the view: a page that
     could merge a change to your code is a page that has to be trusted
     differently from one that can only show it to you.
     """
@@ -1060,7 +1060,7 @@ async def maturity(
 
     Criteria measure evidence rather than switch positions: nothing here can
     be satisfied by changing configuration alone, and in particular no tier
-    rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+    rewards turning the risk-decision gate on. Spec 09 §6 makes that conditional on
     shadow-mode data, so the model asks whether the data exists instead.
     """
     model = request.app.state.maturity_model
@@ -1204,7 +1204,8 @@ async def snooze_finding(
     """Put a row down until a date, deciding nothing about it (spec 27 §3.1).
 
     Deliberately not a `Finding.status`: a snoozed finding is still open,
-    still scores in Oracle, and still goes overdue if it goes overdue. That
+    still scores in the risk decision, and still goes overdue if it goes
+    overdue. That
     separation is what stops "not now" becoming "not ever".
     """
     _require_writer(principal, "Snoozing a finding")
@@ -1322,11 +1323,11 @@ async def repo_insider_risk(
             "person. Nothing here aggregates or ranks contributors, and rows "
             "are deleted after this repository's retention period (spec 06 §9). "
             + (
-                "This repository's Aegis Check Run is BLOCKING: a score at or "
-                "above the threshold fails the pull request."
+                "This repository's insider-risk Check Run is BLOCKING: a score "
+                "at or above the threshold fails the pull request."
                 if blocking
-                else "This repository's Aegis Check Run is advisory — it never "
-                "fails a pull request."
+                else "This repository's insider-risk Check Run is advisory — it "
+                "never fails a pull request."
             )
         ),
     )
@@ -1754,6 +1755,15 @@ class AffectedRepoOut(BaseModel):
     """One repository's exposure to one package (spec 29 §2)."""
 
     repo_full_name: str
+    repo_id: str = Field(
+        default="",
+        description=(
+            "The onboarding id, for linking to the repository page — which "
+            "accepts only this, never `owner/repo`. Empty where the exposure "
+            "outlived the onboarding, in which case there is nothing to link "
+            "to and the caller should render the name as plain text."
+        ),
+    )
     versions: list[str] = Field(
         default_factory=list,
         description=(
@@ -1834,7 +1844,7 @@ class ControlStateOut(BaseModel):
     prevents: list[str] = Field(
         default_factory=list,
         description=(
-            "The Aegis signals this control would have prevented. The link is "
+            "The insider-risk signals this control would have prevented. The link is "
             "the point of the panel: it turns a log of oddities into a "
             "diagnosis with a remedy the team can action themselves."
         ),
@@ -1961,13 +1971,13 @@ async def incident_lookup(
 
     A CVE, a package name, or a purl, answered across every onboarded
     repository. Nothing here is new information — the inventory, the findings,
-    the Oracle verdicts and the KEV/EPSS matches are all already held. The only
+    the risk verdicts and the KEV/EPSS matches are all already held. The only
     new thing is that they arrive together, joined by package name and ordered
     worst-first, which is the difference between answering this in ten seconds
     and answering it in twenty minutes across five tabs.
 
     A read, deliberately. The batch actions spec 29 §2.1 describes go through
-    the existing story and Patchwork paths and are triggered per repository by
+    the existing story and auto-remediation paths and are triggered per repository by
     a person: the platform does not open forty pull requests because KEV
     published overnight.
     """
@@ -2293,8 +2303,9 @@ async def set_finding_status(
 ) -> StatusChangeResult:
     """Record a human disposition (spec 10 §2.2).
 
-    Admin-only: this changes what Oracle will decide, so it is a write, not a
-    view. Viewers can read every finding and change none of them.
+    Admin-only: this changes what the risk-decision engine will decide, so it
+    is a write, not a view. Viewers can read every finding and change none of
+    them.
     """
     if not principal.may_write:
         raise HTTPException(

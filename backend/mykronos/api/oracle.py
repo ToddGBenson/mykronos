@@ -193,7 +193,7 @@ async def evaluate(
         background.add_task(
             request.app.state.notifier.send,
             Notification(
-                title="Oracle refused a commit",
+                title="A risk decision refused a commit",
                 detail=(
                     f"Score {published.decision.overall_risk_score}. "
                     f"{published.decision.reasoning or 'No reasoning recorded.'}\n"
@@ -236,8 +236,9 @@ async def evaluate(
 async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, Any]:
     """The policy currently in force, verbatim (spec 09 §7).
 
-    Readable by viewers as well as admins. Anyone whose pull request Oracle
-    judges is entitled to see how the number was produced — a risk score you
+    Readable by viewers as well as admins. Anyone whose pull request the
+    risk-decision engine judges is entitled to see how the number was
+    produced — a risk score you
     are not allowed to inspect is one people learn to route around.
     """
     policy = request.app.state.oracle_policy
@@ -361,7 +362,8 @@ async def override_decision(
 
     The decision itself is never rewritten — spec 09 §10 needs past decisions
     to stay reproducible. The override is recorded *alongside* it, so the
-    history shows both what Oracle said and what the human did about it.
+    history shows both what the risk decision said and what the human did
+    about it.
 
     spec 09 §6 calls these "exactly the data that should most influence policy
     tuning over time", which is why the reason is mandatory rather than
