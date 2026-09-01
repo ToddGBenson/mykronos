@@ -2253,12 +2253,27 @@ export interface components {
             classes: components["schemas"]["BriefingClassOut"][];
             /** Awaiting */
             awaiting: components["schemas"]["AwaitingClosureOut"][];
+            /** Guidance */
+            guidance: components["schemas"]["CapabilityGuidanceOut"][];
         };
         /**
          * Capability
          * @enum {string}
          */
         Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle" | "network" | "unit" | "functional" | "qa" | "ai";
+        /** CapabilityGuidanceOut */
+        CapabilityGuidanceOut: {
+            /** Capability */
+            capability: string;
+            /** Count */
+            count: number;
+            /** Actionable */
+            actionable: number;
+            /** Unactionable */
+            unactionable: number;
+            /** Rules */
+            rules: components["schemas"]["RuleGuidanceOut"][];
+        };
         /** CapabilityStateOut */
         CapabilityStateOut: {
             /** Capability */
@@ -4198,6 +4213,23 @@ export interface components {
             owner?: string | null;
             /** Notes */
             notes?: string | null;
+        };
+        /** RuleGuidanceOut */
+        RuleGuidanceOut: {
+            /** Capability */
+            capability: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            /** Count */
+            count: number;
+            /** Fix */
+            fix: string;
+            /** Source */
+            source: string;
+            /** Effort */
+            effort: string;
         };
         /**
          * RunRequest

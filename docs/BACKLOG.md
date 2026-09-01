@@ -192,13 +192,13 @@ into entries here:
 
 ## Closed
 
-Seventeen entries, over two days.
+Eighteen entries, over two days.
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
 working tree before it was touched and every one still reproduced.
 
-**2026-09-01 — nine.** B-013 from the outage that day, then B-008 and B-010
+**2026-09-01 — ten.** B-013 from the outage that day, then B-008 and B-010
 rescoped from the import, then B-011 and B-012, which had been iceboxed and were
 built rather than left waiting. B-012's trigger turned out to have fired
 already, which is the argument for re-reading an icebox rather than trusting it
@@ -208,6 +208,56 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-026 — Remediation advice was invented here, and was wrong — **done**
+
+**Size:** M **Verified:** 2026-09-01 **Closed:** 2026-09-01
+
+Every scanner ships remediation advice and the platform threw all of it away.
+`raw_finding_json` has carried it since the first ingest — ZAP writes a
+`solution` per alert, Trivy a `Fixed Version` per package — and nothing read
+any of it. The Remediation surfaces offered text written *here*, from a general
+sense of what a class of finding usually needs.
+
+**That was not merely lossy. It was wrong.** The standing text for containers,
+which I shipped earlier the same day, said *"rebuild on a current base image
+and one rebuild closes them together."* What Trivy actually reported:
+
+| | findings |
+|---|---|
+| container findings with a `Fixed Version` | **3** |
+| container findings with **no** fix published | **231** |
+
+A rebuild would have closed nothing. Checked three ways rather than asserted:
+`apt list --upgradable` in the running image is empty; `apt-cache policy`
+reports Installed == Candidate for `libc6`, `libc-bin` and `perl-base`; and a
+**freshly pulled `python:3.13-slim`** ships byte-identical versions
+(`2.41-12+deb13u3`, `5.40.1-6`). The image is already on the newest Debian
+publishes. The CVEs are unpatched upstream.
+
+So the route for those 231 is an acceptance with `no_vendor_fix` and a review
+date — which spec 24 §3 already re-opens automatically the day a vendor ships.
+Guidance invented from a category was confidently sending somebody to do a day
+of work that could not have closed a single finding.
+
+`guidance.by_rule` now reads the scan, groups on the **rule** rather than the
+finding — 57 CSP alerts across 57 URLs are one policy line, and listing them as
+57 rows is how a five-minute change looks like a sprint — and labels each row
+`scanner` or `standing`, because "the tool told us" and "we think" do not
+deserve equal trust. Rendered on `/remediate` §3.
+
+Two classification bugs found by looking at the output:
+
+- ZAP titles a CSP alert without the word "header", so a naive match called 57
+  findings a judgement and buried the second-cheapest item on the page.
+- A `` written through a shell heredoc became a literal **backspace byte**
+  inside the regex. `inspect.getsource` showed the pattern looking correct
+  while it could never match; only disassembling the function revealed
+  `header|CSP|...`.
+
+Closed by `mykronos/guidance.py`; tests in `tests/test_guidance.py`.
+
+---
 
 ### B-016 — personal-soc filed nothing because its token was empty — **done**
 

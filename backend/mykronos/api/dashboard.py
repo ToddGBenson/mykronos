@@ -19,7 +19,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import briefing, controls, governance, incident, regression, worklist
+from mykronos import (
+    briefing,
+    controls,
+    governance,
+    guidance,
+    incident,
+    regression,
+    worklist,
+)
 from mykronos.adminauth import PrincipalDep
 from mykronos.ci import (
     ActionsClient,
@@ -2099,6 +2107,27 @@ class AwaitingClosureOut(BaseModel):
     scans_needed: int
 
 
+class RuleGuidanceOut(BaseModel):
+    capability: str
+    rule_id: str
+    title: str
+    count: int
+    fix: str
+    #: "scanner" when the tool said it, "standing" when this repository did.
+    #: Shown, because they do not deserve equal trust.
+    source: str
+    #: config | upgrade | judgement | rotate | no_fix
+    effort: str
+
+
+class CapabilityGuidanceOut(BaseModel):
+    capability: str
+    count: int
+    actionable: int
+    unactionable: int
+    rules: list[RuleGuidanceOut]
+
+
 class BriefingClassOut(BaseModel):
     capability: str
     open_findings: int
@@ -2123,6 +2152,8 @@ class BriefingOut(BaseModel):
     stalled: list[StalledLaneOut]
     classes: list[BriefingClassOut]
     awaiting: list[AwaitingClosureOut]
+    #: What each scanner said to do, grouped by rule (B-026).
+    guidance: list[CapabilityGuidanceOut]
 
 
 @router.get("/briefing", response_model=BriefingOut)
@@ -2163,6 +2194,18 @@ async def post_deployment_briefing(
         ],
         awaiting=[
             AwaitingClosureOut.model_validate(dataclasses.asdict(a)) for a in report.awaiting
+        ],
+        guidance=[
+            CapabilityGuidanceOut(
+                capability=g.capability,
+                count=g.count,
+                # Properties, so `asdict` would drop them silently — the same
+                # trap `StalledLane.action` fell into.
+                actionable=g.actionable,
+                unactionable=g.unactionable,
+                rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
+            )
+            for g in guidance.by_rule(request.app.state.catalog)
         ],
     )
 
