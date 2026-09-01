@@ -43,6 +43,63 @@ already shipped.
 
 ## Open
 
+B-013 came from an outage on 2026-08-31 rather than from the TheHub export;
+the rest are the import's remainder.
+
+### B-013 — Token rotation will desync Vault again, because `scanned_by` is single-valued
+
+**Size:** S **State:** open **Verified:** 2026-09-01 (caused a live outage the day before)
+**Specs:** [15 §7](../specs/15-concourse-pipeline.md), D-086
+
+**This already happened once.** On 2026-08-30 a rotation issued a new ingestion
+token for `ToddGBenson/mykronos`, wrote it to the GitHub Actions secret, and
+left Vault holding the old value. The Concourse pipeline reads
+`((mykronos-ingestion-token))` from Vault, so when the 24-hour overlap expired
+the preflight started returning 401 and four lanes — `unit`,
+`lint-and-types`, `qa-spec-links`, `frontend` — failed inside two minutes each.
+Repaired by hand on 2026-09-01 with D-086's procedure.
+
+**D-086 was supposed to prevent exactly this, and does not cover this repo.**
+Its guard is one line in `jobs.py`:
+
+```python
+if onboarding.scanned_by != "github_actions":
+    ...  # defer, log loudly, do not rotate
+```
+
+`ToddGBenson/TheHub` is `concourse`, so it defers correctly. `ToddGBenson/mykronos`
+is recorded as `github_actions` — and it is *also* scanned by Concourse, by the
+pipeline in `deploy/concourse/pipelines/mykronos.yml`. Both statements are true:
+14 Actions workflows are active, and the Concourse pipeline is the one that
+broke. `scanned_by` holds one value, so the repository scanned by both is the
+one the guard cannot protect.
+
+Next scheduled rotation: **2026-11-30**.
+
+**Two ways it fires, and the second is faster.** Beyond the 90-day clock, an
+active token with `secret_synced = 0` is picked up by `due_for_rotation`'s
+unsynced sweep, which calls `rotate(label="rotation-resync")` — a *second*
+rotation — and writes that to Actions. A manual repair that delivers to Vault
+and `.env` but not to Actions leaves precisely that state, so the repair itself
+arms the recurrence unless the flag is set. It was set by hand this time.
+
+**Acceptance criteria**
+
+- The rotation job does not rotate a token it cannot deliver everywhere the
+  repository's scanners read from — not merely everywhere one field names.
+- A repository scanned by both systems is expressible, or the guard stops
+  depending on a single value to describe it.
+- A manual repair cannot leave the unsynced sweep armed to rotate again.
+- A test covers a both-systems repository. D-086 records that all four rotation
+  tests passed against a configuration this estate does not run.
+
+**Deliberately not done here:** changing `scanned_by` to `concourse` would be a
+one-field fix that also alters `capability_states` in `dashboard.py` and
+contradicts spec 32's migration direction, so it is a decision rather than a
+correction.
+
+---
+
 ### B-008 — Name every expected stage, including the ones with no job
 
 **Size:** S **State:** open **Verified:** 2026-08-31 (rescoped)
