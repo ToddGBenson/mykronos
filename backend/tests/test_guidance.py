@@ -223,3 +223,150 @@ class TestHonesty:
 
         assert guidance.by_rule(catalog), "the estate-wide view has rows"
         assert guidance.by_rule(catalog, asset_id="ToddGBenson/nothing-here") == []
+
+
+class TestGroupingByFix:
+    """One level above grouping by rule: several rules, one change.
+
+    `ZAP-10038` ("CSP Header Not Set") and `ZAP-10055` ("CSP: style-src
+    unsafe-inline") are separate plugins with separate ids, and both are
+    answered by one Content-Security-Policy value. Presented as two rows,
+    somebody does the work twice or does half of it.
+    """
+
+    def test_two_rules_naming_one_header_are_one_fix(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        _ingest(
+            client,
+            auth,
+            [
+                finding_payload(
+                    rule_id="ZAP-10038",
+                    title="Content Security Policy Header Not Set at GET /a",
+                    file_path="/a",
+                    raw_finding_json={
+                        "solution": "Ensure that your web server is configured "
+                        "to set the Content-Security-Policy header."
+                    },
+                ),
+                finding_payload(
+                    rule_id="ZAP-10055",
+                    title="CSP: style-src unsafe-inline at GET /b",
+                    file_path="/b",
+                    raw_finding_json={
+                        "solution": "Ensure that your web server is properly "
+                        "configured to set the Content-Security-Policy header."
+                    },
+                ),
+            ],
+            capability="dast",
+        )
+        run_compaction()
+
+        groups = guidance.fix_groups(catalog)
+
+        assert len(groups) == 1, "two rules, one header, one change"
+        assert groups[0].collapses_rules is True
+        assert sorted(groups[0].rules) == ["ZAP-10038", "ZAP-10055"]
+        assert groups[0].findings == 2
+
+    def test_the_operative_header_wins_over_the_one_merely_mentioned(self) -> None:
+        """ZAP's solution for a missing `X-Content-Type-Options` also mentions
+        `Content-Type`. Taking the first — or the first alphabetically — files
+        the finding under a fix that does not exist."""
+        solution = (
+            "Ensure that the application/web server sets the Content-Type "
+            "header appropriately, and that it sets the X-Content-Type-Options "
+            "header to 'nosniff' for all web pages."
+        )
+
+        assert (
+            guidance._header_named_by(solution, "X-Content-Type-Options Header Missing")
+            == "X-Content-Type-Options"
+        )
+
+    def test_two_advisories_on_one_package_are_one_upgrade(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """Fixed in 78.1.1 and 83.0.0 is one upgrade, to 83.0.0. Two groups
+        would ask for the work twice, and the first would not have closed the
+        second."""
+        _ingest(
+            client,
+            auth,
+            [
+                finding_payload(
+                    rule_id=f"CVE-2026-100{n}",
+                    title="setuptools: something",
+                    package_name="setuptools",
+                    raw_finding_json={
+                        "message": {
+                            "text": "Package: setuptools Installed Version: 70.3.0 "
+                            f"Fixed Version: {version} Link: [x](y)"
+                        }
+                    },
+                )
+                for n, version in enumerate(("78.1.1", "83.0.0"))
+            ],
+            capability="containers",
+        )
+        run_compaction()
+
+        groups = guidance.fix_groups(catalog)
+
+        assert len(groups) == 1
+        assert groups[0].action == "Upgrade setuptools to 83.0.0"
+        assert groups[0].collapses_rules is True
+
+    def test_the_highest_version_is_numeric_not_lexical(self) -> None:
+        """`"9.0" > "10.0"` as strings, and offering 9.0 would leave the
+        advisory that needed 10.0 open."""
+        assert guidance._highest({"9.0", "10.0"}) == "10.0"
+        assert guidance._highest({"1.2.10", "1.2.9"}) == "1.2.10"
+
+    def test_a_class_with_no_shared_fix_is_not_collapsed(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """Two SAST rules are two judgements. Grouping them would be a
+        collapse that reads as progress and is not one."""
+        _ingest(
+            client,
+            auth,
+            [
+                finding_payload(rule_id="rule-a", title="A", file_path="a.py"),
+                finding_payload(rule_id="rule-b", title="B", file_path="b.py"),
+            ],
+        )
+        run_compaction()
+
+        groups = guidance.fix_groups(catalog)
+
+        assert len(groups) == 2
+        assert all(not g.collapses_rules for g in groups)
+
+    def test_every_group_ends_with_closure(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """A change nobody scans again closes nothing, however correct it is.
+        That is the defect D-098 exists to report, so the guide says it."""
+        _ingest(
+            client,
+            auth,
+            [
+                finding_payload(
+                    rule_id="ZAP-10063",
+                    title="Permissions Policy Header Not Set at GET /a",
+                    raw_finding_json={
+                        "solution": "Configure the Permissions-Policy header."
+                    },
+                )
+            ],
+            capability="dast",
+        )
+        run_compaction()
+
+        steps = guidance.fix_groups(catalog)[0].steps
+
+        assert steps, "a config fix has a guide"
+        assert "consecutive successful scans" in steps[-1]

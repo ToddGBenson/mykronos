@@ -2129,6 +2129,21 @@ class CapabilityGuidanceOut(BaseModel):
     rules: list[RuleGuidanceOut]
 
 
+class FixGroupOut(BaseModel):
+    fix_id: str
+    action: str
+    capability: str
+    findings: int
+    #: More than one means this change closes several distinct scanner rules,
+    #: which is the whole reason the type exists.
+    rules: list[str]
+    repos: list[str]
+    effort: str
+    #: Ordered. The last is always closure — a change nobody scans again
+    #: closes nothing (D-098).
+    steps: list[str]
+
+
 class BriefingClassOut(BaseModel):
     capability: str
     open_findings: int
@@ -2155,6 +2170,8 @@ class BriefingOut(BaseModel):
     awaiting: list[AwaitingClosureOut]
     #: What each scanner said to do, grouped by rule (B-026).
     guidance: list[CapabilityGuidanceOut]
+    #: The same work grouped by the *change* rather than the rule (B-028).
+    fixes: list[FixGroupOut]
 
 
 @router.get("/briefing", response_model=BriefingOut)
@@ -2207,6 +2224,19 @@ async def post_deployment_briefing(
                 rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
             )
             for g in guidance.by_rule(request.app.state.catalog)
+        ],
+        fixes=[
+            FixGroupOut(
+                fix_id=f.fix_id,
+                action=f.action,
+                capability=f.capability,
+                findings=f.findings,
+                rules=f.rules,
+                repos=f.repos,
+                effort=f.effort,
+                steps=f.steps,
+            )
+            for f in guidance.fix_groups(request.app.state.catalog)
         ],
     )
 

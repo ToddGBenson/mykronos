@@ -2283,6 +2283,8 @@ export interface components {
             awaiting: components["schemas"]["AwaitingClosureOut"][];
             /** Guidance */
             guidance: components["schemas"]["CapabilityGuidanceOut"][];
+            /** Fixes */
+            fixes: components["schemas"]["FixGroupOut"][];
         };
         /**
          * Capability
@@ -3160,6 +3162,25 @@ export interface components {
              * @description False for viewer roles; raw output is admin-only (spec 12 §5).
              */
             raw_output_included: boolean;
+        };
+        /** FixGroupOut */
+        FixGroupOut: {
+            /** Fix Id */
+            fix_id: string;
+            /** Action */
+            action: string;
+            /** Capability */
+            capability: string;
+            /** Findings */
+            findings: number;
+            /** Rules */
+            rules: string[];
+            /** Repos */
+            repos: string[];
+            /** Effort */
+            effort: string;
+            /** Steps */
+            steps: string[];
         };
         /**
          * GovernanceOut

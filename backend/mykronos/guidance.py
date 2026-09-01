@@ -273,3 +273,257 @@ def by_rule(catalog: Catalog, *, asset_id: str | None = None) -> list[Capability
     # Ranking containers top because it has 234 would put the one class nobody
     # can act on above the one that is a few lines of config.
     return sorted(per_capability.values(), key=lambda c: -c.actionable)
+
+
+# ---------------------------------------------------------------------------
+# Grouping by fix rather than by rule
+# ---------------------------------------------------------------------------
+
+#: A header named in a remediation sentence: `X-Content-Type-Options header`,
+#: `Content-Security-Policy header`. Hyphenated capitalised tokens only, so
+#: ordinary prose does not produce one.
+_HEADER = re.compile(r"\b([A-Z][A-Za-z]*(?:-[A-Za-z]+)+)\s+header", re.I)
+
+
+@dataclass
+class FixGroup:
+    """Everything one change would close, and how to make it.
+
+    Grouping by rule was already a large collapse — thirty-three
+    `X-Content-Type-Options` alerts across thirty-three URLs are one row. This
+    is the collapse above it: **two different rules that share one fix.**
+
+    On this estate that is not hypothetical. `ZAP-10038` ("CSP Header Not Set")
+    and `ZAP-10055` ("CSP: style-src unsafe-inline") are separate ZAP plugins
+    with separate ids and separate findings, and both are answered by one
+    `Content-Security-Policy` value. Presented as two rows, somebody does the
+    work twice or does half of it.
+
+    The key is derived from what the scanner said, never from a taxonomy
+    written here. A hand-maintained "these rules are the same really" table is
+    exactly the kind of mapping that is wrong the moment a tool adds a plugin,
+    and nobody notices because it fails silently towards *more* rows.
+    """
+
+    fix_id: str
+    #: One line: the change itself.
+    action: str
+    capability: str
+    findings: int
+    #: Distinct scanner rules this one change answers. More than one is the
+    #: whole point of the type.
+    rules: list[str] = field(default_factory=list)
+    repos: list[str] = field(default_factory=list)
+    effort: str = "judgement"
+    #: Ordered, and the last one is always closure — a change nobody scans
+    #: again does not close anything (D-098).
+    steps: list[str] = field(default_factory=list)
+
+    @property
+    def collapses_rules(self) -> bool:
+        return len(self.rules) > 1
+
+
+def _header_named_by(solution: str, title: str) -> str:
+    """Which header this remediation is actually about.
+
+    A ZAP solution often names two: *"sets the Content-Type header
+    appropriately, and that it sets the X-Content-Type-Options header to
+    'nosniff'"*. Taking the first — or the first alphabetically — picks
+    `Content-Type`, which is not the missing header and would file the finding
+    under a fix that does not exist.
+
+    The title names the operative one, so the title wins. Falling back to the
+    last mentioned rather than the first, because these sentences build towards
+    the header they are asking for.
+    """
+    candidates = [match.group(1) for match in _HEADER.finditer(solution)]
+    if not candidates:
+        return ""
+    # Longest first, because `Content-Type` is a substring of
+    # `X-Content-Type-Options`: a plain containment check against the title
+    # matches the shorter one and files the finding under a fix that does not
+    # exist.
+    for candidate in sorted(candidates, key=len, reverse=True):
+        if candidate.lower() in title.lower():
+            return candidate
+    # `X-`-prefixed headers are the ones ZAP reports as missing; a bare
+    # `Content-Type` in the same sentence is context, not the ask.
+    prefixed = [c for c in candidates if c.lower().startswith("x-")]
+    return prefixed[-1] if prefixed else candidates[-1]
+
+
+def _fix_key(capability: str, rule: RuleGuidance, raw: dict[str, Any]) -> tuple[str, str]:
+    """`(fix_id, action)` — what change closes this rule, said once."""
+    if capability == "dast":
+        header = _header_named_by(rule.fix, rule.title)
+        if header:
+            return (
+                f"header:{header.lower()}",
+                f"Set the {header} response header",
+            )
+    if capability in ("containers", "atlas"):
+        text = str((raw.get("message") or {}).get("text", ""))
+        package = _PACKAGE.search(text)
+        fixed = _FIXED.search(text)
+        version = fixed.group(1) if fixed else ""
+        if package and version and not version.startswith("Link"):
+            # Keyed on the package, not the package-and-version. Two advisories
+            # against `setuptools` fixed in 78.1.1 and 83.0.0 are one upgrade,
+            # to 83.0.0 — presenting them as two groups asks somebody to do it
+            # twice, and the first of them would not have closed the second.
+            name = package.group(1)
+            return (f"upgrade:{name}", f"Upgrade {name} to {version}")
+    if capability == "secrets":
+        return ("rotate:credentials", "Rotate the credential, then remove it")
+
+    # No shared fix to claim. One rule, one group — which is honest rather
+    # than a collapse that reads as progress.
+    return (f"rule:{rule.rule_id}", rule.title)
+
+
+#: How to actually make each kind of change, and how to know it worked. The
+#: last step is always closure, because a change nobody scans again closes
+#: nothing however correct it is — the defect D-098 exists to report.
+_STEPS: dict[str, list[str]] = {
+    "header": [
+        "Set the header at whatever serves the application — the framework's "
+        "response-header config, the reverse proxy, or the CDN. One place, not "
+        "per route: every finding in this group is the same header missing "
+        "from a different URL.",
+        "Check it on the wire rather than in the config: "
+        "`curl -sI <url> | grep -i <header>`. A header set in a file that "
+        "never reaches a response is the failure mode worth ruling out.",
+        "Re-run the DAST lane. Two consecutive successful scans close these; "
+        "one is not enough, and a failing lane closes nothing at all.",
+    ],
+    "upgrade": [
+        "Change the pinned version wherever this package is declared, then "
+        "regenerate the lock file so transitive pins move with it.",
+        "Run the test suite. A version bump that closes an advisory and breaks "
+        "the build has not made anything safer.",
+        "Re-run the dependency lane. Two consecutive successful scans close "
+        "these.",
+    ],
+    "rotate": [
+        "Rotate the credential first, at the system that issued it. The value "
+        "is disclosed by having been in git history and stays disclosed after "
+        "the commit that removes it — removing first buys nothing and costs "
+        "the audit trail.",
+        "Then remove it from the file and replace it with a reference to a "
+        "secret store.",
+        "Re-run the secrets lane. If the credential is still in history the "
+        "finding stays open, which is correct: history is where it leaked.",
+    ],
+}
+
+
+def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGroup]:
+    """Open findings grouped by the change that would close them.
+
+    One level above `by_rule`. That collapses many URLs into one rule; this
+    collapses several rules into one change, where the scanner's own text says
+    they share one.
+    """
+    if not catalog.all_files("findings"):
+        return []
+
+    where = "status = 'open'" + (" AND asset_id = ?" if asset_id else "")
+    rows = catalog.query(
+        f"""
+        SELECT capability, rule_id, title, raw_finding_json, asset_id
+        FROM findings WHERE {where}
+        """,
+        [asset_id] if asset_id else None,
+    )
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for capability, rule_id, title, raw_json, repo in rows:
+        try:
+            raw = json.loads(raw_json) if raw_json else {}
+        except (ValueError, TypeError):
+            raw = {}
+
+        clean_title = _clean(_AT_LOCATION.sub("", str(title or "")), 90)
+        fix, source, effort = _for(str(capability), raw, clean_title)
+        rule = RuleGuidance(
+            capability=str(capability),
+            rule_id=str(rule_id or "(unattributed)"),
+            title=clean_title or str(rule_id),
+            count=1,
+            fix=fix,
+            source=source,
+            effort=effort,
+        )
+        fix_id, action = _fix_key(str(capability), rule, raw)
+
+        entry = grouped.setdefault(
+            fix_id,
+            {
+                "action": action,
+                "capability": str(capability),
+                "findings": 0,
+                "rules": set(),
+                "repos": set(),
+                "effort": effort,
+                "kind": fix_id.split(":", 1)[0],
+                "versions": set(),
+            },
+        )
+        entry["findings"] += 1
+        if fix_id.startswith("upgrade:"):
+            fixed = _FIXED.search(str((raw.get("message") or {}).get("text", "")))
+            if fixed and not fixed.group(1).startswith("Link"):
+                entry["versions"].add(fixed.group(1))
+        entry["rules"].add(rule.rule_id)
+        entry["repos"].add(str(repo))
+        # `config` beats `judgement` for a group somebody can act on in one
+        # place; the cheapest reading of a shared fix is the true one.
+        if EFFORT.index(effort) < EFFORT.index(str(entry["effort"])):
+            entry["effort"] = effort
+
+    groups = [
+        FixGroup(
+            fix_id=fix_id,
+            action=(
+                f"Upgrade {fix_id.split(':', 1)[1]} to "
+                f"{_highest(entry['versions'])}"
+                if entry["versions"]
+                else str(entry["action"])
+            ),
+            capability=str(entry["capability"]),
+            findings=int(entry["findings"]),
+            rules=sorted(entry["rules"]),
+            repos=sorted(entry["repos"]),
+            effort=str(entry["effort"]),
+            steps=_STEPS.get(str(entry["kind"]), []),
+        )
+        for fix_id, entry in grouped.items()
+    ]
+
+    # Cheapest first, then by how much one change closes. A group that answers
+    # seventy findings with one header belongs above one that answers four.
+    groups.sort(key=lambda g: (EFFORT.index(g.effort), -g.findings, g.action))
+    return groups
+
+
+def _highest(versions: set[str]) -> str:
+    """The version that closes all of them.
+
+    Compared numerically per dotted segment rather than as strings, because
+    `"9.0" > "10.0"` lexically and offering 9.0 as the fix would leave the
+    advisory that needed 10.0 open. Anything unparseable falls back to string
+    order, which is wrong less often than crashing.
+    """
+
+    def key(value: str) -> tuple[int, ...]:
+        parts: list[int] = []
+        for chunk in re.split(r"[.\-+~]", value):
+            digits = re.match(r"\d+", chunk)
+            parts.append(int(digits.group()) if digits else 0)
+        return tuple(parts)
+
+    try:
+        return max(versions, key=key)
+    except (TypeError, ValueError):
+        return max(versions)
