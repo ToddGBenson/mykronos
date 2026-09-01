@@ -14,6 +14,7 @@ with one definition instead of a schema file and a parser that can disagree.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Literal
 
@@ -21,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from mykronos.adapters.registry import supported_tools
 from mykronos.schemas import Capability, Severity
+
+logger = logging.getLogger(__name__)
 
 #: Five or six whitespace-separated cron fields. Deliberately shallow: the
 #: point is to catch "every day" typed into a cron box, not to reimplement a
@@ -297,7 +300,7 @@ class AegisConfig(BaseCapabilityConfig):
         ge=1,
         le=100,
         description=(
-            "Score at or above which Aegis recommends blocking. No two "
+            "Score at or above which insider risk recommends blocking. No two "
             "signals can reach the default between them, so a block always "
             "requires at least three independent signals agreeing."
         ),
@@ -428,9 +431,9 @@ class PatchworkConfig(BaseCapabilityConfig):
 
     Note what is *absent*: there is no `blocking` field with any meaning here,
     and no auto-merge setting. spec 08 §3 makes that a hard constraint rather
-    than a default — Patchwork opens draft pull requests and a human merges
-    them, and making that configurable would need a separately-reviewed design
-    change, not a config key.
+    than a default — auto-remediation opens draft pull requests and a human
+    merges them, and making that configurable would need a separately-reviewed
+    design change, not a config key.
     """
 
     source_capabilities: list[str] = Field(
@@ -467,38 +470,19 @@ class PatchworkConfig(BaseCapabilityConfig):
             "never been severity-gated."
         ),
     )
-    fix_generator_url: str | None = Field(
-        default=None,
-        max_length=2048,
-        description=(
-            "Endpoint for LLM-assisted fix generation. Null — the default — "
-            "restricts Patchwork to its deterministic fixers and sends no "
-            "source anywhere (spec 12 §5.2)."
-        ),
-    )
-
-    @field_validator("fix_generator_url")
-    @classmethod
-    def _generator_url_shape(cls, value: str | None) -> str | None:
-        if value and not value.startswith(("http://", "https://")):
-            raise ValueError(
-                f"fix_generator_url must be an http(s) URL, got {value!r}. "
-                "Leave it unset to use only the deterministic fixers."
-            )
-        return value
-
 
 class OracleConfig(BaseCapabilityConfig):
     """Risk gating (spec 09 §6).
 
-    Almost everything about Oracle is global — the weights, the curve, the
-    thresholds all live in the versioned policy file, because a per-repo
+    Almost everything about risk scoring is global — the weights, the curve,
+    the thresholds all live in the versioned policy file, because a per-repo
     scoring rule would make "the same finding scores the same everywhere"
     false and the portfolio incomparable.
 
     What *is* per-repo is whether a `no_go` fails the check run. That has to
-    be settable through the API, and until Phase 6 it was not: Oracle had no
-    schema at all, so `PATCH /api/repos/{id}/capabilities` refused any config
+    be settable through the API, and until Phase 6 it was not: the capability
+    had no schema at all, so `PATCH /api/repos/{id}/capabilities` refused any
+    config
     for it and the only way to turn blocking on was to write the row by hand.
     """
 
@@ -840,6 +824,40 @@ def config_schema(capability: str) -> dict[str, Any]:
     return schema
 
 
+#: Config keys deliberately withdrawn, as `{capability: {key, ...}}`. Dropped
+#: on the way into `validate_config` rather than rejected.
+#:
+#: The models are `extra="forbid"`, and the read path returns stored config
+#: verbatim without validating (`capability_config_for`). So a repo configured
+#: before a withdrawal keeps the dead key in its stored JSON, and the next save
+#: — the UI echoing back what it loaded — would fail on a field the operator
+#: never typed and cannot remove from the form, because the form no longer has
+#: it. Stripping is the only outcome that lets that save succeed.
+#:
+#: - `patchwork.fix_generator_url` (D-096): never reached an HTTP call.
+RETIRED_CONFIG_KEYS: dict[str, frozenset[str]] = {
+    "patchwork": frozenset({"fix_generator_url"}),
+}
+
+
+def _without_retired_keys(capability: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Drop withdrawn keys, loudly enough to be traceable in a log."""
+    retired = RETIRED_CONFIG_KEYS.get(capability)
+    if not retired:
+        return config
+
+    present = retired & set(config)
+    if not present:
+        return config
+
+    logger.info(
+        "Dropping withdrawn %s config key(s) on save: %s",
+        capability,
+        ", ".join(sorted(present)),
+    )
+    return {key: value for key, value in config.items() if key not in retired}
+
+
 def validate_config(capability: str, config: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalise one capability's config block.
 
@@ -852,6 +870,8 @@ def validate_config(capability: str, config: dict[str, Any]) -> dict[str, Any]:
             f"'{capability}' does not accept configuration yet. Configurable "
             f"capabilities: {', '.join(configurable_capabilities())}."
         )
+
+    config = _without_retired_keys(capability, config)
 
     try:
         parsed = model.model_validate(config)

@@ -273,7 +273,7 @@ class SubSignal(BaseModel):
 
 
 class InsiderRiskSubmission(BaseModel):
-    """What the Aegis workflow posts (spec 06 §3, §4).
+    """What the insider-risk workflow posts (spec 06 §3, §4).
 
     No `repo_full_name` and no `signal_id`: the repo comes from the token and
     the id is derived server-side from repo + PR + commit, so a re-run on an
@@ -456,7 +456,7 @@ class ProvenanceSignals(BaseModel):
 
 
 class SscsEvidenceSubmission(BaseModel):
-    """What the Atlas workflow posts (spec 07 §3, §4).
+    """What the dependency (SCA) workflow posts (spec 07 §3, §4).
 
     Counts rather than a trust score: the score is computed server-side from
     §5's formula so it is reproducible and cannot drift between the workflow's

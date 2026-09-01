@@ -67,6 +67,11 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 #: `unit`/`qa`/`qa-spec-links`/`functional` job names `ci.py`'s
 #: `CAPABILITY_BY_JOB` already maps for stage-coverage cross-checking — the
 #: same mapping, rather than a second one built for this.
+#: Capabilities "scan now" can trigger. `network` is deliberately absent and
+#: not an oversight (B-007): spec 14 §0 has no scanner behind it — no workflow
+#: template, no pipeline job, no container — so there is nothing to dispatch.
+#: Adding it here before one exists would put a button on the page that
+#: reports success and starts nothing.
 DISPATCHABLE_CAPABILITIES = frozenset(
     {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )
@@ -155,7 +160,6 @@ class RepoSummary(BaseModel):
 class RepoDetail(RepoSummary):
     github_installation_id: int
     onboarded_by: str
-    auto_merge_workflow_prs: bool
     granted_capabilities: list[str]
     capability_config: dict[str, dict[str, Any]]
 
@@ -182,7 +186,8 @@ class RiskProfileOut(BaseModel):
     """What this application is, as an asset (spec 21 §1).
 
     Every field independently nullable: a partially-filled profile is still
-    useful. `exists` distinguishes the two states that matter to Oracle — a
+    useful. `exists` distinguishes the two states that matter to a risk
+    decision — a
     profile recorded but not yet filled in is an auditable fact, no profile
     at all is `available: false`.
     """
@@ -204,7 +209,8 @@ class ReachabilityOut(BaseModel):
     `analysed` is the field that carries the weight. False means the analysis
     has never run for this repository, which is not the same as it having run
     and found nothing — the second is a result, the first is a gap, and
-    Oracle reports them differently (`available: false` versus a real zero).
+    a risk decision reports them differently (`available: false` versus a real
+    zero).
     """
 
     analysed: bool
@@ -426,7 +432,6 @@ async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetai
             **_summary(row).model_dump(),
             github_installation_id=row.github_installation_id,
             onboarded_by=row.onboarded_by,
-            auto_merge_workflow_prs=row.auto_merge_workflow_prs,
             granted_capabilities=sorted(registry.granted_capabilities(row.github_repo_full_name)),
             capability_config=capability_configs(session, row),
         )
@@ -1138,7 +1143,8 @@ async def put_risk_profile(
 ) -> RiskProfileOut:
     """Record or replace this repository's risk profile (spec 21 §1.3).
 
-    Admin-only and audit-logged: this changes what Oracle will decide, so it
+    Admin-only and audit-logged: this changes what the risk-decision engine
+    will decide, so it
     is a write in the same sense a finding disposition is (spec 10 §2.2), not
     a preference. `updated_by` is stamped from the caller rather than accepted
     from the body — "who said this repository is internet-facing" is exactly

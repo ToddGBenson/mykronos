@@ -249,7 +249,8 @@ def _sscs_snapshot(sscs: dict[str, Any] | None, *, cap: float) -> dict[str, Any]
             "trust_score": None,
             "contribution": 0.0,
             "reason": (
-                "No Atlas evidence exists for this repository — the capability "
+                "No dependency (SCA) evidence exists for this repository — the "
+                "capability "
                 "is not enabled, or its workflow has not run yet."
             ),
         }

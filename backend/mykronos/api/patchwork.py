@@ -53,9 +53,9 @@ class RunResult(BaseModel):
         ),
     )
     note: str = (
-        "Every pull request Patchwork opens is a draft, and it has no ability "
-        "to merge one — the GitHub client it uses exposes no merge operation "
-        "(spec 08 §3)."
+        "Every pull request auto-remediation opens is a draft, and it has no "
+        "ability to merge one — the GitHub client it uses exposes no merge "
+        "operation (spec 08 §3)."
     )
 
 
@@ -79,8 +79,8 @@ class RemediationPage(BaseModel):
     events: list[RemediationEventOut]
     open_draft_prs: int
     note: str = (
-        "Patchwork never merges. A draft pull request here is waiting for a "
-        "person, and will wait indefinitely."
+        "Auto-remediation never merges. A draft pull request here is waiting "
+        "for a person, and will wait indefinitely."
     )
 
 
@@ -155,7 +155,7 @@ class EfficacyRowOut(BaseModel):
 
 
 class EfficacyPage(BaseModel):
-    """Whether Patchwork removes risk, or only opens pull requests.
+    """Whether auto-remediation removes risk, or only opens pull requests.
 
     Two breakdowns because they answer different questions: `by_fixer` says
     which fixers work, `by_rule` says which rules are fixable here. A fixer
@@ -201,8 +201,9 @@ class RemediationFixOut(BaseModel):
     fix_pr_url: str | None = None
     pr_status: str | None = None
     note: str = (
-        "Draft, and it stays that way. Patchwork has no ability to merge — "
-        "the client it uses exposes no merge operation at all (spec 08 §3)."
+        "Draft, and it stays that way. Auto-remediation has no ability to "
+        "merge — the client it uses exposes no merge operation at all "
+        "(spec 08 §3)."
     )
 
 
@@ -241,14 +242,13 @@ def _pipeline(request: Request, repo_full_name: str) -> tuple[PatchworkPipeline,
         min_confidence=float(config.get("min_confidence_to_generate_fix", 0.7)),
         max_open_draft_prs=int(config.get("max_open_draft_prs_per_repo", 10)),
         source_capabilities=tuple(sources),
-        fix_generator_url=config.get("fix_generator_url"),
         auto_fix_min_severity=str(config.get("auto_fix_min_severity", "high")),
     )
     return pipeline, default_branch
 
 
 def _open_draft_count(request: Request, repo_full_name: str) -> int:
-    """How many Patchwork pull requests are still waiting for a person.
+    """How many auto-remediation pull requests are still waiting for a person.
 
     Counted from the event table rather than from GitHub, deliberately: this
     runs on every pipeline invocation, and a list-pull-requests call per run
@@ -288,7 +288,7 @@ async def run(request: Request, body: RunRequest, token: TokenDep) -> RunResult:
 async def preview_finding_fix(
     request: Request, finding_id: str, principal: PrincipalDep
 ) -> RemediationPreviewOut:
-    """What Patchwork would do for one finding, without doing it (spec 18 §7.2).
+    """What auto-remediation would do for one finding, without doing it (spec 18 §7.2).
 
     Principal-authenticated, not a workflow token: this is a person looking
     at one finding, not CI asking about a repository. Every guardrail the
@@ -491,7 +491,7 @@ def _efficacy_rows(catalog: Any, *, key: str, join: str, filter_: str) -> list[E
 
 @router.get("/efficacy", response_model=EfficacyPage)
 async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
-    """Does Patchwork actually remove risk? (spec 25 §3)
+    """Does auto-remediation actually remove risk? (spec 25 §3)
 
     Until the verification loop shipped, a fixer that opened pull requests
     nobody merged was indistinguishable from one that silently removed real
@@ -504,7 +504,9 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
     """
     catalog = request.app.state.catalog
     if not catalog.all_files("remediation_events"):
-        return EfficacyPage(by_fixer=[], by_rule=[], note="Patchwork has not run yet.")
+        return EfficacyPage(
+            by_fixer=[], by_rule=[], note="Auto-remediation has not run yet."
+        )
 
     by_fixer = _efficacy_rows(
         catalog,
@@ -537,7 +539,7 @@ async def repo_events(
     principal: PrincipalDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> RemediationPage:
-    """What Patchwork did, and did not do, for one repository (spec 08 §7)."""
+    """What auto-remediation did, and did not do, for one repository (spec 08 §7)."""
     from mykronos.api.dashboard import _resolve_repo
 
     repo_full_name = _resolve_repo(request, repo_id)

@@ -7,11 +7,29 @@ scoring term, and findings for what a repository has banned outright.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mykronos import atlas, atlas_counts, atlas_sbom
 from mykronos.capabilities import AtlasConfig
 from mykronos.schemas import EcosystemEvidence
+
+#: `backend/tests/` -> repo root, for the CI-definition files below.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _term(assessment, key):
+    """One score term by key.
+
+    Positional indexing was fine while the terms list only carried the terms
+    that scored. `stale_dependencies` is now always present so the page can
+    tell not-measured from measured-zero (B-004), which moves every other
+    term's index.
+    """
+    matches = [t for t in assessment.terms if t["key"] == key]
+    assert matches, f"no {key!r} term in {[t['key'] for t in assessment.terms]}"
+    return matches[0]
 
 
 def component(name, licenses=None, *, ecosystem="npm", version="1.0.0"):
@@ -147,15 +165,21 @@ class TestScoring:
         unknown = atlas.score([self.eco(unknown=4)])
         flagged = atlas.score([self.eco(**{"gpl-3.0": 4})])
 
-        assert unknown.terms[0]["penalty"] < flagged.terms[0]["penalty"]
+        assert _term(unknown, "unknown_licenses")["penalty"] < _term(
+            flagged, "flagged_licenses"
+        )["penalty"]
 
     def test_the_penalty_is_curved(self) -> None:
         """The D-018 discipline every other term here follows. A monorepo
         with two hundred GPL components has a licensing question to answer,
         not a trust score of zero, and a linear term would floor it there and
         stop distinguishing it from one with a thousand."""
-        few = atlas.score([self.eco(**{"gpl-3.0": 5})]).terms[0]["penalty"]
-        many = atlas.score([self.eco(**{"gpl-3.0": 500})]).terms[0]["penalty"]
+        few = _term(atlas.score([self.eco(**{"gpl-3.0": 5})]), "flagged_licenses")[
+            "penalty"
+        ]
+        many = _term(atlas.score([self.eco(**{"gpl-3.0": 500})]), "flagged_licenses")[
+            "penalty"
+        ]
 
         assert many < few * 100
 
@@ -307,3 +331,148 @@ class TestTheCountsMerge:
 
         assert row["maintenance_data_available_for"] is None
         assert row["dependency_count"] == 1
+
+
+class TestBothCiSystemsProduceLicenseEvidence:
+    """The license pass has to run on the path the real repos take (B-005).
+
+    `atlas_counts` computes `licenses_seen` only when handed `--sbom`. The
+    Actions template passed it; the two Concourse pipelines did not, and both
+    primary repositories are Concourse-scanned. Because the evidence write is
+    an upsert and both CI systems scan the same commits, whether a repository
+    had license data depended on which pipeline finished last — intermittent
+    missing data rather than a broken feature, which is the hardest shape to
+    diagnose from a dashboard.
+
+    Spec 22 listed this work as Built. It was built, and it was invisible on
+    the path that mattered.
+    """
+
+    PIPELINES = (
+        "deploy/concourse/pipelines/mykronos.yml",
+        "deploy/concourse/pipelines/thehub.yml",
+    )
+    TEMPLATE = "workflow-templates/atlas.yml.j2"
+
+    def _text(self, relative: str) -> str:
+        return (REPO_ROOT / relative).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("relative", PIPELINES)
+    def test_the_concourse_atlas_task_passes_sbom(self, relative: str) -> None:
+        text = self._text(relative)
+
+        assert "python -m mykronos.atlas_counts" in text, (
+            f"{relative} no longer calls atlas_counts; this guard is stale."
+        )
+        assert "--sbom sbom-out/" in text, (
+            f"{relative} calls atlas_counts without --sbom, so `licenses_seen` "
+            "stays empty and the platform reads it as not-computed. Both "
+            "primary repos are Concourse-scanned (B-005)."
+        )
+
+    @pytest.mark.parametrize("relative", PIPELINES)
+    def test_freshness_stays_opt_in_on_the_concourse_path(self, relative: str) -> None:
+        """Capable, and off. Spec 07 §7 requires the outbound registry call be
+        opted into, so the flag is reachable but never unconditional."""
+        text = self._text(relative)
+
+        assert "ATLAS_CHECK_FRESHNESS" in text, (
+            f"{relative} cannot pass --check-freshness at all, so "
+            "`stale_dependencies` is structurally zero there (B-004)."
+        )
+        assert "$SBOM_ARGS --check-freshness" in text
+        # Never on without the switch being set.
+        assert '"${ATLAS_CHECK_FRESHNESS:-false}" = "true"' in text
+
+    def test_the_actions_template_still_passes_it_too(self) -> None:
+        """The fix is parity, not a swap. If the Actions path ever loses the
+        flag, the race comes back pointing the other way."""
+        text = self._text(self.TEMPLATE)
+
+        assert '--sbom sbom.json' in text
+        assert "--check-freshness" in text
+
+    def test_ordering_between_the_two_systems_no_longer_decides_the_outcome(
+        self,
+    ) -> None:
+        """The property the race broke, stated directly: the same commit
+        scanned by either system computes the same license evidence, because
+        both now run the same pass over the same SBOM."""
+        licenses = atlas_sbom.licenses_by_ecosystem(cyclonedx(component("lodash", ["MIT"])))
+
+        actions_rows = atlas_counts.summarise(self.REPORT, licenses)
+        concourse_rows = atlas_counts.summarise(self.REPORT, licenses)
+
+        assert actions_rows == concourse_rows
+        assert actions_rows[0]["licenses_seen"] == {"mit": 1}
+
+    REPORT = {
+        "results": [
+            {
+                "packages": [
+                    {"package": {"ecosystem": "npm", "name": "lodash", "version": "4.17.21"}}
+                ]
+            }
+        ]
+    }
+
+
+class TestTheStaleTermSaysWhichZeroItIs:
+    """Not-measured and measured-zero are different facts (B-004).
+
+    The freshness pass is opt-in (spec 07 §7) and nothing opts in, so
+    `stale_dependencies` is zero on every repository. Until now the term was
+    emitted only when it scored, so "nobody asked" and "asked, nothing stale"
+    were both rendered as the term being absent — indistinguishable, which is
+    the zero spec 22 §2.1 was written to fix wearing a different hat.
+    """
+
+    def eco(self, stale=0, known=None):
+        return EcosystemEvidence(
+            ecosystem="npm",
+            dependency_count=10,
+            stale_dependencies=stale,
+            maintenance_data_available_for=known,
+        )
+
+    def test_never_measured_is_marked_unavailable(self) -> None:
+        term = _term(atlas.score([self.eco()]), "stale_dependencies")
+
+        assert term["available"] is False
+        assert term["penalty"] == 0.0
+        assert "Not measured" in term["detail"]
+        assert "not a statement that nothing is stale" in term["detail"]
+
+    def test_measured_and_clean_is_a_real_zero(self) -> None:
+        term = _term(atlas.score([self.eco(stale=0, known=10)]), "stale_dependencies")
+
+        assert "available" not in term
+        assert term["penalty"] == 0.0
+        assert "0/10" in term["detail"]
+        assert "nothing is stale" in term["detail"]
+
+    def test_measured_and_stale_still_scores(self) -> None:
+        term = _term(atlas.score([self.eco(stale=5, known=10)]), "stale_dependencies")
+
+        assert "available" not in term
+        assert term["penalty"] > 0
+        assert term["count"] == 5
+
+    def test_the_two_zeroes_are_distinguishable(self) -> None:
+        """The property, stated as one assertion: the page can tell them
+        apart, which is the whole point of emitting both."""
+        not_measured = _term(atlas.score([self.eco()]), "stale_dependencies")
+        measured_clean = _term(
+            atlas.score([self.eco(stale=0, known=10)]), "stale_dependencies"
+        )
+
+        assert not_measured["penalty"] == measured_clean["penalty"] == 0.0
+        assert not_measured != measured_clean
+
+    def test_neither_zero_changes_the_score(self) -> None:
+        """Making the state visible must not move any trust score. A term that
+        renders differently and scores identically is the entire change."""
+        assert (
+            atlas.score([self.eco()]).trust_score
+            == atlas.score([self.eco(stale=0, known=10)]).trust_score
+        )

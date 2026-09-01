@@ -3904,3 +3904,98 @@ Concourse lanes were already `silent`, so there is no coverage to migrate and
 nothing that retiring the pipeline would lose — but neither is there a green
 Actions run to retire it *on*. keel needs its lanes made to report before
 anything is deleted, not a pipeline retirement. Recorded as L0005.
+
+---
+
+## D-095 — A setting that contradicts a refusal is removed, not documented
+
+**Status:** Decided, spec updated
+**Spec:** [03 §5.1](../specs/03-workflow-installer.md), [08 §3](../specs/08-patchwork-integration.md)
+
+`repo_onboardings.auto_merge_workflow_prs` is removed from the model, the
+`RepoDetail` schema and the API response, and the column is retired from
+existing databases on start.
+
+**Why:** it could never act. Spec 08 §3 deliberately gives `GitHubClient` no
+merge method, and two tests assert that no method whose name contains "merge"
+exists on the interface or on either implementation. So the setting was stored,
+returned to any consumer of the contract, rendered by nothing, and consumed by
+nothing — the only thing it could change was what an operator believed the
+platform would do.
+
+Two specs each correct on their own produced a dead option between them. The
+alternative — documenting it as "not implemented yet" — keeps a toggle that
+quietly contradicts a refusal D-085 counts among the most valuable properties
+in the codebase. A refusal that ships with an off switch reads as a default,
+not a guarantee.
+
+Spec 03 §5.1 now states the refusal positively, so the next reader finds an
+answer rather than a gap.
+
+**Retirement mechanism.** There is no migration framework here; `create_all`
+plus `add_missing_columns` (D-052) only ever *adds*. A removed column would
+therefore persist in every deployed database and be absent from every freshly
+built test database — the same disagreement D-052 was written to end, pointing
+the other way.
+
+`Database.drop_retired_columns` closes it against an explicit
+`RETIRED_COLUMNS` list. Deliberately **not** the obvious inverse of
+`add_missing_columns`: "drop every column the models do not declare" is a
+data-loss bug waiting for its first rollback, because a deploy that briefly
+runs the previous image would drop live columns and repopulate nothing. Naming
+each retirement means a column only goes when somebody decided it should. A
+test asserts no name is in `RETIRED_COLUMNS` and on a model at once — that
+combination would drop the column on every start and fail on the next write.
+
+Regression tests: `tests/test_patchwork.py::TestTheHardConstraint::test_no_setting_anywhere_claims_the_platform_can_merge`,
+`tests/test_schema_upgrade.py::TestARetiredColumn`.
+
+---
+
+## D-096 — The LLM fix generator is withdrawn, not implemented
+
+**Status:** Decided, spec updated
+**Spec:** [08 §2 stage 4, §5](../specs/08-patchwork-integration.md)
+
+`PatchworkConfig.fix_generator_url` is removed from the schema, the API and the
+pipeline. Spec 08 §2 now specifies deterministic fixers as the only generator.
+
+**Why:** it never made a call. The value was validated as an `http(s)` URL,
+persisted, exposed through the API and threaded through `PatchworkPipeline` to
+exactly one place — a conditional choosing between two rationale sentences. No
+HTTP request was ever issued to it.
+
+The failure mode was worse than an inert setting. **Unset**, a finding with no
+deterministic fixer got "no fix generator endpoint is configured for this
+deployment, so nothing was attempted" — which invited an operator to configure
+one. **Set**, the same finding got "No deterministic fixer matches this
+finding" — which reads as though the generator had been consulted and declined.
+Configuring the endpoint changed the sentence and nothing else, and the new
+sentence was less true than the old one.
+
+**Why withdrawn rather than built.** Spec 08 §2 described the feature but never
+specified it: no request or response contract, no timeout or failure
+behaviour, no statement of whether a failed generation blocks the pull request,
+no cost or rate ceiling, and nothing about what stops a generated fix reaching
+a reviewer as though a deterministic fixer had produced it. Building it would
+have meant inventing all of that against no endpoint to test with. The
+deterministic fixer is the half that works.
+
+Adding an LLM generator later is a design change that reverses this decision
+and answers those questions first.
+
+**Migration.** The setting lives in the `capability_configs` JSON blob, not a
+column, so there is nothing for `RETIRED_COLUMNS` (D-095) to drop. But the
+config models are `extra="forbid"` while the read path deliberately returns
+stored config unvalidated (`capability_config_for`), so a repository configured
+before this change keeps the dead key in its stored JSON — and the next save,
+the UI echoing back what it loaded, would fail on a field the operator can
+neither see nor remove.
+
+`RETIRED_CONFIG_KEYS` strips withdrawn keys on the way into `validate_config`
+and logs that it did. Deliberately narrow: an unknown key is still refused, so
+this is a named exception rather than a hole in `extra="forbid"`.
+
+Regression tests: `tests/test_patchwork.py::TestTheHardConstraint::test_no_fix_generator_setting_exists_anywhere`,
+`::test_a_config_still_carrying_the_withdrawn_key_can_be_saved`,
+`::test_an_unknown_key_is_still_refused`.

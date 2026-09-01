@@ -194,7 +194,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ingest Aegis
+         * Ingest insider risk
          * @description Score a pull request for insider risk and record it (spec 06 §4).
          *
          *     The workflow reports *observations* — which signals fired and why — and
@@ -222,7 +222,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ingest Atlas
+         * Ingest dependencies (SCA)
          * @description Record supply-chain evidence for a commit (spec 07 §4).
          *
          *     The workflow reports dependency counts per ecosystem; the trust score is
@@ -284,8 +284,9 @@ export interface paths {
          * Ingest Capability Payload
          * @description Capability-specific tables that do not have an endpoint yet.
          *
-         *     Declared here because spec 05 §4 defines the route. Aegis and Atlas have
-         *     their own handlers above — registered first, so this catch-all cannot
+         *     Declared here because spec 05 §4 defines the route. Insider risk and
+         *     dependencies (SCA) have their own handlers above — registered first, so
+         *     this catch-all cannot
          *     shadow them. Returning 501 rather than 404 keeps the contract visible
          *     instead of looking like a routing bug.
          */
@@ -329,7 +330,7 @@ export interface paths {
          *
          *     Read-only, and deliberately so. Each row links out to GitHub to review and
          *     merge; the platform offers no merge of its own. That is the same constraint
-         *     spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+         *     spec 08 §3 makes structural for auto-remediation, applied to the view: a page that
          *     could merge a change to your code is a page that has to be trusted
          *     differently from one that can only show it to you.
          */
@@ -410,7 +411,7 @@ export interface paths {
          *
          *     Criteria measure evidence rather than switch positions: nothing here can
          *     be satisfied by changing configuration alone, and in particular no tier
-         *     rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+         *     rewards turning the risk-decision gate on. Spec 09 §6 makes that conditional on
          *     shadow-mode data, so the model asks whether the data exists instead.
          */
         get: operations["maturity_api_dashboard_maturity_get"];
@@ -497,7 +498,8 @@ export interface paths {
          * @description Put a row down until a date, deciding nothing about it (spec 27 §3.1).
          *
          *     Deliberately not a `Finding.status`: a snoozed finding is still open,
-         *     still scores in Oracle, and still goes overdue if it goes overdue. That
+         *     still scores in the risk decision, and still goes overdue if it goes
+         *     overdue. That
          *     separation is what stops "not now" becoming "not ever".
          */
         post: operations["snooze_finding_api_dashboard_triage__finding_id__snooze_post"];
@@ -763,13 +765,13 @@ export interface paths {
          *
          *     A CVE, a package name, or a purl, answered across every onboarded
          *     repository. Nothing here is new information — the inventory, the findings,
-         *     the Oracle verdicts and the KEV/EPSS matches are all already held. The only
+         *     the risk verdicts and the KEV/EPSS matches are all already held. The only
          *     new thing is that they arrive together, joined by package name and ordered
          *     worst-first, which is the difference between answering this in ten seconds
          *     and answering it in twenty minutes across five tabs.
          *
          *     A read, deliberately. The batch actions spec 29 §2.1 describes go through
-         *     the existing story and Patchwork paths and are triggered per repository by
+         *     the existing story and auto-remediation paths and are triggered per repository by
          *     a person: the platform does not open forty pull requests because KEV
          *     published overnight.
          */
@@ -1037,8 +1039,9 @@ export interface paths {
          * Set Finding Status
          * @description Record a human disposition (spec 10 §2.2).
          *
-         *     Admin-only: this changes what Oracle will decide, so it is a write, not a
-         *     view. Viewers can read every finding and change none of them.
+         *     Admin-only: this changes what the risk-decision engine will decide, so it
+         *     is a write, not a view. Viewers can read every finding and change none of
+         *     them.
          */
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
         trace?: never;
@@ -1133,8 +1136,9 @@ export interface paths {
          * @description Write down something noticed in a retro (spec 11 §4).
          *
          *     The only entry type with no machine-generated component. Admin-only
-         *     because it writes into the same corpus that eventually influences Oracle's
-         *     policy, and an unauthenticated way to inject a "learning" would be a
+         *     because it writes into the same corpus that eventually influences the
+         *     risk-decision policy, and an unauthenticated way to inject a "learning"
+         *     would be a
          *     quietly effective way to change how every repository is scored.
          */
         post: operations["add_note_api_knowledge_notes_post"];
@@ -1283,8 +1287,9 @@ export interface paths {
          * Active Policy
          * @description The policy currently in force, verbatim (spec 09 §7).
          *
-         *     Readable by viewers as well as admins. Anyone whose pull request Oracle
-         *     judges is entitled to see how the number was produced — a risk score you
+         *     Readable by viewers as well as admins. Anyone whose pull request the
+         *     risk-decision engine judges is entitled to see how the number was
+         *     produced — a risk score you
          *     are not allowed to inspect is one people learn to route around.
          */
         get: operations["active_policy_api_oracle_policy_get"];
@@ -1410,7 +1415,8 @@ export interface paths {
          *
          *     The decision itself is never rewritten — spec 09 §10 needs past decisions
          *     to stay reproducible. The override is recorded *alongside* it, so the
-         *     history shows both what Oracle said and what the human did about it.
+         *     history shows both what the risk decision said and what the human did
+         *     about it.
          *
          *     spec 09 §6 calls these "exactly the data that should most influence policy
          *     tuning over time", which is why the reason is mandatory rather than
@@ -1454,7 +1460,7 @@ export interface paths {
         put?: never;
         /**
          * Preview Finding Fix
-         * @description What Patchwork would do for one finding, without doing it (spec 18 §7.2).
+         * @description What auto-remediation would do for one finding, without doing it (spec 18 §7.2).
          *
          *     Principal-authenticated, not a workflow token: this is a person looking
          *     at one finding, not CI asking about a repository. Every guardrail the
@@ -1539,7 +1545,7 @@ export interface paths {
         };
         /**
          * Efficacy
-         * @description Does Patchwork actually remove risk? (spec 25 §3)
+         * @description Does auto-remediation actually remove risk? (spec 25 §3)
          *
          *     Until the verification loop shipped, a fixer that opened pull requests
          *     nobody merged was indistinguishable from one that silently removed real
@@ -1568,7 +1574,7 @@ export interface paths {
         };
         /**
          * Repo Events
-         * @description What Patchwork did, and did not do, for one repository (spec 08 §7).
+         * @description What auto-remediation did, and did not do, for one repository (spec 08 §7).
          */
         get: operations["repo_events_api_patchwork_repos__repo_id__get"];
         put?: never;
@@ -1856,7 +1862,8 @@ export interface paths {
          * Put Risk Profile
          * @description Record or replace this repository's risk profile (spec 21 §1.3).
          *
-         *     Admin-only and audit-logged: this changes what Oracle will decide, so it
+         *     Admin-only and audit-logged: this changes what the risk-decision engine
+         *     will decide, so it
          *     is a write in the same sense a finding disposition is (spec 10 §2.2), not
          *     a preference. `updated_by` is stamped from the caller rather than accepted
          *     from the body — "who said this repository is internet-facing" is exactly
@@ -1992,6 +1999,12 @@ export interface components {
         AffectedRepoOut: {
             /** Repo Full Name */
             repo_full_name: string;
+            /**
+             * Repo Id
+             * @description The onboarding id, for linking to the repository page — which accepts only this, never `owner/repo`. Empty where the exposure outlived the onboarding, in which case there is nothing to link to and the caller should render the name as plain text.
+             * @default
+             */
+            repo_id: string;
             /**
              * Versions
              * @description Every version present, not one. 'We have three copies and one is patched' is the actual state, and a single version would hide the two that are not.
@@ -2348,7 +2361,7 @@ export interface components {
             value?: number | null;
             /**
              * Prevents
-             * @description The Aegis signals this control would have prevented. The link is the point of the panel: it turns a log of oddities into a diagnosis with a remedy the team can action themselves.
+             * @description The insider-risk signals this control would have prevented. The link is the point of the panel: it turns a log of oddities into a diagnosis with a remedy the team can action themselves.
              */
             prevents?: string[];
         };
@@ -2464,7 +2477,7 @@ export interface components {
         };
         /**
          * EfficacyPage
-         * @description Whether Patchwork removes risk, or only opens pull requests.
+         * @description Whether auto-remediation removes risk, or only opens pull requests.
          *
          *     Two breakdowns because they answer different questions: `by_fixer` says
          *     which fixers work, `by_rule` says which rules are fixable here. A fixer
@@ -2687,7 +2700,7 @@ export interface components {
             age_days?: number | null;
             /**
              * Triage
-             * @description Patchwork's own classification (`patchwork/triage.py`), plus `toxic_combination` for a group that cannot be judged alone.
+             * @description The auto-remediation classification (`patchwork/triage.py`), plus `toxic_combination` for a group that cannot be judged alone.
              */
             triage: string;
             /** Triage Rationale */
@@ -2714,7 +2727,7 @@ export interface components {
             epss_score?: number | null;
             /**
              * Fixable
-             * @description Whether Patchwork produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
+             * @description Whether auto-remediation produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
              */
             fixable?: boolean | null;
             /**
@@ -3126,14 +3139,14 @@ export interface components {
             governance: string;
             /**
              * Blocking
-             * @description Whether this repository's Aegis Check Run can fail a pull request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, and off by default. Stated here rather than left to the reader because the gap between what an admin configured and what a reviewer believes is happening is exactly where a governance note stops being one.
+             * @description Whether this repository's insider-risk Check Run can fail a pull request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, and off by default. Stated here rather than left to the reader because the gap between what an admin configured and what a reviewer believes is happening is exactly where a governance note stops being one.
              * @default false
              */
             blocking: boolean;
         };
         /**
          * InsiderRiskSubmission
-         * @description What the Aegis workflow posts (spec 06 §3, §4).
+         * @description What the insider-risk workflow posts (spec 06 §3, §4).
          *
          *     No `repo_full_name` and no `signal_id`: the repo comes from the token and
          *     the id is derived server-side from repo + PR + commit, so a re-run on an
@@ -3439,7 +3452,7 @@ export interface components {
             capability_states: components["schemas"]["CapabilityStateOut"][];
             /**
              * Risk Score
-             * @description Oracle's standing score from the latest portfolio decision. Null means not judged — deliberately not 0, which would read as 'assessed, no risk'. Oracle is opt-in, so a repo that never enabled it stays null.
+             * @description The standing risk score from the latest portfolio decision. Null means not judged — deliberately not 0, which would read as 'assessed, no risk'. Risk decisions are opt-in, so a repo that never enabled them stays null.
              */
             risk_score?: number | null;
             /** Recommendation */
@@ -3655,7 +3668,8 @@ export interface components {
          *     `analysed` is the field that carries the weight. False means the analysis
          *     has never run for this repository, which is not the same as it having run
          *     and found nothing — the second is a result, the first is a gap, and
-         *     Oracle reports them differently (`available: false` versus a real zero).
+         *     a risk decision reports them differently (`available: false` versus a real
+         *     zero).
          */
         ReachabilityOut: {
             /** Analysed */
@@ -3811,7 +3825,7 @@ export interface components {
             pr_status?: string | null;
             /**
              * Note
-             * @default Draft, and it stays that way. Patchwork has no ability to merge — the client it uses exposes no merge operation at all (spec 08 §3).
+             * @default Draft, and it stays that way. Auto-remediation has no ability to merge — the client it uses exposes no merge operation at all (spec 08 §3).
              */
             note: string;
         };
@@ -3825,7 +3839,7 @@ export interface components {
             open_draft_prs: number;
             /**
              * Note
-             * @default Patchwork never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
+             * @default Auto-remediation never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
              */
             note: string;
         };
@@ -3895,8 +3909,6 @@ export interface components {
             github_installation_id: number;
             /** Onboarded By */
             onboarded_by: string;
-            /** Auto Merge Workflow Prs */
-            auto_merge_workflow_prs: boolean;
             /** Granted Capabilities */
             granted_capabilities: string[];
             /** Capability Config */
@@ -3957,7 +3969,8 @@ export interface components {
          * @description What this application is, as an asset (spec 21 §1).
          *
          *     Every field independently nullable: a partially-filled profile is still
-         *     useful. `exists` distinguishes the two states that matter to Oracle — a
+         *     useful. `exists` distinguishes the two states that matter to a risk
+         *     decision — a
          *     profile recorded but not yet filled in is an auditable fact, no profile
          *     at all is `available: false`.
          */
@@ -4038,7 +4051,7 @@ export interface components {
             errors?: string[];
             /**
              * Note
-             * @default Every pull request Patchwork opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
+             * @default Every pull request auto-remediation opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
              */
             note: string;
         };
@@ -4172,7 +4185,7 @@ export interface components {
             trust_score?: number | null;
             /**
              * Raw Trust Score
-             * @description Pre-clamp. Ranking has to survive the floor at 0, the same way Oracle's raw_score survives the ceiling at 100 (D-018).
+             * @description Pre-clamp. Ranking has to survive the floor at 0, the same way the risk decision's raw_score survives the ceiling at 100 (D-018).
              */
             raw_trust_score?: number | null;
             /** Provenance Json */
@@ -4184,7 +4197,7 @@ export interface components {
         };
         /**
          * SscsEvidenceSubmission
-         * @description What the Atlas workflow posts (spec 07 §3, §4).
+         * @description What the dependency (SCA) workflow posts (spec 07 §3, §4).
          *
          *     Counts rather than a trust score: the score is computed server-side from
          *     §5's formula so it is reproducible and cannot drift between the workflow's
@@ -4452,7 +4465,7 @@ export interface components {
             first_seen_at?: string | null;
             /**
              * Repo Recommendation
-             * @description The repo's standing Oracle verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
+             * @description The repo's standing risk verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
              */
             repo_recommendation?: string | null;
             /**

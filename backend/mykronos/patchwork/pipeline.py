@@ -143,7 +143,6 @@ class PatchworkPipeline:
         max_open_draft_prs: int = 10,
         source_capabilities: tuple[str, ...] = DEFAULT_SOURCE_CAPABILITIES,
         correlation_capabilities: tuple[str, ...] = DEFAULT_CORRELATION_CAPABILITIES,
-        fix_generator_url: str | None = None,
         auto_fix_min_severity: str = "high",
     ) -> None:
         self.catalog = catalog
@@ -153,9 +152,6 @@ class PatchworkPipeline:
         self.max_open_draft_prs = max_open_draft_prs
         self.source_capabilities = source_capabilities
         self.correlation_capabilities = correlation_capabilities
-        # Null disables LLM-assisted generation entirely (spec 08 §2). The
-        # deterministic fixers are unaffected; they are the primary path.
-        self.fix_generator_url = fix_generator_url
         # The severity floor for the *unprompted* sweep (spec 19 §4.5).
         # `classify()` hardcoded "critical or high" before this was
         # configurable, so the default keeps every existing repo's behaviour.
@@ -530,13 +526,10 @@ class PatchworkPipeline:
 
         generated = fixers.generate(finding, content)
         if generated is None:
-            reason = (
-                "No deterministic fixer matches this finding, and no fix "
-                "generator endpoint is configured for this deployment, so "
-                "nothing was attempted."
-                if self.fix_generator_url is None
-                else "No deterministic fixer matches this finding."
-            )
+            # One sentence, because there is one path. This used to choose
+            # between two phrasings on `fix_generator_url`, which read as
+            # though a generator had been consulted and declined (D-096).
+            reason = "No deterministic fixer matches this finding."
             return StageOutcome(
                 finding_id=finding_id,
                 stage="no_fix_available",

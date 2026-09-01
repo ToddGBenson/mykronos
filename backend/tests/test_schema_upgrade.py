@@ -15,11 +15,13 @@ had checked.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from sqlalchemy import inspect, text
 
 from mykronos.db.models import Base, RepoOnboarding
-from mykronos.db.session import Database
+from mykronos.db.session import RETIRED_COLUMNS, Database
 
 
 @pytest.fixture
@@ -46,6 +48,18 @@ def open_db(tmp_path):
 
 def columns(db: Database, table: str) -> set[str]:
     return {c["name"] for c in inspect(db.engine).get_columns(table)}
+
+
+def add_column(db: Database, table: str, column: str) -> None:
+    """Age the database back to when a since-retired column still existed.
+
+    The mirror of `drop_column`: the model no longer declares these, so there
+    is no metadata to build them from and the DDL is written out here.
+    """
+    with db.engine.begin() as connection:
+        connection.execute(
+            text(f"ALTER TABLE {table} ADD COLUMN {column} BOOLEAN DEFAULT 0 NOT NULL")
+        )
 
 
 def drop_column(db: Database, table: str, column: str) -> None:
@@ -314,3 +328,116 @@ def _org(db: Database) -> str:
         session.add(org)
         session.flush()
         return org.id
+
+
+class TestARetiredColumn:
+    """The inverse path: a column the models stopped declaring (D-095).
+
+    `add_missing_columns` only ever adds, so a removed column would otherwise
+    sit in every existing database forever — present in production, absent from
+    every freshly-built test database, which is the same disagreement D-052 was
+    written to end, pointing the other way.
+    """
+
+    def test_it_is_dropped_from_a_database_that_still_has_it(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        add_column(db, "repo_onboardings", "auto_merge_workflow_prs")
+        assert "auto_merge_workflow_prs" in columns(db, "repo_onboardings")
+
+        open_db().drop_retired_columns()
+
+        assert "auto_merge_workflow_prs" not in columns(db, "repo_onboardings")
+
+    def test_it_says_what_it_changed(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        add_column(db, "repo_onboardings", "auto_merge_workflow_prs")
+
+        assert open_db().drop_retired_columns() == [
+            "repo_onboardings.auto_merge_workflow_prs"
+        ]
+
+    def test_a_database_that_never_had_it_is_left_alone(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+
+        assert open_db().drop_retired_columns() == []
+
+    def test_running_it_twice_changes_nothing_the_second_time(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        add_column(db, "repo_onboardings", "auto_merge_workflow_prs")
+
+        first = open_db().drop_retired_columns()
+        second = open_db().drop_retired_columns()
+
+        assert first and second == []
+
+    def test_existing_data_survives(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        add_column(db, "repo_onboardings", "auto_merge_workflow_prs")
+        org = _org(db)
+        with db.session() as session:
+            session.add(
+                RepoOnboarding(
+                    org_id=org,
+                    github_repo_full_name="acme/keeps-its-rows",
+                    github_installation_id=1,
+                )
+            )
+            session.commit()
+
+        open_db().drop_retired_columns()
+
+        with open_db().session() as session:
+            row = session.query(RepoOnboarding).one()
+            assert row.github_repo_full_name == "acme/keeps-its-rows"
+
+    def test_create_all_performs_the_retirement(self, open_db) -> None:
+        """Not a script somebody has to remember: it runs on every start."""
+        db = open_db()
+        db.create_all()
+        add_column(db, "repo_onboardings", "auto_merge_workflow_prs")
+
+        open_db().create_all()
+
+        assert "auto_merge_workflow_prs" not in columns(db, "repo_onboardings")
+
+    def test_every_retired_column_is_gone_from_the_models(self, open_db) -> None:
+        """A name cannot be in both lists. Re-declaring a retired column while
+        it stays in RETIRED_COLUMNS would drop it on every single start."""
+        for table_name, column_name in RETIRED_COLUMNS:
+            table = Base.metadata.tables.get(table_name)
+            if table is None:
+                continue
+            assert column_name not in table.columns, (
+                f"{table_name}.{column_name} is declared on the model and also "
+                "listed in RETIRED_COLUMNS. Every start would drop it and the "
+                "next write would fail. Remove it from one of the two."
+            )
+
+    def test_a_hostile_name_cannot_ride_the_retirement_path(self, open_db) -> None:
+        """Same guarantee `add_missing_columns` carries, on the way out.
+
+        The name has to be one that really is on the table, or the "is it
+        present?" guard skips it before any SQL is built and the check proves
+        nothing. SQLite will accept it if it is quoted, which is exactly the
+        shape `_identifier` exists to refuse.
+        """
+        hostile = "x; DROP TABLE repo_onboardings; --"
+        db = open_db()
+        db.create_all()
+        with db.engine.begin() as connection:
+            connection.execute(
+                text(f'ALTER TABLE repo_onboardings ADD COLUMN "{hostile}" TEXT')
+            )
+
+        with (
+            patch("mykronos.db.session.RETIRED_COLUMNS", (("repo_onboardings", hostile),)),
+            pytest.raises(ValueError, match="not a plain SQL identifier"),
+        ):
+            db.drop_retired_columns()
+
+        assert "repo_onboardings" in inspect(db.engine).get_table_names()

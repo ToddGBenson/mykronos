@@ -361,7 +361,7 @@ def handle_push(
     commits = list(payload.get("commits") or [])
 
     if not repo_full_name or not is_patchwork_branch(ref):
-        return {"ignored": "not a Patchwork branch"}
+        return {"ignored": "not an auto-remediation branch"}
 
     try:
         outcome = record_human_edit(

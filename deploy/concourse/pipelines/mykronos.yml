@@ -952,7 +952,33 @@ jobs:
                 # Counts, not a score. The trust formula lives in the platform
                 # so it is reproducible and cannot drift between CI systems
                 # (spec 07 §5, §7).
-                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json)
+                #
+                # --sbom enables the license pass (spec 22 §1). Without it
+                # `licenses_seen` stays empty, which the platform reads as
+                # not-computed rather than as no-licenses-found. This call
+                # omitted it while the Actions path passed it, so whether a
+                # repository had license evidence depended on which CI system
+                # finished last — the evidence write is an upsert and both
+                # scan the same commits. Intermittent missing data, which is
+                # the hardest shape to diagnose from a dashboard (B-005).
+                #
+                # No `-f` guard, unlike the Actions template: that one skips
+                # the SBOM on pull requests, while this task has already
+                # exited non-zero above if the document has no components.
+                SBOM_ARGS="--sbom sbom-out/sbom-${SHORT}.cdx.json"
+
+                # Opt-in per spec 07 §7: freshness queries the npm and PyPI
+                # registries for each package's last publish date, which is an
+                # outbound call to a third party and is never on by default.
+                # Off here, so `stale_dependencies` stays honestly
+                # not-measured rather than a zero meaning "never asked"
+                # (spec 22 §2.1, B-004).
+                if [ "${ATLAS_CHECK_FRESHNESS:-false}" = "true" ]; then
+                  SBOM_ARGS="$SBOM_ARGS --check-freshness --staleness-threshold-days ${ATLAS_STALENESS_THRESHOLD_DAYS:-730}"
+                fi
+
+                # shellcheck disable=SC2086  # deliberate word splitting
+                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json $SBOM_ARGS)
 
                 PROVENANCE=$(jq -nc \
                   --arg builder "concourse" \

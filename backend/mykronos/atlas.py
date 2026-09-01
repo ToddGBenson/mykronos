@@ -311,7 +311,52 @@ def score(
             }
         )
 
-    if maintenance_known and stale:
+    # Three states, and two of them used to be silent (B-004). The freshness
+    # pass is opt-in (spec 07 §7, spec 22 §2.1), so `maintenance_known == 0`
+    # means nobody asked — not that nothing is stale. Emitting no term for
+    # that made it identical on the page to a repository that was measured and
+    # came back clean, which is the zero §2.1 was written to fix wearing a
+    # different hat.
+    # Whether the freshness pass ran at all, which `maintenance_known` cannot
+    # answer: it falls back to `dependency_count` when the field is absent, so
+    # a runner that never looked up a single release date is indistinguishable
+    # from one that found every dependency's date. That fallback is right for
+    # the ratio — a pre-spec-22 runner reporting stale counts needs a
+    # denominator — and wrong for deciding whether anybody measured.
+    freshness_measured = any(
+        eco.maintenance_data_available_for is not None for eco in ecosystems
+    )
+
+    if not freshness_measured and not stale:
+        terms.append(
+            {
+                "key": "stale_dependencies",
+                "penalty": 0.0,
+                "detail": (
+                    "Not measured. The freshness pass is opt-in and is off for "
+                    "this repository, so no dependency's last-release date was "
+                    "looked up. This is not a statement that nothing is stale."
+                ),
+                "count": 0,
+                # Renders as "—" rather than a number, the same way an
+                # unreadable provenance term does (spec 29 §3).
+                "available": False,
+            }
+        )
+    elif not stale or not maintenance_known:
+        terms.append(
+            {
+                "key": "stale_dependencies",
+                "penalty": 0.0,
+                "detail": (
+                    f"0/{maintenance_known} with no release in 2+ years. "
+                    "Measured, and nothing is stale. Denominator excludes "
+                    "dependencies with no published maintenance data."
+                ),
+                "count": 0,
+            }
+        )
+    else:
         ratio = stale / maintenance_known
         contribution = ratio * STALE_PENALTY
         penalty += contribution

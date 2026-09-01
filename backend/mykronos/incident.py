@@ -58,6 +58,10 @@ class Affected:
     """One repository's exposure (spec 29 §2)."""
 
     repo_full_name: str
+    #: The onboarding id, because that is the only thing the repo page accepts
+    #: (`_resolve_repo` is id-only by design). A row without it cannot be
+    #: linked to, which is what made every drill-down here a 404.
+    repo_id: str = ""
     versions: list[str] = field(default_factory=list)
     ecosystem: str = ""
     matched_by: str = "name"
@@ -212,6 +216,14 @@ def look_up(
     context = _finding_context(catalog, [name.lower() for name in package_names])
     verdicts = _verdicts(catalog)
 
+    # Read once and used twice: the ids the affected rows link with, and the
+    # `onboarded` set below. Previously only the set was built, which is why
+    # the rows had no id to carry.
+    onboarding_ids = {
+        row.github_repo_full_name: row.id
+        for row in session.query(RepoOnboarding).filter(RepoOnboarding.status != "removed")
+    }
+
     affected: list[Affected] = []
     seen: set[str] = set()
     for item in exposures:
@@ -223,6 +235,7 @@ def look_up(
         affected.append(
             Affected(
                 repo_full_name=item.repo_full_name,
+                repo_id=onboarding_ids.get(item.repo_full_name, ""),
                 versions=item.versions,
                 ecosystem=item.ecosystem,
                 matched_by=item.matched_by,
@@ -239,12 +252,7 @@ def look_up(
     # Every repository the platform is watching, split three ways — and the
     # third way is the point. `not_checked` is what stops an absence of data
     # reading as a statement of safety.
-    onboarded = {
-        row.github_repo_full_name
-        for row in session.query(RepoOnboarding).filter(
-            RepoOnboarding.status != "removed"
-        )
-    }
+    onboarded = set(onboarding_ids)
     with_sbom = inventory.repos_with_an_sbom(catalog)
 
     return IncidentView(
@@ -273,6 +281,7 @@ def as_dict(view: IncidentView) -> dict[str, Any]:
         "affected": [
             {
                 "repo_full_name": item.repo_full_name,
+                "repo_id": item.repo_id,
                 "versions": item.versions,
                 "ecosystem": item.ecosystem,
                 "matched_by": item.matched_by,
@@ -292,7 +301,7 @@ def as_dict(view: IncidentView) -> dict[str, Any]:
             "Repositories under `not_checked` have no SBOM in the lake and "
             "this view cannot speak about them — they are not a clean result. "
             "Everything under `affected` is as of that repository's last "
-            "Atlas scan, whose commit and date are on the row. The inventory "
+            "dependency scan, whose commit and date are on the row. The inventory "
             "covers what the SBOM resolved: a vendored copy or a library "
             "inside a base image is outside it, and container findings are "
             "where the second of those shows up."

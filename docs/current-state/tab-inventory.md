@@ -87,20 +87,41 @@ worth preserving — the two names were swapped, so older documents referring to
 
 Ordered by consequence. Each is verified through code and cites its evidence.
 
-### F1 — An unknown `?tab=` value silently renders the Dashboard
+### F1 — An unknown `?tab=` value silently renders the Dashboard — **fixed**
 
-`page.tsx` L169–182 is a seven-branch ternary whose final `else` is
-`<DashboardTab>`. There is no validation of `query.tab` against `TABS`.
+**Status: shipped and fixed (B-006).** This was recorded here as a
+hypothetical. It was not: the incident page shipped linking to
+`?tab=supply-chain`, so the drill-down on the one surface that matters on the
+worst day had never worked, and the silent fallthrough is what hid it.
 
-A typo'd, renamed, or removed tab id is therefore **indistinguishable from the
-default**. A link to `?tab=supply-chain` (the label) rather than `?tab=sscs`
-(the id) lands on Dashboard with no error, and a bookmark to a retired tab
-degrades silently.
+The original finding, which stands as the description of the defect:
 
-This is the same class as a defect TheHub fixed twice this week: a sub-tab id
-with no matching branch produced a wrong-but-plausible render rather than a
-visible failure. **Recommended:** validate `tab` against `TABS` and render
-`not-found` (or an `ErrorPanel` naming the bad id) on a miss.
+> `page.tsx` L169–182 is a seven-branch ternary whose final `else` is
+> `<DashboardTab>`. There is no validation of `query.tab` against `TABS`.
+>
+> A typo'd, renamed, or removed tab id is therefore **indistinguishable from
+> the default**. A link to `?tab=supply-chain` (the label) rather than
+> `?tab=sscs` (the id) lands on Dashboard with no error, and a bookmark to a
+> retired tab degrades silently.
+>
+> This is the same class as a defect TheHub fixed twice this week: a sub-tab id
+> with no matching branch produced a wrong-but-plausible render rather than a
+> visible failure. **Recommended:** validate `tab` against `TABS` and render
+> `not-found` (or an `ErrorPanel` naming the bad id) on a miss.
+
+**What changed.** `RepoPage` now validates `tab` against `TABS` before
+anything else and renders an `ErrorPanel` naming the bad id and listing the
+valid ones — the recommendation above, taken as written.
+
+The incident link itself had a second, independent defect: it passed
+`repo_full_name` where the route takes an onboarding id (`_resolve_repo` is
+id-only by design, and says so in its 404). `AffectedRepoOut` now carries
+`repo_id`, and the page links with it, falling back to plain text where the
+exposure outlived the onboarding.
+
+Regression tests:
+`tests/test_component_inventory.py::TestTheEndpoint::test_the_drill_down_link_resolves_to_the_supply_chain_tab`
+and `::test_the_old_broken_link_shape_still_404s`.
 
 ### F2 — No loading state exists anywhere, in a `force-dynamic` app
 
