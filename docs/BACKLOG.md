@@ -45,13 +45,219 @@ already shipped.
 
 ## Open
 
-None. Every entry from the TheHub import is closed, and so is B-013, which came
-from an outage rather than the import.
+Five entries from a monitoring sweep of the running platform on 2026-09-01.
+Every one was reproduced against the live system before it was written; the
+evidence is in each entry rather than a link to a dashboard that will have
+moved on.
 
-The two that had been iceboxed were built on 2026-09-01 rather than left
-waiting. One of them, B-012, turned out to have had its trigger fire already —
-which is the argument for re-reading an icebox occasionally instead of trusting
-that the trigger will announce itself.
+Ordered by consequence. The first two are the platform being wrong about its
+own health, which is worse than the thing it is wrong about.
+
+### B-014 — The one check that would have caught a sealed Vault is inert, and reports FAILED anyway
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+**Specs:** [32 §8.1](../specs/32-github-actions-delivery.md)
+
+`mykronos self-check` reports:
+
+```
+vault   FAILED   No Vault is configured for this deployment.
+Not reachable: vault
+```
+
+**`vault_url` is empty, and is set nowhere** — not in `backend/.env`, not in
+`deploy/`. `jobs.check_vault` returns `reachable=False` with that detail when
+the URL is blank, and the CLI renders that as `FAILED`.
+
+Two separate defects, and the second is the expensive one:
+
+1. **A deliberate absence is reported as a failure.** The backend has no Vault
+   client on purpose — D-086 treats giving it one as a boundary to argue about
+   rather than cross quietly. A permanent `FAILED` on a dependency the platform
+   has decided not to have is the "permanent false alarm that trains people to
+   ignore the panel" this codebase already names in `last_successful_scan_at`.
+   Every `self-check` run has been red since it shipped, so the command cannot
+   report anything else going wrong.
+
+2. **`check_vault` already detects a sealed Vault, and never runs.** It reads
+   `/v1/sys/health`, distinguishes sealed from unreachable, and its message
+   even names the fix script. Vault sealed on 2026-09-01 and nothing surfaced
+   it — the pipelines would have failed on unresolvable vars in a way that
+   looks like a credentials bug, which is exactly what that detail exists to
+   prevent. The detection is written, correct, and unreachable.
+
+**Acceptance criteria**
+
+- `vault_url` is configured for this deployment, so the seal check runs.
+- An unconfigured dependency reports as unavailable or skipped, never
+  `FAILED` — the same distinction this platform draws between "not enabled"
+  and "enabled and silent" everywhere else.
+- A sealed Vault makes `self-check` say so, with the unseal script named.
+- A test covers all three states: unconfigured, sealed, healthy.
+
+---
+
+### B-015 — Three capabilities are permanently "enabled and silent", by design
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+**Specs:** [06 §3](../specs/06-aegis-integration.md), [10 §7](../specs/10-jded-dashboard.md)
+
+`aegis`, `oracle` and `patchwork` show `has_scanned: false` on every repository
+that enables them, for ever. Measured across the whole lake:
+
+```
+sast 365 · secrets 282 · atlas 234 · qa 209 · iac 141
+unit 137 · containers 130 · ai 82 · dast 40 · functional 16
+aegis 0 · oracle 0 · patchwork 0 · cloud 0 · network 0
+```
+
+The first three are zero **by design and always will be**: aegis writes an
+`InsiderRiskSignal`, oracle writes a `RiskDecision`, patchwork writes a
+`RemediationEvent`. None of them writes a `ScanRun`, and
+`_capability_scan_state` reads `scan_runs` and nothing else.
+
+`last_successful_scan_at` already solves exactly this, with a comment saying
+why: *"Looking for it in scan_runs reports every insider job as having reported
+nothing, which is both wrong and the kind of permanent false alarm that trains
+people to ignore the panel."* `capability_states` never got the same treatment.
+
+**This became consequential with B-008**, which is why it is filed now rather
+than left. Before that change, "enabled and silent" was an absence a caller had
+to infer; now it is a named state a caller is invited to act on — so three of
+fifteen capabilities permanently assert a problem that does not exist. The
+field made the platform more honest about one thing and more wrong about
+another.
+
+**Acceptance criteria**
+
+- A capability that reports through a table other than `scan_runs` is read from
+  the table it actually writes, as `last_successful_scan_at` does.
+- Its state on the portfolio distinguishes "has reported" from "cannot report
+  this way", rather than reporting silence.
+- A test asserts each of the three is not permanently silent, so the next
+  capability that reports differently is caught when it is added.
+- `cloud` and `network` are genuinely at zero and must keep reporting as such —
+  see B-018 for `cloud`.
+
+---
+
+### B-016 — personal-soc has been scanning and filing nothing since 2026-08-12
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+**Specs:** [15 §6](../specs/15-concourse-pipeline.md)
+
+The applied `personal-soc` pipeline carries, verbatim:
+
+```yaml
+params:
+  MYKRONOS_TOKEN: ""
+```
+
+`PERSONAL_SOC_INGESTION_TOKEN` is **absent from `deploy/concourse/.env`**, and
+`set-personal-soc-pipeline.ps1:187` reads it with `Read-EnvValueOptional` — so
+a missing credential applies cleanly as an empty string. The `.env` files were
+rebuilt from running containers on 2026-08-23 after being lost; this key was not
+among what came back.
+
+The lake agrees: personal-soc's newest scan run is **2026-08-12**, twenty days
+before this was measured, and the portfolio flags it `is_stale`.
+
+**The pipeline is honest about it and nobody is listening.** Each task checks
+for an empty token and prints `NO MYKRONOS TOKEN — RESULTS WERE NOT FILED`,
+with a comment saying that beats a green tick implying otherwise. It is right,
+and it is buried in a build log: the job still goes green, so nothing on any
+dashboard says this repository stopped reporting.
+
+**Acceptance criteria**
+
+- The token is restored and the pipeline re-applied, so results file again.
+- `set-personal-soc-pipeline.ps1` refuses to apply with an empty ingestion
+  token rather than treating it as optional — an unset credential is a
+  configuration error, not a setting.
+- A repository that stops reporting is visible without reading a build log.
+  The reporting cross-check (spec 15 §4a) is the existing home for this.
+- Note for whoever takes this: the same rotation family that caused D-097 also
+  touched this token (`rotation-resync`, 2026-08-21). Deliver to every reader
+  in one operation.
+
+---
+
+### B-017 — Three personal-soc jobs have been failing for a week
+
+**Size:** M **State:** open **Verified:** 2026-09-01
+
+`netassess-ingest`, `netassess-freshness` and `package` are all red and not
+paused. `netassess-ingest` has failed since 2026-08-24, `package` since
+2026-08-31 — its last success was 2026-08-12, the same day the repository
+stopped filing results.
+
+Not yet root-caused. `netassess-ingest`'s log reaches the failure-notify hook
+with almost no task output before it, which points at an early exit rather than
+a check that ran and reported. Whether these share a cause with B-016's empty
+token is exactly the question to answer first — the dates line up and the same
+pipeline holds both.
+
+**Acceptance criteria**
+
+- Each of the three has a named cause, or is retired if the job no longer has a
+  job to do.
+- Whether B-016 is the cause is answered explicitly rather than assumed either
+  way.
+- `personal-soc` reaches a state where every unpaused job is green or is
+  deliberately paused with the reason recorded, as `demo-and-dast` is.
+
+---
+
+### B-018 — `cloud` is enabled on a repository and its lane cannot run
+
+**Size:** S **State:** open **Verified:** 2026-09-01
+
+`cloud` is enabled on `ToddGBenson/TheHub` and has produced zero scan runs
+across the entire lake, ever. The reason is upstream of the platform:
+`thehub`'s `cloud-posture` job is paused because `deploy/concourse/.env` has no
+Azure service principal — `set-thehub-pipeline.ps1` refuses to apply without one
+unless `-AllowMissingAzure` is passed, and the applied pipeline's
+`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` and
+`AZURE_SUBSCRIPTION_ID` are all empty.
+
+So the capability reads as enabled on the dashboard and is structurally
+incapable of reporting. That is the same shape as spec 14's network claim
+(B-007, closed): a capability the platform presents as available and cannot
+perform.
+
+**This needs a decision before code.** Either the Azure principal is restored —
+only the operator knows whether it was lost with the rest of `.env` on
+2026-08-23 or deliberately never set — or `cloud` is disabled on TheHub and
+recorded as not available on this deployment. Both are defensible; leaving it
+enabled and inert is not.
+
+**Acceptance criteria**
+
+- Either `cloud-posture` can run, or `cloud` is not presented as enabled.
+- Whichever way it goes is written down, as D-053 did for DAST.
+- Distinct from B-015: `cloud`'s zero is real, and must keep reading as real.
+
+---
+
+## Watching, not filed
+
+Recorded so the next sweep does not rediscover them, and deliberately not turned
+into entries here:
+
+- **`thehub`: `deploy-demo` and `api-inventory` are failing.** `deploy-demo`
+  timed out after 25 minutes waiting for the demo environment to report a SHA
+  ("host-side poller is not running, or it failed and rolled back");
+  `api-inventory` reports "The API surface has changed and the inventory has
+  not". Both are TheHub's own code, in TheHub's repository. This repo holds the
+  pipeline definition, not the fix.
+- **`keel`: `compliance-daily` is errored** — *errored*, not failed, so the task
+  did not complete rather than completing unhappily. Its weekly and monthly
+  siblings pass. Recorded in
+  [`current-state/keel-pipeline-inventory.md`](current-state/keel-pipeline-inventory.md)
+  as F3, along with three never-run jobs; keel's work belongs in keel's repo.
+- **Two overdue critical findings on TheHub.** Past their `due_at` and open.
+  That is the ownership-and-deadlines mechanism working as designed (spec 24) —
+  a thing for somebody to do, not a defect in the platform.
 
 ---
 
