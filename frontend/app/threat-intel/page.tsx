@@ -7,6 +7,8 @@ import {
   RelativeTime,
   SeverityText,
 } from "@/components/primitives";
+import { IncidentResults } from "@/components/incident-results";
+import { Toolbar } from "@/components/toolbar";
 import type { Severity, ThreatIntelEntry } from "@/lib/api";
 import { getThreatIntel } from "@/lib/server";
 
@@ -30,6 +32,12 @@ export const dynamic = "force-dynamic";
  * Unscored is its own band for the reason the old dash tried to carry in a
  * tooltip: "not yet fetched" is not "low risk", and burying it at the bottom
  * of an EPSS-descending list made it read as exactly that.
+ *
+ * **Incident lookup lives here now.** They were always two views of one
+ * question. The bands answer "what does the outside world think matters"; the
+ * lookup answers "is it here". Separately, reading a KEV entry on one page and
+ * retyping the CVE into another was the whole workflow — so a CVE in the bands
+ * is a link into the lookup for itself, and `/incident` redirects here.
  */
 export const metadata = { title: "Threat intelligence — Mykronos" };
 
@@ -38,7 +46,13 @@ export const metadata = { title: "Threat intelligence — Mykronos" };
  *  table already bolded — made structural rather than typographic. */
 const LIKELY = 0.5;
 
-export default async function ThreatIntelPage() {
+export default async function ThreatIntelPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string }>;
+}) {
+  const { q } = await searchParams;
+  const query = (q ?? "").trim();
   const result = await getThreatIntel();
   if (!result.ok) {
     return <ErrorPanel title="Threat intelligence unavailable" detail={result.error} />;
@@ -65,13 +79,37 @@ export default async function ThreatIntelPage() {
         <span className="font-mono text-[11px] text-ink-3">
           {entries.length} CVE{entries.length === 1 ? "" : "s"} matched to open findings
         </span>
-        <Link
-          href="/triage"
-          className="ml-auto border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
-        >
-          triage queue
-        </Link>
       </div>
+
+      {/* The lookup and the bands are two views of one question, so they share
+          a page and a toolbar. A CVE in a band below links straight into this
+          box with itself already filled in. */}
+      <Toolbar
+        search={{
+          name: "q",
+          value: query,
+          placeholder: "CVE-2026-1337 · lodash · pkg:npm/lodash",
+          label: "look up",
+          action: "/threat-intel",
+        }}
+        action={
+          <Link
+            href="/triage"
+            className="border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
+          >
+            triage queue
+          </Link>
+        }
+      />
+
+      {/* A lookup is a specific question and outranks the standing list. The
+          bands stay below it rather than being replaced, so the answer never
+          costs somebody the context they came in with. */}
+      {query ? (
+        <section className="flex flex-col gap-3 border border-rule bg-paper-2 p-3">
+          <IncidentResults query={query} />
+        </section>
+      ) : null}
 
       {entries.length === 0 ? (
         <EmptyState
@@ -205,8 +243,12 @@ function Band({
             className="grid grid-cols-[minmax(9rem,auto)_1fr] items-baseline gap-x-3 gap-y-1 border-b border-rule-soft py-1.5 last:border-0 sm:grid-cols-[minmax(9rem,auto)_7rem_1fr]"
           >
             <div className="flex flex-wrap items-baseline gap-1.5">
+              {/* Into the lookup on this same page, not away to the queue:
+                  "is it here, and where" is the next question after reading a
+                  band, and it used to mean retyping the CVE somewhere else. */}
               <Link
-                href={`/triage?rule_id=${encodeURIComponent(entry.cve_id)}`}
+                href={`/threat-intel?q=${encodeURIComponent(entry.cve_id)}`}
+                title="Look this up across every repository"
                 className="font-mono text-[11px] font-semibold text-ink hover:text-accent"
               >
                 {entry.cve_id}

@@ -28,10 +28,10 @@ const NAV: {
     items: [
       { label: "Portfolio", href: "/" },
       { label: "Triage queue", href: "/triage" },
+      // Incident lookup lives here too: "what does the outside world think
+      // matters" and "is it here" are two views of one question, and a KEV row
+      // is exactly where the second one gets asked.
       { label: "Threat intelligence", href: "/threat-intel" },
-      // Beside threat intelligence, because that is where somebody
-      // arrives from: a KEV row raises the question this page answers.
-      { label: "Incident lookup", href: "/incident" },
       // Beside the triage queue, not the portfolio: the queue is what to do
       // next, and this is the standing account of what is outstanding and
       // what was decided against — the two halves of the same job.

@@ -5,7 +5,7 @@ import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { TestCoverage } from "@/components/test-coverage";
-import { PipelineCoverage, PipelineLinks } from "@/components/pipelines";
+import { JobLights, PipelineLinks, ReportingGaps } from "@/components/pipelines";
 import { WorkflowSwitches } from "@/components/workflow-switches";
 import { ScanNowButton } from "@/components/scan-now";
 import {
@@ -274,37 +274,61 @@ function DashboardTab({
         <ScanNowButton repoId={repoId} />
       </div>
 
+      {/* Scan health and Enabled jobs were two panels asking the same
+          question from different ends — how is each check doing — and reading
+          them meant joining two grids by eye.
+          
+          One section, two blocks, one header and one legend. Not one *grid*:
+          a job carries a name and no capability, so merging the tiles would
+          mean duplicating the backend's job-to-capability map in the browser,
+          where it would drift silently the first time a template renamed a
+          job. Sitting them together is the honest consolidation; pretending
+          the data supports a row-level join is not. */}
       <Section
-        title="Scan health"
-        detail="how many of each check's runs succeeded"
+        title="Checks"
+        detail="how each one is running, and which jobs back it"
         aside={
           scanHealth ? (
             <span className="font-mono text-[10px] text-ink-3">
-              {reported.length} of {boxes.length} checks have ever run
+              {reported.length} of {boxes.length} have ever run
+              {ci?.pipeline ? ` · ${ci.pipeline}` : ""}
             </span>
           ) : null
         }
       >
-        {scanHealthError ? (
-          <p className="px-3 py-2 text-[11px] text-critical">{scanHealthError}</p>
-        ) : (
-          <ScanHealthBoxes capabilities={boxes} health={scanHealth?.capabilities ?? []} />
-        )}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <div className="px-3 pt-1">
+              <Label>Run health</Label>
+            </div>
+            {scanHealthError ? (
+              <p className="px-3 py-2 text-[11px] text-critical">{scanHealthError}</p>
+            ) : (
+              <ScanHealthBoxes capabilities={boxes} health={scanHealth?.capabilities ?? []} />
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1 border-t border-rule pt-2">
+            <div className="px-3">
+              <Label>Jobs</Label>
+            </div>
+            {ci ? (
+              <>
+                <JobLights ci={ci} />
+                <ReportingGaps reporting={ci.reporting ?? []} />
+              </>
+            ) : (
+              // Said rather than dropped. A block that quietly disappears when
+              // its fetch fails reads as a repository with no pipeline.
+              <p className="px-3 py-2 text-[11px] text-critical">
+                Pipeline state could not be read.
+              </p>
+            )}
+          </div>
+        </div>
       </Section>
 
       {workflows ? <WorkflowSwitches repoId={repoId} page={workflows} /> : null}
-
-      {ci ? (
-        <PipelineCoverage ci={ci} />
-      ) : (
-        // Said rather than dropped. A section that quietly disappears when
-        // its fetch fails reads as a repository with no pipeline.
-        <Section title="Enabled jobs" detail="unavailable">
-          <p className="px-3 py-2 text-[11px] text-critical">
-            Pipeline state could not be read.
-          </p>
-        </Section>
-      )}
     </div>
   );
 }
