@@ -37,6 +37,7 @@ import {
   type TrendSeries,
   type TriageQueue,
   type Briefing,
+  type RepoGuidance,
   type RepoSurfaces,
   type SupplyChainPackages,
   type VulnerabilityManagement,
@@ -393,6 +394,22 @@ export async function getVulnerablePackages(
 }
 
 /** What this repository is, so the threat model can say what is at stake. */
+/** The scanners' own remediation for one repository (B-030). */
+export async function getRepoGuidance(repoId: string): Promise<Result<RepoGuidance>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/guidance",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load remediation guidance") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>> {
   try {
     const { data, response } = await backendClient().GET(

@@ -2416,6 +2416,69 @@ def _surface_out(surface: Any) -> SurfaceOut:
     )
 
 
+class RepoGuidanceOut(BaseModel):
+    """What the scanners recommend for one repository, two ways.
+
+    `fixes` is the actionable half — grouped by the change, so one entry can
+    close several rules — and `by_rule` is the detail behind it.
+    """
+
+    fixes: list[FixGroupOut]
+    by_rule: list[CapabilityGuidanceOut]
+    #: Findings covered by a fix group whose effort is `config` or `upgrade` —
+    #: the ones a person can act on today without a judgement call.
+    actionable_findings: int
+
+
+@router.get("/repos/{repo_id}/guidance", response_model=RepoGuidanceOut)
+async def repo_guidance(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> RepoGuidanceOut:
+    """The scanners' own remediation for this repository (B-030).
+
+    The Remediation tab said what Patchwork did and did not do, which is
+    honest and incomplete: across the estate Patchwork declines almost
+    everything, because four deterministic fixers cover four narrow classes.
+    That left a tab whose truthful answer was "nothing", beside reports full
+    of remediation advice nobody was reading.
+
+    This is the other half. Same source as `/remediate` — ZAP's `solution`,
+    Trivy's `Fixed Version` — scoped to one repository.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    groups = guidance.fix_groups(catalog, asset_id=repo_full_name)
+    return RepoGuidanceOut(
+        fixes=[
+            FixGroupOut(
+                fix_id=f.fix_id,
+                action=f.action,
+                capability=f.capability,
+                findings=f.findings,
+                rules=f.rules,
+                repos=f.repos,
+                effort=f.effort,
+                steps=f.steps,
+            )
+            for f in groups
+        ],
+        by_rule=[
+            CapabilityGuidanceOut(
+                capability=g.capability,
+                count=g.count,
+                actionable=g.actionable,
+                unactionable=g.unactionable,
+                rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
+            )
+            for g in guidance.by_rule(catalog, asset_id=repo_full_name)
+        ],
+        actionable_findings=sum(
+            f.findings for f in groups if f.effort in ("config", "upgrade")
+        ),
+    )
+
+
 @router.get("/repos/{repo_id}/surfaces", response_model=SurfacesOut)
 async def repo_surfaces(
     request: Request, repo_id: str, principal: PrincipalDep

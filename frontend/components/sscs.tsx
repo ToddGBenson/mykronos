@@ -79,12 +79,13 @@ function trustTone(
 }
 
 export function SscsTab({
-  repoId,
   evidence,
   latest,
 }: {
-  repoId: string;
   evidence: SscsEvidence[];
+  // `repoId` used to be a prop here, for the SBOM download links. Those moved
+  // to `ReleaseEvidence` with the table they belong to, so this component now
+  // needs nothing but the numbers it renders.
   latest: SscsEvidence | null;
 }) {
   if (!latest) {
@@ -104,7 +105,6 @@ export function SscsTab({
 
   const detail = (latest.ecosystems_json ?? {}) as Ecosystems;
   const terms = detail.score_terms ?? [];
-  const releases = evidence.filter((row) => row.sbom_ref);
   // A scan ran; it just resolved nothing to score. That is a different state
   // from "no scan has run", which is the empty state above, and from a low
   // score, which is a finding about the dependencies.
@@ -215,74 +215,6 @@ export function SscsTab({
         </section>
       ) : null}
 
-      {releases.length > 0 ? (
-        <section>
-          <Label>Release evidence</Label>
-          <div className="scroll-x mt-1.5 border border-rule">
-            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[11px]">
-              <thead>
-                <tr className="border-b-2 border-ink-2 text-left">
-                  {["Release", "Commit", "Trust", "SBOM", "Builder", "When"].map(
-                    (heading) => (
-                      <th
-                        key={heading}
-                        className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
-                      >
-                        {heading}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {releases.map((row) => {
-                  const provenance = (row.provenance_json ?? {}) as Record<
-                    string,
-                    string
-                  >;
-                  return (
-                    <tr
-                      key={row.evidence_id}
-                      className="border-b border-rule-soft last:border-b-0"
-                    >
-                      <td className="px-2 py-2 font-semibold">
-                        {row.tag_or_release}
-                      </td>
-                      <td className="px-2 py-2 text-ink-3">
-                        {row.commit_sha?.slice(0, 7)}
-                      </td>
-                      <td className="px-2 py-2">
-                        <Pill tone={trustTone(row.trust_score)}>
-                          {row.trust_score ?? "n/a"}
-                        </Pill>
-                      </td>
-                      <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
-                        {/* The archived file itself, not just its path
-                            (spec 18 §8.2) — admin-only, the same gate every
-                            other raw tool output already sits behind. */}
-                        <a
-                          href={`/api/repos/${repoId}/sscs/sbom?evidence_id=${row.evidence_id}`}
-                          className="text-accent underline-offset-2 hover:underline"
-                          title={row.sbom_ref ?? undefined}
-                        >
-                          download
-                        </a>
-                      </td>
-                      <td className="px-2 py-2 text-ink-3">
-                        {provenance.builder_id ?? "—"}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-2 text-ink-3">
-                        <RelativeTime value={row.evaluated_at} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
       <section>
         <Label>Trust over time</Label>
         {/* Oldest first, so the line reads left to right the way a trend does.
@@ -369,5 +301,107 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
         {skipped > 0 ? ` · ${skipped} not assessed, omitted` : ""}
       </p>
     </div>
+  );
+}
+
+
+/**
+ * Every release that carried an SBOM, collapsed by default (B-031).
+ *
+ * Moved out of `SscsTab` and to the bottom of the tab. It is a record rather
+ * than a question: somebody reads it when they need the SBOM for a specific
+ * release, which is rarely, and it was sitting above the thing people come to
+ * this tab for — which packages are vulnerable and what can be upgraded.
+ *
+ * Collapsed rather than removed, and the summary carries the count, so the
+ * evidence is one click away and its absence is never mistaken for a
+ * repository that has never released.
+ */
+export function ReleaseEvidence({
+  repoId,
+  evidence,
+}: {
+  /** Needed for the SBOM download links, which are admin-gated the same way
+   *  every other raw tool output is. */
+  repoId: string;
+  evidence: SscsEvidence[];
+}) {
+  const releases = evidence.filter((row) => row.sbom_ref);
+  if (releases.length === 0) return null;
+
+  return (
+    <details className="border-t border-rule pt-3">
+      <summary className="cursor-pointer list-none">
+        <Label>Release evidence</Label>
+        <span className="ml-2 font-mono text-[10px] text-ink-3">
+          {releases.length} release{releases.length === 1 ? "" : "s"} with an SBOM
+        </span>
+      </summary>
+      <div className="mt-2">
+          <Label>Release evidence</Label>
+          <div className="scroll-x mt-1.5 border border-rule">
+            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[11px]">
+              <thead>
+                <tr className="border-b-2 border-ink-2 text-left">
+                  {["Release", "Commit", "Trust", "SBOM", "Builder", "When"].map(
+                    (heading) => (
+                      <th
+                        key={heading}
+                        className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                      >
+                        {heading}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {releases.map((row) => {
+                  const provenance = (row.provenance_json ?? {}) as Record<
+                    string,
+                    string
+                  >;
+                  return (
+                    <tr
+                      key={row.evidence_id}
+                      className="border-b border-rule-soft last:border-b-0"
+                    >
+                      <td className="px-2 py-2 font-semibold">
+                        {row.tag_or_release}
+                      </td>
+                      <td className="px-2 py-2 text-ink-3">
+                        {row.commit_sha?.slice(0, 7)}
+                      </td>
+                      <td className="px-2 py-2">
+                        <Pill tone={trustTone(row.trust_score)}>
+                          {row.trust_score ?? "n/a"}
+                        </Pill>
+                      </td>
+                      <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
+                        {/* The archived file itself, not just its path
+                            (spec 18 §8.2) — admin-only, the same gate every
+                            other raw tool output already sits behind. */}
+                        <a
+                          href={`/api/repos/${repoId}/sscs/sbom?evidence_id=${row.evidence_id}`}
+                          className="text-accent underline-offset-2 hover:underline"
+                          title={row.sbom_ref ?? undefined}
+                        >
+                          download
+                        </a>
+                      </td>
+                      <td className="px-2 py-2 text-ink-3">
+                        {provenance.builder_id ?? "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-ink-3">
+                        <RelativeTime value={row.evaluated_at} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+      </div>
+    </details>
   );
 }

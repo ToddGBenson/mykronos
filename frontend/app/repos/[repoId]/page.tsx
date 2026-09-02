@@ -13,6 +13,7 @@ import {
   OpenFindings,
   type FindingsQuery,
 } from "@/components/open-findings";
+import { RecommendedFixes } from "@/components/recommended-fixes";
 import { RemediationTab } from "@/components/remediation";
 import { AgeForecast } from "@/components/forecast";
 import { GovernancePanel, MergeCounts } from "@/components/governance";
@@ -20,7 +21,7 @@ import { PathToGreen } from "@/components/path-to-green";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
-import { SscsTab } from "@/components/sscs";
+import { ReleaseEvidence, SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
 import { ThreatModelTab } from "@/components/threat-model";
@@ -41,6 +42,7 @@ import {
   getInsiderRisk,
   getOpenFindings,
   getRemediation,
+  getRepoGuidance,
   getRepo,
   getReachability,
   getRiskProfile,
@@ -677,11 +679,7 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
   }
   return (
     <div className="flex flex-col gap-5">
-      <SscsTab
-        repoId={repoId}
-        evidence={result.data.evidence}
-        latest={result.data.latest ?? null}
-      />
+      <SscsTab evidence={result.data.evidence} latest={result.data.latest ?? null} />
       {/* The scores above say how trustworthy the tree is; this says which
           packages are the reason and what can be done about each (B-027). A
           failure here loses the table, not the whole tab. */}
@@ -692,6 +690,10 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
           {packages.error}
         </p>
       )}
+      {/* Last, and collapsed. It is a record rather than a question — read
+          when somebody needs the SBOM for a specific release — and it was
+          sitting above what people come to this tab for (B-031). */}
+      <ReleaseEvidence repoId={repoId} evidence={result.data.evidence} />
     </div>
   );
 }
@@ -765,15 +767,33 @@ async function AegisTab({ repoId }: { repoId: string }) {
 }
 
 async function PatchworkTab({ repoId }: { repoId: string }) {
-  const result = await getRemediation(repoId);
+  const [result, guidance] = await Promise.all([
+    getRemediation(repoId),
+    getRepoGuidance(repoId),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Remediation unavailable" detail={result.error} />;
   }
   return (
-    <RemediationTab
-      events={result.data.events}
-      openDraftPrs={result.data.open_draft_prs}
-      note={result.data.note}
-    />
+    <div className="flex flex-col gap-5">
+      {/* What the reports recommend, above what Patchwork managed. The tab was
+          only ever the second of those, and across this estate the second is
+          almost always "nothing" — four fixers covering four narrow classes,
+          reporting zero beside reports full of advice nobody read (B-030). */}
+      {guidance.ok ? (
+        <RecommendedFixes data={guidance.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+          {guidance.error}
+        </p>
+      )}
+      <div className="border-t border-rule pt-4">
+        <RemediationTab
+          events={result.data.events}
+          openDraftPrs={result.data.open_draft_prs}
+          note={result.data.note}
+        />
+      </div>
+    </div>
   );
 }
