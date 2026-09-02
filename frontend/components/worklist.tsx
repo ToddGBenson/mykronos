@@ -18,7 +18,21 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
  * directly above this list, and a queue that jumps two rows because somebody
  * typed "jk" into a search field would be worse than no shortcuts at all.
  */
-export function WorklistKeys({ ids }: { ids: string[] }) {
+export function WorklistKeys({
+  ids,
+  param = "finding",
+  clears,
+}: {
+  ids: string[];
+  /** Which query parameter holds the selection. The triage queue selects a
+   *  finding; the findings tab selects a group, because a group is the unit of
+   *  the decision there and its occurrences are a level below. */
+  param?: string;
+  /** Parameters to drop when the selection moves. A findings group carries a
+   *  chosen occurrence, and keeping it while moving to a different group would
+   *  leave a disposition control pointed at a row that is no longer shown. */
+  clears?: readonly string[];
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -38,7 +52,7 @@ export function WorklistKeys({ ids }: { ids: string[] }) {
         return;
       }
 
-      const current = params.get("finding");
+      const current = params.get(param);
       const index = current ? ids.indexOf(current) : -1;
 
       let next: string | undefined;
@@ -50,7 +64,8 @@ export function WorklistKeys({ ids }: { ids: string[] }) {
       event.preventDefault();
 
       const query = new URLSearchParams(params.toString());
-      query.set("finding", next);
+      query.set(param, next);
+      for (const key of clears ?? []) query.delete(key);
       // `scroll: false` — the pane below is what changed, and yanking the page
       // to the top on every keypress makes the list unusable at speed.
       router.replace(`${pathname}?${query.toString()}`, { scroll: false });
@@ -58,7 +73,7 @@ export function WorklistKeys({ ids }: { ids: string[] }) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ids, params, pathname, router]);
+  }, [ids, param, clears, params, pathname, router]);
 
   return null;
 }

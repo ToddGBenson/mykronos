@@ -24,6 +24,8 @@
 
 import Link from "next/link";
 
+import { WorklistKeys } from "@/components/worklist";
+
 import { FilterSelect } from "@/components/filter-select";
 
 import { DispositionForm } from "@/components/disposition";
@@ -211,35 +213,48 @@ export function OpenFindings({
           }
         />
       ) : (
-        <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="min-w-0 flex-1">
-            <GroupTable groups={page.groups} query={query} href={href} />
-            {page.truncated ? (
-              <p className="mt-1 font-mono text-[9px] text-high">
-                Showing the worst {page.shown} of {page.matching}. Filter by
-                severity or capability to reach the rest — a list that silently
-                stops reads as &ldquo;that is all of it&rdquo;.
-              </p>
-            ) : null}
-          </div>
+        <>
+          {/* Layout option 2, as applied to the triage queue. The eight-column
+              table this replaces could not live in a narrow pane — it carried a
+              680px minimum and would have scrolled sideways inside a column —
+              so the same trade is made here: the list keeps what you scan for
+              and the columns move right, where there is room to read them. */}
+          <WorklistKeys
+            ids={page.groups.map((group) => group.group_key)}
+            param="group"
+            clears={["finding"]}
+          />
+          <div className="flex flex-col gap-3 lg:h-[calc(100vh-22rem)] lg:flex-row lg:gap-0">
+            <div className="lg:w-[22rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+              <GroupList groups={page.groups} query={query} href={href} />
+              {page.truncated ? (
+                <p className="px-2 py-1 font-mono text-[9px] text-high">
+                  Showing the worst {page.shown} of {page.matching}. Filter to
+                  reach the rest — a list that silently stops reads as
+                  &ldquo;that is all of it&rdquo;.
+                </p>
+              ) : null}
+            </div>
 
-          <aside className="w-full shrink-0 lg:w-[30rem]">
-            {selected ? (
-              <GroupDetail
-                group={selected}
-                query={query}
-                href={href}
-                detail={detail}
-                remediation={fixByRule[selected.rule_id]}
-              />
-            ) : (
-              <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
-                Select a row to see every place it was reported, why it was
-                triaged that way, and to record a disposition.
-              </div>
-            )}
-          </aside>
-        </div>
+            <div className="min-w-0 grow lg:overflow-y-auto lg:pl-4">
+              {selected ? (
+                <GroupDetail
+                  group={selected}
+                  query={query}
+                  href={href}
+                  detail={detail}
+                  remediation={fixByRule[selected.rule_id]}
+                />
+              ) : (
+                <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
+                  Select a row, or press <span className="font-mono">j</span>, to
+                  see every place it was reported, why it was triaged that way,
+                  and to record a disposition.
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -514,7 +529,21 @@ function ThreatIntelBadge({ group }: { group: FindingGroup }) {
   );
 }
 
-function GroupTable({
+/**
+ * The queue, compact enough to live in a column.
+ *
+ * Replaces an eight-column table with a 680px minimum width, which could not
+ * sit in a pane and would have scrolled sideways inside one. Severity, the
+ * problem, and how many places it was found are what somebody scans for;
+ * owner, due date, age and the rest are in the detail, where they are readable
+ * rather than truncated.
+ *
+ * The toxic-combination marker stays in the list. It is the one flag whose
+ * whole purpose is to be noticed without being looked for — its members are
+ * individually unremarkable by definition, so a reader scanning severity would
+ * pass straight over it.
+ */
+function GroupList({
   groups,
   query,
   href,
@@ -524,127 +553,56 @@ function GroupTable({
   href: (patch: Record<string, string | undefined>) => string;
 }) {
   return (
-    <div className="scroll-x border border-rule">
-      <table className="w-full min-w-[680px] border-collapse bg-paper-2 font-mono text-[11px]">
-        <thead>
-          <tr className="border-b-2 border-ink-2 text-left">
-            {["Sev", "Problem", "Where", "Found by", "Owner", "Due", "Triage", "Age"].map((heading) => (
-              <th
-                key={heading}
-                className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
-              >
-                {heading}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((group) => {
-            const triage = TRIAGE[group.triage] ?? { tone: "muted" as const, label: group.triage };
-            const first = group.locations[0];
-            return (
-              <tr
-                key={group.group_key}
-                className={`border-b border-rule-soft last:border-b-0 hover:bg-paper-3 ${
-                  query.group === group.group_key ? "bg-accent-wash" : ""
-                } ${group.toxic_combination_ids?.length ? "border-l-2 border-l-critical" : ""}`}
-              >
-                <td className="px-2 py-2">
-                  <SeverityText severity={group.severity} />
-                  <ThreatIntelBadge group={group} />
-                  {group.fixable ? (
-                    <span
-                      className="ml-1"
-                      title="Auto-remediation produced a fix for this — open the row to review it."
-                    >
-                      <Pill tone="pass">fix</Pill>
-                    </span>
-                  ) : null}
-                </td>
-                <td className="px-2 py-2">
-                  <Link
-                    href={href({ ...CLEAR_SELECTION, group: group.group_key })}
-                    className="text-ink hover:text-accent"
+    <ul className="flex flex-col">
+      {groups.map((group) => {
+        const on = query.group === group.group_key;
+        return (
+          <li key={group.group_key}>
+            <Link
+              href={href({ ...CLEAR_SELECTION, group: group.group_key })}
+              scroll={false}
+              aria-current={on ? "true" : undefined}
+              className={`flex flex-col gap-0.5 border-b border-rule-soft px-2.5 py-2 ${
+                on
+                  ? "border-l-2 border-l-accent bg-accent-wash"
+                  : "border-l-2 border-l-transparent hover:bg-paper-3"
+              }`}
+            >
+              <span className="flex flex-wrap items-baseline gap-1.5">
+                <SeverityText severity={group.severity} />
+                {group.toxic_combination_ids?.length ? (
+                  <span
+                    className="font-mono text-[8px] uppercase tracking-wide text-critical"
+                    title="Part of a toxic combination — individually unremarkable, dangerous together"
                   >
-                    {group.rule_id}
-                  </Link>
-                  <div className="max-w-[36ch] truncate text-[10px] text-ink-3">
-                    {group.title}
-                  </div>
-                </td>
-                <td className="max-w-[24ch] px-2 py-2 text-ink-2">
-                  <span className="block truncate">
-                    {group.package_name ?? first?.file_path ?? "—"}
-                    {first?.line_start ? `:${first.line_start}` : ""}
+                    combo
                   </span>
-                  {group.occurrences > 1 ? (
-                    <span className="text-[9px] text-ink-3">
-                      + {group.occurrences - 1} more occurrence
-                      {group.occurrences === 2 ? "" : "s"}
-                    </span>
-                  ) : null}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2 text-ink-3">
-                  {group.capabilities.map((capability) => (
-                    // Found By, clickable (spec 18 §5.2): the capability filter
-                    // already existed in the filter bar; this connects the
-                    // column that already shows it to the same filter rather
-                    // than leaving it a second, unclickable display of the
-                    // same fact.
-                    <Link
-                      key={capability}
-                      href={href({
-                        capability: query.capability === capability ? undefined : capability,
-                        ...CLEAR_SELECTION,
-                      })}
-                      title={
-                        CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ??
-                        capability
-                      }
-                      className={
-                        query.capability === capability ? "underline decoration-accent" : ""
-                      }
-                    >
-                      {CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.icon ?? "•"}
-                    </Link>
-                  ))}
-                  <span className="ml-1 text-[9px]">{group.capabilities.join(", ")}</span>
-                </td>
-                <td className="whitespace-nowrap px-2 py-2 text-ink-3">
-                  {group.owner ? (
-                    <Link
-                      href={href({ owner: query.owner === group.owner ? undefined : group.owner })}
-                      className={
-                        query.owner === group.owner
-                          ? "underline decoration-accent"
-                          : "hover:text-accent"
-                      }
-                    >
-                      {group.owner}
-                    </Link>
-                  ) : (
-                    <span title="No CODEOWNERS rule matches this path">unowned</span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2">
-                  <DueCell
-                    state={group.due_state}
-                    at={group.due_at}
-                    source={group.due_source}
-                  />
-                </td>
-                <td className="whitespace-nowrap px-2 py-2">
-                  <Pill tone={triage.tone}>{triage.label}</Pill>
-                </td>
-                <td className="whitespace-nowrap px-2 py-2 tabular text-ink-3">
-                  {typeof group.age_days === "number" ? `${group.age_days}d` : "—"}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                ) : null}
+                {group.fixable ? (
+                  <span
+                    className="font-mono text-[8px] uppercase tracking-wide text-accent"
+                    title="Auto-remediation produced a fix for this"
+                  >
+                    fix
+                  </span>
+                ) : null}
+                <span className="font-mono text-[9px] text-ink-3">
+                  {group.capabilities.join(", ")}
+                </span>
+              </span>
+              <span className="line-clamp-2 text-[11px] leading-snug text-ink">
+                {group.title}
+              </span>
+              <span className="font-mono text-[9px] text-ink-3">
+                {group.occurrences}&times;
+                {group.owner ? ` · ${group.owner}` : ""}
+                {group.age_days != null ? ` · ${group.age_days}d` : ""}
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -665,7 +623,13 @@ function GroupDetail({
   return (
     <div className="flex flex-col gap-3 border border-rule bg-paper-2 p-3">
       <div>
-        <SeverityText severity={group.severity} />
+        <span className="flex flex-wrap items-baseline gap-1.5">
+          <SeverityText severity={group.severity} />
+          {/* Renders nothing unless KEV or EPSS ≥ 0.5, so it costs no room when
+              there is nothing to say — and when there is, it outranks the
+              severity beside it. */}
+          <ThreatIntelBadge group={group} />
+        </span>
         <h3 className="mt-1 text-sm font-semibold leading-snug">{group.title}</h3>
         <p className="mt-1 font-mono text-[10px] text-ink-3">
           {group.rule_id} · {group.capabilities.join(", ")}
@@ -720,6 +684,33 @@ function GroupDetail({
           </p>
         </details>
       ) : null}
+
+      {/* Owner, due and age lived in table columns that no longer exist. They
+          are facts about who answers for this and when it is late — the two
+          questions a triage conversation opens with — so they get a row of
+          their own rather than being dropped with the table. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-y border-rule-soft py-1.5">
+        <span className="font-mono text-[9px] text-ink-3">
+          owner{" "}
+          {group.owner ? (
+            <Link
+              href={href({ owner: query.owner === group.owner ? undefined : group.owner })}
+              className={query.owner === group.owner ? "text-accent" : "text-ink-2 hover:text-accent"}
+            >
+              {group.owner}
+            </Link>
+          ) : (
+            // Absent rather than "unassigned": CODEOWNERS either names
+            // somebody or it does not, and inventing a default owner is how a
+            // finding ends up assigned to whoever last touched the file.
+            <span className="text-ink-3">not resolved</span>
+          )}
+        </span>
+        <DueCell state={group.due_state} at={group.due_at} source={group.due_source} />
+        {group.age_days != null ? (
+          <span className="font-mono text-[9px] text-ink-3">{group.age_days}d old</span>
+        ) : null}
+      </div>
 
       <div>
         <Label>
