@@ -24,33 +24,41 @@
  */
 
 @theme {
-  --color-paper: #f1f5f8;
-  --color-paper-2: #e6edf2;
-  --color-paper-3: #d9e3ea;
-  --color-ink: #14202b;
-  --color-ink-2: #47596a;
-  --color-ink-3: #7d8f9e;
-  --color-rule: #bfcdd8;
-  --color-rule-soft: #d5dfe7;
+  --color-paper: #f2f1ec;
+  --color-paper-2: #e8e7e0;
+  --color-paper-3: #dedcd3;
+  --color-ink: #121715;
+  --color-ink-2: #3f4a46;
+  /* Muted, but not below AA. `ink-3` carries real text all over this app —
+     run counts, "silent for 13 days", the cadence beside a stalled lane — and
+     the values these replaced sat at 3.61 and 4.00 against their own grounds.
+     Both are now above 4.5, checked in both directions rather than eyeballed
+     on the one the author happened to be using. */
+  --color-ink-3: #5f6b67;
+  --color-rule: #c8c9c0;
+  --color-rule-soft: #dad9d1;
 
-  --color-accent: #1e5f8c;
-  --color-accent-2: #3d82b3;
-  --color-accent-wash: #dfeaf3;
+  --color-accent: #8a5a12;
+  --color-accent-2: #a97220;
+  --color-accent-wash: #f5ecd9;
 
-  --color-critical: #b23a34;
-  --color-high: #b07219;
-  --color-medium: #8a7a2c;
-  --color-low: #7d8f9e;
-  --color-info: #93a3b0;
-  --color-pass: #2f7355;
+  --color-critical: #a8342a;
+  --color-high: #8a5a12;
+  --color-medium: #6f6420;
+  --color-low: #5f6b67;
+  --color-info: #8b948f;
+  --color-pass: #2c6b4a;
 
-  --color-critical-wash: #f7e4e2;
-  --color-high-wash: #f8ecda;
-  --color-pass-wash: #e0eee7;
+  --color-critical-wash: #f6e3e0;
+  --color-high-wash: #f5ecd9;
+  --color-pass-wash: #e0efe6;
 
   /* The drafting grid, as a token so it moves with the theme rather than
      being a literal that only works on one ground. */
-  --color-grid: rgba(30, 95, 140, 0.06);
+  /* No drafting grid in this direction — an instrument panel is unlit
+     background, not paper. Kept as a transparent token so nothing that
+     references it breaks. */
+  --color-grid: transparent;
 
   /* Both faces are self-hosted by `next/font` in `layout.tsx`, which sets the
      two variables below on <html>. The fallbacks are real rather than
@@ -67,79 +75,71 @@
  *
  * A viewer has an explicit choice or no choice at all, and the un-stamped
  * default is the common one. So: the palette above is the light ground and the
- * only one `@theme` declares; the media query below handles "no choice, dark
- * OS"; and the two `[data-theme]` blocks let an explicit pick beat the OS in
- * either direction.
+ * only one `@theme` declares; the media query handles "no choice, dark OS";
+ * and the two `[data-theme]` blocks let an explicit pick beat the OS either
+ * way.
  *
  * `@theme` cannot do any of this itself — it is compile-time, and Tailwind
  * hoists it out of whatever it is written inside. A second one under a media
  * query is not a dark variant, it is a replacement, which is how this app
  * shipped permanently dark from the day it was written until 2026-09-02.
  *
- * **The dark palette is deliberately further from the light one than a naive
- * inversion.** The first attempt moved the ground from `#101312` to `#0d141a`
- * — three points apart, both near-black — and the redesign was invisible to
- * anyone whose OS was dark. A drafting grid at 5% on near-black is also
- * invisible, so the ground lifts and the grid strengthens: this direction is
- * supposed to look drawn, and it has to look drawn on both.
+ * **Direction A is dark-first, and the light ground is a counterpart rather
+ * than the intent.** An instrument panel is a lit readout in a dim room; the
+ * light palette is the same instrument printed on paper, and the amber signal
+ * darkens to `#8a5a12` there because amber on white is unreadable at this
+ * type size. Both were checked against each other, which is the step that was
+ * skipped last time: the previous dark variant sat three points from the
+ * palette it replaced and the redesign was invisible to anyone whose OS was
+ * dark.
  */
 @media (prefers-color-scheme: dark) {
   /* Guarded, so an explicit light choice still wins on a dark OS. */
   :root:not([data-theme="light"]) {
-    --color-paper: #0e1721;
-    --color-paper-2: #16212d;
-    --color-paper-3: #1f2c3a;
-    --color-ink: #dce9f4;
-    --color-ink-2: #a7bccd;
-    --color-ink-3: #74899c;
-    --color-rule: #2b3a49;
-    --color-rule-soft: #1f2b37;
-
-    --color-accent: #79bdf0;
-    --color-accent-2: #4f97cc;
-    --color-accent-wash: #16283a;
-
-    --color-critical: #e58279;
-    --color-high: #dda75a;
-    --color-medium: #c6b76a;
-    --color-low: #74899c;
-    --color-info: #5f7488;
-    --color-pass: #63b591;
-
-    --color-critical-wash: #2c1a18;
-    --color-high-wash: #2c2216;
-    --color-pass-wash: #16261f;
-
-    --color-grid: rgba(121, 189, 240, 0.075);
+    --color-paper: #0b0f0e;
+    --color-paper-2: #121817;
+    --color-paper-3: #1a2220;
+    --color-ink: #ccdad3;
+    --color-ink-2: #8ba098;
+    --color-ink-3: #748782;
+    --color-rule: #1f2b28;
+    --color-rule-soft: #172120;
+    --color-accent: #e8a33d;
+    --color-accent-2: #b8802e;
+    --color-accent-wash: #241c0e;
+    --color-critical: #e5534b;
+    --color-high: #e8a33d;
+    --color-medium: #c9b95e;
+    --color-low: #748782;
+    --color-info: #4a5a55;
+    --color-pass: #4fb783;
+    --color-critical-wash: #2a1614;
+    --color-high-wash: #241c0e;
+    --color-pass-wash: #12241c;
   }
 }
 
 :root[data-theme="dark"] {
-    --color-paper: #0e1721;
-    --color-paper-2: #16212d;
-    --color-paper-3: #1f2c3a;
-    --color-ink: #dce9f4;
-    --color-ink-2: #a7bccd;
-    --color-ink-3: #74899c;
-    --color-rule: #2b3a49;
-    --color-rule-soft: #1f2b37;
-
-    --color-accent: #79bdf0;
-    --color-accent-2: #4f97cc;
-    --color-accent-wash: #16283a;
-
-    --color-critical: #e58279;
-    --color-high: #dda75a;
-    --color-medium: #c6b76a;
-    --color-low: #74899c;
-    --color-info: #5f7488;
-    --color-pass: #63b591;
-
-    --color-critical-wash: #2c1a18;
-    --color-high-wash: #2c2216;
-    --color-pass-wash: #16261f;
-
-    --color-grid: rgba(121, 189, 240, 0.075);
+    --color-paper: #0b0f0e;
+    --color-paper-2: #121817;
+    --color-paper-3: #1a2220;
+    --color-ink: #ccdad3;
+    --color-ink-2: #8ba098;
+    --color-ink-3: #748782;
+    --color-rule: #1f2b28;
+    --color-rule-soft: #172120;
+    --color-accent: #e8a33d;
+    --color-accent-2: #b8802e;
+    --color-accent-wash: #241c0e;
+    --color-critical: #e5534b;
+    --color-high: #e8a33d;
+    --color-medium: #c9b95e;
+    --color-low: #748782;
+    --color-info: #4a5a55;
+    --color-pass: #4fb783;
+    --color-critical-wash: #2a1614;
+    --color-high-wash: #241c0e;
+    --color-pass-wash: #12241c;
 }
 
 html,
@@ -149,38 +149,29 @@ body {
 }
 
 body {
-  font-family: var(--font-sans);
-  font-feature-settings: "cv02", "cv03", "cv04";
+  /* Mono for everything, including prose — the defining move of this
+     direction and the one with a real cost. Direction C split identifiers from
+     sentences deliberately; A gives that up to read as a single instrument
+     readout, which means the written rationales this platform is full of are
+     now set in a face that does not want to be read at length. That trade was
+     made with eyes open and is one line to reverse.
 
-  /* The drafting grid. Two hairline gradients rather than an image, at an
-     opacity that reads as paper texture rather than as content — it has to
-     survive behind an 9px table row without competing with it. Fixed
-     attachment so it does not slide under long pages, which would make it a
-     motion effect rather than a surface. */
-  background-image:
-    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
-  background-size: 20px 20px;
-  background-attachment: fixed;
+     `--font-sans` is still declared and still loaded: the two-face split is a
+     token change away if the prose becomes the thing that hurts. */
+  font-family: var(--font-mono);
+  font-feature-settings: "cv02", "cv03", "cv04";
 }
 
-/* A drawing frame, not a decoration: two corner ticks in the accent, on the
-   panels that carry a measurement somebody might go and check. Applied
-   deliberately rather than to every box — the whole point is that it marks
-   something, and a mark on everything marks nothing. */
+/* `.ticks` is a no-op under Direction A.
+ *
+ * Corner marks are a technical-drawing device and belong to Direction C. They
+ * are kept as an empty rule rather than removed from the components, because
+ * the class marks something true — "this panel carries a measurement" — and
+ * that will be worth drawing again if the direction changes back. Deleting the
+ * call sites would throw away the judgement about *which* panels qualify,
+ * which is the expensive half. */
 .ticks {
   position: relative;
-}
-
-.ticks::before,
-.ticks::after {
-  content: "";
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-color: var(--color-accent);
-  border-style: solid;
-  pointer-events: none;
 }
 
 .ticks::before {
