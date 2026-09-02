@@ -63,45 +63,83 @@
 }
 
 /*
- * Dark as a `:root` override, not a nested `@theme`.
+ * Three theme states, not two.
  *
- * `@theme` is compile-time: Tailwind hoists it out of whatever it is written
- * inside, so a second one under `@media (prefers-color-scheme: dark)` did not
- * become a dark variant — it replaced the light palette outright. The built
- * stylesheet carried exactly one set of values, the dark ones, and the app had
- * been permanently dark since the frontend was first written. Nobody noticed
- * because the two palettes were close enough in temperature that a dark ground
- * read as intentional.
+ * A viewer has an explicit choice or no choice at all, and the un-stamped
+ * default is the common one. So: the palette above is the light ground and the
+ * only one `@theme` declares; the media query below handles "no choice, dark
+ * OS"; and the two `[data-theme]` blocks let an explicit pick beat the OS in
+ * either direction.
  *
- * A plain `:root` inside the media query is a runtime cascade instead. Every
- * Tailwind v4 utility resolves through `var(--color-*)`, so overriding the
- * variables here is all that is needed — and both palettes now survive into
- * the bundle, which is the thing to check if this ever regresses.
+ * `@theme` cannot do any of this itself — it is compile-time, and Tailwind
+ * hoists it out of whatever it is written inside. A second one under a media
+ * query is not a dark variant, it is a replacement, which is how this app
+ * shipped permanently dark from the day it was written until 2026-09-02.
+ *
+ * **The dark palette is deliberately further from the light one than a naive
+ * inversion.** The first attempt moved the ground from `#101312` to `#0d141a`
+ * — three points apart, both near-black — and the redesign was invisible to
+ * anyone whose OS was dark. A drafting grid at 5% on near-black is also
+ * invisible, so the ground lifts and the grid strengthens: this direction is
+ * supposed to look drawn, and it has to look drawn on both.
  */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --color-paper: #0d141a;
-    --color-paper-2: #141d25;
-    --color-paper-3: #1c2731;
-    --color-ink: #e4edf4;
-    --color-ink-2: #aebecc;
-    --color-ink-3: #7b8d9c;
-    --color-rule: #27343f;
-    --color-rule-soft: #1e2932;
-    --color-accent: #6cb0e0;
-    --color-accent-2: #4b8dbd;
-    --color-accent-wash: #15242f;
-    --color-critical: #e07b70;
-    --color-high: #d9a253;
-    --color-medium: #c2b364;
-    --color-low: #7b8d9c;
-    --color-info: #67798a;
-    --color-pass: #5fb08a;
-    --color-critical-wash: #2a1917;
-    --color-high-wash: #2a2116;
-    --color-pass-wash: #152420;
-    --color-grid: rgba(108, 176, 224, 0.05);
+  /* Guarded, so an explicit light choice still wins on a dark OS. */
+  :root:not([data-theme="light"]) {
+    --color-paper: #0e1721;
+    --color-paper-2: #16212d;
+    --color-paper-3: #1f2c3a;
+    --color-ink: #dce9f4;
+    --color-ink-2: #a7bccd;
+    --color-ink-3: #74899c;
+    --color-rule: #2b3a49;
+    --color-rule-soft: #1f2b37;
+
+    --color-accent: #79bdf0;
+    --color-accent-2: #4f97cc;
+    --color-accent-wash: #16283a;
+
+    --color-critical: #e58279;
+    --color-high: #dda75a;
+    --color-medium: #c6b76a;
+    --color-low: #74899c;
+    --color-info: #5f7488;
+    --color-pass: #63b591;
+
+    --color-critical-wash: #2c1a18;
+    --color-high-wash: #2c2216;
+    --color-pass-wash: #16261f;
+
+    --color-grid: rgba(121, 189, 240, 0.075);
   }
+}
+
+:root[data-theme="dark"] {
+    --color-paper: #0e1721;
+    --color-paper-2: #16212d;
+    --color-paper-3: #1f2c3a;
+    --color-ink: #dce9f4;
+    --color-ink-2: #a7bccd;
+    --color-ink-3: #74899c;
+    --color-rule: #2b3a49;
+    --color-rule-soft: #1f2b37;
+
+    --color-accent: #79bdf0;
+    --color-accent-2: #4f97cc;
+    --color-accent-wash: #16283a;
+
+    --color-critical: #e58279;
+    --color-high: #dda75a;
+    --color-medium: #c6b76a;
+    --color-low: #74899c;
+    --color-info: #5f7488;
+    --color-pass: #63b591;
+
+    --color-critical-wash: #2c1a18;
+    --color-high-wash: #2c2216;
+    --color-pass-wash: #16261f;
+
+    --color-grid: rgba(121, 189, 240, 0.075);
 }
 
 html,

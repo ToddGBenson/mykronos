@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Link from "next/link";
+
+import { ThemeToggle } from "@/components/theme-toggle";
 
 import "./globals.css";
 
@@ -89,9 +92,43 @@ const mono = IBM_Plex_Mono({
   display: "swap",
 });
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The nonce `proxy.ts` minted for this request. The theme script below is
+  // inline by necessity — it has to run before the first paint — and inline
+  // scripts are exactly what the CSP blocks, so it carries the nonce rather
+  // than the policy carrying `'unsafe-inline'`.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+
   return (
-    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
+    <html
+      lang="en"
+      className={`${sans.variable} ${mono.variable}`}
+      // The script below sets `data-theme` before React sees the document, so
+      // the server's markup and the client's disagree by design. Without this,
+      // that is a hydration error rather than the point.
+      suppressHydrationWarning
+    >
+      <head>
+        {/*
+          Applied before the first paint, which is the whole reason it is
+          inline and synchronous: deferring to an effect would render the wrong
+          ground and then correct it, and a page that flashes white on a dark
+          screen at 3am is worse than one that took a millisecond longer.
+
+          Absent or unreadable storage falls through to no attribute at all,
+          which is the `system` default — so a private window or blocked site
+          data degrades to following the OS rather than to a broken page.
+        */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html:
+              '(function(){try{var t=localStorage.getItem("theme");' +
+              'if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}' +
+              "catch(e){}})()",
+          }}
+        />
+      </head>
       <body className="min-h-screen antialiased">
         <div className="flex min-h-screen flex-col">
           <header className="flex flex-wrap items-center gap-4 border-b border-rule bg-paper-2 px-4 py-2.5">
@@ -101,9 +138,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <span className="font-mono text-[10px] text-ink-3">
               AppSec control plane
             </span>
-            <span className="ml-auto border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
-              Phase 7 · admin
-            </span>
+            <div className="ml-auto flex items-center gap-3">
+              <ThemeToggle />
+              <span className="border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
+                Phase 7 · admin
+              </span>
+            </div>
           </header>
 
           <div className="flex flex-1 flex-col md:flex-row">
