@@ -23,7 +23,6 @@ import {
   Label,
   Pill,
   RelativeTime,
-  Section,
   type IndicatorTone,
 } from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
@@ -264,34 +263,14 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
  * (spec 17 §2.3) — rendering `PipelineLinks` a second time inside the tab
  * would say the same two links twice on one page load.
  */
-export function PipelineCoverage({ ci }: { ci: CiPage }) {
-  return (
-    <Section
-      title="Enabled jobs"
-      // `pipeline` is the Concourse pipeline name, or "github-actions", or
-      // null when nothing covers this repository. Naming Concourse in the
-      // null case predated there being a second CI and told an
-      // Actions-scanned repo it was missing a pipeline it never wanted.
-      detail={ci.pipeline ?? "nothing covers this repository"}
-    >
-      <JobLights ci={ci} />
-      <ReportingGaps reporting={ci.reporting ?? []} />
-    </Section>
-  );
-}
 
-/**
- * The links and both light rows, as the dashboard lays them out.
- *
- * One definition rather than one per page: two copies of "which sections, in
- * which order, under which headings" is two things to keep in step, and the
- * one that drifts is always the one nobody is looking at.
- */
-export function PipelinesPanel({ ci }: { ci: CiPage }) {
-  return (
-    <>
-      <PipelineLinks ci={ci} />
-      <PipelineCoverage ci={ci} />
-    </>
-  );
-}
+// `PipelineCoverage` and `PipelinesPanel` lived here until the Dashboard tab
+// merged Scan health and Enabled jobs into one Checks section. Both were
+// wrappers whose only job was to say which sections go in which order under
+// which headings, and the merge is now the answer to that. `JobLights` and
+// `ReportingGaps` are composed directly by the section; `PipelineLinks` is
+// still used at the top of every repository tab.
+//
+// `PipelinesPanel` had no callers even before this — worth noting rather than
+// deleting quietly, because it was the second definition of a layout that had
+// drifted from the one actually rendering.
