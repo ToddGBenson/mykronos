@@ -58,7 +58,22 @@ testpaths = ["tests"]
 # the project root; modern setuptools editable finders expose just the
 # configured packages, so CI could not import `tests` at all.
 pythonpath = ["."]
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # anyio 4.15.0 (released 2026-09-02) deprecated the `anyio.abc.BlockingPortal`
+  # alias. Starlette's `testclient` module still uses it, at import time — so
+  # with warnings-as-errors, `from fastapi.testclient import TestClient` raises
+  # and every test in the suite fails to collect. The unit lane went from green
+  # to a 38-second collection error on an unrelated pull request.
+  #
+  # Scoped to that one message rather than relaxing the rule: `error` is doing
+  # real work here and a blanket DeprecationWarning ignore would hide our own.
+  # The call site belongs to starlette, so there is nothing to fix in this
+  # repository — delete this line once starlette moves to
+  # `anyio.from_thread.BlockingPortal`, which is the only thing that will make
+  # it dead rather than merely quiet.
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 markers = ["slow: performance checks against spec 05 §9 acceptance criteria"]
 # The GitHub client is async; every async test is a coroutine test.
 asyncio_mode = "auto"
