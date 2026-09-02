@@ -877,6 +877,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/guidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Guidance
+         * @description The scanners' own remediation for this repository (B-030).
+         *
+         *     The Remediation tab said what Patchwork did and did not do, which is
+         *     honest and incomplete: across the estate Patchwork declines almost
+         *     everything, because four deterministic fixers cover four narrow classes.
+         *     That left a tab whose truthful answer was "nothing", beside reports full
+         *     of remediation advice nobody was reading.
+         *
+         *     This is the other half. Same source as `/remediate` — ZAP's `solution`,
+         *     Trivy's `Fixed Version` — scoped to one repository.
+         */
+        get: operations["repo_guidance_api_dashboard_repos__repo_id__guidance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/surfaces": {
         parameters: {
             query?: never;
@@ -4220,6 +4249,21 @@ export interface components {
                 };
             };
         };
+        /**
+         * RepoGuidanceOut
+         * @description What the scanners recommend for one repository, two ways.
+         *
+         *     `fixes` is the actionable half — grouped by the change, so one entry can
+         *     close several rules — and `by_rule` is the detail behind it.
+         */
+        RepoGuidanceOut: {
+            /** Fixes */
+            fixes: components["schemas"]["FixGroupOut"][];
+            /** By Rule */
+            by_rule: components["schemas"]["CapabilityGuidanceOut"][];
+            /** Actionable Findings */
+            actionable_findings: number;
+        };
         /** RepoSummary */
         RepoSummary: {
             /** Id */
@@ -6145,6 +6189,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThreatModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_guidance_api_dashboard_repos__repo_id__guidance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoGuidanceOut"];
                 };
             };
             /** @description Validation Error */

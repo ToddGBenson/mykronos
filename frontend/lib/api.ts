@@ -53,6 +53,9 @@ export type VulnerablePackage = SupplyChainPackages["packages"][number];
 export type RepoSurfaces =
   paths["/api/dashboard/repos/{repo_id}/surfaces"]["get"]["responses"]["200"]["content"]["application/json"];
 export type Surface = RepoSurfaces["assets"][number];
+/** What the scanners recommend for one repository (B-030). */
+export type RepoGuidance =
+  paths["/api/dashboard/repos/{repo_id}/guidance"]["get"]["responses"]["200"]["content"]["application/json"];
 export type BriefingClass = Briefing["classes"][number];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];
