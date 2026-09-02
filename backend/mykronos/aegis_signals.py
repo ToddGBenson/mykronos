@@ -72,6 +72,28 @@ FAST_APPROVAL_SCORE = 15.0
 #: observable: nobody verified the machine's work.
 UNVERIFIED_AI_SCORE = 20.0
 
+#: A reviewer asked for changes and the pull request carries an approval
+#: anyway. Weighted below self-approval because it is genuinely ambiguous —
+#: the objection may well have been resolved by a later commit, and GitHub
+#: does not say so in a way this can read.
+OVERRIDDEN_OBJECTION_SCORE = 25.0
+
+#: The change edits the workflows that gate it. Distinct from a sensitive path,
+#: which is a per-repository glob somebody chose: this is the platform's own
+#: definition of "the thing that would have caught you", and it needs no
+#: configuration to be right.
+CI_CONFIG_SCORE = 25.0
+
+#: Paths that decide what runs against a change. Prefix-matched rather than
+#: glob-matched, because these are directory conventions rather than patterns
+#: and a glob invites the same near-miss `matches_glob` exists to handle.
+CI_CONFIG_PREFIXES = (
+    ".github/workflows/",
+    ".github/actions/",
+    "deploy/concourse/pipelines/",
+    "workflow-templates/",
+)
+
 #: Elevated org access (spec 20 §2). Weighted with `self_approval` as the
 #: heaviest pair, matching `SIGNAL_CAP` — like that one it is a fact rather
 #: than a heuristic (GitHub either reports the role or it does not), and like
@@ -457,6 +479,87 @@ def privilege_adjacent_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
     }
 
 
+def overridden_objection_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
+    """Somebody asked for changes, and it was approved anyway (spec 06 §2a).
+
+    Review integrity is about whether review *happened*, and an objection that
+    was approved past is the case where it happened and did not count.
+
+    **Deliberately ambiguous, and weighted for it.** GitHub does not say
+    whether a later commit resolved the objection, and the common innocent
+    path — reviewer objects, author fixes it, someone else approves — looks
+    identical from here. So this fires as a prompt to look, never as a
+    finding, and it says which reviewer objected so the reader can ask them
+    rather than guess.
+
+    Fires only when the objector is not among the approvers: a reviewer who
+    asked for changes and then approved has resolved their own objection,
+    which is the process working.
+    """
+    objectors = {
+        r.reviewer_login.lower()
+        for r in facts.reviews
+        if r.state.upper() == "CHANGES_REQUESTED"
+    }
+    if not objectors:
+        return None
+
+    approvers = {r.reviewer_login.lower() for r in _approvals(facts)}
+    if not approvers:
+        return None
+
+    unresolved = objectors - approvers
+    if not unresolved:
+        return None
+
+    named = ", ".join(sorted(unresolved))
+    return {
+        "key": "overridden_objection",
+        "score": OVERRIDDEN_OBJECTION_SCORE,
+        "rationale": (
+            f"{named} requested changes and did not approve afterwards, but "
+            "this pull request carries an approval. That is often a later "
+            "commit resolving the objection and somebody else signing off - "
+            "GitHub does not say which, so this is a prompt to ask, not a "
+            "finding."
+        ),
+    }
+
+
+def ci_config_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
+    """The change edits the workflows that gate it (spec 06 §2a).
+
+    The sharpest thing in this file that needs no configuration to be right.
+    A sensitive path is a glob somebody chose per repository and may not have
+    got around to; this is the platform's own definition of the machinery that
+    would have caught a change, and altering it in the same pull request is
+    worth a reviewer knowing about however ordinary the diff looks.
+
+    Not an accusation. Workflows are edited for good reasons constantly, which
+    is why it scores below the cap and names the files rather than the person.
+    """
+    touched = sorted(
+        path
+        for path in facts.changed_files
+        if any(path.startswith(prefix) for prefix in CI_CONFIG_PREFIXES)
+    )
+    if not touched:
+        return None
+
+    shown = ", ".join(touched[:3])
+    more = f" (+{len(touched) - 3} more)" if len(touched) > 3 else ""
+    return {
+        "key": "ci_config_modified",
+        "score": CI_CONFIG_SCORE,
+        "rationale": (
+            f"This change edits the checks that run against it: {shown}{more}. "
+            "Routine when a pipeline is being worked on, and worth a second "
+            "pair of eyes when it is not - the checks are what a review "
+            "relies on."
+        ),
+    }
+
+
 def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[str, Any]]:
     """Every signal that fired, in a stable order.
 
@@ -473,6 +576,8 @@ def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[st
         fast_approval_signal(facts),
         unverified_ai_signal(facts),
         privilege_adjacent_signal(facts),
+        overridden_objection_signal(facts),
+        ci_config_signal(facts),
     ]
     return [signal for signal in candidates if signal is not None]
 

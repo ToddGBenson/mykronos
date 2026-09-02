@@ -546,19 +546,41 @@ async function FindingsTab({
   repoId: string;
   query: FindingsQuery;
 }) {
-  const findings = await getOpenFindings(repoId, {
-    severity: query.severity,
-    capability: query.capability,
-    finding_status: query.status,
-    rule_id: query.rule_id,
-    kev_only: query.kev_only === "1",
-    min_epss: query.min_epss ? Number(query.min_epss) : undefined,
-    triage: query.triage,
-    fixable: query.fixable === "1" ? true : undefined,
-  });
+  // Guidance alongside the findings. The detail pane said what was wrong and
+  // never what to do about it, while the scanners had been carrying the answer
+  // in every report all along (B-032).
+  const [findings, guidance] = await Promise.all([
+    getOpenFindings(repoId, {
+      severity: query.severity,
+      capability: query.capability,
+      finding_status: query.status,
+      rule_id: query.rule_id,
+      kev_only: query.kev_only === "1",
+      min_epss: query.min_epss ? Number(query.min_epss) : undefined,
+      triage: query.triage,
+      fixable: query.fixable === "1" ? true : undefined,
+    }),
+    getRepoGuidance(repoId),
+  ]);
 
   if (!findings.ok) {
     return <ErrorPanel title="Findings unavailable" detail={findings.error} />;
+  }
+
+  // Flattened to rule -> remediation once here rather than searched per row.
+  // A failed guidance fetch costs the "what to do" block and nothing else:
+  // the findings were the tab before this and must still be.
+  const fixByRule: Record<string, { fix: string; source: string; effort: string }> = {};
+  if (guidance.ok) {
+    for (const capability of guidance.data.by_rule) {
+      for (const rule of capability.rules) {
+        fixByRule[rule.rule_id] = {
+          fix: rule.fix,
+          source: rule.source,
+          effort: rule.effort,
+        };
+      }
+    }
   }
 
   return (
@@ -566,6 +588,7 @@ async function FindingsTab({
       repoId={repoId}
       page={findings.data}
       query={query}
+      fixByRule={fixByRule}
       detail={
         query.finding ? <FindingDisposition findingId={query.finding} /> : undefined
       }

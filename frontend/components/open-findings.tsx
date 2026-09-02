@@ -149,12 +149,16 @@ export function OpenFindings({
   page,
   query,
   detail,
+  fixByRule = {},
 }: {
   repoId: string;
   page: OpenFindingsPage;
   query: FindingsQuery;
   /** Rendered in the aside when one occurrence is selected. */
   detail?: React.ReactNode;
+  /** Rule id -> what the scanner said to do about it. Empty when the guidance
+   *  fetch failed, which costs the "what to do" block and nothing else. */
+  fixByRule?: Record<string, { fix: string; source: string; effort: string }>;
 }) {
   const href = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
@@ -219,9 +223,15 @@ export function OpenFindings({
             ) : null}
           </div>
 
-          <aside className="w-full shrink-0 lg:w-[26rem]">
+          <aside className="w-full shrink-0 lg:w-[30rem]">
             {selected ? (
-              <GroupDetail group={selected} query={query} href={href} detail={detail} />
+              <GroupDetail
+                group={selected}
+                query={query}
+                href={href}
+                detail={detail}
+                remediation={fixByRule[selected.rule_id]}
+              />
             ) : (
               <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
                 Select a row to see every place it was reported, why it was
@@ -643,11 +653,13 @@ function GroupDetail({
   query,
   href,
   detail,
+  remediation,
 }: {
   group: FindingGroup;
   query: FindingsQuery;
   href: (patch: Record<string, string | undefined>) => string;
   detail?: React.ReactNode;
+  remediation?: { fix: string; source: string; effort: string };
 }) {
   const triage = TRIAGE[group.triage] ?? { tone: "muted" as const, label: group.triage };
   return (
@@ -661,6 +673,29 @@ function GroupDetail({
         </p>
       </div>
 
+      {/* First, because it is why somebody opened the row. The pane used to
+          lead with the classifier's verdict and the scanner's description —
+          two paragraphs about the problem before anything about the answer. */}
+      {remediation ? (
+        <div className="border-l-2 border-accent-2 bg-paper-3 px-2.5 py-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <Label>What to do</Label>
+            <span className="text-[8px] uppercase tracking-wide text-ink-3">
+              {remediation.effort}
+            </span>
+            {remediation.source === "standing" ? (
+              <span
+                className="text-[8px] uppercase tracking-wide text-ink-3"
+                title="Written by this platform, not by the scanner. Gitleaks reports a match and no remedy, for instance."
+              >
+                ours, not the scanner&rsquo;s
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-ink">{remediation.fix}</p>
+        </div>
+      ) : null}
+
       <div>
         <Pill tone={triage.tone}>{triage.label}</Pill>
         <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
@@ -668,10 +703,22 @@ function GroupDetail({
         </p>
       </div>
 
+      {/* Collapsible rather than a nested scrollbar. `max-h-32` on the
+          scanner's own prose put a second scroll region inside a pane that was
+          already scrolling, so reading the whole description meant a
+          scrollbar somebody had to find first. */}
       {group.description ? (
-        <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-ink-2">
-          {group.description}
-        </p>
+        <details>
+          <summary className="cursor-pointer list-none">
+            <Label>Why the scanner flagged it</Label>
+            <span className="ml-1.5 font-mono text-[9px] text-ink-3">
+              {group.description.length > 240 ? "expand" : ""}
+            </span>
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-ink-2">
+            {group.description}
+          </p>
+        </details>
       ) : null}
 
       <div>
@@ -679,7 +726,7 @@ function GroupDetail({
           {group.occurrences} occurrence{group.occurrences === 1 ? "" : "s"}
         </Label>
         <ul className="mt-1 flex flex-col gap-0.5">
-          {group.locations.map((location) => (
+          {group.locations.slice(0, 12).map((location) => (
             <li key={location.finding_id} className="font-mono text-[10px]">
               <Link
                 href={href({ finding: location.finding_id })}
@@ -700,6 +747,14 @@ function GroupDetail({
             </li>
           ))}
         </ul>
+        {group.locations.length > 12 ? (
+          <p className="mt-1 font-mono text-[9px] text-ink-3">
+            +{group.locations.length - 12} more occurrence
+            {group.locations.length - 12 === 1 ? "" : "s"}. Capped so the
+            disposition control below stays reachable — a row with twenty-three
+            identical locations used to push it off the end of the pane.
+          </p>
+        ) : null}
       </div>
 
       {detail ?? (
