@@ -54,6 +54,14 @@ SIGNAL_CAP: dict[str, float] = {
     "sole_approver": 20.0,
     "fast_approval": 15.0,
     "unverified_ai": 20.0,
+    # An objection that was approved past. Below `self_approval` because it is
+    # genuinely ambiguous: GitHub does not say whether a later commit resolved
+    # the objection, and the innocent path looks identical from here.
+    "overridden_objection": 25.0,
+    # The change edits the checks that gate it. Needs no per-repository
+    # configuration to be right, unlike `sensitive_path` — which is why it sits
+    # beside it in weight despite being narrower.
+    "ci_config_modified": 25.0,
 }
 
 #: Signals the platform will accept. An unknown key is dropped rather than

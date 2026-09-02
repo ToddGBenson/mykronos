@@ -14,12 +14,14 @@ anywhere else in the platform.
 
 from __future__ import annotations
 
-from mykronos.aegis import SIGNAL_CAP
+from mykronos.aegis import KNOWN_SIGNALS, SIGNAL_CAP
 from mykronos.aegis_signals import (
     PullRequestFacts,
     ReviewFact,
+    ci_config_signal,
     collect,
     fast_approval_signal,
+    overridden_objection_signal,
     self_approval_signal,
     sole_approver_signal,
     unverified_ai_signal,
@@ -353,3 +355,152 @@ class TestTheWorkflowCanActuallySeeReviews:
         rendered = self._rendered()
 
         assert "|| echo '[]' > reviews.json" in rendered
+
+
+class TestOverriddenObjection:
+    """Review integrity is about whether review happened. This is the case
+    where it happened and did not count."""
+
+    def test_an_unresolved_objection_beside_an_approval_fires(self) -> None:
+        signal = overridden_objection_signal(
+            facts(
+                reviews=(
+                    review(login="careful", state="CHANGES_REQUESTED"),
+                    review(login="hurried", state="APPROVED"),
+                )
+            )
+        )
+
+        assert signal is not None
+        assert signal["key"] == "overridden_objection"
+        # Names the reviewer so somebody can ask them, rather than leaving the
+        # reader to work out who objected.
+        assert "careful" in signal["rationale"]
+
+    def test_the_objector_approving_afterwards_does_not_fire(self) -> None:
+        """A reviewer who asked for changes and then approved has resolved
+        their own objection. That is the process working, and calling it a
+        signal would teach people to ignore this one."""
+        signal = overridden_objection_signal(
+            facts(
+                reviews=(
+                    review(login="careful", state="CHANGES_REQUESTED"),
+                    review(login="careful", state="APPROVED"),
+                )
+            )
+        )
+
+        assert signal is None
+
+    def test_an_objection_with_no_approval_does_not_fire(self) -> None:
+        """Nothing has been overridden yet — the pull request is simply not
+        approved, which is the ordinary state of a change under review."""
+        signal = overridden_objection_signal(
+            facts(reviews=(review(login="careful", state="CHANGES_REQUESTED"),))
+        )
+
+        assert signal is None
+
+    def test_no_reviews_does_not_fire(self) -> None:
+        assert overridden_objection_signal(facts()) is None
+
+    def test_it_cannot_block_on_its_own(self) -> None:
+        signal = overridden_objection_signal(
+            facts(
+                reviews=(
+                    review(login="careful", state="CHANGES_REQUESTED"),
+                    review(login="hurried", state="APPROVED"),
+                )
+            )
+        )
+
+        assert signal is not None
+        assert signal["score"] <= SIGNAL_CAP[signal["key"]]
+
+
+class TestCiConfigModified:
+    """The change edits the checks that would have caught it."""
+
+    def test_a_workflow_edit_fires(self) -> None:
+        signal = ci_config_signal(
+            facts(changed_files=[".github/workflows/mykronos-sast.yml"])
+        )
+
+        assert signal is not None
+        assert signal["key"] == "ci_config_modified"
+        # Names the files rather than the person: workflows are edited for good
+        # reasons constantly, and this is a prompt to look at a diff.
+        assert "mykronos-sast.yml" in signal["rationale"]
+
+    def test_ordinary_source_does_not_fire(self) -> None:
+        assert ci_config_signal(facts(changed_files=["src/app.py"])) is None
+
+    def test_a_path_merely_containing_the_word_workflow_does_not_fire(self) -> None:
+        """Prefix-matched, not substring-matched. `src/workflows/engine.py` is
+        application code that happens to be about workflows, and firing on it
+        would be the near-miss that teaches people to ignore the signal."""
+        assert ci_config_signal(facts(changed_files=["src/workflows/engine.py"])) is None
+
+    def test_many_files_are_summarised_rather_than_listed(self) -> None:
+        signal = ci_config_signal(
+            facts(changed_files=[f".github/workflows/w{n}.yml" for n in range(6)])
+        )
+
+        assert signal is not None
+        assert "+3 more" in signal["rationale"]
+
+    def test_it_cannot_block_on_its_own(self) -> None:
+        signal = ci_config_signal(facts(changed_files=[".github/workflows/x.yml"]))
+
+        assert signal is not None
+        assert signal["score"] <= SIGNAL_CAP[signal["key"]]
+
+
+class TestBothReachCollect:
+    def test_every_signal_collect_can_emit_is_registered(self) -> None:
+        """The guard that would have caught this before it shipped.
+
+        `KNOWN_SIGNALS` *drops* an unregistered key rather than scoring it, so
+        a new signal that nobody adds to `SIGNAL_CAP` is computed on every pull
+        request and silently discarded — working code, no error, no effect. Both
+        of the signals added here did exactly that until this test existed.
+        """
+        emitted = {
+            signal["key"]
+            for signal in collect(
+                facts(
+                    changed_files=[".github/workflows/x.yml", "src/auth/login.py"],
+                    author_prior_commits=0,
+                    reviews=(
+                        review(login="careful", state="CHANGES_REQUESTED"),
+                        review(login="octocat", state="APPROVED", seconds=1),
+                    ),
+                    ai_authored=True,
+                ),
+                SENSITIVE,
+            )
+        }
+
+        assert emitted, "the fixture should fire several signals"
+        assert emitted <= KNOWN_SIGNALS, (
+            f"{sorted(emitted - KNOWN_SIGNALS)} would be dropped by the scorer"
+        )
+
+    def test_the_new_signals_are_assembled(self) -> None:
+        """A signal nothing calls is a signal that does not exist."""
+        fired = {
+            signal["key"]
+            for signal in collect(
+                facts(
+                    changed_files=[".github/workflows/x.yml"],
+                    reviews=(
+                        review(login="careful", state="CHANGES_REQUESTED"),
+                        review(login="hurried", state="APPROVED"),
+                    ),
+                ),
+                SENSITIVE,
+            )
+        }
+
+        assert "ci_config_modified" in fired
+        assert "overridden_objection" in fired
