@@ -4229,3 +4229,55 @@ scripts, hydration failed, and every client component on the site was inert.
 The fix was a per-request nonce in `proxy.ts`, not a wider policy — which is
 the same distinction this decision is about. A header that ships is not a
 header that works, and the check for the second one is opening the console.
+
+## D-100 — Suspicious-comments keeps three words, and that is a tuning not a suppression
+
+**2026-09-02.** ZAP rule 10027 ("Information Disclosure — Suspicious Comments")
+held 24 open findings against the platform's own frontend, growing with every
+page added. All 24 were false, all in the same way, and the way matters more
+than the count.
+
+The rule looks for developer notes left in shipped code. Its default word list
+is TODO, FIXME, BUG, BUGS, XXX, QUERY, DB, ADMIN, ADMINISTRATOR, USER,
+USERNAME, SELECT, WHERE, FROM, LATER, DEBUG. Thirteen of those sixteen are
+ordinary vocabulary for a security console. This application's own interface
+text says "from", "user", "admin" and "bug" constantly, and the CVE
+descriptions it renders say them again.
+
+**Why they matched at all.** ZAP tokenises JavaScript with a lexer and reports
+only comment tokens, which should have made page *text* unreachable. A Next.js
+RSC payload defeats it: a JSON document, full of `\"` escapes, embedded in a JS
+string literal. The lexer loses its place, and the `//` in an ordinary
+`https://github.com/...` link then reads as the start of a line comment. The
+"comment" extends to the end of a minified line, so every word on that line
+becomes a candidate. The evidence on all 24 was the English word "from",
+matched case-insensitively, sitting in a sentence.
+
+So the alerts were not about comments, and nothing in the comments could fix
+them. The three available responses were to accept 24 findings that regenerate
+with every new route, to disable rule 10027, or to fix the word list.
+
+**The word list, measured against the running application.** The default list
+alerted on essentially every page. TODO, FIXME and XXX alone alerted zero times
+across ten pages, and still caught a real
+`// TODO: remove the hardcoded admin credential` on a page whose prose also
+said from, user, admin, bug and query. The rule keeps working; it stops firing
+on the dictionary.
+
+**Why this is not suppression.** The distinction is whether the rule can still
+produce a true positive, and it demonstrably can — that was tested, not
+assumed. Disabling 10027 would have removed the capability; dropping thirteen
+words that this application legitimately displays removes the noise and leaves
+three words that do not appear in ordinary writing. A leftover developer note
+in shipped JavaScript is still caught tomorrow.
+
+**What would make this wrong.** If the frontend ever ships unminified
+JavaScript with real comments, the kept list is thin and worth revisiting.
+And if ZAP fixes the lexer's handling of RSC payloads, the whole tuning becomes
+unnecessary rather than merely narrower — worth checking at the next major
+version bump, currently 2.16.1.
+
+Configured in `.github/workflows/demo-and-dast.yml`, before the functional
+suite rather than beside the spider exclusions: 10027 is a passive rule and
+scans traffic as it crosses the proxy, so a list applied after the suite has
+run is applied to nothing.

@@ -159,6 +159,68 @@ jobs:
           docker cp deploy/demo/seed.py "${BACKEND}:/tmp/seed.py"
           docker exec "$BACKEND" python /tmp/seed.py --url http://localhost:8100
 
+      - name: Narrow the suspicious-comments word list
+        # Before the functional suite, not with the spider exclusions further
+        # down. Rule 10027 is *passive*: it runs on traffic as it crosses the
+        # proxy, so by the time the spider starts, the suite's page loads have
+        # already been scanned with whatever list was in force.
+        #
+        # **Why this rule needed tuning.** 10027 looks for developer notes left
+        # in shipped code, and its default list is TODO, FIXME, BUG, BUGS, XXX,
+        # QUERY, DB, ADMIN, ADMINISTRATOR, USER, USERNAME, SELECT, WHERE, FROM,
+        # LATER, DEBUG. Most of those are ordinary vocabulary for a security
+        # console: this application's own text says "from", "user", "admin" and
+        # "bug" constantly, and the CVE descriptions it renders say them again.
+        #
+        # It matched them because ZAP's JavaScriptLexer loses its place inside
+        # a Next.js RSC payload — a JSON document, full of \" escapes, sitting
+        # inside a JS string — and then reads the `//` of an ordinary
+        # `https://github.com/...` link as the start of a line comment. The
+        # "comment" runs to the end of a minified line, so every word on it
+        # becomes a candidate. The evidence on all 24 findings was the English
+        # word "from", matched case-insensitively, in prose.
+        #
+        # So the alerts were not about comments and could not be fixed in the
+        # comments. Measured against the running application: the default list
+        # alerted on essentially every page; TODO/FIXME/XXX alone alerted zero
+        # times across ten, while still catching a real
+        # `// TODO: remove the hardcoded admin credential` on a page whose
+        # prose also said from, user, admin, bug and query.
+        #
+        # Kept deliberately: those three do not appear in ordinary writing, so
+        # they still mean what the rule intends. Everything dropped here is a
+        # word this application legitimately displays.
+        run: |
+          set -uo pipefail
+          zap_api() { curl -fsS --max-time 60 -x "$ZAP_PROXY" "http://zap$1"; }
+
+          # Not in the base image — the payload list is only editable through
+          # this add-on, and the install is a marketplace fetch.
+          zap_api "/JSON/autoupdate/action/installAddon/?id=custompayloads" >/dev/null
+
+          ready=0
+          for _ in $(seq 1 24); do
+            if zap_api "/JSON/custompayloads/view/customPayloadsCategories/" >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 5
+          done
+          if [ "$ready" -ne 1 ]; then
+            # Loud, and not fatal. A noisier DAST run is worth having; a lane
+            # that reports nothing is not (see the report-writing note below).
+            echo "::warning::custompayloads never came up — 10027 will run with its default word list."
+            exit 0
+          fi
+
+          for word in QUERY DB ADMIN ADMINISTRATOR USER USERNAME SELECT WHERE FROM LATER BUG BUGS DEBUG; do
+            zap_api "/JSON/custompayloads/action/disableCustomPayload/?category=Suspicious-Comments&payload=${word}" >/dev/null \
+              || echo "::warning::could not disable suspicious-comment word ${word}"
+          done
+
+          echo -n "Suspicious-Comments now matches: "
+          zap_api "/JSON/custompayloads/view/customPayloads/?category=Suspicious-Comments" \
+            | python -c 'import json,sys; print(", ".join(p["payload"] for p in json.load(sys.stdin)["customPayloads"] if p["enabled"]))'
+
       - name: Functional suite, proxied through ZAP
         id: functional
         continue-on-error: true
