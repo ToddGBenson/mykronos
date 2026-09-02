@@ -8,6 +8,7 @@ endpoint writes an audit entry in the same transaction as the change
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
@@ -75,6 +76,46 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 DISPATCHABLE_CAPABILITIES = frozenset(
     {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )
+
+
+def _nothing_to_dispatch(
+    repo_full_name: str,
+    asked_for: Sequence[str] | None,
+    available: Sequence[str],
+) -> str:
+    """Say which of the three reasons this was, rather than one wrong sentence.
+
+    "No scanning capability is enabled for X" was returned for all of them,
+    and on the platform's own repository it was simply false: eleven
+    capabilities are enabled there. Asking it to run DAST — which is
+    dispatchable, and which reports findings against that repo every twenty
+    minutes — got back a claim that nothing at all was enabled, pointing at
+    the repository's configuration when the real answer was that `dast` runs
+    from a workflow this platform does not generate.
+
+    A scan button that refuses is fine. A scan button that refuses while
+    misdescribing why sends somebody to the wrong file.
+    """
+    if not asked_for:
+        return f"No scanning capability is enabled for {repo_full_name}."
+
+    asked = sorted(set(asked_for))
+    named = ", ".join(asked)
+    # Not in the dispatchable set at all: aegis, oracle, patchwork and the
+    # rest are reporting lanes, and no amount of enabling makes them buttons.
+    undispatchable = sorted(set(asked) - DISPATCHABLE_CAPABILITIES)
+    if undispatchable == asked:
+        return (
+            f"{named} cannot be dispatched on demand — it reports on its own schedule "
+            f"rather than being triggered. Dispatchable here: "
+            f"{', '.join(available) if available else 'nothing'}."
+        )
+    if available:
+        return (
+            f"{named} is not enabled for {repo_full_name}, so there is no workflow to "
+            f"trigger. Enabled and dispatchable here: {', '.join(available)}."
+        )
+    return f"No scanning capability is enabled for {repo_full_name}."
 
 # ---------------------------------------------------------------------------
 # Wire models
@@ -778,6 +819,7 @@ async def scan_now(
         scanned_by = row.scanned_by
         default_branch = row.default_branch
         installation_id = row.github_installation_id
+        available = sorted(enabled & DISPATCHABLE_CAPABILITIES)
 
     if not scanning:
         if pending:
@@ -791,7 +833,7 @@ async def scan_now(
         return ScanResult(
             dispatched=[],
             failed=[],
-            detail=f"No scanning capability is enabled for {repo_full_name}.",
+            detail=_nothing_to_dispatch(repo_full_name, capabilities, available),
         )
 
     dispatched: list[str] = []
