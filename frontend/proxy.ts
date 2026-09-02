@@ -33,10 +33,30 @@ export function proxy(request: NextRequest) {
   // in the browser. It does not in production, and neither does Next.js.
   const isDev = process.env.NODE_ENV === "development";
 
+  // `style-src` gets NO nonce, and that is not an oversight.
+  //
+  // A nonce in a directive makes the browser *ignore* `'unsafe-inline'` in the
+  // same directive — it says so out loud, which is the only reason this was
+  // caught. Adding one here therefore did not harden styles, it disabled the
+  // exemption they depend on, and every inline style on the page was blocked:
+  // React's `style={{ width }}` attributes, the EPSS bars, Tailwind's runtime.
+  //
+  // A style *attribute* cannot carry a nonce at all — it is governed by
+  // `style-src-attr` and has nowhere to put one — so `'unsafe-inline'` is
+  // genuinely required rather than merely convenient. Scripts are different:
+  // Next.js stamps the nonce onto every `<script>` it emits, so the nonce
+  // there replaces the exemption instead of cancelling it.
+  //
+  // `script-src` stays at 'self' plus the nonce. The console on the public
+  // hostname reports a blocked `static.cloudflareinsights.com` beacon — that
+  // is the tunnel injecting analytics, it is blocked deliberately, and adding
+  // the origin to make the error go away would be the only edit to this header
+  // that materially weakened it (D-099). The `attribution-reporting`
+  // Permissions-Policy warning is from the same source and needs nothing.
   const csp = `
     default-src 'self';
     script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""};
-    style-src 'self' 'nonce-${nonce}' 'unsafe-inline';
+    style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data:;
     font-src 'self' data:;
     connect-src 'self';
