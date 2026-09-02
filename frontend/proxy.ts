@@ -33,19 +33,34 @@ export function proxy(request: NextRequest) {
   // in the browser. It does not in production, and neither does Next.js.
   const isDev = process.env.NODE_ENV === "development";
 
-  // `style-src` gets NO nonce, and that is not an oversight.
+  // Styles are split across two directives, and the split is the whole point.
   //
-  // A nonce in a directive makes the browser *ignore* `'unsafe-inline'` in the
-  // same directive — it says so out loud, which is the only reason this was
-  // caught. Adding one here therefore did not harden styles, it disabled the
-  // exemption they depend on, and every inline style on the page was blocked:
-  // React's `style={{ width }}` attributes, the EPSS bars, Tailwind's runtime.
+  // The history, because both previous attempts were wrong in instructive
+  // ways. First `style-src 'self' 'nonce-…'`, straight from the Next.js CSP
+  // guide: that blocked 96 inline styles, because a nonce in a directive makes
+  // the browser *ignore* `'unsafe-inline'` in the same directive, and a style
+  // *attribute* has nowhere to put a nonce. Then `style-src 'self'
+  // 'unsafe-inline'`, which worked and permitted every `<style>` element an
+  // attacker could inject — and the platform's own DAST lane opened 46 medium
+  // findings against it (ZAP-10055) the next day. Being scanned by the thing
+  // you are building is a short feedback loop.
   //
-  // A style *attribute* cannot carry a nonce at all — it is governed by
-  // `style-src-attr` and has nowhere to put one — so `'unsafe-inline'` is
-  // genuinely required rather than merely convenient. Scripts are different:
-  // Next.js stamps the nonce onto every `<script>` it emits, so the nonce
-  // there replaces the exemption instead of cancelling it.
+  // Splitting resolves what looked like a straight tradeoff, because the two
+  // cases genuinely differ:
+  //
+  //   style-src      → `<style>` elements. Next.js stamps the nonce onto the
+  //                    inline styles it generates (its CSP guide says so
+  //                    explicitly), and Tailwind ships an external file that
+  //                    `'self'` covers. Nothing here needs the exemption, so
+  //                    an injected `<style>` block is now refused.
+  //   style-src-attr → `style=""` attributes. React writes these for the EPSS
+  //                    bars and every computed width, they cannot carry a
+  //                    nonce, and no build step removes them. Genuinely
+  //                    required rather than merely convenient.
+  //
+  // `style-src-attr` has been Baseline since December 2022. A browser older
+  // than that ignores it and falls back to `style-src` — stricter, not looser,
+  // so the failure mode is an unstyled bar rather than an open door.
   //
   // `script-src` stays at 'self' plus the nonce. The console on the public
   // hostname reports a blocked `static.cloudflareinsights.com` beacon — that
@@ -56,7 +71,8 @@ export function proxy(request: NextRequest) {
   const csp = `
     default-src 'self';
     script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""};
-    style-src 'self' 'unsafe-inline';
+    style-src 'self' 'nonce-${nonce}';
+    style-src-attr 'unsafe-inline';
     img-src 'self' blob: data:;
     font-src 'self' data:;
     connect-src 'self';
