@@ -4189,3 +4189,43 @@ actually work, and no surface in the platform had ever said so.
 `asset_id`/`repo_full_name` join — and a test asserts the two agree on the same
 estate. A page that promised something would close on a different rule from the
 one that closes it would be worse than saying nothing.
+
+## D-099 — The Cloudflare beacon stays blocked
+
+**2026-09-02.** The browser console on `mykronos.toddbenson.net` reports two
+things that look like defects and are not:
+
+```
+Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/...'
+violates the following Content Security Policy directive: "script-src 'self'"
+
+Error with Permissions-Policy header: Unrecognized feature: 'attribution-reporting'
+```
+
+Neither comes from this application. The tunnel that fronts the public
+hostname injects both — an analytics beacon and a `Permissions-Policy` naming a
+feature this browser does not implement. The CSP blocks the first, the browser
+warns about the second, and both are working exactly as intended.
+
+**The beacon stays blocked.** Allowing it means adding a third-party origin to
+`script-src`, and `script-src 'self'` is the directive doing the actual work in
+that header: everything else in the policy is narrowing an attack surface that
+`self` already bounds. Widening it buys page-view analytics nobody asked for
+and gives up the one guarantee worth having — that a script executing on this
+page came from this origin or carried a nonce we minted.
+
+It is recorded because the failure mode is somebody meeting the console error
+in six months, reading it as broken, and adding the origin to make it go away.
+That change would look like tidying and would be the only thing in the header
+that materially weakened it.
+
+The `attribution-reporting` warning needs nothing. A browser warning about a
+feature name it does not recognise in a header set by a proxy is not a state
+this repository can or should alter.
+
+**Not to be confused with the CSP bug fixed the same day.** That one was real
+and was ours: `script-src 'self'` with no nonce blocked Next.js's own inline
+scripts, hydration failed, and every client component on the site was inert.
+The fix was a per-request nonce in `proxy.ts`, not a wider policy — which is
+the same distinction this decision is about. A header that ships is not a
+header that works, and the check for the second one is opening the console.
