@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { WorklistKeys } from "@/components/worklist";
+
 import {
   EmptyState,
   ErrorPanel,
@@ -39,7 +41,12 @@ function Checks({ checks }: { checks: PullRequestRow["checks"] }) {
   return <span className="text-pass">{checks.passed} passed</span>;
 }
 
-export default async function PullRequestsPage() {
+export default async function PullRequestsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ pr?: string }>;
+}) {
+  const { pr: selectedNumber } = await searchParams;
   const result = await getPullRequests();
 
   if (!result.ok) {
@@ -53,6 +60,9 @@ export default async function PullRequestsPage() {
   // which made a page called Pull requests show nothing for a repository with
   // fifteen of them.
   const others = pull_requests.filter((pr) => pr.kind === "other");
+  // Selection in the URL, like every other list on this platform, so the row
+  // somebody is looking at survives a refresh and can be sent to somebody else.
+  const selected = pull_requests.find((pr) => String(pr.number) === selectedNumber);
 
   return (
     <div className="flex flex-col gap-5">
@@ -113,81 +123,84 @@ export default async function PullRequestsPage() {
           }
         />
       ) : (
-        <div className="scroll-x border border-rule">
-          <table className="w-full min-w-[900px] border-collapse bg-paper-2 font-mono text-[11px]">
-            <thead>
-              <tr className="border-b-2 border-ink-2 text-left">
-                {["Kind", "Repository", "What it changes", "Files", "Checks", "Age", ""].map(
-                  (heading) => (
-                    <th
-                      key={heading}
-                      className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+      <>
+        {/* Layout option 2, as on the triage queue and the findings tab. The
+            seven-column table this replaces carried a 900px minimum, which is
+            wider than the pane it would have to sit in — and it truncated the
+            one column worth reading, the rationale for why Mykronos opened
+            the thing at all. */}
+        <WorklistKeys ids={pull_requests.map((pr) => String(pr.number))} param="pr" />
+        <div className="flex flex-col gap-3 lg:h-[calc(100vh-20rem)] lg:flex-row lg:gap-0">
+          <div className="lg:w-[22rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+            <ul className="flex flex-col">
+              {pull_requests.map((pr) => {
+                const on = String(pr.number) === selectedNumber;
+                return (
+                  <li key={`${pr.repo_full_name}#${pr.number}`}>
+                    <Link
+                      href={`/pull-requests?pr=${pr.number}`}
+                      scroll={false}
+                      aria-current={on ? "true" : undefined}
+                      className={`flex flex-col gap-0.5 border-b border-rule-soft px-2.5 py-2 ${
+                        on
+                          ? "border-l-2 border-l-accent bg-accent-wash"
+                          : "border-l-2 border-l-transparent hover:bg-paper-3"
+                      }`}
                     >
-                      {heading}
-                    </th>
-                  ),
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {pull_requests.map((pr) => (
-                <tr
-                  key={`${pr.repo_full_name}#${pr.number}`}
-                  className="border-b border-rule-soft last:border-b-0 align-top hover:bg-paper-3"
-                >
-                  <td className="whitespace-nowrap px-2 py-2">
-                    <Pill tone={pr.kind === "fix" ? "warn" : pr.kind === "install" ? "accent" : "muted"}>
-                      {pr.kind === "other" ? "theirs" : pr.kind}
-                    </Pill>
-                    {pr.draft ? (
-                      <span className="ml-1 text-[9px] text-ink-3">draft</span>
-                    ) : null}
-                  </td>
-                  <td className="max-w-[24ch] truncate px-2 py-2 text-ink">
-                    {pr.repo_full_name}
-                    <span className="text-ink-3"> #{pr.number}</span>
-                  </td>
-                  <td className="max-w-[38ch] px-2 py-2">
-                    <div className="truncate text-ink" title={pr.title}>
-                      {pr.summary || pr.title}
-                    </div>
-                    {pr.detail ? (
-                      <div
-                        className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-ink-3"
-                        title={pr.detail}
-                      >
-                        {pr.detail}
-                      </div>
-                    ) : null}
-                    {pr.human_edited ? (
-                      <div className="mt-1 text-[10px] text-high">
-                        A person has committed here — Patchwork has stood down
-                        permanently.
-                      </div>
-                    ) : null}
-                  </td>
-                  <td className="px-2 py-2 text-ink-2">{pr.changed_files ?? "—"}</td>
-                  <td className="whitespace-nowrap px-2 py-2">
-                    <Checks checks={pr.checks} />
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-2 text-ink-2">
-                    <RelativeTime value={pr.opened_at} />
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-2 text-right">
-                    <a
-                      href={pr.url}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="border border-rule px-2 py-1 text-[10px] text-ink-2 hover:border-accent hover:text-accent"
-                    >
-                      review on GitHub →
-                    </a>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      <span className="flex flex-wrap items-baseline gap-1.5">
+                        <Pill
+                          tone={
+                            pr.kind === "fix"
+                              ? "warn"
+                              : pr.kind === "install"
+                                ? "accent"
+                                : "muted"
+                          }
+                        >
+                          {pr.kind === "other" ? "theirs" : pr.kind}
+                        </Pill>
+                        {/* Failing checks belong in the list, not the detail:
+                            it is the one thing that changes whether this row is
+                            worth opening at all. */}
+                        {(pr.checks?.failed ?? 0) > 0 ? (
+                          <span className="font-mono text-[8px] uppercase tracking-wide text-critical">
+                            {pr.checks?.failed} failing
+                          </span>
+                        ) : null}
+                        {pr.human_edited ? (
+                          <span
+                            className="font-mono text-[8px] uppercase tracking-wide text-high"
+                            title="Somebody committed to this branch, so Patchwork has stood down"
+                          >
+                            taken over
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="line-clamp-2 text-[11px] leading-snug text-ink">
+                        {pr.summary || pr.title}
+                      </span>
+                      <span className="truncate font-mono text-[9px] text-ink-3">
+                        {pr.repo_full_name} #{pr.number}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          <div className="min-w-0 grow lg:overflow-y-auto lg:pl-4">
+            {selected ? (
+              <PullRequestDetail pr={selected} />
+            ) : (
+              <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
+                Choose a pull request, or press{" "}
+                <span className="font-mono">j</span>.
+              </div>
+            )}
+          </div>
         </div>
+      </>
       )}
 
       <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
@@ -214,5 +227,81 @@ export default async function PullRequestsPage() {
         the list as work that no longer exists.
       </p>
     </div>
+  );
+}
+
+
+/**
+ * One pull request, with room for the reason it exists.
+ *
+ * The table this replaces truncated `detail` into a `max-w` cell with the full
+ * text in a `title` attribute — so the installer's plan and Patchwork's
+ * rationale, the two things that explain why the platform opened something
+ * against your code, were visible only on hover to somebody who knew to hover.
+ */
+function PullRequestDetail({ pr }: { pr: PullRequestRow }) {
+  return (
+    <article className="flex flex-col gap-3 border border-rule bg-paper-2 p-3">
+      <div className="flex flex-col gap-1">
+        <span className="flex flex-wrap items-baseline gap-2">
+          <Pill tone={pr.kind === "fix" ? "warn" : pr.kind === "install" ? "accent" : "muted"}>
+            {pr.kind === "other" ? "theirs" : pr.kind}
+          </Pill>
+          {pr.draft ? <Pill tone="muted">draft</Pill> : null}
+          {pr.human_edited ? <Pill tone="warn">taken over</Pill> : null}
+        </span>
+        <h2 className="text-[13px] font-semibold leading-snug">{pr.title}</h2>
+        <a
+          href={pr.url}
+          className="font-mono text-[10px] text-accent hover:underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          {pr.repo_full_name} #{pr.number} ↗
+        </a>
+      </div>
+
+      {pr.summary || pr.detail ? (
+        <div className="flex flex-col gap-1">
+          <Label>Why this exists</Label>
+          {pr.summary ? (
+            <p className="text-[11px] leading-relaxed text-ink">{pr.summary}</p>
+          ) : null}
+          {/* Was a `title` attribute on a truncated cell. It is the platform's
+              own account of what it proposed and why; it gets to be read. */}
+          {pr.detail ? (
+            <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">{pr.detail}</p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-[11px] leading-relaxed text-ink-3">
+          Mykronos did not open this one, so it has no rationale to offer —
+          only what GitHub reports about it.
+        </p>
+      )}
+
+      <div className="flex flex-col gap-1">
+        <Label>Checks</Label>
+        {/* Counts rather than a verdict, for the reason this page has always
+            given: "2 failed" and "all green" are different questions to
+            somebody deciding whether to merge, and a single tick throws away
+            the one that decides whether they look closer. */}
+        <Checks checks={pr.checks} />
+      </div>
+
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-rule-soft pt-2 font-mono text-[9px] text-ink-3">
+        <span>
+          opened <RelativeTime value={pr.opened_at} />
+        </span>
+        {pr.branch ? <span>{pr.branch}</span> : null}
+        {/* Absent from the listing endpoint by design — one call per repository
+            instead of one per pull request — so this says so rather than
+            rendering a confident zero. */}
+        <span>
+          {pr.changed_files != null ? `${pr.changed_files} files` : "file count not fetched"}
+        </span>
+        {pr.capabilities?.length ? <span>{pr.capabilities.join(", ")}</span> : null}
+      </div>
+    </article>
   );
 }
