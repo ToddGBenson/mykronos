@@ -1,67 +1,106 @@
 @import "tailwindcss";
 
 /*
- * Direction A — "The Console".
+ * Direction C — "Blueprint".
  *
  * A dense operational surface, so the design work is information design
  * rather than typography: state has to read at a glance, and semantic colour
  * (critical / high / pass) is kept separate from the accent so that "this
- * needs attention" never competes with "this is a link".
+ * needs attention" never competes with "this is a link". That much is
+ * unchanged from the green console this replaces.
+ *
+ * **What changed is that identifiers and prose no longer look alike.** The
+ * markup has always split them — `font-mono` on a package name, nothing on a
+ * paragraph — but nothing declared a sans, so the "prose" half fell through to
+ * whatever `system-ui` resolved to and the two read as one voice. On a page
+ * where `libc6 2.41-12+deb13u3` sits beside "no fixed version has been
+ * published", the reader was separating them by meaning rather than by sight.
+ * Plex Sans against Plex Mono is a deliberate, obviously-different pair.
+ *
+ * The palette moves from green-biased warm neutrals to cool ones with a
+ * drafting blue, and the page carries a faint grid. The vernacular is a
+ * technical drawing rather than a dashboard: this is a system being surveyed,
+ * and every number on it is a measurement somebody can go and check.
  */
 
 @theme {
-  --color-paper: #f4f6f4;
-  --color-paper-2: #eaeeeb;
-  --color-paper-3: #dfe4e0;
-  --color-ink: #15181a;
-  --color-ink-2: #3c4643;
-  --color-ink-3: #6b7873;
-  --color-rule: #c6cfc9;
-  --color-rule-soft: #d9e0db;
+  --color-paper: #f1f5f8;
+  --color-paper-2: #e6edf2;
+  --color-paper-3: #d9e3ea;
+  --color-ink: #14202b;
+  --color-ink-2: #47596a;
+  --color-ink-3: #7d8f9e;
+  --color-rule: #bfcdd8;
+  --color-rule-soft: #d5dfe7;
 
-  --color-accent: #2e5c4f;
-  --color-accent-2: #4a8874;
-  --color-accent-wash: #e2ede7;
+  --color-accent: #1e5f8c;
+  --color-accent-2: #3d82b3;
+  --color-accent-wash: #dfeaf3;
 
-  --color-critical: #b3392c;
-  --color-high: #c0741c;
-  --color-medium: #8a7b2e;
-  --color-low: #6b7873;
-  --color-info: #8f9a95;
-  --color-pass: #3e7a5e;
+  --color-critical: #b23a34;
+  --color-high: #b07219;
+  --color-medium: #8a7a2c;
+  --color-low: #7d8f9e;
+  --color-info: #93a3b0;
+  --color-pass: #2f7355;
 
-  --color-critical-wash: #f6e3e0;
-  --color-high-wash: #f8ebdc;
-  --color-pass-wash: #e1efe8;
+  --color-critical-wash: #f7e4e2;
+  --color-high-wash: #f8ecda;
+  --color-pass-wash: #e0eee7;
 
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  /* The drafting grid, as a token so it moves with the theme rather than
+     being a literal that only works on one ground. */
+  --color-grid: rgba(30, 95, 140, 0.06);
+
+  /* Both faces are self-hosted by `next/font` in `layout.tsx`, which sets the
+     two variables below on <html>. The fallbacks are real rather than
+     decorative: a font that fails to load must degrade to something of the
+     same category, or the identifier/prose split this direction exists for
+     quietly stops working. */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "Cascadia Code", "SF Mono",
+    Menlo, Consolas, monospace;
 }
 
+/*
+ * Dark as a `:root` override, not a nested `@theme`.
+ *
+ * `@theme` is compile-time: Tailwind hoists it out of whatever it is written
+ * inside, so a second one under `@media (prefers-color-scheme: dark)` did not
+ * become a dark variant — it replaced the light palette outright. The built
+ * stylesheet carried exactly one set of values, the dark ones, and the app had
+ * been permanently dark since the frontend was first written. Nobody noticed
+ * because the two palettes were close enough in temperature that a dark ground
+ * read as intentional.
+ *
+ * A plain `:root` inside the media query is a runtime cascade instead. Every
+ * Tailwind v4 utility resolves through `var(--color-*)`, so overriding the
+ * variables here is all that is needed — and both palettes now survive into
+ * the bundle, which is the thing to check if this ever regresses.
+ */
 @media (prefers-color-scheme: dark) {
-  @theme {
-    --color-paper: #101312;
-    --color-paper-2: #171b19;
-    --color-paper-3: #1f2523;
-    --color-ink: #e8eeea;
-    --color-ink-2: #b3beb8;
-    --color-ink-3: #7e8c86;
-    --color-rule: #2e3835;
-    --color-rule-soft: #242c29;
-
-    --color-accent: #6fbfa2;
-    --color-accent-2: #4e9c82;
-    --color-accent-wash: #1a2723;
-
-    --color-critical: #e4796a;
-    --color-high: #dfa55c;
-    --color-medium: #c4b45e;
-    --color-low: #7e8c86;
-    --color-info: #6b7873;
-    --color-pass: #6fbfa2;
-
-    --color-critical-wash: #2a1a18;
-    --color-high-wash: #2a2117;
-    --color-pass-wash: #16241e;
+  :root {
+    --color-paper: #0d141a;
+    --color-paper-2: #141d25;
+    --color-paper-3: #1c2731;
+    --color-ink: #e4edf4;
+    --color-ink-2: #aebecc;
+    --color-ink-3: #7b8d9c;
+    --color-rule: #27343f;
+    --color-rule-soft: #1e2932;
+    --color-accent: #6cb0e0;
+    --color-accent-2: #4b8dbd;
+    --color-accent-wash: #15242f;
+    --color-critical: #e07b70;
+    --color-high: #d9a253;
+    --color-medium: #c2b364;
+    --color-low: #7b8d9c;
+    --color-info: #67798a;
+    --color-pass: #5fb08a;
+    --color-critical-wash: #2a1917;
+    --color-high-wash: #2a2116;
+    --color-pass-wash: #152420;
+    --color-grid: rgba(108, 176, 224, 0.05);
   }
 }
 
@@ -72,7 +111,50 @@ body {
 }
 
 body {
+  font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04";
+
+  /* The drafting grid. Two hairline gradients rather than an image, at an
+     opacity that reads as paper texture rather than as content — it has to
+     survive behind an 9px table row without competing with it. Fixed
+     attachment so it does not slide under long pages, which would make it a
+     motion effect rather than a surface. */
+  background-image:
+    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-attachment: fixed;
+}
+
+/* A drawing frame, not a decoration: two corner ticks in the accent, on the
+   panels that carry a measurement somebody might go and check. Applied
+   deliberately rather than to every box — the whole point is that it marks
+   something, and a mark on everything marks nothing. */
+.ticks {
+  position: relative;
+}
+
+.ticks::before,
+.ticks::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-color: var(--color-accent);
+  border-style: solid;
+  pointer-events: none;
+}
+
+.ticks::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.ticks::after {
+  bottom: -1px;
+  right: -1px;
+  border-width: 0 1px 1px 0;
 }
 
 /* Digits in a column have to line up to be comparable at a glance. */

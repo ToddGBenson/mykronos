@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Link from "next/link";
 
 import "./globals.css";
@@ -61,9 +62,36 @@ const NAV: {
   },
 ];
 
+/**
+ * Two faces, doing two different jobs (Direction C).
+ *
+ * The markup has always split identifiers from prose — `font-mono` on a
+ * package name, nothing on a paragraph — but nothing declared a sans, so the
+ * prose half fell through to whatever `system-ui` resolved to and the two read
+ * as one voice. `libc6 2.41-12+deb13u3` beside "no fixed version has been
+ * published" made the reader separate them by meaning rather than by sight.
+ *
+ * Self-hosted through `next/font` rather than linked from a CDN: this platform
+ * runs on a LAN and is read during incidents, and a typeface that needs the
+ * internet is one that disappears exactly when it is most needed.
+ */
+const sans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-sans",
+  display: "swap",
+});
+
+const mono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body className="min-h-screen antialiased">
         <div className="flex min-h-screen flex-col">
           <header className="flex flex-wrap items-center gap-4 border-b border-rule bg-paper-2 px-4 py-2.5">
