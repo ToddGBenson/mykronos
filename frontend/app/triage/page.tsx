@@ -11,9 +11,10 @@ import {
   Verdict,
 } from "@/components/primitives";
 import { ClassificationReview } from "@/components/classification-review";
+import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
-import { SEVERITY_ORDER, type Severity } from "@/lib/api";
-import { getTriage } from "@/lib/server";
+import { SEVERITY_ORDER, type Severity, type TriageItem } from "@/lib/api";
+import { getBriefing, getTriage } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +77,9 @@ export default async function TriagePage({
     owner?: string;
     order?: string;
     triage?: string;
+    /** Which finding the detail pane is showing. In the URL rather than in
+     *  state, so the row somebody is looking at survives a refresh. */
+    finding?: string;
   }>;
 }) {
   const query = await searchParams;
@@ -95,6 +99,30 @@ export default async function TriagePage({
   }
 
   const { items, open_by_severity, total_open, truncated } = result.data;
+
+  // The scanners' own remediation, fetched once for the whole estate rather
+  // than per selection: the queue spans repositories, so a per-finding lookup
+  // would be a request every time somebody pressed `j`.
+  //
+  // A failed briefing costs the "what to do" block and nothing else. The queue
+  // was the page before this and still is.
+  const briefing = await getBriefing();
+  const fixByRule: Record<string, { fix: string; source: string; effort: string }> = {};
+  if (briefing.ok) {
+    for (const capability of briefing.data.guidance) {
+      for (const rule of capability.rules) {
+        fixByRule[rule.rule_id] = {
+          fix: rule.fix,
+          source: rule.source,
+          effort: rule.effort,
+        };
+      }
+    }
+  }
+
+  // Selection lives in the URL, like every other part of this view, so the row
+  // somebody is looking at survives a refresh and can be sent to somebody else.
+  const selected = items.find((item) => item.finding_id === query.finding);
 
   const filterHref = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
@@ -270,133 +298,73 @@ export default async function TriagePage({
           }
         />
       ) : (
-        <div className="scroll-x border border-rule">
-          <table className="w-full min-w-[880px] border-collapse bg-paper-2 font-mono text-[11px]">
-            <thead>
-              <tr className="border-b-2 border-ink-2 text-left">
-                {[
-                  "Sev",
-                  "Repository",
-                  "Verdict",
-                  "Rule",
-                  "Location",
-                  "Cap",
-                  "Effort",
-                  ...(query.order === "rank" ? ["Rank"] : []),
-                  "Classifier",
-                  "Age",
-                ].map(
-                  (heading) => (
-                    <th
-                      key={heading}
-                      className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
-                    >
-                      {heading}
-                    </th>
-                  ),
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr
-                  key={item.finding_id}
-                  className="border-b border-rule-soft last:border-b-0 hover:bg-paper-3"
-                >
-                  <td className="px-2 py-2">
-                    <SeverityText severity={item.severity as Severity} />
-                    {item.in_kev ? (
-                      <span className="ml-1" title={`${item.cve_id} is in CISA's KEV catalog`}>
-                        <Pill tone="critical">KEV</Pill>
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="max-w-[22ch] truncate px-2 py-2">
-                    <Link
-                      href={`/repos/${item.repo_id}`}
-                      className="text-ink hover:text-accent"
-                      title={item.repo_full_name}
-                    >
-                      {item.repo_full_name}
-                    </Link>
-                  </td>
-                  <td className="px-2 py-2">
-                    <Verdict recommendation={item.repo_recommendation} />
-                  </td>
-                  <td className="px-2 py-2">
-                    <Link
-                      href={`/repos/${item.repo_id}?tab=findings&finding=${item.finding_id}`}
-                      className="font-semibold text-ink hover:text-accent"
-                      title={item.title}
-                    >
-                      {item.rule_id}
-                    </Link>
-                  </td>
-                  <td className="max-w-[26ch] truncate px-2 py-2 text-ink-2">
-                    {item.package_name
-                      ? `${item.package_name}@${item.package_version ?? "?"}`
-                      : (item.file_path ?? "—")}
-                    {item.line_start ? `:${item.line_start}` : ""}
-                  </td>
-                  <td className="px-2 py-2 text-ink-3">{item.capability}</td>
-                  <td className="whitespace-nowrap px-2 py-2">
-                    {item.effort ? (
-                      <Pill tone={item.effort === "one_click" ? "pass" : "muted"}>
-                        {item.effort.replace(/_/g, " ")}
-                      </Pill>
-                    ) : (
-                      <span className="text-ink-3">—</span>
-                    )}
-                  </td>
-                  {query.order === "rank" ? (
-                    <td
-                      className="tabular whitespace-nowrap px-2 py-2 font-bold text-ink"
-                      title={(item.rank_terms ?? [])
-                        .map((term) => `${term.points > 0 ? "+" : ""}${term.points} ${term.detail}`)
-                        .join(String.fromCharCode(10))}
-                    >
-                      {item.rank?.toFixed(0) ?? "—"}
-                    </td>
-                  ) : null}
-                  <td className="px-2 py-2 align-top">
-                    {/* During a rollout the backend is briefly the previous
-                        one, which returns no classification at all -- the type
-                        says `string` and the runtime says undefined, the same
-                        gap that took the vulnerability-management page down
-                        between two deploys. An empty cell is the honest render
-                        of "this backend does not report that yet"; a review
-                        button that would 404 is not. */}
-                    {!item.triage ? (
-                      <span className="font-mono text-[9px] text-ink-3">—</span>
-                    ) : (
-                    <div className="flex flex-col gap-1">
-                      <span
-                        className="font-mono text-[9px] text-ink-3"
-                        title={item.triage_rationale}
+        <>
+          {/* Layout option 2: the queue and the thing you are working on stop
+              competing for one screen.
+
+              The ten-column table this replaces made every field equally
+              prominent and none of them readable — a truncated title beside a
+              truncated location beside a rank breakdown nobody could parse at
+              that width. The list now carries only what you scan for, and
+              everything else moved right, where there is room for it. */}
+          <WorklistKeys ids={items.map((item) => item.finding_id)} />
+          <div className="flex flex-col gap-3 lg:h-[calc(100vh-16rem)] lg:flex-row lg:gap-0">
+            {/* Scrolls on its own, so working an item never loses your place
+                in the queue — the single reason this shape is worth building
+                rather than widening the aside. */}
+            <div className="lg:w-[24rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+              <ul className="flex flex-col">
+                {items.map((item) => {
+                  const on = query.finding === item.finding_id;
+                  return (
+                    <li key={item.finding_id}>
+                      <Link
+                        href={filterHref({ finding: item.finding_id })}
+                        scroll={false}
+                        aria-current={on ? "true" : undefined}
+                        className={`flex flex-col gap-0.5 border-b border-rule-soft px-2.5 py-2 ${
+                          on
+                            ? "border-l-2 border-l-accent bg-accent-wash"
+                            : "border-l-2 border-l-transparent hover:bg-paper-3"
+                        }`}
                       >
-                        {CLASSIFICATION_LABEL[item.triage] ?? item.triage}
-                      </span>
-                      {/* Offered on every row, not only the machine's
-                          false-positive guesses: disagreeing is the half that
-                          recorded nothing before, and it is exactly the row
-                          the classifier got wrong that nobody could say so
-                          about (B-020). */}
-                      <ClassificationReview
-                        findingId={item.finding_id}
-                        classification={item.triage}
-                        rationale={item.triage_rationale ?? ""}
-                      />
-                    </div>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-2 align-top text-ink-2">
-                    <RelativeTime value={item.first_seen_at} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        <span className="flex flex-wrap items-baseline gap-1.5">
+                          <SeverityText severity={item.severity as Severity} />
+                          {item.in_kev ? (
+                            <span className="font-mono text-[8px] uppercase tracking-wide text-critical">
+                              kev
+                            </span>
+                          ) : null}
+                          <span className="font-mono text-[9px] text-ink-3">
+                            {item.capability}
+                          </span>
+                        </span>
+                        <span className="line-clamp-2 text-[11px] leading-snug text-ink">
+                          {item.title}
+                        </span>
+                        <span className="truncate font-mono text-[9px] text-ink-3">
+                          {item.repo_full_name}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            <div className="min-w-0 grow lg:overflow-y-auto lg:px-4">
+              {selected ? (
+                <WorklistDetail item={selected} fix={fixByRule[selected.rule_id]} />
+              ) : (
+                <div className="border border-rule bg-paper-2 px-3 py-4 text-[11px] leading-relaxed text-ink-3">
+                  Choose a finding, or press <span className="font-mono">j</span>.
+                  Everything the old table showed in ten columns is here, with
+                  room to read it.
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
 
       {truncated ? (
@@ -420,5 +388,123 @@ export default async function TriagePage({
         in a repo already called <span className="font-mono">no go</span>.
       </p>
     </div>
+  );
+}
+
+/**
+ * One finding, with room (layout option 2).
+ *
+ * Everything the ten-column table showed, plus the two things it had nowhere
+ * to put: the classifier's rationale — which was a `title` attribute, so it
+ * existed only for people who hovered and knew to — and the scanner's own
+ * remediation, which was on `/remediate` and nowhere near the finding it
+ * applied to.
+ *
+ * Ordered by what somebody opening a row wants: what it is, what to do, why
+ * the machine thinks what it thinks, then where it is and how it ranked.
+ */
+function WorklistDetail({
+  item,
+  fix,
+}: {
+  item: TriageItem;
+  fix?: { fix: string; source: string; effort: string };
+}) {
+  return (
+    <article className="flex flex-col gap-3 border border-rule bg-paper-2 p-3">
+      <div className="flex flex-col gap-1">
+        <span className="flex flex-wrap items-baseline gap-2">
+          <SeverityText severity={item.severity as Severity} />
+          {item.in_kev ? <Pill tone="critical">KEV</Pill> : null}
+          <span className="font-mono text-[10px] text-ink-3">{item.capability}</span>
+        </span>
+        <h2 className="text-[13px] font-semibold leading-snug">{item.title}</h2>
+        <span className="font-mono text-[10px] text-ink-3">
+          {item.rule_id}
+          {item.cve_id ? ` · ${item.cve_id}` : ""}
+        </span>
+      </div>
+
+      {/* First, because it is why the row was opened. */}
+      {fix ? (
+        <div className="border-l-2 border-accent-2 bg-paper-3 px-2.5 py-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <Label>What to do</Label>
+            <span className="text-[8px] uppercase tracking-wide text-ink-3">{fix.effort}</span>
+            {fix.source === "standing" ? (
+              <span
+                className="text-[8px] uppercase tracking-wide text-ink-3"
+                title="Written by this platform, not the scanner."
+              >
+                ours, not the scanner&rsquo;s
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-ink">{fix.fix}</p>
+        </div>
+      ) : null}
+
+      {item.triage ? (
+        <div className="flex flex-col gap-1">
+          <Label>What the classifier concluded</Label>
+          <span className="font-mono text-[10px] text-ink-2">
+            {CLASSIFICATION_LABEL[item.triage] ?? item.triage}
+          </span>
+          {/* Was a `title` attribute on a table cell, so it existed only for
+              somebody who hovered and knew to. It is the reasoning; it gets to
+              be visible. */}
+          {item.triage_rationale ? (
+            <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">
+              {item.triage_rationale}
+            </p>
+          ) : null}
+          <ClassificationReview
+            findingId={item.finding_id}
+            classification={item.triage}
+            rationale={item.triage_rationale ?? ""}
+          />
+        </div>
+      ) : null}
+
+      <div className="flex flex-col gap-1">
+        <Label>Where</Label>
+        <Link
+          href={`/repos/${item.repo_id}?tab=findings`}
+          className="font-mono text-[10px] text-accent hover:underline"
+        >
+          {item.repo_full_name}
+        </Link>
+        <span className="break-all font-mono text-[10px] text-ink-2">
+          {item.file_path
+            ? `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`
+            : item.package_name
+              ? `${item.package_name}@${item.package_version ?? "?"}`
+              : "—"}
+        </span>
+        <span className="flex flex-wrap items-baseline gap-1.5 font-mono text-[9px] text-ink-3">
+          first seen <RelativeTime value={item.first_seen_at} />
+          {item.effort ? <>· {item.effort}</> : null}
+          {/* `Verdict` rather than the raw string: it renders "not assessed"
+              distinctly from a real recommendation, and risk decisions are
+              opt-in — flattening both to text would let an unjudged repository
+              read as a judged one. */}
+          ·<Verdict recommendation={item.repo_recommendation} />
+        </span>
+      </div>
+
+      {/* The rank was a column of comma-joined terms nobody could read at that
+          width. Same numbers, one per line, which is all it ever needed. */}
+      {item.rank_terms?.length ? (
+        <div className="flex flex-col gap-0.5">
+          <Label>Why it ranks here {item.rank ? `· ${item.rank.toFixed(0)}` : ""}</Label>
+          {item.rank_terms.map((term) => (
+            <span key={term.detail} className="font-mono text-[9px] text-ink-2">
+              {term.points > 0 ? "+" : ""}
+              {term.points} {term.detail}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </article>
   );
 }
