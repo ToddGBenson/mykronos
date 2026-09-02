@@ -324,7 +324,7 @@ export function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="border border-rule bg-paper-2">
+    <section className="ticks border border-rule bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
         <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink">
           {title}
@@ -352,7 +352,10 @@ export function StatTile({
 }) {
   return (
     <div
-      className={`flex flex-col gap-0.5 border p-2.5 ${
+      // `ticks` here and not on every box: a stat tile is a measurement
+      // somebody can go and check, which is exactly what the corner marks are
+      // for. A mark on everything marks nothing.
+      className={`ticks flex flex-col gap-0.5 border p-2.5 ${
         alert ? "border-critical bg-critical-wash" : "border-rule bg-paper-2"
       }`}
     >
