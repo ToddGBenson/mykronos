@@ -70,7 +70,7 @@ export function ClassificationReview({
 
   if (done) {
     return (
-      <span className="font-mono text-[9px] text-ink-3">
+      <span className="font-mono text-[11px] text-ink-3">
         {done === "agreed" ? "dismissed" : "kept — classifier rejected"}
       </span>
     );
@@ -83,7 +83,7 @@ export function ClassificationReview({
         onClick={() => setOpen(true)}
         disabled={pending}
         title={rationale || "Review this classification"}
-        className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-accent hover:text-accent disabled:opacity-40"
+        className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent disabled:opacity-40"
       >
         review
       </button>
@@ -93,14 +93,14 @@ export function ClassificationReview({
   return (
     <div className="flex flex-col gap-1">
       {rationale ? (
-        <p className="max-w-[42ch] text-[9px] leading-snug text-ink-3">{rationale}</p>
+        <p className="max-w-[42ch] text-[11px] leading-snug text-ink-3">{rationale}</p>
       ) : null}
       <input
         type="text"
         value={reason}
         onChange={(event) => setReason(event.target.value)}
         placeholder="why — recorded either way"
-        className="w-full border border-rule bg-paper px-1.5 py-0.5 font-mono text-[9px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+        className="w-full border border-rule bg-paper px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
       />
       <div className="flex flex-wrap items-center gap-1">
         {confirmable ? (
@@ -113,7 +113,7 @@ export function ClassificationReview({
                 ? "Confirm: dismiss this as a false positive"
                 : "A reason is required — dampening reads the reason, not the click"
             }
-            className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
+            className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
           >
             agree — dismiss
           </button>
@@ -123,7 +123,7 @@ export function ClassificationReview({
           onClick={() => void send(false)}
           disabled={pending}
           title="Reject: this finding is real. Recorded against the classifier, and it does not dampen the rule."
-          className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
+          className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
         >
           disagree — it is real
         </button>
@@ -133,13 +133,13 @@ export function ClassificationReview({
             setOpen(false);
             setError(null);
           }}
-          className="px-1 font-mono text-[9px] text-ink-3 hover:text-accent"
+          className="px-1 font-mono text-[11px] text-ink-3 hover:text-accent"
         >
           cancel
         </button>
       </div>
       {error ? (
-        <p className="max-w-[42ch] text-[9px] leading-snug text-critical">{error}</p>
+        <p className="max-w-[42ch] text-[11px] leading-snug text-critical">{error}</p>
       ) : null}
     </div>
   );

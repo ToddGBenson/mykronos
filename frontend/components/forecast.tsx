@@ -33,7 +33,7 @@ export function AgeForecast({ forecast }: { forecast: Forecast | null }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border border-high bg-high-wash px-3 py-2">
       <Label>Forecast</Label>
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-2">
         With no changes, this repository reaches{" "}
         <span className="font-mono font-semibold text-critical">
           {(forecast.reaches ?? "no_go").replace(/_/g, " ")}

@@ -46,7 +46,7 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border border-rule bg-paper-2 px-3 py-2">
       <Label>Built and scanned by</Label>
       <a
-        className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+        className="font-mono text-[13px] text-accent underline-offset-2 hover:underline"
         href={ci.github_url}
         target="_blank"
         rel="noreferrer"
@@ -54,7 +54,7 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
         github.com/{ci.repo_full_name}
       </a>
       <a
-        className="font-mono text-[11px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
+        className="font-mono text-[13px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
         href={ci.github_actions_url}
         target="_blank"
         rel="noreferrer"
@@ -68,7 +68,7 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
           false one. */}
       {ci.pipeline_url && ci.pipeline !== "github-actions" ? (
         <a
-          className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+          className="font-mono text-[13px] text-accent underline-offset-2 hover:underline"
           href={ci.pipeline_url}
           target="_blank"
           rel="noreferrer"
@@ -138,11 +138,11 @@ export function JobLights({ ci }: { ci: CiPage }) {
 
   if (ci.unavailable) {
     return (
-      <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-3">{ci.unavailable}</p>
+      <p className="px-3 py-2 text-[14px] leading-relaxed text-ink-3">{ci.unavailable}</p>
     );
   }
   if (jobs.length === 0) {
-    return <p className="px-3 py-2 text-[11px] text-ink-3">This pipeline has no jobs.</p>;
+    return <p className="px-3 py-2 text-[13px] text-ink-3">This pipeline has no jobs.</p>;
   }
 
   return (
@@ -175,13 +175,13 @@ function JobTile({ job }: { job: CiJob }) {
 
   const body = (
     <div className={`flex flex-col gap-1 border-l-2 bg-paper-2 p-2.5 ${border}`}>
-      <span className="font-mono text-[10px] text-ink-2">{job.name}</span>
+      <span className="font-mono text-[12px] text-ink-2">{job.name}</span>
       <span
         className={`font-mono text-xs font-bold uppercase tracking-[0.06em] ${INDICATOR[tone].word}`}
       >
         {job.status ?? "not run"}
       </span>
-      <span className="font-mono text-[9px] leading-relaxed text-ink-3">
+      <span className="font-mono text-[11px] leading-relaxed text-ink-3">
         {job.build_name ? `#${job.build_name}` : "no build yet"}
         {job.finished_at ? (
           <>
@@ -226,7 +226,7 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
       <Label>Ran, but nothing arrived</Label>
       <ul className="mt-1 flex flex-col gap-0.5">
         {problems.map((row) => (
-          <li key={row.job} className="font-mono text-[10px] text-ink-2">
+          <li key={row.job} className="font-mono text-[12px] text-ink-2">
             <span className="font-bold">{row.job}</span> succeeded
             {row.built_at ? (
               <>

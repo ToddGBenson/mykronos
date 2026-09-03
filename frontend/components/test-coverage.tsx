@@ -31,7 +31,7 @@ export function TestCoverage({ row }: { row: Row | undefined }) {
   // make the honest one look like the broken one.
   if (line === null && branch === null) {
     return (
-      <p className="font-mono text-[10px] leading-relaxed text-ink-3">
+      <p className="font-mono text-[12px] leading-relaxed text-ink-3">
         No coverage reported. Write a Cobertura or JaCoCo report into
         <span className="text-ink-2"> $MYKRONOS_RESULTS</span> and it appears
         here.
@@ -46,7 +46,7 @@ export function TestCoverage({ row }: { row: Row | undefined }) {
           <span className="tabular font-mono text-lg font-bold leading-none text-ink">
             {percent(line)}
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
             lines
           </span>
         </span>
@@ -57,19 +57,19 @@ export function TestCoverage({ row }: { row: Row | undefined }) {
           <span className="tabular font-mono text-lg font-bold leading-none text-ink-2">
             {percent(branch)}
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
             branches
           </span>
         </span>
       ) : null}
 
       {row?.coverage_at ? (
-        <span className="font-mono text-[9px] text-ink-3">
+        <span className="font-mono text-[11px] text-ink-3">
           measured <RelativeTime value={row.coverage_at} />
         </span>
       ) : null}
 
-      <p className="w-full max-w-prose text-[10px] leading-relaxed text-ink-3">
+      <p className="w-full max-w-prose text-[12px] leading-relaxed text-ink-3">
         Not a security metric. It says how much of the code the suite executes,
         not whether it would catch anything that has gone wrong here — that is
         regression coverage, which counts fixed findings with a test pinned to

@@ -76,7 +76,7 @@ export default async function ThreatIntelPage({
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Threat intelligence</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {entries.length} CVE{entries.length === 1 ? "" : "s"} matched to open findings
         </span>
       </div>
@@ -95,7 +95,7 @@ export default async function ThreatIntelPage({
         action={
           <Link
             href="/triage"
-            className="border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
+            className="border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-accent hover:text-accent"
           >
             triage queue
           </Link>
@@ -175,7 +175,7 @@ export default async function ThreatIntelPage({
         </>
       )}
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label>Reading this list</Label>
         <br />
         Only findings with a CVE appear: most SAST and IaC findings describe a
@@ -203,9 +203,9 @@ function Tile({
     tone === "critical" ? "text-critical" : tone === "warn" ? "text-high" : "text-ink-2";
   return (
     <div className="border border-rule bg-paper-2 px-3 py-2">
-      <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-ink-3">{label}</div>
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">{label}</div>
       <div className={`font-mono text-xl font-bold tabular ${colour}`}>{value}</div>
-      <div className="text-[9px] leading-snug text-ink-3">{detail}</div>
+      <div className="text-[11px] leading-snug text-ink-3">{detail}</div>
     </div>
   );
 }
@@ -232,9 +232,9 @@ function Band({
     <section className={`flex flex-col gap-2 border-l-2 pl-3 ${edge}`}>
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 className="text-[13px] font-bold">{title}</h2>
-        <span className="font-mono text-[10px] text-ink-3">{entries.length}</span>
+        <span className="font-mono text-[12px] text-ink-3">{entries.length}</span>
       </div>
-      <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">{detail}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">{detail}</p>
 
       <div className="flex flex-col">
         {entries.map((entry) => (
@@ -249,13 +249,13 @@ function Band({
               <Link
                 href={`/threat-intel?q=${encodeURIComponent(entry.cve_id)}`}
                 title="Look this up across every repository"
-                className="font-mono text-[11px] font-semibold text-ink hover:text-accent"
+                className="font-mono text-[13px] font-semibold text-ink hover:text-accent"
               >
                 {entry.cve_id}
               </Link>
               <SeverityText severity={entry.worst_severity as Severity} />
               {entry.in_kev && entry.kev_added_at ? (
-                <span className="font-mono text-[9px] text-ink-3">
+                <span className="font-mono text-[11px] text-ink-3">
                   listed <RelativeTime value={entry.kev_added_at} />
                 </span>
               ) : null}
@@ -263,7 +263,7 @@ function Band({
 
             <EpssBar score={entry.epss_score} />
 
-            <div className="font-mono text-[9px] text-ink-3">
+            <div className="font-mono text-[11px] text-ink-3">
               {entry.finding_count} finding{entry.finding_count === 1 ? "" : "s"} ·{" "}
               {entry.repo_full_names.map((repo, index) => (
                 <span key={repo}>
@@ -299,7 +299,7 @@ function Band({
 function EpssBar({ score }: { score: number | null | undefined }) {
   if (typeof score !== "number") {
     return (
-      <span className="font-mono text-[9px] text-ink-3" title="Not yet fetched, or not scored">
+      <span className="font-mono text-[11px] text-ink-3" title="Not yet fetched, or not scored">
         no score
       </span>
     );
@@ -316,7 +316,7 @@ function EpssBar({ score }: { score: number | null | undefined }) {
         />
       </span>
       <span
-        className={`font-mono text-[10px] tabular ${score >= LIKELY ? "font-bold text-high" : "text-ink-2"}`}
+        className={`font-mono text-[12px] tabular ${score >= LIKELY ? "font-bold text-high" : "text-ink-2"}`}
       >
         {percent.toFixed(1)}%
       </span>

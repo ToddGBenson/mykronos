@@ -61,11 +61,11 @@ export function Toolbar({
             defaultValue={search.value ?? ""}
             placeholder={search.placeholder}
             aria-label={search.label}
-            className="min-w-[16rem] border border-rule bg-paper px-2 py-1 font-mono text-[10px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+            className="min-w-[16rem] border border-rule bg-paper px-2 py-1 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
           />
           <button
             type="submit"
-            className="border border-accent px-2 py-1 font-mono text-[10px] text-accent hover:bg-accent-wash"
+            className="border border-accent px-2 py-1 font-mono text-[12px] text-accent hover:bg-accent-wash"
           >
             {search.label}
           </button>

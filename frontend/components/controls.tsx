@@ -92,12 +92,12 @@ export function ControlList({
         >
           <Pill tone="accent">{kindLabel(control.kind)}</Pill>
 
-          <span className="text-[11px] text-ink-2">
+          <span className="text-[13px] text-ink-2">
             {control.description || <em className="text-ink-3">no description</em>}
           </span>
 
           {control.evidence_ref ? (
-            <span className="font-mono text-[10px] text-ink-3">
+            <span className="font-mono text-[12px] text-ink-3">
               {control.evidence_ref}
             </span>
           ) : (
@@ -105,7 +105,7 @@ export function ControlList({
             // would mean the register only ever holds the controls somebody
             // had time to document.
             <span
-              className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3"
+              className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3"
               title="Asserted with no file, route, policy or test named."
             >
               no evidence
@@ -116,7 +116,7 @@ export function ControlList({
               verified control, and the tab must not let it look like one. */}
           {!control.checkable ? (
             <span
-              className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3"
+              className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3"
               title="No capability here can contradict this control, so nothing checks it."
             >
               unchecked
@@ -126,7 +126,7 @@ export function ControlList({
           {control.stale ? (
             <Pill tone="warn">stale</Pill>
           ) : control.last_verified_at ? (
-            <span className="font-mono text-[9px] text-ink-3">
+            <span className="font-mono text-[11px] text-ink-3">
               confirmed <RelativeTime value={control.last_verified_at} />
             </span>
           ) : null}
@@ -136,7 +136,7 @@ export function ControlList({
               type="button"
               disabled={busy === control.control_id}
               onClick={() => act(control.control_id, "confirm")}
-              className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-accent hover:text-accent disabled:opacity-50"
+              className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent disabled:opacity-50"
             >
               still true
             </button>
@@ -144,14 +144,14 @@ export function ControlList({
               type="button"
               disabled={busy === control.control_id}
               onClick={() => act(control.control_id, "withdraw")}
-              className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-50"
+              className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-50"
             >
               withdraw
             </button>
           </span>
 
           {control.declared_by ? (
-            <span className="w-full font-mono text-[9px] text-ink-3">
+            <span className="w-full font-mono text-[11px] text-ink-3">
               declared by {control.declared_by}
             </span>
           ) : null}
@@ -159,7 +159,7 @@ export function ControlList({
       ))}
 
       {error ? (
-        <p className="border-t border-rule-soft px-3 py-1.5 text-[11px] text-critical">
+        <p className="border-t border-rule-soft px-3 py-1.5 text-[13px] text-critical">
           {error}
         </p>
       ) : null}
@@ -217,7 +217,7 @@ function DeclareControl({ repoId, stride }: { repoId: string; stride: string }) 
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="border-t border-rule-soft px-3 py-1.5 text-left font-mono text-[10px] text-ink-3 hover:text-accent"
+        className="border-t border-rule-soft px-3 py-1.5 text-left font-mono text-[12px] text-ink-3 hover:text-accent"
       >
         + declare a control for {stride.replace(/_/g, " ")}
       </button>
@@ -229,13 +229,13 @@ function DeclareControl({ repoId, stride }: { repoId: string; stride: string }) 
       <Label>Declare a control</Label>
 
       <label className="flex flex-col gap-1">
-        <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3">
+        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
           Kind
         </span>
         <select
           value={kind}
           onChange={(event) => setKind(event.target.value)}
-          className="border border-rule bg-paper px-1.5 py-1 font-mono text-[11px] text-ink"
+          className="border border-rule bg-paper px-1.5 py-1 font-mono text-[13px] text-ink"
         >
           {KINDS.map((value) => (
             <option key={value} value={value}>
@@ -246,48 +246,48 @@ function DeclareControl({ repoId, stride }: { repoId: string; stride: string }) 
       </label>
 
       <label className="flex flex-col gap-1">
-        <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3">
+        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
           What it does
         </span>
         <input
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="Every route behind the session middleware."
-          className="border border-rule bg-paper px-1.5 py-1 text-[11px] text-ink"
+          className="border border-rule bg-paper px-1.5 py-1 text-[13px] text-ink"
         />
       </label>
 
       <label className="flex flex-col gap-1">
-        <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-ink-3">
+        <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
           Evidence — a file, route, policy or test
         </span>
         <input
           value={evidence}
           onChange={(event) => setEvidence(event.target.value)}
           placeholder="app/middleware/auth.py"
-          className="border border-rule bg-paper px-1.5 py-1 font-mono text-[11px] text-ink"
+          className="border border-rule bg-paper px-1.5 py-1 font-mono text-[13px] text-ink"
         />
-        <span className="text-[10px] leading-relaxed text-ink-3">
+        <span className="text-[12px] leading-relaxed text-ink-3">
           Optional. A control without one is recorded as asserted rather than
           referenced — worth having, and shown as the weaker claim.
         </span>
       </label>
 
-      {error ? <p className="text-[11px] text-critical">{error}</p> : null}
+      {error ? <p className="text-[13px] text-critical">{error}</p> : null}
 
       <div className="flex items-center gap-2">
         <button
           type="button"
           disabled={saving}
           onClick={save}
-          className="border border-accent px-2 py-0.5 font-mono text-[10px] text-accent hover:bg-accent-wash disabled:opacity-50"
+          className="border border-accent px-2 py-0.5 font-mono text-[12px] text-accent hover:bg-accent-wash disabled:opacity-50"
         >
           {saving ? "recording…" : "declare"}
         </button>
         <button
           type="button"
           onClick={() => setOpen(false)}
-          className="font-mono text-[10px] text-ink-3 hover:text-ink"
+          className="font-mono text-[12px] text-ink-3 hover:text-ink"
         >
           cancel
         </button>

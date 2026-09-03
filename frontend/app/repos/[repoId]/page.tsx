@@ -154,13 +154,13 @@ export default async function RepoPage({
       {ci.ok ? (
         <PipelineLinks ci={ci.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
           {ci.error}
         </p>
       )}
 
       {repo.data.pending_capabilities?.length ? (
-        <div className="border border-high bg-high-wash px-3 py-2 text-[11px] text-ink-2">
+        <div className="border border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2">
           <strong className="text-high">Awaiting merge.</strong>{" "}
           {repo.data.pending_capabilities.join(", ")} will start running once
           pull request{" "}
@@ -179,7 +179,7 @@ export default async function RepoPage({
                 ? `/repos/${repoId}`
                 : `/repos/${repoId}?tab=${entry.id}`
             }
-            className={`-mb-0.5 border-b-2 px-3 py-1.5 font-mono text-[10px] ${
+            className={`-mb-0.5 border-b-2 px-3 py-1.5 font-mono text-[12px] ${
               tab === entry.id
                 ? "border-accent font-bold text-ink"
                 : "border-transparent text-ink-3 hover:text-accent"
@@ -291,7 +291,7 @@ function DashboardTab({
         detail="how each one is running, and which jobs back it"
         aside={
           scanHealth ? (
-            <span className="font-mono text-[10px] text-ink-3">
+            <span className="font-mono text-[12px] text-ink-3">
               {reported.length} of {boxes.length} have ever run
               {ci?.pipeline ? ` · ${ci.pipeline}` : ""}
             </span>
@@ -304,7 +304,7 @@ function DashboardTab({
               <Label>Run health</Label>
             </div>
             {scanHealthError ? (
-              <p className="px-3 py-2 text-[11px] text-critical">{scanHealthError}</p>
+              <p className="px-3 py-2 text-[13px] text-critical">{scanHealthError}</p>
             ) : (
               <ScanHealthBoxes capabilities={boxes} health={scanHealth?.capabilities ?? []} />
             )}
@@ -322,7 +322,7 @@ function DashboardTab({
             ) : (
               // Said rather than dropped. A block that quietly disappears when
               // its fetch fails reads as a repository with no pipeline.
-              <p className="px-3 py-2 text-[11px] text-critical">
+              <p className="px-3 py-2 text-[13px] text-critical">
                 Pipeline state could not be read.
               </p>
             )}
@@ -394,7 +394,7 @@ function SecurityScans({
   return (
     <section className="flex flex-col gap-2 border-t border-rule pt-3">
       <Label>Security scans</Label>
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-2">
         <strong className="text-ink">These produce findings, not a score.</strong>{" "}
         A scan started here writes findings that enter this repository&rsquo;s risk
         decision and stay open until two consecutive successful scans see them
@@ -414,7 +414,7 @@ function SecurityScans({
               key={capability.id}
               className="flex flex-wrap items-center justify-between gap-2 border-b border-rule-soft pb-1.5 last:border-0"
             >
-              <span className="font-mono text-[10px] text-ink-2">
+              <span className="font-mono text-[12px] text-ink-2">
                 <strong className="text-ink">{capability.label}</strong>
                 <span className="ml-2 text-ink-3">{capability.detail}</span>
               </span>
@@ -448,7 +448,7 @@ async function TestHarnessTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[14px] leading-relaxed text-ink-2">
         <strong className="text-ink">Pass/fail, not findings.</strong> Unit,
         functional, and QA-doc checks record a run and a count, never a
         security finding — a failing test cannot lower this repository&rsquo;s
@@ -460,7 +460,7 @@ async function TestHarnessTab({
       </p>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {boxes.length === 0
             ? "None of unit, functional, or qa is enabled for this repository — enable one on the Dashboard tab."
             : `Enabled: ${boxes.join(", ")}`}
@@ -479,12 +479,12 @@ async function TestHarnessTab({
           boxes.length > 0 ? (
             <ScanHealthBoxes capabilities={boxes} health={scanHealth.data.capabilities} />
           ) : (
-            <p className="px-3 py-3 text-[11px] text-ink-3">
+            <p className="px-3 py-3 text-[13px] text-ink-3">
               Nothing to show until unit, functional, or qa is enabled.
             </p>
           )
         ) : (
-          <p className="px-3 py-2 text-[11px] text-critical">{scanHealth.error}</p>
+          <p className="px-3 py-2 text-[13px] text-critical">{scanHealth.error}</p>
         )}
       </Section>
 
@@ -523,7 +523,7 @@ async function LaneTrend({
         {trend.ok ? (
           <PassRateSparkline capability={capability} points={trend.data.points} />
         ) : (
-          <p className="text-[11px] text-critical">{trend.error}</p>
+          <p className="text-[13px] text-critical">{trend.error}</p>
         )}
       </div>
       {/* Beside the sparkline rather than in a section of its own (spec 31
@@ -607,7 +607,7 @@ async function FindingDisposition({ findingId }: { findingId: string }) {
   const result = await getFinding(findingId);
   if (!result.ok) {
     return (
-      <p className="border-t border-rule pt-2 text-[10px] text-critical">
+      <p className="border-t border-rule pt-2 text-[12px] text-critical">
         {result.error}
       </p>
     );
@@ -615,12 +615,12 @@ async function FindingDisposition({ findingId }: { findingId: string }) {
   return (
     <div className="flex flex-col gap-2">
       {result.data.code_snippet ? (
-        <pre className="scroll-x max-h-40 border border-rule bg-paper p-2 font-mono text-[10px] leading-relaxed">
+        <pre className="scroll-x max-h-40 border border-rule bg-paper p-2 font-mono text-[12px] leading-relaxed">
           {result.data.code_snippet}
         </pre>
       ) : null}
       {result.data.fingerprint_version === "v1-line" ? (
-        <p className="border-l-2 border-high bg-high-wash px-2 py-1 text-[10px] text-ink-2">
+        <p className="border-l-2 border-high bg-high-wash px-2 py-1 text-[12px] text-ink-2">
           This finding&rsquo;s identity is positional — the adapter captured no
           code snippet, so it will churn when unrelated lines shift above it,
           and its age is unreliable.
@@ -667,7 +667,7 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
       {profile.ok ? (
         <RiskProfileCard repoId={repoId} profile={profile.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
           {profile.error}
         </p>
       )}
@@ -678,7 +678,7 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
       {reachability.ok ? (
         <ReachabilityCard report={reachability.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
           {reachability.error}
         </p>
       )}
@@ -709,7 +709,7 @@ async function SupplyChainTab({ repoId }: { repoId: string }) {
       {packages.ok ? (
         <VulnerablePackages data={packages.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
           {packages.error}
         </p>
       )}
@@ -741,7 +741,7 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
       {surfaces.ok ? (
         <Surfaces repoId={repoId} data={surfaces.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
           {surfaces.error}
         </p>
       )}
@@ -773,7 +773,7 @@ async function AegisTab({ repoId }: { repoId: string }) {
           <MergeCounts merges={posture.data.merges} />
         </>
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[11px] text-ink-3">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-ink-3">
           {posture.error}
         </p>
       )}
@@ -806,7 +806,7 @@ async function PatchworkTab({ repoId }: { repoId: string }) {
       {guidance.ok ? (
         <RecommendedFixes data={guidance.data} />
       ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[10px] text-critical">
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
           {guidance.error}
         </p>
       )}

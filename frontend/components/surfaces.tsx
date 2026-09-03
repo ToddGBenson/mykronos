@@ -48,7 +48,7 @@ export function Surfaces({ repoId, data }: { repoId: string; data: RepoSurfaces 
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-baseline gap-3">
         <Label>What this repository is</Label>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {data.total} declared
         </span>
         {data.internet_facing > 0 ? (
@@ -58,13 +58,13 @@ export function Surfaces({ repoId, data }: { repoId: string; data: RepoSurfaces 
           <Pill tone="muted">{data.unknowns} unanswered</Pill>
         ) : null}
         {!data.complete && data.total > 0 ? (
-          <span className="font-mono text-[9px] text-ink-3">
+          <span className="font-mono text-[11px] text-ink-3">
             incomplete — a model needs all three
           </span>
         ) : null}
       </div>
 
-      <p className="max-w-prose text-[10px] leading-relaxed text-ink-2">
+      <p className="max-w-prose text-[12px] leading-relaxed text-ink-2">
         <strong className="text-ink">Declared, not verified.</strong> Nothing
         here can confirm that a database holds customer records or that a port
         is reachable from outside. These are assertions a person made, which is
@@ -122,12 +122,12 @@ function Group({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[10px] font-bold text-ink">{title}</span>
-        <span className="font-mono text-[9px] text-ink-3">{hint}</span>
-        <span className="font-mono text-[9px] text-ink-3">· {rows.length}</span>
+        <span className="font-mono text-[12px] font-bold text-ink">{title}</span>
+        <span className="font-mono text-[11px] text-ink-3">{hint}</span>
+        <span className="font-mono text-[11px] text-ink-3">· {rows.length}</span>
       </div>
       {rows.length === 0 ? (
-        <p className="font-mono text-[9px] text-ink-3">
+        <p className="font-mono text-[11px] text-ink-3">
           none declared — this part of the model is missing
         </p>
       ) : (
@@ -167,9 +167,9 @@ function SurfaceRow({
 
   return (
     <div className="flex flex-wrap items-baseline gap-2 border-b border-rule-soft py-1 last:border-0">
-      <span className="font-mono text-[10px] text-ink">{row.name}</span>
+      <span className="font-mono text-[12px] text-ink">{row.name}</span>
       <span
-        className={`font-mono text-[9px] ${
+        className={`font-mono text-[11px] ${
           row.exposure === "internet"
             ? "text-high"
             : row.exposure === "unknown"
@@ -185,26 +185,26 @@ function SurfaceRow({
         {row.exposure}
       </span>
       {showSensitivity ? (
-        <span className="font-mono text-[9px] text-ink-2">{row.sensitivity}</span>
+        <span className="font-mono text-[11px] text-ink-2">{row.sensitivity}</span>
       ) : null}
       {row.description ? (
-        <span className="max-w-[46ch] text-[9px] leading-snug text-ink-3">
+        <span className="max-w-[46ch] text-[11px] leading-snug text-ink-3">
           {row.description}
         </span>
       ) : null}
       {row.evidence_ref ? (
-        <span className="font-mono text-[9px] text-ink-3">{row.evidence_ref}</span>
+        <span className="font-mono text-[11px] text-ink-3">{row.evidence_ref}</span>
       ) : null}
       <button
         type="button"
         onClick={() => void withdraw()}
         disabled={pending}
         title="Withdraw this declaration — a correction, not a deletion of evidence"
-        className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-40"
+        className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-40"
       >
         withdraw
       </button>
-      {error ? <span className="text-[9px] text-critical">{error}</span> : null}
+      {error ? <span className="text-[11px] text-critical">{error}</span> : null}
     </div>
   );
 }
@@ -243,7 +243,7 @@ function DeclareForm({ repoId }: { repoId: string }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="self-start border border-rule px-2 py-1 font-mono text-[10px] text-ink-2 hover:border-accent hover:text-accent"
+        className="self-start border border-rule px-2 py-1 font-mono text-[12px] text-ink-2 hover:border-accent hover:text-accent"
       >
         declare an asset, entry point or boundary
       </button>
@@ -256,7 +256,7 @@ function DeclareForm({ repoId }: { repoId: string }) {
         <select
           value={kind}
           onChange={(event) => setKind(event.target.value)}
-          className="border border-rule bg-paper p-1 font-mono text-[10px] text-ink"
+          className="border border-rule bg-paper p-1 font-mono text-[12px] text-ink"
         >
           {KINDS.map((entry) => (
             <option key={entry.id} value={entry.id}>
@@ -269,17 +269,17 @@ function DeclareForm({ repoId }: { repoId: string }) {
           value={name}
           onChange={(event) => setName(event.target.value)}
           placeholder="name — e.g. Cardholder database"
-          className="min-w-[18rem] flex-1 border border-rule bg-paper px-1.5 py-1 font-mono text-[10px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+          className="min-w-[18rem] flex-1 border border-rule bg-paper px-1.5 py-1 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
         />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-1 font-mono text-[9px] text-ink-3">
+        <label className="flex items-center gap-1 font-mono text-[11px] text-ink-3">
           exposure
           <select
             value={exposure}
             onChange={(event) => setExposure(event.target.value)}
-            className="border border-rule bg-paper p-1 text-[10px] text-ink"
+            className="border border-rule bg-paper p-1 text-[12px] text-ink"
           >
             {EXPOSURES.map((value) => (
               <option key={value} value={value}>
@@ -291,12 +291,12 @@ function DeclareForm({ repoId }: { repoId: string }) {
         {/* Only for an asset. Asking how sensitive a *way in* is produces an
             answer nobody can act on, and the backend drops it regardless. */}
         {kind === "asset" ? (
-          <label className="flex items-center gap-1 font-mono text-[9px] text-ink-3">
+          <label className="flex items-center gap-1 font-mono text-[11px] text-ink-3">
             holds
             <select
               value={sensitivity}
               onChange={(event) => setSensitivity(event.target.value)}
-              className="border border-rule bg-paper p-1 text-[10px] text-ink"
+              className="border border-rule bg-paper p-1 text-[12px] text-ink"
             >
               {SENSITIVITIES.map((value) => (
                 <option key={value} value={value}>
@@ -311,7 +311,7 @@ function DeclareForm({ repoId }: { repoId: string }) {
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="what it is, briefly"
-          className="min-w-[16rem] flex-1 border border-rule bg-paper px-1.5 py-1 font-mono text-[10px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+          className="min-w-[16rem] flex-1 border border-rule bg-paper px-1.5 py-1 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
         />
       </div>
 
@@ -321,7 +321,7 @@ function DeclareForm({ repoId }: { repoId: string }) {
           onClick={() => void submit()}
           disabled={pending || !name.trim()}
           title={name.trim() ? "Record this declaration" : "A name is required"}
-          className="border border-rule px-2 py-0.5 font-mono text-[10px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
+          className="border border-rule px-2 py-0.5 font-mono text-[12px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
         >
           declare
         </button>
@@ -331,18 +331,18 @@ function DeclareForm({ repoId }: { repoId: string }) {
             setOpen(false);
             setError(null);
           }}
-          className="px-1 font-mono text-[10px] text-ink-3 hover:text-accent"
+          className="px-1 font-mono text-[12px] text-ink-3 hover:text-accent"
         >
           cancel
         </button>
-        <span className="font-mono text-[9px] text-ink-3">
+        <span className="font-mono text-[11px] text-ink-3">
           Leave exposure as <span className="text-ink-2">unknown</span> if you do
           not know — it is a real answer, and guessing understates risk.
         </span>
       </div>
 
       {error ? (
-        <p className="max-w-prose text-[9px] leading-snug text-critical">{error}</p>
+        <p className="max-w-prose text-[11px] leading-snug text-critical">{error}</p>
       ) : null}
     </div>
   );

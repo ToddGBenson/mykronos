@@ -230,7 +230,13 @@ class TestStaleness:
         note = regression.as_dict(regression.Coverage(fixed_findings=1))["note"]
 
         assert "cannot catch" in note
-        assert "D-046" in note
+        # The *reason* has to survive, because that is what makes the limit
+        # understandable. The internal decision id that used to be asserted
+        # here does not: this string is rendered on the trends page, and
+        # "(D-046)" is a fact about this repository rather than about the
+        # reader's tests.
+        assert "suite totals" in note
+        assert "D-0" not in note
 
 
 class TestThePortfolio:

@@ -146,7 +146,7 @@ export function SscsTab({
       {!assessed ? (
         <section className="border border-high bg-high-wash p-2.5">
           <Label>Not assessed</Label>
-          <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+          <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
             {terms[0]?.detail ??
               "The scan resolved no dependencies, so no supply-chain trust was assessed."}{" "}
             This is not a clean result. Until the manifests resolve to a pinned
@@ -158,7 +158,7 @@ export function SscsTab({
       ) : terms.length > 0 ? (
         <section>
           <Label>How the trust score was reached</Label>
-          <table className="mt-1.5 w-auto border-collapse font-mono text-[10px]">
+          <table className="mt-1.5 w-auto border-collapse font-mono text-[12px]">
             <tbody>
               <tr>
                 <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">100</td>
@@ -206,7 +206,7 @@ export function SscsTab({
               </tr>
             </tbody>
           </table>
-          <p className="mt-1.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-1.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             Advisory counts are curved rather than summed, so more
             vulnerabilities always score worse without five criticals and five
             hundred both reaching zero. Ratio terms stay linear because a ratio
@@ -238,7 +238,7 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
 
   if (scored.length < 2) {
     return (
-      <p className="mt-1 text-[11px] text-ink-3">
+      <p className="mt-1 text-[13px] text-ink-3">
         {scored.length === 0
           ? `No scan has resolved dependencies yet${skipped > 0 ? ` (${skipped} assessed nothing)` : ""}.`
           : "One data point so far. A trend needs at least two scans."}
@@ -296,7 +296,7 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
         />
         <circle cx={lastX} cy={lastY} r="2.5" className="fill-current" />
       </svg>
-      <p className="mt-1 font-mono text-[9px] text-ink-3">
+      <p className="mt-1 font-mono text-[11px] text-ink-3">
         {scored.length} scans · dashed line is the default release floor of 50
         {skipped > 0 ? ` · ${skipped} not assessed, omitted` : ""}
       </p>
@@ -333,21 +333,21 @@ export function ReleaseEvidence({
     <details className="border-t border-rule pt-3">
       <summary className="cursor-pointer list-none">
         <Label>Release evidence</Label>
-        <span className="ml-2 font-mono text-[10px] text-ink-3">
+        <span className="ml-2 font-mono text-[12px] text-ink-3">
           {releases.length} release{releases.length === 1 ? "" : "s"} with an SBOM
         </span>
       </summary>
       <div className="mt-2">
           <Label>Release evidence</Label>
           <div className="scroll-x mt-1.5 border border-rule">
-            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[11px]">
+            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[13px]">
               <thead>
                 <tr className="border-b-2 border-ink-2 text-left">
                   {["Release", "Commit", "Trust", "SBOM", "Builder", "When"].map(
                     (heading) => (
                       <th
                         key={heading}
-                        className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                        className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                       >
                         {heading}
                       </th>

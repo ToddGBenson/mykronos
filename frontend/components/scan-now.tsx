@@ -69,17 +69,17 @@ export function ScanNowButton({
         type="button"
         onClick={run}
         disabled={busy}
-        className={`self-start border border-rule px-2 py-1 font-mono text-[10px] text-ink-2 hover:border-accent hover:text-accent ${
+        className={`self-start border border-rule px-2 py-1 font-mono text-[12px] text-ink-2 hover:border-accent hover:text-accent ${
           busy ? "opacity-40" : ""
         }`}
       >
         {busy ? "dispatching…" : label}
       </button>
 
-      {error ? <p className="font-mono text-[10px] text-critical">{error}</p> : null}
+      {error ? <p className="font-mono text-[12px] text-critical">{error}</p> : null}
 
       {result ? (
-        <p className="max-w-prose font-mono text-[10px] text-ink-3">
+        <p className="max-w-prose font-mono text-[12px] text-ink-3">
           {result.detail}
           {result.dispatched.length > 0 ? (
             <>

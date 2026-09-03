@@ -49,7 +49,7 @@ export async function IncidentResults({ query }: { query: string }) {
       <section className="border border-rule bg-paper-2">
         <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-2">
           <Label>Affected</Label>
-          <span className="font-mono text-[10px] text-ink-3">
+          <span className="font-mono text-[12px] text-ink-3">
             {view.affected.length === 0
               ? "no repository in the inventory contains it"
               : `${view.affected.length} repositor${view.affected.length === 1 ? "y" : "ies"} · worst first`}
@@ -57,13 +57,13 @@ export async function IncidentResults({ query }: { query: string }) {
         </div>
 
         {view.affected.length === 0 ? (
-          <p className="px-3 py-2 text-[11px] text-ink-3">
+          <p className="px-3 py-2 text-[13px] text-ink-3">
             Nothing matched. Read that together with the block below: it means
             nothing matched <em>among the repositories this can see</em>.
           </p>
         ) : (
           <div className="scroll-x">
-            <table className="w-full min-w-[720px] border-collapse font-mono text-[11px]">
+            <table className="w-full min-w-[720px] border-collapse font-mono text-[13px]">
               <tbody>
                 {view.affected.map((item) => (
                   <tr
@@ -114,7 +114,7 @@ export async function IncidentResults({ query }: { query: string }) {
                         </Pill>
                       ) : null}
                     </td>
-                    <td className="px-2 py-1.5 text-[10px] text-ink-3">
+                    <td className="px-2 py-1.5 text-[12px] text-ink-3">
                       {/* As of when, on every row. Stale data presented as
                           current is the other way this page could mislead
                           somebody who is in a hurry. */}
@@ -146,13 +146,13 @@ export async function IncidentResults({ query }: { query: string }) {
           <div className="border-b border-high/40 px-3 py-2">
             <Label>Not checked — {view.not_checked.length}</Label>
           </div>
-          <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+          <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
             <strong className="text-ink">These are not a clean result.</strong>{" "}
             No SBOM has reached the lake for them, so this page cannot say
             whether they contain it. Enable Atlas, or check them by hand before
             standing down.
           </p>
-          <ul className="flex flex-wrap gap-x-3 gap-y-1 px-3 pb-2 font-mono text-[11px] text-ink-2">
+          <ul className="flex flex-wrap gap-x-3 gap-y-1 px-3 pb-2 font-mono text-[13px] text-ink-2">
             {view.not_checked.map((name) => (
               <li key={name}>{name}</li>
             ))}
@@ -165,7 +165,7 @@ export async function IncidentResults({ query }: { query: string }) {
           <div className="border-b border-rule-soft px-3 py-2">
             <Label>Checked and clear — {view.clear.length}</Label>
           </div>
-          <ul className="flex flex-wrap gap-x-3 gap-y-1 px-3 py-2 font-mono text-[11px] text-ink-3">
+          <ul className="flex flex-wrap gap-x-3 gap-y-1 px-3 py-2 font-mono text-[13px] text-ink-3">
             {view.clear.map((name) => (
               <li key={name}>{name}</li>
             ))}
@@ -173,7 +173,7 @@ export async function IncidentResults({ query }: { query: string }) {
         </section>
       ) : null}
 
-      <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">{view.note}</p>
+      <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">{view.note}</p>
     </div>
   );
 }
@@ -188,7 +188,7 @@ function Advisory({
   // same error as calling an unscanned repository clean.
   if (view.in_kev == null && view.epss_score == null) {
     return (
-      <p className="border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] text-ink-3">
+      <p className="border-l-2 border-rule bg-paper-2 px-3 py-2 text-[13px] text-ink-3">
         No threat intelligence recorded for {view.query} — it has not been
         checked against KEV, which is not the same as not being listed.
       </p>
@@ -197,7 +197,7 @@ function Advisory({
 
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-l-2 border-rule bg-paper-2 px-3 py-2">
-      <span className="font-mono text-[11px] font-semibold text-ink">
+      <span className="font-mono text-[13px] font-semibold text-ink">
         {view.query}
       </span>
       {view.in_kev ? (
@@ -206,7 +206,7 @@ function Advisory({
         <Pill tone="muted">not in KEV</Pill>
       )}
       {view.epss_score != null ? (
-        <span className="font-mono text-[10px] text-ink-2">
+        <span className="font-mono text-[12px] text-ink-2">
           EPSS {view.epss_score.toFixed(2)} — probability of exploitation in 30
           days
         </span>

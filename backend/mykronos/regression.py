@@ -266,6 +266,6 @@ def as_dict(result: Coverage) -> dict[str, Any]:
             "run green in 30 days — which catches a suite that stopped "
             "running and cannot catch one deleted test inside a lane that "
             "still runs, because the JUnit adapter records suite totals "
-            "rather than case names (D-046)."
+            "rather than case names."
         ),
     }

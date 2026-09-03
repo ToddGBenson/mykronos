@@ -63,7 +63,7 @@ export function GovernancePanel({ posture }: { posture: GovernancePosture }) {
     <section className="border border-rule bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
         <Label>Change governance</Label>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           what would stop a bad change getting in
         </span>
 
@@ -76,7 +76,7 @@ export function GovernancePanel({ posture }: { posture: GovernancePosture }) {
               : `${posture.governance_score}/100`}
           </Pill>
           {posture.read_at ? (
-            <span className="font-mono text-[9px] text-ink-3">
+            <span className="font-mono text-[11px] text-ink-3">
               read <RelativeTime value={posture.read_at} />
             </span>
           ) : null}
@@ -84,12 +84,12 @@ export function GovernancePanel({ posture }: { posture: GovernancePosture }) {
       </div>
 
       {!posture.readable ? (
-        <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+        <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
           {posture.unreadable_reason}
         </p>
       ) : (
         <>
-          <table className="w-full border-collapse font-mono text-[11px]">
+          <table className="w-full border-collapse font-mono text-[13px]">
             <tbody>
               {controls.map((control) => (
                 <ControlRow key={control.key} control={control} />
@@ -97,7 +97,7 @@ export function GovernancePanel({ posture }: { posture: GovernancePosture }) {
             </tbody>
           </table>
 
-          <p className="max-w-prose border-t border-rule-soft px-3 py-2 text-[10px] leading-relaxed text-ink-3">
+          <p className="max-w-prose border-t border-rule-soft px-3 py-2 text-[12px] leading-relaxed text-ink-3">
             {posture.note}
           </p>
         </>
@@ -124,7 +124,7 @@ function ControlRow({ control }: { control: Control }) {
             control "would have prevented" reads as an accusation about
             something that did not happen. */}
         {prevents.length > 0 && control.state !== "on" ? (
-          <span className="text-[10px] text-ink-3">
+          <span className="text-[12px] text-ink-3">
             would stop: {prevents.map((s) => SIGNAL_LABEL[s] ?? s).join(", ")}
           </span>
         ) : null}
@@ -161,12 +161,12 @@ export function MergeCounts({ merges }: { merges: GovernancePosture["merges"] })
     <section className="border border-rule bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-2">
         <Label>Merges in the last {data.days} days</Label>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {data.assessed} assessed
         </span>
       </div>
 
-      <table className="w-full border-collapse font-mono text-[11px]">
+      <table className="w-full border-collapse font-mono text-[13px]">
         <tbody>
           {rows.map(([label, value]) => (
             <tr key={label} className="border-t border-rule-soft first:border-t-0">
@@ -184,7 +184,7 @@ export function MergeCounts({ merges }: { merges: GovernancePosture["merges"] })
       </table>
 
       {/* The sentence that keeps this inside spec 06 §9. */}
-      <p className="max-w-prose border-t border-rule-soft px-3 py-2 text-[10px] leading-relaxed text-ink-3">
+      <p className="max-w-prose border-t border-rule-soft px-3 py-2 text-[12px] leading-relaxed text-ink-3">
         {data.note}
       </p>
     </section>

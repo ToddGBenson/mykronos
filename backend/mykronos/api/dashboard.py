@@ -1134,10 +1134,14 @@ async def trends(
             }
             for point in series
         ],
+        # Reader-facing copy, so no internal citation: a specification section
+        # number is a fact about this repository, not about the reader's data,
+        # and it lands in the interface as noise for anyone who cannot open the
+        # document it names.
         "note": (
             "Every point is a query over first_seen_at and resolved_at, not a "
-            "stored snapshot, so any of them can be re-derived from the "
-            "findings themselves (spec 10 §6)."
+            "stored snapshot, so any of them can be recalculated from the "
+            "findings themselves."
         ),
     }
 

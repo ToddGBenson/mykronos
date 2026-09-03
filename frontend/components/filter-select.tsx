@@ -75,14 +75,14 @@ export function FilterSelect({
 
   return (
     <label className="flex items-center gap-1.5">
-      <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-ink-3">
+      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">
         {label}
       </span>
       <select
         value={value ?? ""}
         disabled={pending}
         onChange={(event) => choose(event.target.value)}
-        className={`border bg-paper px-1.5 py-0.5 font-mono text-[10px] focus:border-accent focus:outline-none disabled:opacity-50 ${
+        className={`border bg-paper px-1.5 py-0.5 font-mono text-[12px] focus:border-accent focus:outline-none disabled:opacity-50 ${
           active ? "border-accent text-accent" : "border-rule text-ink-2"
         }`}
       >

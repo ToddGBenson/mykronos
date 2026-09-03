@@ -33,7 +33,7 @@ export function VulnerablePackages({ data }: { data: SupplyChainPackages }) {
     <section className="flex flex-col gap-2">
       <div className="flex flex-wrap items-baseline gap-3">
         <Label>Vulnerable packages</Label>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {data.total} package{data.total === 1 ? "" : "s"} · {data.advisories}{" "}
           advisor{data.advisories === 1 ? "y" : "ies"}
         </span>
@@ -46,7 +46,7 @@ export function VulnerablePackages({ data }: { data: SupplyChainPackages }) {
       </div>
 
       {data.unfixable_advisories > 0 ? (
-        <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[10px] leading-relaxed text-ink-2">
+        <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[12px] leading-relaxed text-ink-2">
           <strong className="text-ink">
             {data.unfixable_advisories} of {data.advisories} advisories have no
             published fix.
@@ -60,7 +60,7 @@ export function VulnerablePackages({ data }: { data: SupplyChainPackages }) {
       ) : null}
 
       <div className="scroll-x">
-        <table className="w-full min-w-[720px] border-collapse font-mono text-[10px]">
+        <table className="w-full min-w-[720px] border-collapse font-mono text-[12px]">
           <thead>
             <tr className="text-left text-ink-3">
               <th className="px-2 py-1 font-normal">Package</th>
@@ -81,14 +81,14 @@ export function VulnerablePackages({ data }: { data: SupplyChainPackages }) {
                   {pkg.package_name}
                   {pkg.kev_count > 0 ? (
                     <span
-                      className="ml-1.5 text-[8px] uppercase tracking-wide text-critical"
+                      className="ml-1.5 text-[10px] uppercase tracking-wide text-critical"
                       title="Listed in CISA's Known Exploited Vulnerabilities catalogue — a fact, not a prediction"
                     >
                       KEV
                     </span>
                   ) : null}
                   {pkg.cves.length > 0 ? (
-                    <div className="mt-0.5 max-w-[36ch] text-[8px] leading-snug text-ink-3">
+                    <div className="mt-0.5 max-w-[36ch] text-[10px] leading-snug text-ink-3">
                       {pkg.cves.join(", ")}
                     </div>
                   ) : null}

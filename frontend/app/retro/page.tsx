@@ -43,7 +43,7 @@ export default async function RetroPage({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Retro</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {new Date(report.period_start).toISOString().slice(0, 10)} to{" "}
           {new Date(report.period_end).toISOString().slice(0, 10)}
         </span>
@@ -52,7 +52,7 @@ export default async function RetroPage({
             <a
               key={days}
               href={`/retro?days=${days}`}
-              className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+              className={`border px-1.5 py-0.5 font-mono text-[11px] ${
                 periodDays === days
                   ? "border-accent bg-accent-wash text-accent"
                   : "border-rule text-ink-3 hover:border-accent"
@@ -98,7 +98,7 @@ export default async function RetroPage({
         <section className="flex flex-col gap-2">
           <div>
             <h2 className="text-sm font-bold">Ready to generalise</h2>
-            <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+            <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
               Confirmed independently across repositories. Repeated dismissal
               inside one repository is one team&rsquo;s opinion held firmly,
               which is not the same evidence. Nothing below has been applied —
@@ -137,7 +137,7 @@ export default async function RetroPage({
         {trend.ok ? (
           <TrendTable report={trend.data} />
         ) : "notEnoughHistory" in trend ? (
-          <p className="max-w-prose border border-dashed border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-3">
+          <p className="max-w-prose border border-dashed border-rule bg-paper-2 px-3 py-2 text-[14px] leading-relaxed text-ink-3">
             {trend.notEnoughHistory}
           </p>
         ) : (
@@ -145,7 +145,7 @@ export default async function RetroPage({
         )}
       </section>
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label>Reading this page</Label>
         <br />
         Every figure is recomputed from the Knowledge Store and this
@@ -174,19 +174,19 @@ function LearningSection({
       <div>
         <h2 className="text-sm font-bold">
           {title}{" "}
-          <span className="font-mono text-[11px] font-normal text-ink-3">
+          <span className="font-mono text-[13px] font-normal text-ink-3">
             {rows.length}
           </span>
         </h2>
         {note ? (
-          <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             {note}
           </p>
         ) : null}
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-[11px] text-ink-3">{empty}</p>
+        <p className="text-[13px] text-ink-3">{empty}</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {rows.map((row) => (
@@ -195,23 +195,23 @@ function LearningSection({
               className="border border-rule bg-paper-2 px-3 py-2"
             >
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span className="font-mono text-[11px] font-bold">
+                <span className="font-mono text-[13px] font-bold">
                   {row.subject}
                 </span>
                 <ConfidenceBar value={row.confidence} />
-                <span className="font-mono text-[10px] text-ink-3">
+                <span className="font-mono text-[12px] text-ink-3">
                   {row.observations} observation{row.observations === 1 ? "" : "s"}
                 </span>
                 {row.repo_full_name ? (
-                  <span className="font-mono text-[10px] text-ink-3">
+                  <span className="font-mono text-[12px] text-ink-3">
                     {row.repo_full_name}
                   </span>
                 ) : null}
-                <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-ink-3">
+                <span className="ml-auto whitespace-nowrap font-mono text-[12px] text-ink-3">
                   <RelativeTime value={row.last_confirmed_at} />
                 </span>
               </div>
-              <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+              <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
                 {row.text}
               </p>
             </li>
@@ -226,28 +226,28 @@ function CandidateCard({ candidate }: { candidate: PromotionCandidate }) {
   return (
     <li className="border border-accent bg-accent-wash px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-[11px] font-bold">{candidate.subject}</span>
+        <span className="font-mono text-[13px] font-bold">{candidate.subject}</span>
         <Pill tone="accent">
           {candidate.from_tier} → {candidate.to_tier}
         </Pill>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {candidate.project_count} repositories · {candidate.total_observations}{" "}
           observations · confidence {candidate.mean_confidence.toFixed(2)}
         </span>
       </div>
-      <p className="mt-1 font-mono text-[10px] text-ink-3">
+      <p className="mt-1 font-mono text-[12px] text-ink-3">
         {candidate.repos.join(", ")}
       </p>
       {candidate.reasons.length > 0 ? (
         <ul className="mt-1.5 flex flex-col gap-0.5">
           {candidate.reasons.slice(0, 3).map((reason) => (
-            <li key={reason} className="max-w-prose text-[11px] text-ink-2">
+            <li key={reason} className="max-w-prose text-[14px] text-ink-2">
               — {reason}
             </li>
           ))}
         </ul>
       ) : (
-        <p className="mt-1.5 max-w-prose text-[11px] text-ink-3">
+        <p className="mt-1.5 max-w-prose text-[14px] text-ink-3">
           No reason may be shown: the contributing entries are marked
           restricted. Weigh this on the recurrence alone, or ask the
           repositories involved.
@@ -281,7 +281,7 @@ function ConfidenceBar({ value }: { value: number }) {
           style={{ width: `${Math.min(100, Math.max(0, value * 100))}%` }}
         />
       </span>
-      <span className="tabular font-mono text-[10px] text-ink-3">
+      <span className="tabular font-mono text-[12px] text-ink-3">
         {value.toFixed(2)}
       </span>
     </span>
@@ -302,7 +302,7 @@ function TrendTable({
 }) {
   return (
     <>
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         Learning volume across {report.points.length} periods of{" "}
         {report.period_days} days —{" "}
         <span className="font-mono text-ink-2">{report.direction}</span>. A word
@@ -310,14 +310,14 @@ function TrendTable({
         than they can carry.
       </p>
       <div className="scroll-x border border-rule">
-        <table className="w-full min-w-[520px] border-collapse bg-paper-2 font-mono text-[11px]">
+        <table className="w-full min-w-[520px] border-collapse bg-paper-2 font-mono text-[13px]">
           <thead>
             <tr className="border-b-2 border-ink-2 text-left">
               {["Period from", "New", "With reasons", "Reconfirmed", "Dismissals", "Overrides"].map(
                 (heading) => (
                   <th
                     key={heading}
-                    className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                    className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                   >
                     {heading}
                   </th>
