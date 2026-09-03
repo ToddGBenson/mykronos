@@ -45,19 +45,23 @@ already shipped.
 
 ## Open
 
-Five. Everything from the 2026-09-01 monitoring sweep, and all three gaps that
-writing [`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed.
-Every entry here was reproduced against the live system before it was written;
-the evidence is in each entry rather than a link to a dashboard that will have
-moved on.
+Three, and **all three need the operator rather than code**. B-018 is a
+decision only they can make, B-035 needs a credential this repository must not
+hold, and B-038 needs a decision about what this product is before it needs
+scoping. Writing code against any of them would be guessing.
 
-**Two need the operator rather than code.** B-018 is a decision only they can
-make, and B-035 needs a credential this repository must not hold. Writing code
-against either would be guessing.
+Everything from the 2026-09-01 monitoring sweep, all three gaps that writing
+[`finding-lifecycle.md`](finding-lifecycle.md) exposed, and five of the seven
+entries the 2026-09-03 DevSecOps assessment produced are in Closed. Every entry
+here was reproduced against the live system before it was written; the evidence
+is in each entry rather than a link to a dashboard that will have moved on.
 
 **B-032 through B-038 came from a DevSecOps assessment of the workflow on
-2026-09-03**, and they share a shape worth noticing: almost none of them is a
-missing feature. The finding record is an assembly over eleven services that
+2026-09-03.** Five landed the same day — the check run now names what a change
+introduced (B-036), every finding has an owner (B-034), the queue says what it
+could not rank by (B-033), a finding has a record of its own (B-032), and the
+current SBOM is reachable without knowing an evidence id (B-037). They shared a
+shape worth noticing: almost none of them was a missing feature. The finding record is an assembly over eleven services that
 already exist; the risk model is built and unpopulated; routing is switched on
 and nothing is routed; the notifier is configured and addressed to nobody; the
 check run's introduced-findings query has existed since D-048 and only the gate
@@ -148,113 +152,6 @@ enabled and inert is not.
 
 ---
 
-### B-032 — A finding has no record of its own
-
-**Size:** L **State:** open **Verified:** 2026-09-03
-
-One finding's story is spread across eleven surfaces, and deciding what to do
-about a single one currently means visiting five pages. Taking
-`CVE-2026-11822` / `libsqlite3-0` on `ToddGBenson/TheHub` as the worked example,
-here is where its facts live today:
-
-| fact | lives in |
-| --- | --- |
-| verdict, rationale, claim, snooze | triage queue |
-| group, occurrences, disposition | repo findings tab |
-| code snippet, raw scanner output | `GET /api/dashboard/findings/{id}` |
-| CVE, EPSS, KEV | threat intelligence |
-| package, **fixed version**, direct/transitive | supply chain |
-| the fix, its effort, how many it closes | remediate today |
-| CWE → STRIDE | threat model |
-| whether the lane can close it | scan health |
-| whether a regression test is pinned | regression coverage |
-| whether it is auto-fixable | patchwork |
-| what it is dangerous *with* | toxic combinations |
-
-Three of the facts that would change the decision — whether a fix exists,
-whether the lane can close it, whether the code is reachable — are not on the
-page where the decision gets made. The design proposal is approved; this entry
-is the build.
-
-**Four things are genuinely new.** The rest is assembly over services that
-already exist.
-
-- `GET /api/dashboard/findings/{id}/record` — one call returning the whole
-  record instead of eleven.
-- **Closure status per finding.** Does not exist at finding level anywhere
-  today; it is inferable from scan health if you know to go and look. Joining
-  the finding's lane to scan health and the absence counter is what stops
-  somebody fixing a defect twice because the first fix appeared not to work.
-- **Fix-group membership from the finding.** Guidance groups by change already;
-  only the reverse index is missing.
-- **Package facts on the finding** — `fixed_version`, `direct`, ecosystem,
-  joined from supply chain.
-
-**Acceptance criteria**
-
-- One page answers, in this order: what is it, does it matter *here*, what do I
-  do, what happened and can it end.
-- Every action is inline — claim, snooze, disposition, owner, due date, groom,
-  pin a regression test, preview a patch. The record is where the work happens,
-  not a report about work happening elsewhere.
-- "Can it close?" is stated explicitly, naming the lane and its health.
-- Missing context is visible rather than absent: a finding with no reachability
-  analysis and no declared exposure says so, because that is why it is ranked
-  by severity rather than by risk (see B-033).
-- The eleven surfaces keep working. This is a join, not a migration.
-
-**Provenance:** proposed and approved 2026-09-03 after a DevSecOps assessment of
-the workflow. Design, with the real values above rendered:
-`claude.ai/code/artifact/6dff82d0-e4dd-41a7-a7b4-60c78ca708e6`.
-
----
-
-### B-033 — Risk ranking presents itself as risk while running on severity
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-Nothing populates the context the risk model is built to weigh:
-
-```
-risk profile exists    0 of 4 repositories
-surfaces declared      0 of 4 repositories
-reachability analysed  2 of 4 repositories
-```
-
-`internet_facing`, `data_classification` and `business_criticality` are null
-everywhere, so scoring degrades to severity — and the interface presents the
-result as risk without saying which one the reader is looking at. A wrong label
-on a real number is worse than a missing number.
-
-**Acceptance criteria**
-
-- Either the profiles are filled, or every surface that ranks says what it is
-  ranking by.
-- The degradation is visible at the point of ranking, not in documentation.
-
-**Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-034 — 282 finding groups, 0 owners, routing enabled
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-`MYKRONOS_ROUTING_ENABLED=true` and every open finding group on the estate is
-unassigned; 255 of 282 also have no due date. An unowned finding is one nobody
-has agreed to fix, and the queue is currently a very good reading experience
-rather than a work assignment.
-
-**Acceptance criteria**
-
-- A default owner exists — CODEOWNERS, or the repository owner — so the empty
-  state is a starting point somebody can argue with rather than a blank.
-- Unowned is visible as a state worth fixing, not as an empty column.
-
-**Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
 ### B-035 — The notifier is configured and addressed to nobody
 
 **Size:** S **State:** open **Verified:** 2026-09-03
@@ -271,63 +168,6 @@ repository must not hold.
 
 - Either a webhook is configured, or the absence is recorded as a decision the
   way D-053 recorded paused DAST, so it stops reading as an oversight.
-
-**Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-036 — The check run scores the repository and never names the change
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`Mykronos / risk decision` renders a score, the arithmetic that produced it, and
-which modifiers were unavailable. What it never says is the one thing the author
-of the change can act on: **what this pull request introduced.**
-
-The score describes the whole open backlog, which is the right answer to "how
-much risk does this repository carry" and the wrong one to "should this ship".
-On a repository with 330 open findings the number barely moves, so the check
-reads the same whether the change added a critical or fixed one.
-
-**Most of this already exists.** `Queries.introduced_by()` has been computing
-exactly this since D-048 — same `first_seen_scan_run_id` join the pull-request
-filter now uses — but it returns counts by severity and only the gate consumes
-them. The missing piece is a row-returning variant and a section in the summary.
-
-**Acceptance criteria**
-
-- The check run names the findings the change introduced, not only a count.
-- Nothing introduced says so plainly, because "this change added nothing" is the
-  common case and the most reassuring thing the check can report.
-- The standing score stays. It answers a different question and both are worth
-  having on the page; they just have to be labelled as different questions.
-
-**Provenance:** DevSecOps assessment, 2026-09-03. Unblocked by the pull-request
-scoping in #182.
-
----
-
-### B-037 — There is no way to ask for the current SBOM
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-`GET /api/dashboard/repos/{id}/sscs/sbom` requires an `evidence_id` and returns
-422 without one. Tying an SBOM to a release artifact is arguably more correct
-than a floating "current" one — an SBOM without a build is a guess — but
-"what is in production right now" is the question customers, auditors and
-incident responders actually ask, and answering it today requires knowing an
-evidence id first.
-
-The incident case is the sharp one: a CVE lands, and the question is whether we
-ship the affected package *anywhere*. `sscs/packages` answers that per
-repository; nothing answers it as an artifact somebody can hand over.
-
-**Acceptance criteria**
-
-- A repository's most recent release evidence is reachable without knowing its
-  id, or the endpoint says which evidence to ask for.
-- The correctness of build-pinned SBOMs is preserved — this is a lookup, not a
-  floating document.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
 
@@ -402,6 +242,63 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-037 — The current SBOM is reachable without an evidence id — **done**
+
+**Closed 2026-09-03** by #188. `evidence_id` is optional; omitting it resolves
+the newest build that captured an SBOM. Pinning to a build stays correct — one
+without a build is a guess about what shipped — so this is a lookup of a real
+artifact rather than a floating document. A repository that has never built one
+now says so, which is a different answer from "wrong id".
+
+---
+
+### B-032 — A finding has a record of its own — **done**
+
+**Closed 2026-09-03** by #187. `GET /findings/{id}/record` and
+`/repos/{repoId}/findings/{findingId}`. An assembly over eleven services that
+already existed; the only genuinely new block is "can it close?", which was
+inferable from scan health if you knew to go and look, and which is what stops
+somebody fixing a defect twice.
+
+Rendering it against live data found a bug in itself: `fixable: true` beside an
+empty `fixed_version`, because the scanner writes `""` and the check was
+`is not None`.
+
+---
+
+### B-033 — Say what the ranking is ranking by — **done** (the code half)
+
+**Closed 2026-09-03** by #186. The queue returns and renders what it consulted
+and what it could not. The gap turned out to be sharper than filed: business
+context is not a *degraded* input, it is not a term in `rank_terms` at all, so
+this was a threat-intel ranking presenting itself as a risk one.
+
+Filling the profiles in remains the operator's half, and the disclosure
+disappears on its own the moment they exist.
+
+---
+
+### B-034 — Every finding has an owner — **done**
+
+**Closed 2026-09-03** by #185. A third rung — the account the repository
+belongs to — plus a backfill for the 1001 findings that predated ownership
+resolution. 282 unowned groups became 282 owned.
+
+It forced a distinction the module had deliberately collapsed: "no CODEOWNERS
+file" and "GitHub is down" both produced an empty rule list, which was fine
+while both led to `unresolved` and wrong the moment one of them could lead to
+an assignment.
+
+---
+
+### B-036 — The check run names the change — **done**
+
+**Closed 2026-09-03** by #183, with #184 fixing the log-injection finding that
+#183 itself introduced — the first time this feedback path closed on its own
+output.
+
+---
 
 ### B-024 — TheHub stopped scanning, and it was not the billing — **done**
 

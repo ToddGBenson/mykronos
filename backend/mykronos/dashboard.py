@@ -1833,6 +1833,42 @@ class DashboardQueries:
             return None
         return {"sbom_ref": rows[0][0]}
 
+    def latest_sscs_evidence(self, repo_full_name: str) -> dict[str, Any] | None:
+        """The newest evidence row that actually has an SBOM (B-037).
+
+        "What is in production right now" is the question customers, auditors
+        and incident responders ask, and answering it used to require knowing
+        an evidence id first — which nothing in the interface told you.
+
+        Pinning an SBOM to a build stays correct: an SBOM without one is a
+        guess about what shipped. This is a *lookup* of the most recent build,
+        not a floating document, so the answer is still an artifact somebody
+        can name and re-fetch.
+
+        Ordered by `evaluated_at` and filtered to rows that name a file, because
+        the newest evidence row is not always the newest *SBOM* — a run can
+        record trust scoring without capturing one, and returning that would be
+        a 404 that looked like "no SBOM here" rather than "not on that build".
+        """
+        rows = self.catalog.query(
+            """
+            SELECT evidence_id, sbom_ref, evaluated_at
+            FROM sscs_evidence
+            WHERE repo_full_name = ?
+              AND sbom_ref IS NOT NULL AND sbom_ref <> ''
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return None
+        return {
+            "evidence_id": str(rows[0][0]),
+            "sbom_ref": rows[0][1],
+            "evaluated_at": rows[0][2],
+        }
+
     # -- scan health ----------------------------------------------------
 
     def introduced_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:

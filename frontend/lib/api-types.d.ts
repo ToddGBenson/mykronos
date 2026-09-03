@@ -655,6 +655,12 @@ export interface paths {
          *     Admin-only — `may_see_raw_output`, the same gate every other archived
          *     tool output already sits behind (spec 12 §5): an SBOM is raw output too,
          *     just one atlas produced rather than a scanner.
+         *
+         *     **`evidence_id` is optional (B-037).** Pinning an SBOM to a build is
+         *     correct — one without a build is a guess about what shipped — but that
+         *     made the common question unanswerable without a lookup nobody knew to do.
+         *     Omitting it resolves the newest build that captured one, which is a lookup
+         *     of a real artifact rather than a floating document.
          */
         get: operations["repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get"];
         put?: never;
@@ -6161,8 +6167,9 @@ export interface operations {
     };
     repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get: {
         parameters: {
-            query: {
-                evidence_id: string;
+            query?: {
+                /** @description Omit for the most recent build that captured one — the 'what is in production right now' question, which used to require knowing an id nothing in the interface told you. */
+                evidence_id?: string | null;
             };
             header?: never;
             path: {
