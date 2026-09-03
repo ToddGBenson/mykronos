@@ -1664,6 +1664,42 @@ class TestSbomDownload:
 
         assert response.status_code == 403
 
+    def test_omitting_the_id_serves_the_newest_build(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """B-037 — "what is in production right now".
+
+        Pinning an SBOM to a build stays correct; requiring the caller to know
+        which build made answering the common question impossible without a
+        lookup nothing in the interface told them to do.
+        """
+        repo_id, _evidence_id = self._seed(client, admin_auth, run_compaction)
+        settings = client.app.state.settings
+        sbom_path = settings.datalake_dir / "raw" / "example" / "sbom.json"
+        sbom_path.parent.mkdir(parents=True, exist_ok=True)
+        sbom_path.write_text('{"bomFormat": "CycloneDX"}')
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom", headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"bomFormat": "CycloneDX"}
+
+    def test_a_repository_with_no_sbom_says_why(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """Distinct from "wrong id". Nothing has been built yet, and saying so
+        is the difference between a dead end and an explanation."""
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom", headers=admin_auth
+        )
+
+        assert response.status_code == 404
+        assert "recorded against a release" in response.json()["detail"]
+
     def test_an_unknown_evidence_id_is_404(
         self, client, admin_auth, run_compaction
     ) -> None:

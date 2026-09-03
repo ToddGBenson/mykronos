@@ -1736,13 +1736,28 @@ async def repo_sbom(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
-    evidence_id: Annotated[str, Query()],
+    evidence_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Omit for the most recent build that captured one — the "
+                "'what is in production right now' question, which used to "
+                "require knowing an id nothing in the interface told you."
+            ),
+        ),
+    ] = None,
 ) -> FileResponse:
     """The archived SBOM itself, not just its trust-score summary (spec 18 §8.2).
 
     Admin-only — `may_see_raw_output`, the same gate every other archived
     tool output already sits behind (spec 12 §5): an SBOM is raw output too,
     just one atlas produced rather than a scanner.
+
+    **`evidence_id` is optional (B-037).** Pinning an SBOM to a build is
+    correct — one without a build is a guess about what shipped — but that
+    made the common question unanswerable without a lookup nobody knew to do.
+    Omitting it resolves the newest build that captured one, which is a lookup
+    of a real artifact rather than a floating document.
     """
     if not principal.may_see_raw_output:
         raise HTTPException(
@@ -1754,12 +1769,24 @@ async def repo_sbom(
         )
 
     repo_full_name = _resolve_repo(request, repo_id)
-    row = _queries(request).sscs_evidence_row(repo_full_name, evidence_id)
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No supply-chain evidence {evidence_id} for this repository.",
-        )
+    if evidence_id is None:
+        row = _queries(request).latest_sscs_evidence(repo_full_name)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "No build of this repository has captured an SBOM yet. "
+                    "An SBOM is recorded against a release, so there is "
+                    "nothing to serve until one has been built."
+                ),
+            )
+    else:
+        row = _queries(request).sscs_evidence_row(repo_full_name, evidence_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No supply-chain evidence {evidence_id} for this repository.",
+            )
     sbom_ref = row.get("sbom_ref")
     if not sbom_ref:
         raise HTTPException(
