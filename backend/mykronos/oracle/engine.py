@@ -1448,6 +1448,50 @@ class OracleEngine:
         )
         return (report, int(rows[0][0]) if rows else 0)
 
+    def _accepted_risk(self, repo_full_name: str) -> dict[str, int]:
+        """Acceptances that are not decisions, counted.
+
+        An accepted finding is excluded from every open count, which is
+        correct — a risk somebody consciously took is not one nobody has
+        looked at. That exclusion is earned by acceptances that *are*
+        decisions, and this platform's own definition of one is "a decision
+        with a premise, and the premise is the part that expires".
+
+        So two things are counted: an acceptance with no grounds recorded or
+        no review date at all, and one whose review date has passed. Neither
+        is visible anywhere in the score today, which means a repository can
+        move 294 findings out of its open counts by setting a status and
+        never being asked about them again.
+        """
+        if not self.catalog.all_files("findings"):
+            return {"unqualified": 0, "expired": 0, "total": 0}
+        rows = self.catalog.query(
+            """
+            SELECT
+              count(*),
+              sum(CASE WHEN accepted_until IS NULL
+                        OR accepted_reason_code IS NULL
+                        OR trim(accepted_reason_code) = ''
+                       THEN 1 ELSE 0 END),
+              sum(CASE WHEN accepted_until IS NOT NULL
+                        AND accepted_until < current_date
+                       THEN 1 ELSE 0 END)
+            FROM findings
+            WHERE asset_id = ? AND status = 'accepted_risk'
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return {"unqualified": 0, "expired": 0, "total": 0}
+        total, unqualified, expired = rows[0]
+        return {
+            "total": int(total or 0),
+            # An expired acceptance is counted once, as expired — the heavier
+            # of the two — rather than in both buckets.
+            "unqualified": max(0, int(unqualified or 0) - int(expired or 0)),
+            "expired": int(expired or 0),
+        }
+
     def _blast_radius(self, repo_full_name: str) -> tuple[list[str], dict[str, int] | None]:
         """This repo's finding packages, and the portfolio map (spec 19 §2.4).
 
@@ -1729,6 +1773,53 @@ class OracleEngine:
                     contribution=points,
                     detail=f"+{points:g} (flat, once any {severity} passes {days} days)",
                     inputs={"count": count, "days": days},
+                )
+            )
+
+        # 2b. Accepted risk that is not a decision (B-040).
+        #
+        #     Accepted findings are excluded from every open count above, and
+        #     that exclusion is right — but it is *earned* by acceptances that
+        #     are decisions. An acceptance with no grounds and no review date
+        #     is indistinguishable in effect from ignoring the finding, and
+        #     until now it was invisible here: a repository could move 294
+        #     findings out of its counts by setting a status once.
+        accepted = self._accepted_risk(repo_full_name)
+        accepted_policy = self.policy.accepted_risk
+        for key, count, weight, label in (
+            (
+                "accepted.expired",
+                accepted["expired"],
+                accepted_policy.expired,
+                "acceptance(s) past their review date",
+            ),
+            (
+                "accepted.unqualified",
+                accepted["unqualified"],
+                accepted_policy.unqualified,
+                "acceptance(s) with no grounds or no review date",
+            ),
+        ):
+            if count == 0 or weight == 0:
+                continue
+            raw = count * weight
+            contribution = min(raw, accepted_policy.cap) if accepted_policy.cap else raw
+            capped = accepted_policy.cap and raw > accepted_policy.cap
+            terms.append(
+                Term(
+                    key=key,
+                    label=f"{count} {label}",
+                    contribution=contribution,
+                    detail=(
+                        f"{count} × {weight:g} = {raw:.1f}"
+                        + (f", capped at {accepted_policy.cap:g}" if capped else "")
+                    ),
+                    inputs={
+                        "count": count,
+                        "weight": weight,
+                        "capped": bool(capped),
+                        "accepted_total": accepted["total"],
+                    },
                 )
             )
 

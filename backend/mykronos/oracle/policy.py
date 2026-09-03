@@ -36,6 +36,34 @@ class AgePolicy:
 
 
 @dataclass(frozen=True)
+class AcceptedRiskPolicy:
+    """What an acceptance costs when it is not really a decision.
+
+    Accepted findings are excluded from the open counts, which is correct — a
+    risk somebody consciously took is not a risk nobody has looked at. But that
+    exclusion is only earned by acceptances that *are* decisions.
+
+    This platform's own definition is "a decision with a premise, and the
+    premise is the part that expires". An acceptance with no premise recorded
+    and no date to revisit it has neither. It is indistinguishable in effect
+    from ignoring the finding, and invisible to the score because of a status
+    somebody set once.
+
+    Two weights, and the expired one is heavier on purpose: an acceptance whose
+    review date has passed is worse than one that never had a date, because
+    somebody set a deadline and it went by.
+    """
+
+    #: Per finding accepted with no grounds recorded, or with no review date.
+    unqualified: float
+    #: Per finding whose review date has passed.
+    expired: float
+    #: Both are capped, so a large historic backlog cannot swamp the score the
+    #: way the composite gate D-083 retired did.
+    cap: float
+
+
+@dataclass(frozen=True)
 class DampeningPolicy:
     threshold: float
     dampening_factor: float
@@ -290,6 +318,7 @@ class Policy:
     sscs_penalty_cap: float
     remediation_discount: float
     age: AgePolicy
+    accepted_risk: AcceptedRiskPolicy
     dampening: DampeningPolicy
     risk_profile: RiskProfilePolicy
     governance: GovernancePolicy
@@ -373,6 +402,9 @@ def parse_policy(document: dict[str, Any]) -> Policy:
 
     modifiers = _require(document, "modifiers", "the policy root")
     age_raw = _require(modifiers, "finding_age", "modifiers")
+    # Optional: a policy written before this term existed still loads, and
+    # scores exactly as it did — zero weights mean the term never appears.
+    accepted_raw = modifiers.get("accepted_risk") or {}
     dampening_raw = _require(modifiers, "false_positive_dampening", "modifiers")
     # Optional, unlike the modifiers above: a deployment running the policy
     # file from before spec 21 keeps working, with every risk-profile weight
@@ -468,6 +500,13 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 modifiers["remediation_in_flight"], "discount", "modifiers.remediation_in_flight"
             ),
             "modifiers.remediation_in_flight.discount",
+        ),
+        accepted_risk=AcceptedRiskPolicy(
+            unqualified=_number(
+                accepted_raw.get("unqualified", 0), "accepted_risk.unqualified"
+            ),
+            expired=_number(accepted_raw.get("expired", 0), "accepted_risk.expired"),
+            cap=_number(accepted_raw.get("cap", 0), "accepted_risk.cap"),
         ),
         age=AgePolicy(
             over_30_days_critical=_number(

@@ -128,6 +128,28 @@ modifiers:
     over_30_days_critical: 15
     over_90_days_high: 10
 
+  # Accepted risk (B-040). Accepted findings are excluded from the open counts,
+  # which is right: a risk somebody consciously took is not a risk nobody has
+  # looked at. That exclusion is earned by acceptances that are *decisions*.
+  #
+  # This platform defines one as "a decision with a premise, and the premise is
+  # the part that expires". An acceptance with no grounds and no review date
+  # has neither — it is indistinguishable in effect from ignoring the finding,
+  # and invisible to the score because of a status somebody set once. On this
+  # estate that is 294 of 294.
+  #
+  # `expired` is heavier than `unqualified` deliberately: a review date that
+  # has passed is worse than never having set one, because somebody committed
+  # to revisiting and did not.
+  #
+  # Capped, because a large historic backlog must not swamp the score the way
+  # the composite gate D-083 retired did — that gate refused every commit once
+  # a backlog existed, and got switched off.
+  accepted_risk:
+    unqualified: 0.15
+    expired: 0.5
+    cap: 12
+
   # Knowledge Store (spec 11). Arrives in Phase 5; null until then.
   #
   # A rule that humans keep dismissing on this repo should stop shouting.
