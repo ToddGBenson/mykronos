@@ -218,6 +218,26 @@ that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
 
+### B-040 — Accepted risk is invisible to the risk decision — **done**
+
+**Closed 2026-09-03** by #191. Accepted findings are excluded from every open
+count, which is correct — a risk somebody consciously took is not one nobody
+has looked at. That exclusion is *earned* by acceptances that are decisions,
+and this platform's own definition is "a decision with a premise, and the
+premise is the part that expires".
+
+On the live estate, **294 of 294 acceptances had neither**: no grounds
+recorded, no review date. A repository could move 294 findings out of its
+counts by setting a status once and never being asked about them again.
+
+Oracle now carries two light, capped terms — `accepted.unqualified` and the
+heavier `accepted.expired`, because a review date that has passed is worse than
+never setting one. An acceptance with grounds and a future date still costs
+nothing, which is the whole point: the term punishes the missing premise, not
+the decision.
+
+---
+
 ### B-038 — Nothing runs before `git push` — **closed as a decision**
 
 **Closed 2026-09-03** by D-101. Asked directly, the operator confirmed the
