@@ -1514,6 +1514,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Tests
+         * @description What testing exists here, and what kinds of it do not.
+         *
+         *     The Harness tab answers "did the suite pass". This answers the question
+         *     behind it — which *kinds* of testing this repository has evidence of — and
+         *     names the kinds nothing here produces, with what would evidence each.
+         *
+         *     **Absent is the answer, not a blank.** A view that shows only the testing
+         *     that exists can never tell anybody what is missing, and what is missing is
+         *     the entire question. Contract, end-to-end, performance, accessibility,
+         *     resilience and post-deploy testing are listed by name whether or not this
+         *     repository does any of them.
+         *
+         *     **Coverage is a state, never a bare number.** `never_reported` is not 0%:
+         *     on 2026-09-03 every test run in this estate was in that state — the adapter
+         *     parses Cobertura and JaCoCo, the lake has the columns, and no pipeline was
+         *     writing a coverage document — and rendering it as zero would have been a
+         *     fabricated measurement of 227 real runs.
+         *
+         *     No score. The kinds are not equally applicable — a library needs no
+         *     post-deploy smoke test — so a single figure could only ever penalise a
+         *     repository for correctly not doing something.
+         */
+        get: operations["repo_tests_api_dashboard_repos__repo_id__tests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -5257,6 +5297,58 @@ export interface components {
             complete: boolean;
         };
         /**
+         * TestEstateOut
+         * @description What testing this repository has evidence of, and what kinds it lacks.
+         */
+        TestEstateOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Kinds */
+            kinds: components["schemas"]["TestKindOut"][];
+            /** Lanes */
+            lanes: components["schemas"]["TestLaneOut"][];
+            /** Note */
+            note: string;
+        };
+        /** TestKindOut */
+        TestKindOut: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Why */
+            why: string;
+            /** Presence */
+            presence: string;
+            /** Evidence */
+            evidence: string[];
+            /** How To Evidence */
+            how_to_evidence: string;
+        };
+        /** TestLaneOut */
+        TestLaneOut: {
+            /** Capability */
+            capability: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Runs */
+            runs: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Failed */
+            failed: number;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Coverage State */
+            coverage_state: string;
+            /** Line Coverage */
+            line_coverage: number | null;
+        };
+        /**
          * ThreatIntelEntryOut
          * @description One CVE, matched against every open finding that names it (spec 17 §4.4).
          */
@@ -7408,6 +7500,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SsdfOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_tests_api_dashboard_repos__repo_id__tests_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestEstateOut"];
                 };
             };
             /** @description Validation Error */

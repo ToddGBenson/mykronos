@@ -26,6 +26,7 @@ import { ReleaseEvidence, SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
 import { SsdfTab } from "@/components/ssdf";
+import { TestEstate } from "@/components/test-estate";
 import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
@@ -51,6 +52,7 @@ import {
   getRiskProfileProposal,
   getGovernance,
   getSsdf,
+  getTestEstate,
   getScanHealth,
   getScanRunTrend,
   getSscs,
@@ -457,7 +459,12 @@ async function TestHarnessTab({
   repoId: string;
   enabled: string[];
 }) {
-  const scanHealth = await getScanHealth(repoId);
+  // Alongside, not nested: the estate view is the larger half of this tab
+  // now, and a scan-health read that fails must not take it down with it.
+  const [scanHealth, estate] = await Promise.all([
+    getScanHealth(repoId),
+    getTestEstate(repoId),
+  ]);
   const reported = scanHealth.ok
     ? scanHealth.data.capabilities.map((c) => c.capability)
     : [];
@@ -490,6 +497,17 @@ async function TestHarnessTab({
           label="run tests"
         />
       </div>
+
+      {/* Above the run buttons because it is the question they are part of:
+          "run the unit suite" only reassures once you know whether a unit
+          suite is the only kind of testing this repository has. */}
+      {estate.ok ? (
+        <TestEstate data={estate.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
+          {estate.error}
+        </p>
+      )}
 
       <SecurityScans repoId={repoId} enabled={enabled} reported={reported} />
 

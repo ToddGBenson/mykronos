@@ -816,6 +816,31 @@ export async function getGovernance(
   }
 }
 
+export type TestEstateView =
+  paths["/api/dashboard/repos/{repo_id}/tests"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * What testing exists for this repository, and what kinds of it do not.
+ *
+ * Distinct from `getScanHealth`, which answers whether the lanes are running.
+ * This answers whether the lanes that exist are the testing this repository
+ * ought to have, which is the question nothing on the platform asked before.
+ */
+export async function getTestEstate(repoId: string): Promise<Result<TestEstateView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/tests",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read the test estate") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type SsdfView =
   paths["/api/dashboard/repos/{repo_id}/ssdf"]["get"]["responses"]["200"]["content"]["application/json"];
 
