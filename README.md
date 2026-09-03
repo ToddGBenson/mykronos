@@ -1,56 +1,114 @@
-# Project Mykronos
+# Mykronos
 
-**Unified AppSec onboarding, scanning, risk-decision, and dashboard platform.**
+**An AppSec control plane: it reads what your scanners report and tells you what
+is actually true.**
 
-Mykronos lets a security team register ("onboard") any GitHub repository, run a standard
-set of fifteen security and quality checks against it — through GitHub Actions workflows
-it installs, or through a Concourse pipeline the repository already has — collect every
-scan's results into a local data lake, run those results through a risk-decision engine,
-and view everything, across every onboarded repo, in one unified dashboard. A
-learning/RAG layer captures retro feedback over time so the whole system gets smarter
-about false positives, recurring issues, and process changes.
+Mykronos is not a scanner. Scanners are a commodity; knowing which of four
+hundred findings can close this afternoon, which are frozen behind a lane that
+quietly stopped reporting, and which single change closes seven of them is not.
+It onboards a GitHub repository, installs a standard set of checks, collects
+every result into a local data lake, scores it, and answers the questions the
+scanners cannot.
 
-Build order and milestones are in [`specs/13-build-roadmap.md`](specs/13-build-roadmap.md).
-The specs are written for a developer with no prior context on any of the source
-projects referenced below.
+## What it does that other tools do not
+
+**It knows when a scanner has stopped.** A lane that reports nothing looks
+exactly like a clean repository. Mykronos treats a silent lane as the leading
+item on the page — ahead of severity — because while one is silent, none of
+your numbers mean anything.
+
+**It refuses to close a finding on one clean scan.** Closure requires two
+consecutive *successful* scans that no longer see it. The cost is stated out
+loud: a broken lane freezes its findings open, and the platform tells you that
+is what happened rather than letting a failed scan launder into good news.
+
+**It groups remediation by the change, not the finding.** One response header
+that answers seven findings appears once, with its blast radius and the step
+that verifies it landed — including checking the header on the wire rather than
+in the config, which is where that fix usually fails.
+
+**It says when it does not know.** "0 of 430 are auto-fixable." "This ranking is
+severity and threat intelligence, not business risk, because no risk profile
+exists." "DAST reached a deployment, which is not the same as internet-facing —
+that lane runs inside CI against an ephemeral stack." A number you cannot check
+is a number people stop believing.
 
 ## Status
 
-All seven roadmap phases are built and in production, serving four onboarded
-repositories through three Concourse pipelines plus GitHub Actions. Work since the
-roadmap closed is tracked as decisions and retros rather than phases:
+Running in production against four repositories — one scanned by Concourse,
+three by GitHub Actions — with ten capabilities reporting.
+
+| | |
+|---|---|
+| Open findings | 430, every one owned and dated or visibly not |
+| Successful scan runs recorded | 2,581 |
+| Findings ever recorded | 2,964 |
+| Capabilities reporting | 10 of 15 |
+| Risk gate | Advisory. It would have refused 0 of the last 30 merges (D-102) |
+
+Known gaps, stated rather than implied:
 
 | Area | State |
 |---|---|
-| Phases 0–7 (lake → dashboard → Oracle → Aegis/Atlas → Knowledge → Patchwork → trends) | **Done** — every dashboard tab renders from real data |
-| The standard set: 15 checks per repo, icons, one-click enable/disable, coverage cross-check | **Done** — spec 10 §2.1, spec 15 §4a |
-| Concourse as the primary execution environment (spec 15/16); Actions retained for Actions-scanned repos | **Done** — uploader pinned at `v2` (D-051) |
-| Quality lanes as ScanRuns: unit, functional, QA docs (D-046); AI checks (D-047) | **Done** |
-| Network scanning (spec 14) | **Not started** — the authorization model and the ingest path exist; no scanner does. Nothing in the platform emits a network scan, so no CIDR would be scanned if one were authorized (spec 14 §0) |
-| DAST | Paused platform-wide until the scan has a resource budget (D-053) |
-| Harness/Findings tabs, threat intel (KEV/EPSS), exploitability in Oracle, scan-now dispatch, `ai` capability's first tool, i2i grooming, Triage-queue KEV badges / `min_epss`/`kev_only` filters (spec 17) | **Done** — no reachability engine; honestly `unknown` in Oracle, real call-graph analysis is separate work (D-057, D-058, D-059, #15) |
-| 8-tab repo page (Dashboard = capability manager/scan health/jobs, Findings, Harness = a real unit/functional/qa test runner, Threat Model, Supply chain, Insider Threat, Risk Decision, Remediation), portfolio/Findings count-mismatch fix, `triage`/Found-By filters, per-finding remediation preview + on-demand PR, SBOM download (spec 18) | **Done** — Threat Model is capability-level, not CWE-level (no `Finding` carries a structured CWE); its narrative layer is honest plumbing, no LLM wired. Harness's "run tests" reaches Concourse-scanned repos only — no GitHub Actions workflow template exists yet for unit/functional/qa (D-061, D-062, D-063) |
+| Network scanning | **Not started.** The authorization model and the ingest path exist; no scanner does, so no CIDR would be scanned if one were authorized |
+| Cloud posture | Enabled on one repository and structurally unable to run — no Azure principal (B-018) |
+| ZAP active scanning | Paused. It measured 548% CPU and 7 GiB on the shared host and took production down while it ran (D-053). Passive DAST still runs |
+| Notifications | The notifier is built, the severity threshold is set, and no webhook URL is configured — so everything is pull (B-035) |
+| Risk profiles | 0 of 4 repositories have one, so scoring degrades to severity and threat intelligence. The interface says so at the point of ranking (B-033) |
+| Local / pre-commit | Deliberately absent. This is a control plane, not a scanner, and the loop starts at push (D-101) |
 
-Implementation decisions the specs do not settle — and the ones that became spec
-changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md). Operational
-lessons worth carrying between projects are promoted to [`docs/lessons/`](docs/lessons/),
-and incident-scale days get a retro in [`docs/retros/`](docs/retros/). Work that
-is known and not yet done — including gaps where a spec claims more than the code
-delivers — is [`docs/BACKLOG.md`](docs/BACKLOG.md).
+## How it decides
 
-How a finding travels from a scanner to a closed record — deduplication,
-false-positive elimination, triage, remediation, and what each stage guarantees
-— is [`docs/finding-lifecycle.md`](docs/finding-lifecycle.md). The mechanisms
-are spread across fifteen specs; that document is the only place they are
-stated end to end, and it measures the estate against them.
+Three processes worth understanding before reading the code:
 
-The shape every Concourse pipeline conforms to — eleven numbered rules, the
-failure each one prevents, and a per-capability conformance table for both
-pipelines — is [`docs/pipeline-standard.md`](docs/pipeline-standard.md).
-Comments in the pipeline YAML cite it by rule number (D-078).
+**Triage.** Every finding lands in exactly one of `true_positive`,
+`likely_false_positive` or `needs_human_judgment`, and every classification
+carries a written reason — an unexplained verdict is treated as a bug. A rule
+this repository has dismissed *with a written reason* is quietened; a rule
+dismissed without one is not, because click counts are not evidence. One
+classifier serves both the dashboard and auto-remediation, so the platform
+cannot call something a false positive on one page and generate a fix for it on
+another.
 
-Spec changes land as their own commits before the code that depends on them. Where an
-outage forced code first, the spec sync is called out in the retro that covers it.
+**Toxic combinations.** A set of findings that together carry more risk than any
+of them alone — an unauthenticated endpoint beside a SQL-injectable query is one
+unauthenticated database. Rules are data rather than code, so they can be added
+without a release. Detecting one *stops* the individual fixes: repairing half a
+toxic pair makes the situation look resolved while the composite risk remains.
+
+**Remediation.** Six stages, and every finding produces exactly one event —
+including the ones where nothing happened, because "we looked at this and could
+not fix it" is useful and a finding that silently never appears is not. Fix
+generation is narrow by construction, and the platform structurally cannot merge
+its own work: the GitHub client exposes no merge operation and a test asserts
+the method does not exist.
+
+## Running it
+
+```bash
+# The stack: API, dashboard, Vault, Concourse, ZAP.
+cd deploy/mykronos
+docker compose --env-file ../../backend/.env up -d
+
+# The one thing that is not obvious: the GitHub App key is bind-mounted from
+# the host, and compose defaults it to /dev/null. deploy.ps1 resolves it; if
+# you call compose directly, export it first or GitHub auth fails silently.
+export MYKRONOS_GITHUB_APP_KEY_HOST_PATH=/path/to/app.pem
+```
+
+```bash
+# What to run first, and after every deploy: it leads with the lanes that
+# cannot close findings, which is the thing most likely to be wrong.
+mykronos briefing
+```
+
+Implementation decisions the specs do not settle — and the ones that became
+spec changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+Operational lessons worth carrying between projects are promoted to
+[`docs/lessons/`](docs/lessons/), incident-scale days get a retro in
+[`docs/retros/`](docs/retros/), and work that is known and not yet done —
+including gaps where a spec claims more than the code delivers — is in
+[`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Start here
 
@@ -97,6 +155,11 @@ subsystem, and each is a list of things that were *named* in an earlier spec —
 a capped signal, a scoring term, a snapshot category — and never wired to
 anything. Their status tables record what shipped and what was deliberately
 left, with the reasoning in `docs/DECISIONS.md`.
+
+The specs are the design record, not the current state. Where a spec and the
+running system disagree, the system is right and `docs/BACKLOG.md` says so —
+that gap is tracked rather than tidied away, because a spec that quietly
+describes something nobody built is worse than one that is visibly out of date.
 
 ## Provenance
 
