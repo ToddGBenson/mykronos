@@ -1,0 +1,505 @@
+<title>Mykronos Verdict Poster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* ---- page chrome: follows the viewer's theme ---- */
+  :root{
+    --page-bg:#E4E7EC;
+    --page-fg:#1B2029;
+    --page-dim:#67707E;
+    --page-rule:rgba(27,32,41,.16);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --page-bg:#090B0F;
+      --page-fg:#D3D9E2;
+      --page-dim:#79838F;
+      --page-rule:rgba(211,217,226,.14);
+    }
+  }
+  :root[data-theme="dark"]{
+    --page-bg:#090B0F;
+    --page-fg:#D3D9E2;
+    --page-dim:#79838F;
+    --page-rule:rgba(211,217,226,.14);
+  }
+
+  /* ---- poster inks: fixed ---- */
+  :root{
+    --graphite:#12151B;
+    --panel:#191E27;
+    --panel-2:#1F2530;
+    --steel:#3B7DFF;
+    --steel-dim:#2A5AB8;
+    --paper:#EDF0F4;
+    --mute:#8A95A5;
+    --mute-dim:#5D6878;
+    --rule:rgba(138,149,165,.22);
+    --rule-soft:rgba(138,149,165,.10);
+    --sev-crit:#E5484D;
+    --sev-high:#F76B15;
+    --sev-med:#E8B931;
+    --sev-pass:#30A46C;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box;}
+
+  body{
+    background:var(--page-bg);
+    color:var(--page-fg);
+    font-family:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+    padding:40px 20px 64px;
+    display:flex;flex-direction:column;align-items:center;gap:20px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .sheet-note{
+    width:100%;max-width:1000px;
+    display:flex;justify-content:space-between;align-items:baseline;
+    gap:16px;flex-wrap:wrap;
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--page-dim);
+    padding-bottom:10px;border-bottom:1px solid var(--page-rule);
+  }
+
+  /* ============ POSTER ============ */
+  .poster{
+    width:100%;max-width:1000px;
+    background:var(--graphite);
+    color:var(--paper);
+    position:relative;overflow:hidden;isolation:isolate;
+  }
+  .poster::before{
+    content:'';position:absolute;inset:0;
+    background-image:
+      linear-gradient(var(--rule-soft) 1px,transparent 1px),
+      linear-gradient(90deg,var(--rule-soft) 1px,transparent 1px);
+    background-size:40px 40px;
+    opacity:.6;pointer-events:none;z-index:0;
+  }
+  .poster::after{
+    content:'';position:absolute;
+    top:-200px;left:-120px;width:560px;height:560px;
+    background:radial-gradient(circle,rgba(59,125,255,.14) 0%,transparent 68%);
+    pointer-events:none;z-index:0;
+  }
+  .poster > *{position:relative;z-index:1;}
+
+  /* ---- masthead ---- */
+  .masthead{
+    padding:46px 52px 40px;
+    border-bottom:1px solid var(--rule);
+  }
+  .eyebrow{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10.5px;font-weight:500;letter-spacing:.26em;
+    text-transform:uppercase;color:var(--steel);
+    display:flex;align-items:center;gap:10px;margin-bottom:24px;
+  }
+  .eyebrow::before{content:'';width:22px;height:2px;background:var(--steel);flex:none;}
+
+  /* Sized so the wordmark fills the measure exactly and never clips:
+     the glyph run is 994px wide at 100px, against 896px of content width. */
+  .wordmark{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:800;
+    font-size:clamp(22px,calc(10vw - 14px),90px);
+    line-height:.94;letter-spacing:-.02em;
+    color:var(--paper);
+  }
+  .lede{
+    margin-top:22px;
+    display:grid;grid-template-columns:minmax(0,1fr) 300px;
+    gap:44px;align-items:start;
+  }
+  .lede h2{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:700;font-size:25px;line-height:1.24;
+    letter-spacing:-.012em;color:var(--paper);
+    text-wrap:balance;max-width:16em;
+  }
+  .lede h2 span{color:var(--steel);}
+  .lede p{
+    margin-top:16px;font-size:15px;line-height:1.6;
+    color:var(--mute);max-width:36em;
+  }
+
+  /* verdict card */
+  .verdict{
+    border:1px solid var(--rule);
+    background:var(--panel);
+    padding:0;
+  }
+  .verdict .v-head{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--mute-dim);
+    padding:13px 16px;border-bottom:1px solid var(--rule);
+  }
+  .v-row{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:12px;padding:10px 16px;
+    border-bottom:1px solid var(--rule-soft);
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:11px;color:var(--mute);
+  }
+  .v-row:last-child{border-bottom:none;}
+  .v-row b{color:var(--paper);font-weight:500;font-variant-numeric:tabular-nums;}
+  .sev{
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .sev::before{content:'';width:8px;height:8px;flex:none;}
+  .sev.crit::before{background:var(--sev-crit);}
+  .sev.high::before{background:var(--sev-high);}
+  .sev.med::before{background:var(--sev-med);}
+  .sev.pass::before{background:var(--sev-pass);}
+  .v-foot{
+    padding:12px 16px;
+    border-top:1px solid var(--rule);
+    background:rgba(48,163,108,.10);
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--sev-pass);
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+
+  /* ---- section scaffolding ---- */
+  .section{padding:38px 52px 40px;border-bottom:1px solid var(--rule);}
+  .s-head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:24px;}
+  .s-head h3{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:700;font-size:21px;letter-spacing:-.01em;color:var(--paper);
+  }
+  .s-head .s-sub{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--mute-dim);
+    border-left:1px solid var(--rule);padding-left:16px;
+  }
+
+  /* ---- the standard set ---- */
+  .lane{margin-bottom:18px;}
+  .lane:last-child{margin-bottom:0;}
+  .lane-label{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--mute-dim);margin-bottom:9px;
+    display:flex;align-items:center;gap:10px;
+  }
+  .lane-label::after{content:'';height:1px;flex:1;background:var(--rule);}
+  .checks{
+    display:grid;grid-template-columns:repeat(4,1fr);
+    gap:1px;background:var(--rule);border:1px solid var(--rule);
+  }
+  .check{
+    background:var(--panel);
+    padding:13px 14px 15px;
+    display:flex;flex-direction:column;gap:5px;
+  }
+  .check .c-name{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:700;font-size:14px;color:var(--paper);letter-spacing:-.005em;
+  }
+  .check .c-tool{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.09em;color:var(--steel);
+  }
+  .check .c-what{font-size:11.5px;line-height:1.45;color:var(--mute);}
+  .check.quality .c-tool{color:var(--sev-pass);}
+  /* Seven checks across a four-column grid: the odd one out takes the slack,
+     which suits the only check whose subject is an asset rather than a repo. */
+  .check.wide{grid-column:span 2;}
+
+  /* ---- flow ---- */
+  /* Seven stages, one row: a pipeline that wraps stops reading as a pipeline. */
+  .flow{
+    display:grid;grid-template-columns:repeat(7,1fr);
+    border:1px solid var(--rule);background:var(--panel);
+  }
+  .step{
+    min-width:0;
+    padding:15px 13px 17px;
+    border-right:1px solid var(--rule);
+    display:flex;flex-direction:column;gap:6px;
+  }
+  .step:last-child{border-right:none;}
+  .step.decision{background:var(--panel-2);border-top:2px solid var(--steel);}
+  .step .st-n{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.16em;color:var(--mute-dim);
+    font-variant-numeric:tabular-nums;
+  }
+  .step .st-t{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:700;font-size:14px;color:var(--paper);line-height:1.2;
+  }
+  .step.decision .st-t{color:var(--steel);}
+  .step .st-d{font-size:11px;line-height:1.42;color:var(--mute);hyphens:auto;}
+
+  /* ---- codenames ---- */
+  .codenames{
+    display:grid;grid-template-columns:repeat(3,1fr);
+    gap:1px;background:var(--rule);border:1px solid var(--rule);
+  }
+  .codename{
+    background:var(--panel);padding:18px 18px 20px;
+    display:flex;flex-direction:column;gap:7px;
+  }
+  .codename .cn-name{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:800;font-size:20px;letter-spacing:-.015em;color:var(--paper);
+  }
+  .codename .cn-role{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);
+  }
+  .codename p{font-size:12px;line-height:1.5;color:var(--mute);}
+
+  /* ---- honesty strip: the distinctive move ---- */
+  .honesty{
+    background:var(--panel-2);
+    border:1px solid var(--rule);
+    border-left:3px solid var(--sev-med);
+  }
+  .h-head{
+    padding:14px 20px;border-bottom:1px solid var(--rule);
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--sev-med);
+  }
+  .h-list{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--rule);}
+  .h-item{
+    background:var(--panel-2);padding:15px 20px;
+    display:flex;flex-direction:column;gap:4px;
+  }
+  .h-item .h-t{font-size:12.5px;font-weight:600;color:var(--paper);}
+  .h-item .h-d{font-size:11.5px;line-height:1.45;color:var(--mute);}
+  .h-item code{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10.5px;color:var(--sev-med);
+    background:rgba(232,185,49,.10);
+    padding:1px 5px;
+  }
+
+  /* ---- scale band ---- */
+  .band{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--rule);}
+  .stat{
+    padding:26px 22px 24px;border-right:1px solid var(--rule);
+    display:flex;flex-direction:column;gap:6px;
+  }
+  .stat:nth-child(4n){border-right:none;}
+  .stat:nth-child(n+5){border-top:1px solid var(--rule);}
+  .stat .n{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:800;font-size:36px;line-height:1;letter-spacing:-.025em;
+    color:var(--steel);font-variant-numeric:tabular-nums;
+  }
+  .stat .n small{font-size:19px;color:var(--steel-dim);}
+  .stat .l{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--mute-dim);
+  }
+
+  /* ---- colophon ---- */
+  .colophon{
+    padding:30px 52px 40px;
+    display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:center;
+  }
+  .stack{display:flex;flex-wrap:wrap;gap:7px;}
+  .chip{
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--mute);border:1px solid var(--rule);padding:6px 11px;
+  }
+  .chip.hot{color:var(--steel);border-color:rgba(59,125,255,.42);}
+  .sigil{display:flex;align-items:center;gap:14px;}
+  .sigil .mark{
+    width:52px;height:52px;flex:none;border:2px solid var(--steel);
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:800;font-size:24px;color:var(--steel);
+  }
+  .sigil .lock{
+    font-family:'Syne','IBM Plex Sans',sans-serif;
+    font-weight:700;font-size:17px;line-height:1.1;color:var(--paper);letter-spacing:-.01em;
+  }
+  .sigil .lock span{
+    display:block;font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:9.5px;font-weight:400;letter-spacing:.17em;text-transform:uppercase;
+    color:var(--mute-dim);margin-top:5px;
+  }
+
+  @media (max-width:820px){
+    .masthead{padding:34px 26px 30px;}
+    .lede{grid-template-columns:1fr;gap:26px;}
+    .section{padding:30px 26px 32px;}
+    .checks{grid-template-columns:repeat(2,1fr);}
+    .flow{grid-template-columns:1fr;}
+    .step{border-right:none;border-bottom:1px solid var(--rule);}
+    .step:last-child{border-bottom:none;}
+    .step.decision{border-top:none;border-left:2px solid var(--steel);}
+    .codenames{grid-template-columns:1fr;}
+    .h-list{grid-template-columns:1fr;}
+    .band{grid-template-columns:repeat(2,1fr);}
+    .stat{border-right:1px solid var(--rule);}
+    .stat:nth-child(2n){border-right:none;}
+    .stat:nth-child(n+3){border-top:1px solid var(--rule);}
+    .colophon{grid-template-columns:1fr;padding:26px 26px 32px;}
+  }
+</style>
+
+<div class="sheet-note">
+  <span>Project Mykronos &middot; AppSec Platform</span>
+  <span>Figures verified against source 2026-08-29</span>
+</div>
+
+<div class="poster">
+
+  <header class="masthead">
+    <div class="eyebrow">Unified AppSec onboarding, scanning &amp; risk decision</div>
+    <h1 class="wordmark">MYKRONOS</h1>
+
+    <div class="lede">
+      <div>
+        <h2>Register a repository. Fifteen checks run. <span>One engine decides.</span></h2>
+        <p>Onboard any GitHub repo and Mykronos installs the pipelines, runs the standard set of security and quality checks, lands every result in a local data lake, and puts it through a risk-decision engine that returns a verdict &mdash; not another list of findings for somebody to triage.</p>
+      </div>
+
+      <div class="verdict">
+        <div class="v-head">Oracle &middot; risk decision</div>
+        <div class="v-row"><span class="sev crit">Critical</span><b>blocks</b></div>
+        <div class="v-row"><span class="sev high">High</span><b>owner + due date</b></div>
+        <div class="v-row"><span class="sev med">Medium</span><b>worklist</b></div>
+        <div class="v-row"><span>KEV / EPSS</span><b>weighted</b></div>
+        <div class="v-row"><span>Reachability</span><b>unknown</b></div>
+        <div class="v-row"><span>Acceptance</span><b>expires</b></div>
+        <div class="v-foot"><span class="sev pass">Gate</span><span>pass / no-go</span></div>
+      </div>
+    </div>
+  </header>
+
+  <section class="section">
+    <div class="s-head">
+      <h3>The standard set</h3>
+      <div class="s-sub">Fifteen checks &middot; every onboarded repo</div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-label">Security surface &mdash; seven</div>
+      <div class="checks">
+        <div class="check"><div class="c-name">SAST</div><div class="c-tool">CodeQL &middot; SARIF</div><div class="c-what">Static analysis over first-party source.</div></div>
+        <div class="check"><div class="c-name">Secrets</div><div class="c-tool">Gitleaks</div><div class="c-what">Committed credentials, across history.</div></div>
+        <div class="check"><div class="c-name">Containers</div><div class="c-tool">Trivy</div><div class="c-what">Image layers, OS and library CVEs.</div></div>
+        <div class="check"><div class="c-name">IaC</div><div class="c-tool">Policy scan</div><div class="c-what">Terraform and compose misconfiguration.</div></div>
+        <div class="check"><div class="c-name">Cloud</div><div class="c-tool">AWS &middot; Azure</div><div class="c-what">Account posture against the subscription.</div></div>
+        <div class="check"><div class="c-name">DAST</div><div class="c-tool">ZAP</div><div class="c-what">Running-app scan against a target URL.</div></div>
+        <div class="check wide"><div class="c-name">Network</div><div class="c-tool">Nmap</div><div class="c-what">The one check whose subject is an asset, not a repository.</div></div>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-label">Risk &amp; supply chain &mdash; four</div>
+      <div class="checks">
+        <div class="check"><div class="c-name">Aegis</div><div class="c-tool">Insider risk</div><div class="c-what">AI-authorship disclosure and privilege-adjacent changes.</div></div>
+        <div class="check"><div class="c-name">Atlas</div><div class="c-tool">OSV &middot; SBOM</div><div class="c-what">Dependencies, licences, denylists and freshness.</div></div>
+        <div class="check"><div class="c-name">Patchwork</div><div class="c-tool">Fix PRs</div><div class="c-what">Auto-remediation, previewed before it opens a PR.</div></div>
+        <div class="check"><div class="c-name">Oracle</div><div class="c-tool">The gate</div><div class="c-what">Turns every other result into one decision.</div></div>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-label">Quality lanes &mdash; four &middot; these report runs, never findings</div>
+      <div class="checks">
+        <div class="check quality"><div class="c-name">Unit</div><div class="c-tool">JUnit</div><div class="c-what">A failing assertion is not a vulnerability.</div></div>
+        <div class="check quality"><div class="c-name">Functional</div><div class="c-tool">JUnit</div><div class="c-what">End-to-end behaviour, flaky tests flagged.</div></div>
+        <div class="check quality"><div class="c-name">QA docs</div><div class="c-tool">Evidence</div><div class="c-what">The paperwork an audit asks for.</div></div>
+        <div class="check quality"><div class="c-name">AI</div><div class="c-tool">Provenance</div><div class="c-what">Prompt-injection surface, model provenance, eval coverage.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="s-head">
+      <h3>From a repo URL to a verdict</h3>
+      <div class="s-sub">Two execution environments, one lake</div>
+    </div>
+    <div class="flow">
+      <div class="step"><div class="st-n">01</div><div class="st-t">Onboard</div><div class="st-d">GitHub App auth. Config validated at save.</div></div>
+      <div class="step"><div class="st-n">02</div><div class="st-t">Install</div><div class="st-d">A Concourse pipeline, or Actions workflows.</div></div>
+      <div class="step"><div class="st-n">03</div><div class="st-t">Scan</div><div class="st-d">On schedule, on push, or on demand.</div></div>
+      <div class="step"><div class="st-n">04</div><div class="st-t">Lake</div><div class="st-d">Normalised locally. Nothing leaves the estate.</div></div>
+      <div class="step decision"><div class="st-n">05</div><div class="st-t">Decide</div><div class="st-d">Severity, KEV, EPSS and asset context.</div></div>
+      <div class="step"><div class="st-n">06</div><div class="st-t">Work</div><div class="st-d">A ranked worklist. An owner. A due date.</div></div>
+      <div class="step"><div class="st-n">07</div><div class="st-t">Learn</div><div class="st-d">Re-scan on merge. Feed the retro back.</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="s-head">
+      <h3>The components</h3>
+      <div class="s-sub">Six services behind one dashboard</div>
+    </div>
+    <div class="codenames">
+      <div class="codename"><div class="cn-name">Oracle</div><div class="cn-role">Risk decision engine</div><p>The adviser and the gate. Publishes a path to green and a shadow report before it ever starts blocking.</p></div>
+      <div class="codename"><div class="cn-name">Aegis</div><div class="cn-role">Insider risk</div><p>The PR gate for AI authorship and privilege-adjacent change. States plainly whether it blocks.</p></div>
+      <div class="codename"><div class="cn-name">Atlas</div><div class="cn-role">Supply chain &middot; SCA</div><p>Dependency and licence compliance, SBOM download, and a freshness signal that is actually measured.</p></div>
+      <div class="codename"><div class="cn-name">Patchwork</div><div class="cn-role">Auto-remediation</div><p>Generates the fix PR from the finding, previews the diff, and learns from a rejected fix.</p></div>
+      <div class="codename"><div class="cn-name">JDED</div><div class="cn-role">Unified dashboard</div><p>Portfolio scoring across every repo, drilling into an eight-tab page per repository.</p></div>
+      <div class="codename"><div class="cn-name">Knowledge</div><div class="cn-role">RAG learning</div><p>Retro feedback captured across repos, so false positives and recurring issues get recognised.</p></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="s-head">
+      <h3>What it does not claim</h3>
+      <div class="s-sub">Stated on the poster, not buried in a footnote</div>
+    </div>
+    <div class="honesty">
+      <div class="h-head">Known limits &middot; carried in the docs as decisions</div>
+      <div class="h-list">
+        <div class="h-item"><div class="h-t">No reachability engine</div><div class="h-d">Exploitability is reported as <code>unknown</code> rather than guessed. Real call-graph analysis is separate work.</div></div>
+        <div class="h-item"><div class="h-t">DAST is paused</div><div class="h-d">Platform-wide, until the scan has a resource budget. Built, wired, deliberately off.</div></div>
+        <div class="h-item"><div class="h-t">Network awaits a CIDR</div><div class="h-d">Shipped and idle until there is a range the operator is authorised to scan.</div></div>
+        <div class="h-item"><div class="h-t">Threat model is capability-level</div><div class="h-d">STRIDE across capabilities, not per-CWE &mdash; no finding carries a structured CWE yet.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="stat"><div class="n">15</div><div class="l">Checks per repo</div></div>
+    <div class="stat"><div class="n">2,113</div><div class="l">Automated tests</div></div>
+    <div class="stat"><div class="n">76<small>K</small></div><div class="l">Lines of Python</div></div>
+    <div class="stat"><div class="n">79</div><div class="l">API endpoints</div></div>
+    <div class="stat"><div class="n">33</div><div class="l">Written specs</div></div>
+    <div class="stat"><div class="n">96</div><div class="l">Logged decisions</div></div>
+    <div class="stat"><div class="n">8</div><div class="l">Tabs per repo page</div></div>
+    <div class="stat"><div class="n">314</div><div class="l">Commits</div></div>
+  </section>
+
+  <footer class="colophon">
+    <div class="stack">
+      <span class="chip hot">FastAPI</span>
+      <span class="chip hot">Concourse</span>
+      <span class="chip">GitHub Actions</span>
+      <span class="chip">GitHub App</span>
+      <span class="chip">CodeQL</span>
+      <span class="chip">Trivy</span>
+      <span class="chip">Gitleaks</span>
+      <span class="chip">OSV</span>
+      <span class="chip">ZAP</span>
+      <span class="chip">Nmap</span>
+      <span class="chip">SARIF</span>
+      <span class="chip">KEV &middot; EPSS</span>
+      <span class="chip">SBOM</span>
+      <span class="chip">Docker</span>
+    </div>
+    <div class="sigil">
+      <div class="mark">M</div>
+      <div class="lock">MYKRONOS<span>Scan &middot; decide &middot; remediate</span></div>
+    </div>
+  </footer>
+
+</div>

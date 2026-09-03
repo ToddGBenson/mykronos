@@ -45,9 +45,10 @@ already shipped.
 
 ## Open
 
-Two, and **both need the operator rather than code**. B-018 is a decision only
-they can make, and B-035 needs a credential this repository must not hold.
-Writing code against either would be guessing.
+Three, and **all three need the operator rather than code**. B-018 is a
+decision only they can make, B-035 needs a credential this repository must not
+hold, and B-042 is a call about this repository's CI budget. Writing code
+against any of them would be guessing.
 
 B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
 The risk gate was asked about at the same time and stays advisory, recorded as
@@ -124,6 +125,43 @@ rest of `.env` on 2026-08-23 or deliberately never set — so writing code befor
 that choice would be guessing. It was deferred on 2026-09-01 with the capability
 left enabled and inert, which this entry itself calls the one indefensible
 state; that is a deliberate hold, not an oversight.
+
+### B-042 — Coverage is plumbed end to end and no pipeline writes it
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+Every test run in this lake reports `line_coverage = NULL`. All of them: 227
+unit runs and 55 functional runs on `mykronos`, 36 unit runs on `TheHub`.
+
+**Nothing is broken.** The JUnit adapter parses Cobertura `line-rate` and
+JaCoCo `LINE` counters (`adapters/tests_junit.py`), the registry merges the
+columns (`registry.py:223`), the lake stores them, `scan_health` reads the most
+recent run that *reported* coverage rather than the most recent run, and the
+uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS` and merges the results.
+Drop a `coverage.xml` beside `unit.xml` and the number appears.
+
+No pipeline writes one. `mykronos`'s own unit lane runs
+`python -m pytest -q -n auto --junitxml="$MYKRONOS_RESULTS/unit.xml"` and that
+is the entire gap: no `--cov`, and `pytest-cov` is not in the `dev` extra.
+
+This is the same shape as most of B-032 through B-038 — the capability is
+ahead of its wiring — and it is why the new test-estate view renders "never
+measured" for every lane on every repository.
+
+**Not done here, deliberately.** Coverage collection under `pytest-xdist` costs
+real time on a 14-minute suite that runs on every pull request, and spending
+that is a call about this repository's CI budget rather than a defect to fix.
+The per-repo lane `command` is operator config, not platform code.
+
+**Acceptance criteria**
+
+- `pytest-cov` in the `dev` extra and `--cov=mykronos
+  --cov-report=xml:$MYKRONOS_RESULTS/coverage.xml` on the unit lane command.
+- A figure appears on the Harness tab without any platform change, which is
+  the proof that the plumbing was always right.
+- The added CI time is measured and recorded, not assumed.
+
+---
 
 ### B-018 — `cloud` is enabled on a repository and its lane cannot run
 

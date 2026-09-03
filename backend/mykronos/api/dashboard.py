@@ -34,6 +34,7 @@ from mykronos import (
     ssdf,
     supply_chain,
     surfaces,
+    test_estate,
     worklist,
 )
 from mykronos.adminauth import PrincipalDep
@@ -4128,5 +4129,106 @@ async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> 
             "read is unknown rather than absent. The 800-53 families named against "
             "each practice are cross-references, not claims — whether an SSDF "
             "practice satisfies a given control is an assessor's judgement."
+        ),
+    )
+
+
+class TestKindOut(BaseModel):
+    key: str
+    name: str
+    why: str
+    presence: str
+    evidence: list[str]
+    how_to_evidence: str
+
+
+class TestLaneOut(BaseModel):
+    capability: str
+    enabled: bool
+    runs: int
+    succeeded: int
+    failed: int
+    last_run_at: str | None
+    coverage_state: str
+    line_coverage: float | None
+
+
+class TestEstateOut(BaseModel):
+    """What testing this repository has evidence of, and what kinds it lacks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    counts: dict[str, int]
+    kinds: list[TestKindOut]
+    lanes: list[TestLaneOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/tests", response_model=TestEstateOut)
+async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) -> TestEstateOut:
+    """What testing exists here, and what kinds of it do not.
+
+    The Harness tab answers "did the suite pass". This answers the question
+    behind it — which *kinds* of testing this repository has evidence of — and
+    names the kinds nothing here produces, with what would evidence each.
+
+    **Absent is the answer, not a blank.** A view that shows only the testing
+    that exists can never tell anybody what is missing, and what is missing is
+    the entire question. Contract, end-to-end, performance, accessibility,
+    resilience and post-deploy testing are listed by name whether or not this
+    repository does any of them.
+
+    **Coverage is a state, never a bare number.** `never_reported` is not 0%:
+    on 2026-09-03 every test run in this estate was in that state — the adapter
+    parses Cobertura and JaCoCo, the lake has the columns, and no pipeline was
+    writing a coverage document — and rendering it as zero would have been a
+    fabricated measurement of 227 real runs.
+
+    No score. The kinds are not equally applicable — a library needs no
+    post-deploy smoke test — so a single figure could only ever penalise a
+    repository for correctly not doing something.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+    health = queries.scan_health(repo_full_name)
+
+    reporting = {
+        str(lane["capability"])
+        for lane in health
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        enabled = set(row.enabled_capabilities or []) if row else set()
+
+    # Demonstrated only. An asserted link is somebody's claim that a test
+    # covers a finding; this view is about what the platform watched happen.
+    demonstrated = regression.coverage(request.app.state.catalog, repo_full_name).demonstrated
+
+    kinds = test_estate.assess(
+        reporting_capabilities=reporting,
+        demonstrated_regressions=demonstrated,
+    )
+    lanes = test_estate.lane_health(health, enabled)
+
+    return TestEstateOut(
+        repo_full_name=repo_full_name,
+        counts=test_estate.summarise(kinds),
+        kinds=[TestKindOut(**vars(kind)) for kind in kinds],
+        lanes=[TestLaneOut(**vars(lane)) for lane in lanes],
+        note=(
+            "Evidenced, not asserted. A lane that is enabled and has never reported "
+            "evidences no testing, and a lane with runs but no coverage document is "
+            "reported as never having measured coverage rather than as zero percent."
         ),
     )
