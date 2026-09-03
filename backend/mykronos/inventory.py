@@ -248,6 +248,81 @@ def exposure(
     return sorted(by_repo.values(), key=lambda e: e.repo_full_name)
 
 
+def archived_sboms(
+    catalog: Catalog,
+    *,
+    repo_full_name: str | None = None,
+    latest_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Every archived SBOM the inventory could be rebuilt from (B-039).
+
+    The extractor runs on Atlas evidence submission, so the index only learns
+    about a repository the next time it scans. Three cases leave an archived
+    document with no rows behind it: a newest SBOM that predates the
+    extractor, an extraction that failed (every failure there is swallowed
+    deliberately, so a truncated document cannot fail an ingest), and a lake
+    restored from archive. This is how the index is rebuilt without waiting
+    for every repository to scan again.
+
+    Newest first, and only rows that name a file, because an evidence row can
+    record trust scoring without capturing a document.
+
+    `latest_only` is the default and matters more than it looks. This estate
+    has 177 archived SBOMs across two repositories — one per Atlas run, going
+    back months. Indexing all of them would put every version a library has
+    ever been at into a table whose entire purpose is answering "what do we
+    run *now*", so "which repositories contain lodash 4.17.20" would return
+    builds that shipped and moved on. One document per repository, the newest,
+    is the answer to the question being asked.
+    """
+    if not catalog.all_files("sscs_evidence"):
+        return []
+    where = "WHERE sbom_ref IS NOT NULL AND sbom_ref <> ''"
+    params: list[Any] = []
+    if repo_full_name:
+        where += " AND repo_full_name = ?"
+        params.append(repo_full_name)
+    rows = catalog.query(
+        f"""
+        SELECT repo_full_name, commit_sha, evidence_id, sbom_ref, evaluated_at
+        FROM sscs_evidence {where}
+        ORDER BY evaluated_at DESC
+        """,
+        params,
+    )
+    found = [
+        {
+            "repo_full_name": str(repo),
+            "commit_sha": str(commit or ""),
+            "evidence_id": str(evidence_id),
+            "sbom_ref": str(ref),
+            "evaluated_at": at,
+        }
+        for repo, commit, evidence_id, ref, at in rows
+    ]
+    if not latest_only:
+        return found
+
+    newest: dict[str, dict[str, Any]] = {}
+    for entry in found:  # already ordered newest first
+        newest.setdefault(entry["repo_full_name"], entry)
+    return list(newest.values())
+
+
+def already_indexed(catalog: Catalog) -> set[str]:
+    """`scan_run_id`s the inventory already holds, so a rebuild is idempotent.
+
+    The extractor stores the SBOM's own ref as `scan_run_id`, so this is the
+    natural key for "we have already read that document".
+    """
+    if not catalog.all_files("sbom_components"):
+        return set()
+    return {
+        str(row[0])
+        for row in catalog.query("SELECT DISTINCT scan_run_id FROM sbom_components")
+    }
+
+
 def repos_with_an_sbom(catalog: Catalog) -> set[str]:
     """Every repository this inventory can speak about at all.
 

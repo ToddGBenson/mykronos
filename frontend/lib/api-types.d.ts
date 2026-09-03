@@ -1366,6 +1366,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/inventory/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reindex Inventory
+         * @description Rebuild the component inventory from SBOMs already in the archive.
+         *
+         *     The extractor runs on Atlas evidence submission, so a repository whose
+         *     SBOM was archived before that code existed has a downloadable document and
+         *     no rows in the index. On this deployment that was every repository: both
+         *     served a complete CycloneDX SBOM on request while `sbom_components` held
+         *     **zero rows**, which made "which of our repositories contain this library"
+         *     answerable only by opening SBOMs by hand — the exact question the table
+         *     exists to answer, about data the platform had already collected.
+         *
+         *     A third read of a file the runner produced. No new scan, no new tool, no
+         *     workflow change: the documents are on disk and this walks them.
+         *
+         *     Skips anything already indexed, so it is safe to run repeatedly, and
+         *     defaults to a dry run because it writes to a table other views read.
+         */
+        post: operations["reindex_inventory_api_dashboard_inventory_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -4292,6 +4326,26 @@ export interface components {
             /** Evidence */
             evidence: string;
         };
+        /**
+         * ReindexOut
+         * @description What rebuilding the component inventory found.
+         */
+        ReindexOut: {
+            /** Sboms Found */
+            sboms_found: number;
+            /** Sboms Read */
+            sboms_read: number;
+            /** Already Indexed */
+            already_indexed: number;
+            /** Unreadable */
+            unreadable: number;
+            /** Components */
+            components: number;
+            /** Repos */
+            repos: string[];
+            /** Dry Run */
+            dry_run: boolean;
+        };
         /** RemediationEventOut */
         RemediationEventOut: {
             /** Event Id */
@@ -7012,6 +7066,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingRecordOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reindex_inventory_api_dashboard_inventory_reindex_post: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+                dry_run?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexOut"];
                 };
             };
             /** @description Validation Error */

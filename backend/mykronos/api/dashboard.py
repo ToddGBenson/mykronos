@@ -9,6 +9,7 @@ policy — which is why it demands a reason.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import time
 from datetime import date, datetime
@@ -26,6 +27,7 @@ from mykronos import (
     governance,
     guidance,
     incident,
+    inventory,
     regression,
     reown,
     supply_chain,
@@ -3625,4 +3627,106 @@ async def whole_finding_record(
                 has_risk_profile=profile is not None,
             )
         ],
+    )
+
+
+class ReindexOut(BaseModel):
+    """What rebuilding the component inventory found."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sboms_found: int
+    sboms_read: int
+    already_indexed: int
+    unreadable: int
+    components: int
+    repos: list[str]
+    dry_run: bool
+
+
+@router.post("/inventory/reindex", response_model=ReindexOut)
+async def reindex_inventory(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+    dry_run: Annotated[bool, Query()] = True,
+) -> ReindexOut:
+    """Rebuild the component inventory from SBOMs already in the archive.
+
+    The extractor runs on Atlas evidence submission, so the index only ever
+    learns about a repository the next time it scans. That leaves three cases
+    with an archived document and no rows: a repository whose newest SBOM
+    predates the extractor, one whose extraction failed (every failure there
+    is swallowed deliberately so a truncated SBOM cannot fail an ingest), and
+    a lake restored from archive.
+
+    A third read of a file the runner produced. No new scan, no new tool, no
+    workflow change: the documents are on disk and this walks them.
+
+    Reads the **newest** SBOM per repository, not every archived one. This
+    estate has 177 of them going back months, and a table whose purpose is
+    answering "what do we run now" is not improved by every version a library
+    has ever been at — "which repositories contain lodash 4.17.20" would start
+    returning builds that shipped and moved on.
+
+    Skips anything already indexed, so it is safe to run repeatedly, and
+    defaults to a dry run because it writes to a table other views read.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Writing requires admin."
+        )
+
+    catalog = request.app.state.catalog
+    settings = request.app.state.settings
+    scope = _resolve_repo(request, repo_id) if repo_id else None
+
+    archived = inventory.archived_sboms(catalog, repo_full_name=scope)
+    indexed = inventory.already_indexed(catalog)
+
+    read = skipped = unreadable = components = 0
+    touched: set[str] = set()
+
+    for entry in archived:
+        if entry["sbom_ref"] in indexed:
+            skipped += 1
+            continue
+        # Same containment check the ingest path applies: the ref is this
+        # platform's own write, and is still resolved and re-checked against
+        # the lake root before being opened.
+        try:
+            source = (settings.datalake_dir / entry["sbom_ref"]).resolve()
+            source.relative_to(settings.datalake_dir.resolve())
+            document = json.loads(source.read_bytes())
+        except (ValueError, OSError, json.JSONDecodeError):
+            # Retention prunes archived bytes while the evidence row survives,
+            # so a missing file is expected rather than exceptional.
+            unreadable += 1
+            continue
+
+        rows = inventory.rows_from_sbom(
+            document,
+            repo_full_name=entry["repo_full_name"],
+            commit_sha=entry["commit_sha"],
+            scan_run_id=entry["sbom_ref"],
+        )
+        if not rows:
+            unreadable += 1
+            continue
+
+        read += 1
+        components += len(rows)
+        touched.add(entry["repo_full_name"])
+        if not dry_run:
+            request.app.state.buffer.append("sbom_components", rows)
+        indexed.add(entry["sbom_ref"])
+
+    return ReindexOut(
+        sboms_found=len(archived),
+        sboms_read=read,
+        already_indexed=skipped,
+        unreadable=unreadable,
+        components=components,
+        repos=sorted(touched),
+        dry_run=dry_run,
     )
