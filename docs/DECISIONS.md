@@ -4281,3 +4281,64 @@ Configured in `.github/workflows/demo-and-dast.yml`, before the functional
 suite rather than beside the spider exclusions: 10027 is a passive rule and
 scans traffic as it crosses the proxy, so a list applied after the suite has
 run is applied to nothing.
+
+## D-101 — The loop starts at push, and that is the position rather than a gap
+
+**2026-09-03.** Mykronos ships no pre-commit hook, no local scan command and no
+editor integration. A DevSecOps assessment on 2026-09-03 filed that as B-038,
+noting that the fastest feedback a developer can get today is a CI run after a
+push — and that four of the open findings on this estate are committed
+credentials, which is exactly the class a pre-commit hook exists to stop.
+
+**The position stands: this is a control plane, not a scanner.** Asked directly,
+the operator confirmed it. The scanners live in CI, the platform reads what they
+report, and the value it adds is in the layer above them — knowing which of 491
+findings can close this afternoon, which are frozen behind a dead lane, and
+which one change closes seven of them. Adding a thin local scanner would put
+this project in the business of maintaining scanner integrations on developer
+machines, which is a different product with a different maintenance burden.
+
+**What that costs, stated rather than left implicit.** The cheapest finding is
+the one that never reaches a branch, and this platform will never catch that
+one. A committed credential is found after it is committed, which means the
+credential is already compromised and rotation — not removal — is the first
+step. The remediation guidance already says exactly that, and it says it
+because of this decision.
+
+**What would reopen it.** A local path becomes worth building if the CI loop
+stops being fast enough to be the first feedback, or if the estate starts
+accumulating secrets faster than they are rotated. Neither is true today: the
+lanes report within minutes of a push, and the four committed credentials here
+are known, owned and dated.
+
+Recorded so B-038 stops reading as an omission somebody forgot to close. It is
+closed, and this is the answer.
+
+## D-102 — The risk gate stays advisory, with the evidence kept current
+
+**2026-09-03.** Oracle runs in shadow mode: it scores every commit, posts a
+check run, and blocks nothing. The shadow-mode table shows what the current
+gate would have done over ninety days — **0 of 30 merges refused** by the
+delta-based gate that runs now, against 30 of 30 by the composite-score gate
+D-048 and D-083 retired.
+
+That contrast is the argument for turning it on, and it was put to the operator
+on 2026-09-03. **The answer was no.** The gate stays advisory.
+
+**Why that is a defensible answer rather than a deferral.** A gate that has
+never fired in ninety days is cheap to enable and cheap to leave off; the
+difference between the two is entirely in what happens on the day it *does*
+fire. Whoever owns the consequence of a blocked release owns that call, and
+this repository does not. "It would not have blocked anything" is a fact about
+the past, not a promise about the release that finally trips it.
+
+**What this decision requires in exchange.** The evidence has to stay current,
+because its whole value is that it is measured rather than asserted. The
+shadow-mode table is a standing read over the last ninety days, so it stays
+true on its own — but a change to the gate's terms resets what it is evidence
+*for*, and D-048 and D-083 are the record of that happening twice already.
+
+**What would reopen it.** A merge that shipped a critical the gate would have
+caught. That is the incident record the shadow-mode view says it cannot supply
+— it is the denominator for the question, not the answer to it — and one real
+entry in it changes the arithmetic completely.

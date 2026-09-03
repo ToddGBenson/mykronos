@@ -209,6 +209,25 @@ export async function getFindingRecord(
   }
 }
 
+export type EstateLibraries =
+  paths["/api/dashboard/libraries"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** Every library the estate carries, and where — the consolidation view. */
+export async function getLibraries(
+  ecosystem?: string,
+): Promise<Result<EstateLibraries>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/libraries", {
+      cache: "no-store",
+      ...(ecosystem ? { params: { query: { ecosystem } } } : {}),
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load libraries") };
+    return { ok: true, data: data as EstateLibraries };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getFinding(findingId: string): Promise<Result<Finding>> {
   try {
     const { data, response } = await backendClient().GET(

@@ -36,6 +36,10 @@ const NAV: {
       // matters" and "is it here" are two views of one question, and a KEV row
       // is exactly where the second one gets asked.
       { label: "Threat intelligence", href: "/threat-intel" },
+      // Beside threat intelligence, not under a repository: the question it
+      // answers is estate-wide by construction — how many distinct libraries
+      // are we maintaining, and which are we carrying at several versions.
+      { label: "Libraries", href: "/libraries" },
       // Beside the triage queue, not the portfolio: the queue is what to do
       // next, and this is the standing account of what is outstanding and
       // what was decided against — the two halves of the same job.

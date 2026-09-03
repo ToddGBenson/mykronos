@@ -45,10 +45,14 @@ already shipped.
 
 ## Open
 
-Three, and **all three need the operator rather than code**. B-018 is a
-decision only they can make, B-035 needs a credential this repository must not
-hold, and B-038 needs a decision about what this product is before it needs
-scoping. Writing code against any of them would be guessing.
+Two, and **both need the operator rather than code**. B-018 is a decision only
+they can make, and B-035 needs a credential this repository must not hold.
+Writing code against either would be guessing.
+
+B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
+The risk gate was asked about at the same time and stays advisory, recorded as
+D-102 rather than a backlog entry, because a deliberate posture with the
+evidence to defend it is a decision and not outstanding work.
 
 Everything from the 2026-09-01 monitoring sweep, all three gaps that writing
 [`finding-lifecycle.md`](finding-lifecycle.md) exposed, and five of the seven
@@ -173,35 +177,6 @@ repository must not hold.
 
 ---
 
-### B-038 — Nothing runs before `git push`
-
-**Size:** L **State:** open **Verified:** 2026-09-03
-
-There is no pre-commit hook, no local scan command, and no editor path. The
-`mykronos` CLI is an operator's tool — tokens, lake compaction, briefings — and
-the fastest feedback a developer can get is a CI run after a push.
-
-Defensible for a control plane: the scanners live in CI and the platform reads
-them. But four of the open findings on this estate are committed credentials,
-which is exactly the class a pre-commit hook exists to stop, and the cheapest
-finding is the one that never reaches a branch.
-
-**This is the one entry that needs a decision before scoping.** A thin path —
-`mykronos scan --staged` shelling out to gitleaks and semgrep, reusing the
-existing adapters — is days. An editor integration is a different product. The
-platform's stated position is that it is a control plane and not a scanner, and
-that position is either still true or it is not.
-
-**Acceptance criteria**
-
-- Either a local path exists, or "the loop starts at push" is recorded as a
-  decision the way D-053 recorded paused DAST, so it stops reading as an
-  omission.
-
-**Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
@@ -242,6 +217,18 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-038 — Nothing runs before `git push` — **closed as a decision**
+
+**Closed 2026-09-03** by D-101. Asked directly, the operator confirmed the
+position: this is a control plane, not a scanner. The entry always said it
+needed a decision before it needed code, and that is the decision.
+
+What it costs is written down rather than left implicit — a committed
+credential is found after it is committed, so rotation and not removal is the
+first step, which is why the remediation guidance says exactly that.
+
+---
 
 ### B-037 — The current SBOM is reachable without an evidence id — **done**
 

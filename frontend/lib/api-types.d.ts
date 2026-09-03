@@ -1379,21 +1379,62 @@ export interface paths {
          * Reindex Inventory
          * @description Rebuild the component inventory from SBOMs already in the archive.
          *
-         *     The extractor runs on Atlas evidence submission, so a repository whose
-         *     SBOM was archived before that code existed has a downloadable document and
-         *     no rows in the index. On this deployment that was every repository: both
-         *     served a complete CycloneDX SBOM on request while `sbom_components` held
-         *     **zero rows**, which made "which of our repositories contain this library"
-         *     answerable only by opening SBOMs by hand — the exact question the table
-         *     exists to answer, about data the platform had already collected.
+         *     The extractor runs on Atlas evidence submission, so the index only ever
+         *     learns about a repository the next time it scans. That leaves three cases
+         *     with an archived document and no rows: a repository whose newest SBOM
+         *     predates the extractor, one whose extraction failed (every failure there
+         *     is swallowed deliberately so a truncated SBOM cannot fail an ingest), and
+         *     a lake restored from archive.
          *
          *     A third read of a file the runner produced. No new scan, no new tool, no
          *     workflow change: the documents are on disk and this walks them.
+         *
+         *     Reads the **newest** SBOM per repository, not every archived one. This
+         *     estate has 177 of them going back months, and a table whose purpose is
+         *     answering "what do we run now" is not improved by every version a library
+         *     has ever been at — "which repositories contain lodash 4.17.20" would start
+         *     returning builds that shipped and moved on.
          *
          *     Skips anything already indexed, so it is safe to run repeatedly, and
          *     defaults to a dry run because it writes to a table other views read.
          */
         post: operations["reindex_inventory_api_dashboard_inventory_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/libraries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estate Libraries
+         * @description Every library the estate carries, and where — the consolidation view.
+         *
+         *     The per-repository views answer "what does this service depend on". This
+         *     answers the question one level up, which no existing view could: *how many
+         *     distinct libraries are we maintaining across everything, and which of them
+         *     are we carrying at more than one version?*
+         *
+         *     Two reasons to act, and the ordering reflects them. A library in every
+         *     repository is a blast radius — one advisory against it is an estate-wide
+         *     event rather than a ticket. A library at three versions is a
+         *     standardisation target, and the oldest of those is where a CVE lands first
+         *     while the newest gives everybody false comfort.
+         *
+         *     Deliberately not filtered to vulnerable packages. The point is to reduce
+         *     the number of distinct dependencies *before* one becomes a finding; a view
+         *     that showed only the ones already causing pain would be the vulnerability
+         *     list again under another name.
+         */
+        get: operations["estate_libraries_api_dashboard_libraries_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3724,6 +3765,46 @@ export interface components {
             notified: boolean;
             /** Detail */
             detail: string;
+        };
+        /**
+         * LibrariesOut
+         * @description The estate's dependency surface, for reducing it.
+         */
+        LibrariesOut: {
+            /** Total Libraries */
+            total_libraries: number;
+            /** Total Components */
+            total_components: number;
+            /** Repos Covered */
+            repos_covered: number;
+            /** Shared */
+            shared: number;
+            /** Divergent */
+            divergent: number;
+            /** Single Use */
+            single_use: number;
+            /** Libraries */
+            libraries: components["schemas"]["LibraryOut"][];
+            /** Note */
+            note: string;
+        };
+        /**
+         * LibraryOut
+         * @description One library across the estate.
+         */
+        LibraryOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Repos */
+            repos: string[];
+            /** Versions */
+            versions: string[];
+            /** Divergent */
+            divergent: boolean;
+            /** Direct Anywhere */
+            direct_anywhere: boolean;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -7098,6 +7179,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReindexOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    estate_libraries_api_dashboard_libraries_get: {
+        parameters: {
+            query?: {
+                ecosystem?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibrariesOut"];
                 };
             };
             /** @description Validation Error */

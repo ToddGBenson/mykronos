@@ -323,6 +323,82 @@ def already_indexed(catalog: Catalog) -> set[str]:
     }
 
 
+@dataclass(frozen=True)
+class Library:
+    """One library across the whole estate."""
+
+    package_name: str
+    ecosystem: str
+    repos: list[str]
+    versions: list[str]
+    #: True when the same library is carried at more than one version. The
+    #: standardisation target: one of those versions is the oldest, and it is
+    #: the one a CVE will land on first.
+    divergent: bool
+    direct_anywhere: bool
+
+
+def estate_libraries(
+    catalog: Catalog, *, ecosystem: str | None = None, limit: int = 500
+) -> list[Library]:
+    """Every library the estate carries, and where.
+
+    The consolidation question, which the per-repository views cannot answer:
+    *how many distinct libraries are we maintaining, and which of them are we
+    carrying more than one version of?*
+
+    Ordered by reach first and divergence second, because those are the two
+    reasons to act. A library in every repository is a blast radius — one
+    advisory against it is an estate-wide event. A library at three versions is
+    a standardisation target, and the oldest of those versions is where a CVE
+    lands first while the newest gives everybody false comfort.
+
+    Deliberately not filtered to vulnerable packages. The whole point is to
+    reduce the number of distinct dependencies *before* one of them becomes a
+    finding, and a view that only showed the ones already causing pain would be
+    the vulnerability list again under a different name.
+    """
+    if not catalog.all_files("sbom_components"):
+        return []
+
+    where = ""
+    params: list[Any] = []
+    if ecosystem:
+        where = "WHERE ecosystem = ?"
+        params.append(ecosystem)
+    params.append(limit)
+
+    rows = catalog.query(
+        f"""
+        SELECT package_name,
+               min(ecosystem)                          AS ecosystem,
+               count(DISTINCT repo_full_name)          AS repos,
+               count(DISTINCT package_version)         AS versions,
+               string_agg(DISTINCT repo_full_name, '|') AS repo_list,
+               string_agg(DISTINCT package_version, '|') AS version_list,
+               max(CASE WHEN direct THEN 1 ELSE 0 END)  AS direct_anywhere
+        FROM sbom_components
+        {where}
+        GROUP BY package_name
+        ORDER BY repos DESC, versions DESC, package_name
+        LIMIT ?
+        """,
+        params,
+    )
+
+    return [
+        Library(
+            package_name=str(name),
+            ecosystem=str(eco or "unknown"),
+            repos=sorted(str(repo_list or "").split("|")) if repo_list else [],
+            versions=sorted(str(version_list or "").split("|")) if version_list else [],
+            divergent=int(versions) > 1,
+            direct_anywhere=bool(direct),
+        )
+        for name, eco, _repos, versions, repo_list, version_list, direct in rows
+    ]
+
+
 def repos_with_an_sbom(catalog: Catalog) -> set[str]:
     """Every repository this inventory can speak about at all.
 

@@ -3730,3 +3730,84 @@ async def reindex_inventory(
         repos=sorted(touched),
         dry_run=dry_run,
     )
+
+
+class LibraryOut(BaseModel):
+    """One library across the estate."""
+
+    package_name: str
+    ecosystem: str
+    repos: list[str]
+    versions: list[str]
+    divergent: bool
+    direct_anywhere: bool
+
+
+class LibrariesOut(BaseModel):
+    """The estate's dependency surface, for reducing it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_libraries: int
+    total_components: int
+    repos_covered: int
+    shared: int
+    divergent: int
+    single_use: int
+    libraries: list[LibraryOut]
+    note: str
+
+
+@router.get("/libraries", response_model=LibrariesOut)
+async def estate_libraries(
+    request: Request,
+    principal: PrincipalDep,
+    ecosystem: Annotated[str | None, Query(max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+) -> LibrariesOut:
+    """Every library the estate carries, and where — the consolidation view.
+
+    The per-repository views answer "what does this service depend on". This
+    answers the question one level up, which no existing view could: *how many
+    distinct libraries are we maintaining across everything, and which of them
+    are we carrying at more than one version?*
+
+    Two reasons to act, and the ordering reflects them. A library in every
+    repository is a blast radius — one advisory against it is an estate-wide
+    event rather than a ticket. A library at three versions is a
+    standardisation target, and the oldest of those is where a CVE lands first
+    while the newest gives everybody false comfort.
+
+    Deliberately not filtered to vulnerable packages. The point is to reduce
+    the number of distinct dependencies *before* one becomes a finding; a view
+    that showed only the ones already causing pain would be the vulnerability
+    list again under another name.
+    """
+    catalog = request.app.state.catalog
+    libraries = inventory.estate_libraries(catalog, ecosystem=ecosystem, limit=limit)
+
+    totals = catalog.query(
+        "SELECT count(*), count(DISTINCT package_name), count(DISTINCT repo_full_name) "
+        "FROM sbom_components"
+    ) if catalog.all_files("sbom_components") else [(0, 0, 0)]
+    components, distinct, repos = (int(totals[0][0]), int(totals[0][1]), int(totals[0][2]))
+
+    return LibrariesOut(
+        total_libraries=distinct,
+        total_components=components,
+        repos_covered=repos,
+        shared=sum(1 for lib in libraries if len(lib.repos) > 1),
+        divergent=sum(1 for lib in libraries if lib.divergent),
+        single_use=sum(1 for lib in libraries if len(lib.repos) == 1),
+        libraries=[LibraryOut(**vars(lib)) for lib in libraries],
+        # Said on the response rather than in documentation, because the
+        # honest limit of this view changes what somebody should conclude from
+        # it: a library missing from an SBOM is missing from here too.
+        note=(
+            "Built from each repository's most recent SBOM. A repository that "
+            "has never produced one is absent rather than clean, and a "
+            "dependency the SBOM did not resolve — vendored code, or a library "
+            "inside a base image — is outside this view. Container findings "
+            "are where the second of those shows up."
+        ),
+    )
