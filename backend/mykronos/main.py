@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -26,6 +27,7 @@ from mykronos.api.webhooks import router as webhooks_router
 from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
+from mykronos.db.models import JobRun
 from mykronos.digest import send_all as send_digests
 from mykronos.gate import PerimeterGate
 from mykronos.github.auth import AppCredentials
@@ -50,19 +52,48 @@ from mykronos.jobs import (
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ownership import OwnershipResolver
 from mykronos.ratelimit import SlidingWindowLimiter
+from mykronos.schemas import utcnow
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
 logger = logging.getLogger(__name__)
 
 
+def _record_run(db: Any, name: str, interval: int, error: str | None) -> None:
+    """Write down that a job ran, and whether it worked.
+
+    Best-effort and never raised out of: a health record that could take down
+    the job it is recording would be worse than no health record. A failure to
+    write it is logged and the job carries on.
+    """
+    try:
+        with db.session() as session:
+            row = session.get(JobRun, name)
+            if row is None:
+                row = JobRun(name=name)
+                session.add(row)
+            row.last_run_at = utcnow()
+            row.interval_seconds = interval
+            if error is None:
+                row.last_succeeded_at = row.last_run_at
+                row.consecutive_failures = 0
+                row.last_error = ""
+            else:
+                row.consecutive_failures = int(row.consecutive_failures or 0) + 1
+                row.last_error = error[:2000]
+            session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not record the outcome of job %r", name)
+
+
 async def _every(
-    name: str, interval: int, run: Callable[[], Awaitable[None]]
+    name: str, interval: int, run: Callable[[], Awaitable[None]], db: Any = None
 ) -> None:
     """Run `run` forever on an interval, surviving its failures.
 
@@ -70,6 +101,12 @@ async def _every(
     worse failure than the one that killed it — silent, and usually noticed
     weeks later. Everything except cancellation is logged and retried on the
     next tick.
+
+    **Retrying is right, and it is also what makes the failure invisible.** A
+    job that has thrown on every run for a fortnight looks, from outside,
+    exactly like one that has never had a problem: the only evidence is a line
+    in a log nobody tails. So each outcome is written down as well as logged,
+    which is what the platform health surface reads.
     """
     while True:
         await asyncio.sleep(interval)
@@ -77,8 +114,13 @@ async def _every(
             await run()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Scheduled job %r failed; will retry in %ss", name, interval)
+            if db is not None:
+                _record_run(db, name, interval, scrub(str(exc)) or exc.__class__.__name__)
+        else:
+            if db is not None:
+                _record_run(db, name, interval, None)
 
 
 async def _compaction_loop(app: FastAPI, interval: int) -> None:
@@ -181,6 +223,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # spec 11 §8: colocated with the lake, logically separate. Personal tier
     # is where every captured learning starts; promotion to team or org is a
     # human decision (spec 11 §2), never a side effect of writing one.
+    # When this process came up. The health surface needs it to tell a job
+    # whose interval has not elapsed since start-up from one that has stopped —
+    # without it every long-interval job reads as late for a day after a deploy.
+    app.state.started_at = utcnow()
     app.state.knowledge = KnowledgeStore(
         default_store_dir(settings.datalake_dir),
         tier="personal",
@@ -349,7 +395,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ):
             tasks.append(
                 asyncio.create_task(
-                    _every(name, interval, run), name=f"mykronos-{name}"
+                    _every(name, interval, run, app.state.db),
+                    name=f"mykronos-{name}",
                 )
             )
 

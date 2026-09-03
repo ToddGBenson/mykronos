@@ -1593,6 +1593,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/platform-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform Health Page
+         * @description Is the platform itself working?
+         *
+         *     It tells four repositories what is wrong with them and had no surface
+         *     saying whether it was running. Everything needed already existed —
+         *     `self_check` probes ingestion, Vault and Concourse, and every scheduled job
+         *     passes through one runner — and all of it went to a log file nobody tails.
+         *
+         *     **A caught failure is the quiet kind.** The job runner catches every
+         *     exception, logs it, and retries on the next tick. That is correct, and it
+         *     means a job which has thrown on every run for a fortnight is
+         *     indistinguishable from outside from one that has never had a problem.
+         *
+         *     The jobs whose silence matters most are the ones nothing else notices. If
+         *     `absences` stops, findings never close and every count on every page drifts
+         *     wrong in the reassuring direction — the CI failure this codebase keeps
+         *     writing about, happening inside the platform instead.
+         *
+         *     **Three states kept apart** because they need three different things done:
+         *     a failing job has an error to read, a late job has a scheduler to check,
+         *     and one that has never run is a deployment that came up without it.
+         *
+         *     Dependencies are probed live. A cached answer to "is Vault sealed" is worth
+         *     nothing — that is the question somebody asks precisely when they suspect
+         *     the cache.
+         */
+        get: operations["platform_health_page_api_dashboard_platform_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -3043,6 +3086,15 @@ export interface components {
              */
             prevents?: string[];
         };
+        /** DependencyHealthOut */
+        DependencyHealthOut: {
+            /** Name */
+            name: string;
+            /** Reachable */
+            reachable: boolean;
+            /** Detail */
+            detail: string;
+        };
         /**
          * DigestGroupOut
          * @description One fix, repeated across the portfolio (spec 19 §3.4).
@@ -3922,6 +3974,19 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /** JobHealthOut */
+        JobHealthOut: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Last Succeeded At */
+            last_succeeded_at: string | null;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+        };
         /**
          * LaneFailure
          * @description A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
@@ -4226,6 +4291,20 @@ export interface components {
             direct?: boolean | null;
             /** Advisories */
             advisories?: number | null;
+        };
+        /**
+         * PlatformHealthOut
+         * @description Whether this platform is itself working.
+         */
+        PlatformHealthOut: {
+            /** Degraded */
+            degraded: boolean;
+            /** Jobs */
+            jobs: components["schemas"]["JobHealthOut"][];
+            /** Dependencies */
+            dependencies: components["schemas"]["DependencyHealthOut"][];
+            /** Note */
+            note: string;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -7692,6 +7771,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_health_page_api_dashboard_platform_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformHealthOut"];
                 };
             };
         };

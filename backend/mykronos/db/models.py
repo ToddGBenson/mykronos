@@ -709,6 +709,54 @@ class RepoGovernance(Base):
         return f"<RepoGovernance {self.repo_full_name} score={self.governance_score}>"
 
 
+class JobRun(Base):
+    """Whether the platform's own scheduled work is still running.
+
+    **The platform tells four repositories what is wrong with them and had no
+    record of whether it was itself working.** `_every` catches every failure,
+    logs it, and retries on the next tick — which is the right behaviour and
+    means a job that has thrown on every run for a fortnight looks exactly like
+    one that has never had a problem. The evidence was one line in a log file
+    nobody tails.
+
+    That matters most for the jobs whose silence is invisible. If
+    `reconcile-absences` stops, findings never close and every count on every
+    page slowly becomes wrong in the safe-looking direction. If `acceptances`
+    stops, an acceptance past its review date stays accepted. Neither raises
+    anything anywhere.
+
+    One row per job, current state rather than history — the same rule
+    `RepoGovernance` follows, and for the same reason. What matters is whether
+    it is running now and when it last actually worked, not a log of every
+    tick.
+
+    `last_succeeded_at` is separate from `last_run_at` on purpose: a job that
+    runs every six hours and fails every time has a recent `last_run_at`, and
+    reading only that would report a dead job as healthy.
+    """
+
+    __tablename__ = "job_runs"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: The last time it finished without raising. A job whose failures are
+    #: caught and retried has a fresh `last_run_at` for ever.
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Since the last success. One failure is a bad day; twenty is a job that
+    #: is not going to fix itself.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    #: Scrubbed, and only the most recent. The full history is in the log; this
+    #: is here so a surface can say what went wrong without asking anyone to
+    #: open one.
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    #: How often it is meant to run, so a reader can tell a job that is late
+    #: from one that simply has a long interval.
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=0)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<JobRun {self.name} failures={self.consecutive_failures}>"
+
+
 class ControlDrift(Base):
     """One control changing state, recorded when it happens (spec 30).
 
