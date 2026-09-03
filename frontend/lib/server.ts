@@ -841,6 +841,31 @@ export async function getTestEstate(repoId: string): Promise<Result<TestEstateVi
   }
 }
 
+export type ConsultView =
+  paths["/api/dashboard/repos/{repo_id}/consult"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * What this platform knows about a repository, and what it does not.
+ *
+ * Uncached: this is the surface somebody opens *instead of* reading the tabs,
+ * so an answer here that disagrees with the tab it links to would be worse
+ * than no answer at all.
+ */
+export async function getConsult(repoId: string): Promise<Result<ConsultView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/consult",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not consult") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type SsdfView =
   paths["/api/dashboard/repos/{repo_id}/ssdf"]["get"]["responses"]["200"]["content"]["application/json"];
 

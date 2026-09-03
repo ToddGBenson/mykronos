@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { CapabilityManager } from "@/components/capability-manager";
+import { Consult } from "@/components/consult";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
@@ -50,6 +51,7 @@ import {
   getReachability,
   getRiskProfile,
   getRiskProfileProposal,
+  getConsult,
   getGovernance,
   getSsdf,
   getTestEstate,
@@ -65,7 +67,7 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Ten tabs, in this order (spec 18 §2).
+ * Eleven tabs, in this order (spec 18 §2).
  *
  * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
  * scan health, enabled jobs — promoted to the default landing tab rather than
@@ -75,6 +77,10 @@ export const dynamic = "force-dynamic";
  */
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
+  // Second, because it is the tab somebody opens *instead of* the other nine.
+  // Nine tabs is a filing system; this is the answer, and every line of it
+  // links back to the tab that produced it.
+  { id: "consult", label: "Consult" },
   { id: "findings", label: "Findings" },
   // Directly after Findings, because it is the same backlog asked the next
   // question. Findings says what is outstanding here; this says which of it is
@@ -207,7 +213,9 @@ export default async function RepoPage({
         ))}
       </nav>
 
-      {tab === "decisions" ? (
+      {tab === "consult" ? (
+        <ConsultTab repoId={repoId} />
+      ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
       ) : tab === "sscs" ? (
         <SupplyChainTab repoId={repoId} />
@@ -829,6 +837,14 @@ async function AegisTab({ repoId }: { repoId: string }) {
       />
     </div>
   );
+}
+
+async function ConsultTab({ repoId }: { repoId: string }) {
+  const result = await getConsult(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Consult unavailable" detail={result.error} />;
+  }
+  return <Consult repoId={repoId} data={result.data} />;
 }
 
 async function AdherenceTab({ repoId }: { repoId: string }) {

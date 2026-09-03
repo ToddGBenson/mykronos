@@ -1554,6 +1554,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/consult": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Consult
+         * @description Consult the Champion — ask this platform what it knows about a repository.
+         *
+         *     Nine tabs is a filing system, not an answer. This is the answer: the
+         *     questions somebody actually arrives with, each answered from records, each
+         *     naming the tab where the reader can go and disagree with it.
+         *
+         *     **Not a chatbot, deliberately.** No model, no free-text box. It answers a
+         *     fixed set of questions and — the part that matters — names the questions it
+         *     *cannot* answer, with the reason. The failure mode of an assistant is not
+         *     saying "I do not know"; it is answering anyway.
+         *
+         *     Two reasons for that shape. This repository holds no model API key and must
+         *     not (spec 12 §2), so a chat window would be blocked on the operator exactly
+         *     as the notifier is. And grounding is the hard half regardless: a model
+         *     answering "what should I fix first" is only as good as the facts handed to
+         *     it, and those facts are what this endpoint is. B-043 adds the phrasing
+         *     layer over the same facts once a credential exists.
+         *
+         *     **It cannot act.** Every answer is a read. No dispositions, no acceptances,
+         *     no scans started, no pull requests opened.
+         */
+        get: operations["repo_consult_api_dashboard_repos__repo_id__consult_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -2853,6 +2892,40 @@ export interface components {
             runs?: number | null;
             /** Failure Rate */
             failure_rate?: number | null;
+        };
+        /** ConsultAnswerOut */
+        ConsultAnswerOut: {
+            /** Key */
+            key: string;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Tab */
+            tab: string | null;
+            /** Evidence */
+            evidence: string[];
+        };
+        /**
+         * ConsultOut
+         * @description What this platform knows about one repository, and what it does not.
+         */
+        ConsultOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Answers */
+            answers: components["schemas"]["ConsultAnswerOut"][];
+            /** Cannot Answer */
+            cannot_answer: components["schemas"]["ConsultUnanswerableOut"][];
+            /** Note */
+            note: string;
+        };
+        /** ConsultUnanswerableOut */
+        ConsultUnanswerableOut: {
+            /** Question */
+            question: string;
+            /** Why */
+            why: string;
         };
         /**
          * ControlOut
@@ -7531,6 +7604,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TestEstateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_consult_api_dashboard_repos__repo_id__consult_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsultOut"];
                 };
             };
             /** @description Validation Error */
