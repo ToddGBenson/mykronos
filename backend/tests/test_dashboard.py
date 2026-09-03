@@ -2262,3 +2262,93 @@ class TestReviewingWhatTheClassifierConcluded:
         assert self._review(
             client, admin_auth, "f" * 64, agrees=False, reason="x"
         ).status_code == 404
+
+
+class TestTheFindingRecord:
+    """One finding, with everything the platform knows about it (B-032)."""
+
+    def test_it_assembles_the_blocks(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        listed = client.get(
+            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
+        ).json()["findings"][0]
+
+        body = client.get(
+            f"/api/dashboard/findings/{listed['finding_id']}/record", headers=admin_auth
+        ).json()
+
+        assert body["finding"]["finding_id"] == listed["finding_id"]
+        assert body["repo_full_name"] == REPO
+        # The block that earns the page: it exists nowhere else at finding level.
+        assert "can_close" in body["closure"]
+        assert body["closure"]["required_absences"] == 2
+        assert body["closure"]["lane"] == listed["capability"]
+
+    def test_it_says_what_it_cannot_tell_you(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """A record that silently omits reachability reads as "not reachable".
+
+        Naming the absent inputs is what keeps "does this matter here" an
+        honest question rather than one severity answers by default.
+        """
+        listed = client.get(
+            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
+        ).json()["findings"][0]
+
+        body = client.get(
+            f"/api/dashboard/findings/{listed['finding_id']}/record", headers=admin_auth
+        ).json()
+
+        gaps = {gap["input"] for gap in body["missing_context"]}
+        assert {"reachability", "exposure", "business context"} <= gaps
+
+    def test_an_empty_fixed_version_is_not_fixable(self) -> None:
+        """The scanner writes "" when there is no published fix.
+
+        `is not None` reported `fixable: true` with nothing to upgrade to,
+        which is the most misleading thing this block could say on an estate
+        where 239 of 242 container findings have no upstream fix at all.
+        """
+        from types import SimpleNamespace
+
+        from mykronos import finding_record as record
+
+        class _Catalog:
+            pass
+
+        package = SimpleNamespace(
+            package_name="libsqlite3-0",
+            ecosystem="image",
+            installed_version="3.46.1",
+            fixed_version="",
+            direct=None,
+            advisories=7,
+        )
+        analysis = SimpleNamespace(packages=[package])
+
+        import mykronos.supply_chain as sc
+
+        original = sc.vulnerable_packages
+        sc.vulnerable_packages = lambda *a, **k: analysis  # type: ignore[assignment]
+        try:
+            out = record.package_for(
+                _Catalog(), repo_full_name=REPO, package_name="libsqlite3-0"
+            )
+        finally:
+            sc.vulnerable_packages = original  # type: ignore[assignment]
+
+        assert out is not None
+        assert out["fixable"] is False
+        assert out["fixed_version"] is None
+
+    def test_an_unknown_finding_is_404(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        assert (
+            client.get(
+                "/api/dashboard/findings/nope/record", headers=admin_auth
+            ).status_code
+            == 404
+        )
