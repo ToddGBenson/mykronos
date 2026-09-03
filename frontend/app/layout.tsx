@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Link from "next/link";
 
+import { Feedback } from "@/components/feedback";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 import "./globals.css";
@@ -154,6 +155,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               AppSec control plane
             </span>
             <div className="ml-auto flex items-center gap-3">
+              <Feedback />
               <ThemeToggle />
               {/* "Phase 7 · admin" used to sit here — the project's internal
                   delivery phase, in the corner every interface uses for
