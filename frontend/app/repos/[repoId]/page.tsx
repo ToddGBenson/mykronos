@@ -47,6 +47,7 @@ import {
   getRepo,
   getReachability,
   getRiskProfile,
+  getRiskProfileProposal,
   getGovernance,
   getScanHealth,
   getScanRunTrend,
@@ -645,9 +646,10 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
   // not on a settings page somewhere else. Fetched alongside rather than
   // nested, so a profile that fails to load does not take the decisions with
   // it.
-  const [result, profile, reachability] = await Promise.all([
+  const [result, profile, proposal, reachability] = await Promise.all([
     getDecisions(repoId),
     getRiskProfile(repoId),
+    getRiskProfileProposal(repoId),
     getReachability(repoId),
   ]);
   if (!result.ok) {
@@ -673,7 +675,11 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
       <AgeForecast forecast={snapshot?.forecast ?? null} />
       <PathToGreen repoId={repoId} path={path} />
       {profile.ok ? (
-        <RiskProfileCard repoId={repoId} profile={profile.data} />
+        <RiskProfileCard
+          repoId={repoId}
+          profile={profile.data}
+          proposal={proposal.ok ? proposal.data : null}
+        />
       ) : (
         <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
           {profile.error}
