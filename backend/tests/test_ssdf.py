@@ -60,6 +60,71 @@ class TestEvidenceNotIntent:
         assert pw8.evidence and pw8.missing
 
 
+class TestPlatformFunctions:
+    """The oracle, Patchwork and reasoned dismissals are not scan lanes.
+
+    They produce records rather than scan runs, so asking scan health about
+    them returns "never reported" however much work they have done. The first
+    cut of this module did exactly that and reported PO.4 unevidenced against
+    1,382 recorded decisions.
+    """
+
+    def test_a_function_with_records_evidences_its_practice(self) -> None:
+        results = _by_id(
+            ssdf.assess(
+                reporting_capabilities=set(),
+                enabled_capabilities=set(),
+                confirmed_controls=set(),
+                known_controls=set(),
+                functions={
+                    "oracle": ssdf.FunctionState(True, "1,382 decisions recorded"),
+                },
+            )
+        )
+
+        assert results["PO.4"].status == "met"
+        assert "1,382 decisions recorded" in results["PO.4"].evidence
+
+    def test_a_function_with_no_records_evidences_nothing(self) -> None:
+        results = _by_id(
+            ssdf.assess(
+                reporting_capabilities=set(),
+                enabled_capabilities=set(),
+                confirmed_controls=set(),
+                known_controls=set(),
+                functions={"oracle": ssdf.FunctionState(False, "no decisions recorded")},
+            )
+        )
+
+        assert results["PO.4"].status == "not_evidenced"
+        assert "no decisions recorded" in results["PO.4"].missing
+
+    def test_a_function_that_could_not_be_read_is_not_a_failure(self) -> None:
+        """Same rule as an unreadable control, pointed at the lake."""
+        results = _by_id(
+            ssdf.assess(
+                reporting_capabilities=set(),
+                enabled_capabilities=set(),
+                confirmed_controls=set(),
+                known_controls=set(),
+            )
+        )
+
+        assert any("was not read" in m for m in results["PO.4"].missing)
+
+    def test_no_practice_asks_scan_health_about_a_function(self) -> None:
+        """The bug this class exists for, pinned at the mapping.
+
+        `oracle`, `patchwork` and `aegis` were once listed as capabilities,
+        which routed them to scan health and made three practices permanently
+        unevidenced against real records.
+        """
+        for practice in ssdf.PRACTICES:
+            assert not ({"oracle", "patchwork", "aegis"} & set(practice.capabilities)), (
+                practice.practice_id
+            )
+
+
 class TestControls:
     def test_an_unreadable_control_is_not_a_failure(self) -> None:
         """Unknown is not absent. Reporting a control the platform could not

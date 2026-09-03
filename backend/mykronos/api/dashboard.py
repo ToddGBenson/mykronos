@@ -3948,6 +3948,93 @@ class SsdfOut(BaseModel):
     note: str
 
 
+def _ssdf_functions(request: Request, repo_full_name: str) -> dict[str, ssdf.FunctionState]:
+    """What the platform's own functions have on record for this repository.
+
+    These are not scan lanes and produce no scan runs, so asking scan health
+    about them returns "never reported" however much work they have done — the
+    oracle had written 1,382 decisions for this repository while the first cut
+    of this endpoint reported PO.4 as unevidenced. On a compliance view an
+    understatement is not the safe direction to be wrong in: it gets a team
+    told to build something it already has.
+
+    A read that fails reports the function as unread rather than as having
+    produced nothing, for the same reason an unreadable control is unknown
+    rather than absent.
+    """
+    catalog = request.app.state.catalog
+
+    def count(table: str, extra: str = "") -> int | None:
+        try:
+            rows = catalog.query(
+                f"SELECT count(*) FROM {table} WHERE repo_full_name = ?{extra}",
+                [repo_full_name],
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not count %s for SSDF: %s", table, scrub(repo_full_name))
+            return None
+        return int(rows[0][0]) if rows else 0
+
+    states: dict[str, ssdf.FunctionState] = {}
+
+    decisions = count("risk_decisions")
+    if decisions is not None:
+        states["oracle"] = ssdf.FunctionState(
+            evidenced=decisions > 0,
+            detail=(
+                f"the risk engine has recorded {decisions:,} decisions against a "
+                "published policy"
+                if decisions
+                else "the risk engine has recorded no decisions for this repository"
+            ),
+        )
+
+    events = count("remediation_events")
+    if events is not None:
+        states["patchwork"] = ssdf.FunctionState(
+            evidenced=events > 0,
+            detail=(
+                f"auto-remediation has recorded {events:,} events"
+                if events
+                else "auto-remediation has recorded no events for this repository"
+            ),
+        )
+
+    # Denominator from the lake, numerator from the Knowledge Store — the same
+    # split `maturity._reasoned_ratio` uses, and for the same reason: counting
+    # reasoned dismissals out of the store alone asks a population already
+    # filtered on the property being measured.
+    dismissed = count("findings", " AND status = 'false_positive'")
+    reasoned = 0
+    store = getattr(request.app.state, "knowledge", None)
+    if store is not None:
+        try:
+            reasoned = sum(
+                entry.observations
+                for entry in store.list_entries()
+                if entry.source_type == "finding_dismissal"
+                and entry.repo_full_name == repo_full_name
+                and entry.has_reason
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not read the Knowledge Store for SSDF: %s", scrub(repo_full_name))
+    if dismissed is not None:
+        states["reasoned_dismissals"] = ssdf.FunctionState(
+            evidenced=reasoned > 0,
+            detail=(
+                f"{reasoned:,} of {dismissed:,} dismissals carry a written reason"
+                if reasoned
+                else (
+                    f"none of {dismissed:,} dismissals carry a written reason"
+                    if dismissed
+                    else "nothing has been dismissed here, so no root cause has accumulated"
+                )
+            ),
+        )
+
+    return states
+
+
 @router.get("/repos/{repo_id}/ssdf", response_model=SsdfOut)
 async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> SsdfOut:
     """Which SSDF practices this repository can evidence (SP 800-218).
@@ -4028,6 +4115,7 @@ async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> 
         enabled_capabilities=enabled,
         confirmed_controls=confirmed,
         known_controls=known,
+        functions=_ssdf_functions(request, repo_full_name),
     )
 
     return SsdfOut(

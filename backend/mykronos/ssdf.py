@@ -29,12 +29,25 @@ useful than either rounding.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 logger = logging.getLogger(__name__)
 
 Status = Literal["met", "partial", "not_evidenced", "not_applicable"]
+
+
+@dataclass(frozen=True)
+class FunctionState:
+    """What a platform function's own records show.
+
+    The caller writes both sentences because the caller has the numbers; this
+    module only routes them to evidence or to missing.
+    """
+
+    evidenced: bool
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,13 @@ class Practice:
     capabilities: tuple[str, ...] = ()
     #: Governance controls whose confirmation evidences this practice.
     controls: tuple[str, ...] = ()
+    #: Platform functions — the oracle, Patchwork, reasoned dismissals — whose
+    #: *records* evidence this practice. Separate from `capabilities` because
+    #: they are not scan lanes and produce no scan runs: asking scan health
+    #: about the oracle returns "never reported" however many decisions it has
+    #: written, which understates adherence exactly as badly as counting an
+    #: enabled toggle overstates it.
+    functions: tuple[str, ...] = ()
     #: Reachable 800-53 families, for anyone cross-referencing. Named, not
     #: claimed: this platform evidences the SSDF practice, and whether that
     #: satisfies a given 800-53 control is an assessor's judgement.
@@ -71,7 +91,7 @@ PRACTICES: tuple[Practice, ...] = (
     ),
     Practice(
         "PO.4", "Prepare the Organization", "Define criteria for software security checks",
-        capabilities=("oracle",),
+        functions=("oracle",),
         nist_800_53=("SA-15", "RA-5"),
         how_to_evidence="Enable the risk-decision engine so a policy exists and is applied.",
     ),
@@ -138,7 +158,7 @@ PRACTICES: tuple[Practice, ...] = (
     ),
     Practice(
         "RV.2", "Respond to Vulnerabilities", "Assess, prioritize, and remediate vulnerabilities",
-        capabilities=("oracle", "patchwork"),
+        functions=("oracle", "patchwork"),
         nist_800_53=("RA-5", "SI-2"),
         how_to_evidence=(
             "Findings must carry an owner and a remediation target, and dispositions "
@@ -147,7 +167,7 @@ PRACTICES: tuple[Practice, ...] = (
     ),
     Practice(
         "RV.3", "Respond to Vulnerabilities", "Analyze vulnerabilities to identify root causes",
-        capabilities=("aegis",),
+        functions=("reasoned_dismissals",),
         nist_800_53=("RA-5", "SI-2"),
         how_to_evidence=(
             "Record dismissals with a written reason so recurring causes accumulate "
@@ -177,6 +197,7 @@ def assess(
     enabled_capabilities: set[str],
     confirmed_controls: set[str],
     known_controls: set[str],
+    functions: Mapping[str, FunctionState] | None = None,
 ) -> list[PracticeResult]:
     """Which practices this repository can evidence right now.
 
@@ -190,6 +211,13 @@ def assess(
     in the other direction: a control this platform could not read is unknown,
     not absent, and reporting it as a failure would be as wrong as reporting it
     as a pass.
+
+    `functions` carries the platform's own records — decisions written, fixes
+    attempted, dismissals reasoned. They are not lanes and have no scan runs,
+    so a practice that depends on one is unevidenced forever if it is asked of
+    scan health instead. That understates adherence, which is the same failure
+    as inflating it pointed the other way, and on a compliance view it is the
+    one that gets a team told to fix something it already does.
     """
     results: list[PracticeResult] = []
 
@@ -205,6 +233,15 @@ def assess(
             else:
                 missing.append(f"{capability} is not enabled")
 
+        for name in practice.functions:
+            state = (functions or {}).get(name)
+            if state is None:
+                missing.append(f"{name.replace('_', ' ')} was not read")
+            elif state.evidenced:
+                evidence.append(state.detail)
+            else:
+                missing.append(state.detail)
+
         for control in practice.controls:
             if control in confirmed_controls:
                 evidence.append(f"{control.replace('_', ' ')} is enforced")
@@ -213,7 +250,7 @@ def assess(
             else:
                 missing.append(f"{control.replace('_', ' ')} could not be read")
 
-        if not practice.capabilities and not practice.controls:
+        if not practice.capabilities and not practice.controls and not practice.functions:
             # PW.1 — design. Nothing observable maps to it, and saying so is
             # more honest than mapping it to a scanner that answers a
             # different question.
