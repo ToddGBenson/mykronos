@@ -274,11 +274,17 @@ class OracleService:
                     repo_full_name, commit_sha
                 )
             except Exception:  # noqa: BLE001 - the score is still worth posting
+                # `scrub`, because both values reach here from a request and a
+                # newline in either would end this record early and start one a
+                # reader has no reason to doubt (spec 12 §8). The root filter
+                # would catch it too; the explicit call is what makes the trust
+                # boundary visible at the call site, and what static analysis
+                # can follow.
                 logger.warning(
                     "Could not read introduced findings for %s@%s; posting the "
                     "check run without that section.",
-                    repo_full_name,
-                    commit_sha,
+                    scrub(repo_full_name),
+                    scrub(commit_sha),
                 )
                 introduced = None
             try:
