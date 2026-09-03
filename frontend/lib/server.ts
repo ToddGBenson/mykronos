@@ -228,6 +228,28 @@ export async function getLibraries(
   }
 }
 
+export type RiskProfileProposal =
+  paths["/api/dashboard/repos/{repo_id}/risk-profile/proposal"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** What the platform can evidence about a repository, and what it refuses to
+ *  guess (B-041). Rendered where the empty profile form would otherwise be. */
+export async function getRiskProfileProposal(
+  repoId: string,
+): Promise<Result<RiskProfileProposal>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/risk-profile/proposal",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the proposal") };
+    }
+    return { ok: true, data: data as RiskProfileProposal };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getFinding(findingId: string): Promise<Result<Finding>> {
   try {
     const { data, response } = await backendClient().GET(
