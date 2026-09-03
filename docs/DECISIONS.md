@@ -4441,3 +4441,46 @@ regressions for a repository that has done nothing.
 
 **Only regressions reach the Consult answer.** A control being turned on is
 good news and does not belong in an answer about weakening.
+
+## D-106 — Our own CVSS is the standard's environmental score, not a new number
+
+**2026-09-03.** The brief asked for "our own CVSS score based on what is known
+about this system and vulnerability — otherwise assume the worst". That is
+CVSS's own environmental score, so this implements the published formula rather
+than inventing a competitor.
+
+**Why not a bespoke number.** The platform already has one: Oracle's risk score,
+with exploitation-in-the-wild, ownership, remediation in flight and supply-chain
+trust as named terms. A second in-house figure would compete with it and be
+weaker. What CVSS gives that Oracle cannot is a figure other people already know
+how to read — a vendor, an auditor and a customer all understand 9.8 dropping to
+7.2, and none of them can check a score this platform defined.
+
+**"Assume the worst" is the standard's own default, and it is why this is safe.**
+Every environmental modifier defaults to `X`, and `X` takes the base metric's
+value. A repository that has told the platform nothing scores *exactly* its base
+score. The number can only move once somebody states a fact, every statement is
+attributable to whoever confirmed the risk profile, and there is no path by
+which a score falls because a form went unfilled. Tests pin that in both
+directions.
+
+**The vector, not the score.** The lake stored `cvss_score` and no vector, which
+made this impossible: a score is one number for every system in the world and
+cannot be re-read, where a vector can. Vectors now come from NVD through the
+existing threat-intel refresh, twenty per sweep at NVD's unauthenticated rate,
+and a lookup that finds nothing is *recorded as having looked* — roughly two
+thirds of this estate's container findings carry Debian `TEMP-` identifiers NVD
+has never heard of, and retrying those daily would spend the whole budget.
+
+**Absent rather than approximated.** A finding with no CVE — every Semgrep
+pattern, every ZAP alert — gets no environmental score at all. Deriving a vector
+from the severity word would produce a figure that looks like a published
+standard, is not one, and would be quoted as one. That is the worst thing this
+feature could do, so it does not do it.
+
+**Two mapping calls worth disagreeing with, stated in one place.** `public` data
+maps to `CR:M` rather than `CR:L` — a team that honestly declares its data
+public must not find every confidentiality finding quietly demoted for saying
+so. And `internet_facing=True` sets no modifier at all: the base vector already
+says `AV:N` where the flaw is network-exploitable, and re-asserting it would be
+a control that cannot change anything while looking like it might.

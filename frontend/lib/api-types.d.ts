@@ -3565,6 +3565,7 @@ export interface components {
             closure: components["schemas"]["ClosureOut"];
             fix: components["schemas"]["FixOut"] | null;
             package: components["schemas"]["PackageOut"] | null;
+            severity_here?: components["schemas"]["SeverityHereOut"] | null;
             /** Missing Context */
             missing_context: components["schemas"]["RecordGap"][];
         };
@@ -5108,6 +5109,29 @@ export interface components {
          * @enum {string}
          */
         Severity: "info" | "low" | "medium" | "high" | "critical";
+        /**
+         * SeverityHereOut
+         * @description This vulnerability's CVSS score, re-read for this system.
+         *
+         *     `environmental` equals `base` whenever nothing is known, by construction:
+         *     every undefined modifier takes the base metric's value, so a repository
+         *     with no confirmed risk profile is never quietly discounted. `stated` says
+         *     which of those two situations produced an equal pair.
+         */
+        SeverityHereOut: {
+            /** Vector */
+            vector: string;
+            /** Base */
+            base: number;
+            /** Environmental */
+            environmental: number;
+            /** Moved */
+            moved: boolean;
+            /** Stated */
+            stated: boolean;
+            /** Because */
+            because: string[];
+        };
         /** SnoozeRequest */
         SnoozeRequest: {
             /**
