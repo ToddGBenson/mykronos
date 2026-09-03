@@ -866,6 +866,30 @@ export async function getConsult(repoId: string): Promise<Result<ConsultView>> {
   }
 }
 
+export type PlatformHealthView =
+  paths["/api/dashboard/platform-health"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Is the platform itself working?
+ *
+ * Uncached, and more obviously so than anything else here: this is the page
+ * somebody opens when they suspect the platform is lying to them, and a cached
+ * answer to "is Vault sealed" is worth precisely nothing.
+ */
+export async function getPlatformHealth(): Promise<Result<PlatformHealthView>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/platform-health", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read platform health") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type SsdfView =
   paths["/api/dashboard/repos/{repo_id}/ssdf"]["get"]["responses"]["200"]["content"]["application/json"];
 

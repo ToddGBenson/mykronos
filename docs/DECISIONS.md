@@ -4484,3 +4484,44 @@ public must not find every confidentiality finding quietly demoted for saying
 so. And `internet_facing=True` sets no modifier at all: the base vector already
 says `AV:N` where the flaw is network-exploitable, and re-asserting it would be
 a control that cannot change anything while looking like it might.
+
+## D-107 — The platform reports on itself, because a caught failure is silent
+
+**2026-09-03.** Mykronos tells four repositories what is wrong with them and had
+no surface saying whether it was itself running.
+
+Everything needed already existed. `self_check` probes ingestion, Vault and
+Concourse; every scheduled job passes through one runner. All of it went to a
+log file nobody tails, and `self_check` ran only when somebody typed a command
+— the same "detection that waits for a person is not monitoring" that D-105
+fixed for control drift, one layer further in.
+
+**The runner catches every failure, and that is what hides it.** `_every` logs
+and retries on the next tick, which is right: a job that dies on its first bad
+day and never runs again is worse than the exception that killed it. The cost
+is that a job which has thrown on every run for a fortnight is
+indistinguishable from outside from one that has never had a problem. So each
+outcome is now written down as well as logged.
+
+**`last_succeeded_at` is separate from `last_run_at` for exactly that reason.**
+A job whose failures are caught has a fresh `last_run_at` for ever. Reading
+only that would report a dead job as healthy, which is how this stayed
+invisible.
+
+**Three states, not two.** Failing, late, and never-ran need three different
+things done about them — an error to read, a scheduler to check, and a
+deployment that came up without the job. Collapsing them into "not ok" would
+send somebody to the wrong place.
+
+**And it must not cry wolf.** Lateness is two whole intervals, not one, because
+a timer inside a process that also serves requests drifts. A job whose interval
+has not elapsed since start-up reads as fine rather than late, or every
+long-interval job would be red for a day after each deploy — wrong precisely
+when somebody is most likely to look. `never_ran` alone is not degraded for the
+same reason.
+
+**Each row says what its silence costs.** A page listing nine job names and a
+colour asks the reader to already know which ones matter. `absences` stopping
+means findings never close and every count on every page drifts wrong in the
+reassuring direction — the CI failure this codebase keeps writing about,
+happening inside the platform instead.

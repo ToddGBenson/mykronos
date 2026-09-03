@@ -30,6 +30,7 @@ from mykronos import (
     guidance,
     incident,
     inventory,
+    platform_health,
     regression,
     reown,
     risk_profile_builder,
@@ -63,12 +64,14 @@ from mykronos.dashboard import (
 )
 from mykronos.db.models import (
     CapabilityGrant,
+    JobRun,
     RepoControl,
     RepoOnboarding,
     RiskProfile,
     ThreatIntelMatch,
     capability_config_for,
 )
+from mykronos.jobs import self_check as jobs_self_check
 from mykronos.knowledge.capture import (
     capture_classification_rejected,
     capture_dismissal,
@@ -4544,5 +4547,91 @@ async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) 
             "Answered from this platform's own records. Every answer names the tab "
             "it came from, so you can check it. It cannot act, and the questions it "
             "cannot answer are listed rather than guessed at."
+        ),
+    )
+
+
+class JobHealthOut(BaseModel):
+    name: str
+    status: str
+    detail: str
+    last_succeeded_at: datetime | None
+    consecutive_failures: int
+
+
+class DependencyHealthOut(BaseModel):
+    name: str
+    reachable: bool
+    detail: str
+
+
+class PlatformHealthOut(BaseModel):
+    """Whether this platform is itself working."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    degraded: bool
+    jobs: list[JobHealthOut]
+    dependencies: list[DependencyHealthOut]
+    note: str
+
+
+@router.get("/platform-health", response_model=PlatformHealthOut)
+async def platform_health_page(request: Request, principal: PrincipalDep) -> PlatformHealthOut:
+    """Is the platform itself working?
+
+    It tells four repositories what is wrong with them and had no surface
+    saying whether it was running. Everything needed already existed —
+    `self_check` probes ingestion, Vault and Concourse, and every scheduled job
+    passes through one runner — and all of it went to a log file nobody tails.
+
+    **A caught failure is the quiet kind.** The job runner catches every
+    exception, logs it, and retries on the next tick. That is correct, and it
+    means a job which has thrown on every run for a fortnight is
+    indistinguishable from outside from one that has never had a problem.
+
+    The jobs whose silence matters most are the ones nothing else notices. If
+    `absences` stops, findings never close and every count on every page drifts
+    wrong in the reassuring direction — the CI failure this codebase keeps
+    writing about, happening inside the platform instead.
+
+    **Three states kept apart** because they need three different things done:
+    a failing job has an error to read, a late job has a scheduler to check,
+    and one that has never run is a deployment that came up without it.
+
+    Dependencies are probed live. A cached answer to "is Vault sealed" is worth
+    nothing — that is the question somebody asks precisely when they suspect
+    the cache.
+    """
+    now = utcnow()
+    started_at = getattr(request.app.state, "started_at", None)
+
+    with request.app.state.db.session() as session:
+        rows = list(session.execute(select(JobRun).order_by(JobRun.name)).scalars())
+    jobs = [platform_health.assess_job(row, now=now, started_at=started_at) for row in rows]
+
+    settings = request.app.state.settings
+    dependencies: list[platform_health.DependencyHealth] = []
+    try:
+        for name, result in await jobs_self_check(settings):
+            dependencies.append(
+                platform_health.DependencyHealth(
+                    name=name, reachable=result.reachable, detail=scrub(result.detail)
+                )
+            )
+    except Exception:  # noqa: BLE001 — job health still stands
+        logger.warning("Self-check failed while rendering platform health")
+
+    health = platform_health.PlatformHealth(jobs=jobs, dependencies=dependencies)
+
+    return PlatformHealthOut(
+        degraded=health.degraded,
+        jobs=[JobHealthOut(**vars(job)) for job in jobs],
+        dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
+        note=(
+            "A job that fails is caught, logged and retried, which is right and is "
+            "also what makes it invisible. These rows are the record that log line "
+            "never was. A job with no successful run since this process started is "
+            "reported as fine until twice its interval has passed."
         ),
     )

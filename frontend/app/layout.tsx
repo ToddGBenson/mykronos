@@ -62,6 +62,11 @@ const NAV: {
       { label: "Remediation library", href: "/remediation" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
+      // Last, and the only item about this platform rather than the estate it
+      // watches. It reports on four repositories and had no page reporting on
+      // itself; a job that stopped here is invisible in exactly the way a
+      // stopped scan lane is, and with the same consequence.
+      { label: "Platform health", href: "/platform-health" },
     ],
   },
 ];
