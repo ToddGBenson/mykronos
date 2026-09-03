@@ -161,3 +161,26 @@ class TestGrounding:
 
         assert "dependencies" not in answers
         assert "adherence" not in answers
+
+
+class TestDrift:
+    def test_a_control_that_came_off_is_reported(self) -> None:
+        answers = _by_key(
+            consult.build(
+                consult.Facts(
+                    repo_full_name="o/r",
+                    controls_regressed=("pull_request_required", "signed_commits_required"),
+                )
+            )
+        )
+
+        assert "2 controls came off" in answers["drift"].answer
+        assert "pull request required" in answers["drift"].answer
+
+    def test_nothing_is_said_when_nothing_moved(self) -> None:
+        """No drift is the normal state. A permanent "nothing changed" row
+        trains people to skip the region where the one thing that matters
+        will eventually appear."""
+        answers = _by_key(consult.build(consult.Facts(repo_full_name="o/r")))
+
+        assert "drift" not in answers

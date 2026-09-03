@@ -21,6 +21,7 @@ import { Label, Pill, RelativeTime } from "@/components/primitives";
 import type { GovernancePosture } from "@/lib/api";
 
 type Control = NonNullable<GovernancePosture["controls"]>[number];
+type ControlDrift = NonNullable<GovernancePosture["drift"]>[number];
 
 const CONTROL_LABEL: Record<string, string> = {
   pull_request_required: "Pull request required on default branch",
@@ -97,12 +98,60 @@ export function GovernancePanel({ posture }: { posture: GovernancePosture }) {
             </tbody>
           </table>
 
+          <Drift drift={posture.drift ?? []} />
+
           <p className="max-w-prose border-t border-rule-soft px-3 py-2 text-[12px] leading-relaxed text-ink-3">
             {posture.note}
           </p>
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Controls that changed state since the platform last looked.
+ *
+ * The table above says what is true now, which is what a panel is for. This
+ * says what *moved*, which is what monitoring is for — and until the sweep
+ * shipped, a repository could drop its review requirement and leave no trace
+ * anywhere but a score nobody was watching.
+ *
+ * Absent when nothing has changed rather than shown empty: "no drift" is the
+ * normal state and a permanent empty section trains people to skip the region
+ * of the page where the one thing that matters will appear.
+ */
+function Drift({ drift }: { drift: ControlDrift[] }) {
+  if (drift.length === 0) return null;
+
+  return (
+    <div className="border-t border-rule-soft px-3 py-2">
+      <Label>Changed since we last looked</Label>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {drift.map((row) => (
+          <li
+            key={`${row.control_key}-${row.observed_at}`}
+            className="font-mono text-[12px]"
+          >
+            {/* A transition to `unknown` is a read that failed, not a control
+                that was removed. Colouring them alike would send somebody to
+                fix a security regression that is actually a missing App
+                permission. */}
+            <span className={row.regression ? "text-critical" : "text-ink-2"}>
+              {row.regression ? "▼ " : "· "}
+              {CONTROL_LABEL[row.control_key] ?? row.control_key}
+            </span>{" "}
+            <span className="text-ink-3">
+              {row.to_state === "unknown"
+                ? "could no longer be read"
+                : `${row.from_state} → ${row.to_state}`}
+              {" · "}
+              <RelativeTime value={row.observed_at} />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

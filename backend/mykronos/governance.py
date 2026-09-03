@@ -48,11 +48,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos.codeowners import owner_for, parse
 from mykronos.config import get_settings
-from mykronos.db.models import RepoGovernance
+from mykronos.db.models import ControlDrift, RepoGovernance
 from mykronos.github.client import GitHubClient, GitHubError, PermissionDeniedError
 from mykronos.lake.catalog import Catalog
 from mykronos.schemas import utcnow
@@ -536,23 +537,90 @@ def merge_counts(
 STALE_AFTER_DAYS = 14
 
 
-def remember(session: Session, governance: Governance) -> None:
-    """Store the reading so Oracle can score it (spec 30 §4).
+def remember(session: Session, governance: Governance) -> list[ControlDrift]:
+    """Store the reading so Oracle can score it, and record what changed.
 
     Oracle cannot make an HTTP call — it scores from the lake and the
     operational store — so the panel's live read is copied here on its way
-    past. One row per repository, replaced outright: this is configuration,
-    and a time series of a setting is not evidence the way a scan result is.
+    past. Still one row per repository, replaced outright: this is
+    configuration, and a time series of a setting is not evidence the way a
+    scan result is.
+
+    **A transition is not a time series.** The row keeps the per-control states
+    it last saw, so this read can say which control moved rather than only that
+    the score did. Each change becomes one `ControlDrift` row — an event,
+    because somebody caused it.
+
+    Returns the drift it recorded, so a caller sweeping every repository can
+    report what it found. Nothing is written for a first reading: with no prior
+    states there is no transition, and inventing one from `unknown` would file
+    nine security regressions the first time a repository is read.
     """
     row = session.get(RepoGovernance, governance.repo_full_name)
+    first_reading = row is None
     if row is None:
         row = RepoGovernance(repo_full_name=governance.repo_full_name)
         session.add(row)
+
+    observed = {control.key: control.state for control in governance.controls}
+    drift = [] if first_reading else _drift(session, row, observed)
+
     row.governance_score = score(governance)
     row.source = governance.source
     row.controls_read = sum(1 for c in governance.controls if c.known)
+    row.control_states = observed
     row.read_at = governance.read_at or utcnow()
     session.flush()
+    return drift
+
+
+def _drift(
+    session: Session, row: RepoGovernance, observed: dict[str, str]
+) -> list[ControlDrift]:
+    """Which controls moved since the last read.
+
+    Only controls present in *both* readings. A control that has appeared or
+    disappeared from the reading is a change in what the App could see, not a
+    change in how the repository is governed, and filing it as drift would
+    report a permissions grant as a security event.
+    """
+    previous = row.control_states or {}
+    if not previous:
+        return []
+
+    drift: list[ControlDrift] = []
+    for key, state in observed.items():
+        was = previous.get(key)
+        if was is None or was == state:
+            continue
+        entry = ControlDrift(
+            repo_full_name=row.repo_full_name,
+            control_key=key,
+            from_state=was,
+            to_state=state,
+        )
+        session.add(entry)
+        drift.append(entry)
+
+    if drift:
+        # Warned, not just stored. A control coming off is the one governance
+        # event worth reaching an operator who is not looking at the console.
+        logger.warning(
+            "Control drift on %s: %s",
+            row.repo_full_name,
+            ", ".join(f"{d.control_key} {d.from_state}->{d.to_state}" for d in drift),
+        )
+    return drift
+
+
+def recent_drift(
+    session: Session, repo_full_name: str | None = None, *, limit: int = 50
+) -> list[ControlDrift]:
+    """Control changes, newest first. `None` for the whole estate."""
+    statement = select(ControlDrift).order_by(ControlDrift.observed_at.desc())
+    if repo_full_name is not None:
+        statement = statement.where(ControlDrift.repo_full_name == repo_full_name)
+    return list(session.execute(statement.limit(limit)).scalars())
 
 
 def stored(

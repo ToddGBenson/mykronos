@@ -2018,6 +2018,19 @@ class ControlStateOut(BaseModel):
     )
 
 
+class ControlDriftOut(BaseModel):
+    """One control changing state, recorded when it happened."""
+
+    control_key: str
+    from_state: str
+    to_state: str
+    observed_at: datetime
+    #: True when a control that was on came off. The one transition worth
+    #: waking somebody for, and the reason this is a field rather than left to
+    #: the reader to work out from two state strings.
+    regression: bool
+
+
 class GovernanceOut(BaseModel):
     """A repository's change-governance posture (spec 30)."""
 
@@ -2042,6 +2055,15 @@ class GovernanceOut(BaseModel):
         ),
     )
     controls: list[ControlStateOut] = Field(default_factory=list)
+    drift: list[ControlDriftOut] = Field(
+        default_factory=list,
+        description=(
+            "Controls that changed state since the platform last looked, newest "
+            "first. A transition *to* `unknown` is a read that failed rather "
+            "than a control that was removed — a revoked permission and a "
+            "security regression must never look the same."
+        ),
+    )
     merges: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -2095,11 +2117,27 @@ async def repo_governance(
     # its own (spec 30 §4). Only when the read succeeded: overwriting a good
     # reading with an unreadable one would let a permissions blip erase a
     # posture the platform had correctly established.
+    drift: list[ControlDriftOut] = []
     if posture.readable:
         with request.app.state.db.session() as session:
             governance.remember(session, posture)
+            session.commit()
+            # Read after the write so a change this render just noticed is in
+            # the list. The sweep is what makes detection continuous; this only
+            # keeps the panel from being a render behind its own history.
+            drift = [
+                ControlDriftOut(
+                    control_key=row.control_key,
+                    from_state=row.from_state,
+                    to_state=row.to_state,
+                    observed_at=row.observed_at,
+                    regression=row.from_state == "on" and row.to_state != "unknown",
+                )
+                for row in governance.recent_drift(session, repo_full_name, limit=20)
+            ]
 
     body = governance.as_dict(posture)
+    body["drift"] = drift
     body["merges"] = governance.merge_counts(request.app.state.catalog, repo_full_name)
     return GovernanceOut.model_validate(body)
 
@@ -4397,6 +4435,18 @@ async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) 
             )
             .scalars()
             .first()
+        )
+
+    # Only regressions. A control turned *on* is good news and does not
+    # belong in an answer about weakening, and a control that could not be
+    # read is a permissions problem wearing a security event's clothes.
+    with request.app.state.db.session() as session:
+        facts.controls_regressed = tuple(
+            dict.fromkeys(
+                row.control_key
+                for row in governance.recent_drift(session, repo_full_name, limit=50)
+                if row.from_state == "on" and row.to_state != "unknown"
+            )
         )
 
     # The same call the Adherence tab makes, not a similar one. This answer
