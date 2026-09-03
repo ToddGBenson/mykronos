@@ -1291,6 +1291,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/reown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reown Findings
+         * @description Re-derive ownership for a repository's open findings (B-034).
+         *
+         *     Ownership resolves at ingest, so a finding written before that code existed
+         *     — or before a repository grew a CODEOWNERS file — keeps whatever was true
+         *     the day it was first seen. On this deployment that left 1001 findings with
+         *     a null `owner_source`: not `unresolved`, which at least records that
+         *     somebody asked, but nothing at all.
+         *
+         *     Re-derived rather than migrated, because the answer is not a constant: it
+         *     depends on the repository's CODEOWNERS file *now*, its risk profile *now*,
+         *     and the finding's own path. So this asks the same function ingest asks and
+         *     writes what it says. A SQL update would freeze today's answer as though it
+         *     had always been the answer.
+         *
+         *     **Defaults to a dry run.** It rewrites a column people route work by, and
+         *     the safe default for that is to show somebody what would happen.
+         *
+         *     A finding assigned by hand is never touched — compaction already treats
+         *     `owner_source = 'manual'` as authoritative, and a backfill that ignored it
+         *     would undo the one kind of ownership a person actually decided.
+         */
+        post: operations["reown_findings_api_dashboard_repos__repo_id__reown_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -4203,6 +4242,24 @@ export interface components {
                 [key: string]: string;
             } | null;
         };
+        /**
+         * ReownOut
+         * @description What a re-derive changed, or would change.
+         */
+        ReownOut: {
+            /** Scanned */
+            scanned: number;
+            /** Changed */
+            changed: number;
+            /** Protected */
+            protected: number;
+            /** By Source */
+            by_source: {
+                [key: string]: number;
+            };
+            /** Dry Run */
+            dry_run: boolean;
+        };
         /** RepoDetail */
         RepoDetail: {
             /** Id */
@@ -6747,6 +6804,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThreatIntelEntryOut"][];
+                };
+            };
+        };
+    };
+    reown_findings_api_dashboard_repos__repo_id__reown_post: {
+        parameters: {
+            query?: {
+                /** @description Report what would change and write nothing. */
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReownOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

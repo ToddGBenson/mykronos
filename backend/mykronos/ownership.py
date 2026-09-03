@@ -44,6 +44,10 @@ DEFAULT_TTL_SECONDS = 900
 class _Entry:
     rules: list[Rule]
     expires_at: float
+    #: False when the lookup failed rather than found nothing. Cached with the
+    #: rules so a repository does not flip between "nobody owns this" and "we
+    #: could not ask" inside one TTL.
+    readable: bool = True
 
 
 class OwnershipResolver:
@@ -72,6 +76,10 @@ class OwnershipResolver:
             return cached.rules
 
         rules: list[Rule] = []
+        # Whether we actually got an answer, as distinct from what the answer
+        # was. `github is None` is not a failed read — it is a repository this
+        # deployment cannot ask about, which is a knowable state.
+        readable = True
         if github is not None:
             for path in CODEOWNERS_PATHS:
                 try:
@@ -87,12 +95,36 @@ class OwnershipResolver:
                         exc_info=True,
                     )
                     text = None
+                    readable = False
                 if text:
                     rules = parse(text)
+                    readable = True
                     break
 
-        self._cache[repo_full_name] = _Entry(rules=rules, expires_at=self._now() + self._ttl)
+        self._cache[repo_full_name] = _Entry(
+            rules=rules, expires_at=self._now() + self._ttl, readable=readable
+        )
         return rules
+
+    async def lookup_for(self, github: Any, repo_full_name: str) -> tuple[list[Rule], bool]:
+        """`(rules, readable)` — the rules, and whether we managed to look.
+
+        **The distinction earns its keep now, and did not before.** This module
+        used to collapse "no CODEOWNERS file", "an unreadable one" and "GitHub
+        is down" into one empty result, on the stated grounds that nothing
+        downstream could act on the difference. That was true while all three
+        led to `unresolved`.
+
+        It stopped being true when ownership gained a repository-owner rung. An
+        empty file list means *nobody matched* and falling through to the
+        account is a weak, true answer. A failed read means *we could not ask*,
+        and falling through would convert a GitHub outage into an ownership
+        assignment nobody made — worse than leaving it unresolved, because it
+        looks like a decision.
+        """
+        rules = await self.rules_for(github, repo_full_name)
+        cached = self._cache.get(repo_full_name)
+        return rules, True if cached is None else cached.readable
 
 
 def owner_for_finding(
@@ -100,21 +132,35 @@ def owner_for_finding(
     file_path: str | None,
     rules: list[Rule],
     profile_owner: str | None = None,
+    repo_owner: str | None = None,
+    codeowners_readable: bool = True,
 ) -> tuple[str | None, str]:
     """`(owner, owner_source)` for one finding.
 
-    Two steps, and deliberately no third.
+    Three steps now, each weaker than the one above it and each labelled so a
+    reader knows how much to trust the answer.
 
     A finding with a path resolves through CODEOWNERS. A finding *without* one
     — a dependency CVE, a container layer — falls back to the repository owner
     recorded on the risk profile (spec 21 §1), tagged `profile` so nobody reads
-    it as something the team wrote in their own file.
+    it as something the team wrote in their own file. Failing both, it falls to
+    the account the repository belongs to, tagged `repo_owner`.
 
-    What this does **not** do is guess a manifest. A dependency finding names a
-    package and not the file that declares it, so picking `package.json` over
-    `requirements.txt` to match against CODEOWNERS would be this platform
-    inventing a path and then routing real work by it. The profile answer is
-    weaker and true; the manifest answer would be specific and made up.
+    **Why the third rung was added.** With only two, an estate that has neither
+    CODEOWNERS files nor risk profiles routes nothing: 282 finding groups on
+    this deployment were unowned while routing was switched on, and an unowned
+    finding is one nobody has agreed to fix. The repository's owner is a weak
+    answer and a *true* one — it is genuinely who the repository belongs to —
+    which is the same standard the profile rung is held to. It gives the
+    reassignment conversation something to start from, which a blank column
+    does not.
+
+    What this still does **not** do is guess a manifest. A dependency finding
+    names a package and not the file that declares it, so picking
+    `package.json` over `requirements.txt` to match against CODEOWNERS would be
+    this platform inventing a path and then routing real work by it. Every
+    answer here is weaker and true; the manifest answer would be specific and
+    made up.
     """
     if file_path:
         owner, source = resolve(file_path, rules)
@@ -122,4 +168,9 @@ def owner_for_finding(
             return owner, source
     if profile_owner:
         return profile_owner, "profile"
+    # Only when we actually looked. A failed CODEOWNERS read must not become an
+    # ownership assignment: "we could not ask" looks identical to "the account
+    # owns it" once it is written into a column, and only one of them is true.
+    if repo_owner and codeowners_readable:
+        return repo_owner, "repo_owner"
     return None, "unresolved"

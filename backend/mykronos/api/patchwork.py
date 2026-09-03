@@ -19,7 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
-from mykronos.api.ingest import TokenDep, _installation_client, _require_capability
+from mykronos.api.ingest import (
+    TokenDep,
+    _require_capability,
+    installation_client_for_repo,
+)
 from mykronos.db.models import RepoOnboarding, capability_config_for
 from mykronos.patchwork import PatchworkPipeline, fixers
 from mykronos.patchwork.pipeline import DEFAULT_SOURCE_CAPABILITIES
@@ -289,7 +293,7 @@ async def run(request: Request, body: RunRequest, token: TokenDep) -> RunResult:
     pipeline, default_branch = _pipeline(request, token.repo_full_name)
     result = await pipeline.run(
         token.repo_full_name,
-        github=_installation_client(request, token.repo_full_name),
+        github=installation_client_for_repo(request, token.repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, token.repo_full_name),
     )
@@ -318,7 +322,7 @@ async def preview_finding_fix(
     outcome = await pipeline.run_one(
         repo_full_name,
         finding_id,
-        github=_installation_client(request, repo_full_name),
+        github=installation_client_for_repo(request, repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, repo_full_name),
         preview_only=True,
@@ -369,7 +373,7 @@ async def fix_finding(
     outcome = await pipeline.run_one(
         repo_full_name,
         finding_id,
-        github=_installation_client(request, repo_full_name),
+        github=installation_client_for_repo(request, repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, repo_full_name),
         preview_only=False,

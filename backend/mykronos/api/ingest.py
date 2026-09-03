@@ -462,10 +462,10 @@ async def ingest_findings(
     # (spec 24 §1.2). Never per finding: a four-hundred-finding upload would
     # otherwise be four hundred GitHub requests for one answer.
     ownership = request.app.state.ownership
-    rules = await ownership.rules_for(
-        _installation_client(request, token.repo_full_name), token.repo_full_name
+    rules, codeowners_readable = await ownership.lookup_for(
+        installation_client_for_repo(request, token.repo_full_name), token.repo_full_name
     )
-    profile_owner = _profile_owner(request, token.repo_full_name)
+    profile_owner = profile_owner_for_repo(request, token.repo_full_name)
     targets = request.app.state.oracle_policy.remediation_targets
 
     for finding in batch.findings:
@@ -483,7 +483,14 @@ async def ingest_findings(
             title=finding.title,
         )
         owner, owner_source = owner_for_finding(
-            file_path=finding.file_path, rules=rules, profile_owner=profile_owner
+            file_path=finding.file_path,
+            rules=rules,
+            profile_owner=profile_owner,
+            # The account the repository belongs to — the last rung, and the
+            # one that stops a repository with neither CODEOWNERS nor a risk
+            # profile routing nothing at all.
+            repo_owner=token.repo_full_name.split("/")[0] or None,
+            codeowners_readable=codeowners_readable,
         )
         # From `now` because this is first sight; compaction keeps the stored
         # value for a finding that already exists, which is what makes the
@@ -666,7 +673,7 @@ async def ingest_aegis(
     check_run_id: str | None = None
     check_run_error: str | None = None
     blocking = bool(config.get("blocking", False))
-    github = _installation_client(request, token.repo_full_name)
+    github = installation_client_for_repo(request, token.repo_full_name)
     if github is not None:
         try:
             # Bounded, because this is the only thing between a caller and its
@@ -927,7 +934,7 @@ async def ingest_capability_payload(
     )
 
 
-def _profile_owner(request: Request, repo_full_name: str) -> str | None:
+def profile_owner_for_repo(request: Request, repo_full_name: str) -> str | None:
     """The repository owner recorded on the risk profile (spec 21 §1).
 
     Used only for findings with no path — a dependency CVE names a package,
@@ -947,7 +954,7 @@ def _profile_owner(request: Request, repo_full_name: str) -> str | None:
     return profile.owner if profile is not None else None
 
 
-def _installation_client(request: Request, repo_full_name: str) -> Any:
+def installation_client_for_repo(request: Request, repo_full_name: str) -> Any:
     with request.app.state.db.session() as session:
         onboarding = (
             session.execute(

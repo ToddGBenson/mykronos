@@ -1172,6 +1172,13 @@ class DashboardQueries:
             # it is the queue of work nobody is answerable for yet.
             if owner == "unresolved":
                 where.append("(owner IS NULL OR owner = '')")
+            elif owner == "unclaimed":
+                # Nobody has taken responsibility *by name*. Distinct from
+                # `unresolved`, which now means the platform could not work it
+                # out at all — rare, and a different problem. This is the queue
+                # B-034 exists for: findings that have an owner only because
+                # they fell to the account the repository belongs to.
+                where.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
             else:
                 where.append("owner = ?")
                 params.append(owner)
@@ -1503,6 +1510,11 @@ class DashboardQueries:
         if owner:
             if owner == "unresolved":
                 where.append("(owner IS NULL OR owner = '')")
+            elif owner == "unclaimed":
+                # Same queue as `open_findings` — nobody has taken this by
+                # name. See the note there for why it is separate from
+                # `unresolved`.
+                where.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
             else:
                 where.append("owner = ?")
                 params.append(owner)

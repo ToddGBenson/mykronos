@@ -102,7 +102,9 @@ export type FindingsQuery = {
   triage?: string;
   /** "1" when set — only groups Patchwork produced a fix for (spec 19 §3.2). */
   fixable?: string;
-  /** A CODEOWNERS handle or team, or "unresolved" (spec 24 §1). */
+  /** A CODEOWNERS handle or team, or one of two queues: `unresolved` (the
+   *  platform could not work it out) and `unclaimed` (nobody has taken it by
+   *  name — it has an owner only because the repository does). */
   owner?: string;
   /** overdue | due_soon | on_track | no_target (spec 24 §2.4). */
   due?: string;
@@ -703,10 +705,17 @@ function GroupDetail({
               {group.owner}
             </Link>
           ) : (
-            // Absent rather than "unassigned": CODEOWNERS either names
-            // somebody or it does not, and inventing a default owner is how a
-            // finding ends up assigned to whoever last touched the file.
-            <span className="text-ink-3">not resolved</span>
+            // Absent, and now genuinely rare. Ownership falls to the account
+            // the repository belongs to when CODEOWNERS can be read and
+            // matches nothing (B-034), so reaching here means the platform
+            // could not work it out at all — which is worth looking at rather
+            // than shrugging past.
+            <Link
+              href={href({ owner: query.owner === "unclaimed" ? undefined : "unclaimed" })}
+              className="text-critical hover:underline"
+            >
+              nobody — show the queue
+            </Link>
           )}
         </span>
         <DueCell state={group.due_state} at={group.due_at} source={group.due_source} />

@@ -26,11 +26,16 @@ from mykronos import (
     guidance,
     incident,
     regression,
+    reown,
     supply_chain,
     surfaces,
     worklist,
 )
 from mykronos.adminauth import PrincipalDep
+from mykronos.api.ingest import (
+    installation_client_for_repo,
+    profile_owner_for_repo,
+)
 from mykronos.ci import (
     ActionsClient,
     ConcourseClient,
@@ -3307,3 +3312,89 @@ def _resolve_repo(request: Request, repo_id: str) -> str:
                 ),
             )
         return str(row.github_repo_full_name)
+
+
+class ReownOut(BaseModel):
+    """What a re-derive changed, or would change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scanned: int
+    changed: int
+    protected: int
+    by_source: dict[str, int]
+    dry_run: bool
+
+
+@router.post("/repos/{repo_id}/reown", response_model=ReownOut)
+async def reown_findings(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    dry_run: Annotated[
+        bool,
+        Query(description="Report what would change and write nothing."),
+    ] = True,
+) -> ReownOut:
+    """Re-derive ownership for a repository's open findings (B-034).
+
+    Ownership resolves at ingest, so a finding written before that code existed
+    — or before a repository grew a CODEOWNERS file — keeps whatever was true
+    the day it was first seen. On this deployment that left 1001 findings with
+    a null `owner_source`: not `unresolved`, which at least records that
+    somebody asked, but nothing at all.
+
+    Re-derived rather than migrated, because the answer is not a constant: it
+    depends on the repository's CODEOWNERS file *now*, its risk profile *now*,
+    and the finding's own path. So this asks the same function ingest asks and
+    writes what it says. A SQL update would freeze today's answer as though it
+    had always been the answer.
+
+    **Defaults to a dry run.** It rewrites a column people route work by, and
+    the safe default for that is to show somebody what would happen.
+
+    A finding assigned by hand is never touched — compaction already treats
+    `owner_source = 'manual'` as authoritative, and a backfill that ignored it
+    would undo the one kind of ownership a person actually decided.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Writing requires admin."
+        )
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    rules, readable = await request.app.state.ownership.lookup_for(
+        installation_client_for_repo(request, repo_full_name), repo_full_name
+    )
+    changes, report = reown.plan(
+        catalog,
+        rules_by_repo={repo_full_name: (rules, readable)},
+        profile_owner_by_repo={
+            repo_full_name: profile_owner_for_repo(request, repo_full_name)
+        },
+        repo_full_name=repo_full_name,
+    )
+
+    if not dry_run and changes:
+        # Grouped, because `update_findings` sets one expression for a batch and
+        # a per-finding write would be one lake mutation per row.
+        grouped: dict[tuple[str | None, str], list[str]] = {}
+        for change in changes:
+            key = (change["owner"], change["owner_source"])
+            grouped.setdefault(key, []).append(change["finding_id"])
+        for (owner, source), finding_ids in grouped.items():
+            update_findings(
+                catalog,
+                locate_findings(catalog, finding_ids),
+                "owner = ?, owner_source = ?",
+                [owner, source],
+            )
+
+    return ReownOut(
+        scanned=report.scanned,
+        changed=report.changed,
+        protected=report.protected,
+        by_source=report.by_source,
+        dry_run=dry_run,
+    )
