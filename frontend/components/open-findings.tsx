@@ -252,6 +252,7 @@ export function OpenFindings({
                   href={href}
                   detail={detail}
                   remediation={fixByRule[selected.rule_id]}
+                  repoId={repoId}
                 />
               ) : null}
             </div>
@@ -617,12 +618,15 @@ function GroupDetail({
   href,
   detail,
   remediation,
+  repoId,
 }: {
   group: FindingGroup;
   query: FindingsQuery;
   href: (patch: Record<string, string | undefined>) => string;
   detail?: React.ReactNode;
   remediation?: { fix: string; source: string; effort: string };
+  /** Needed only to link each occurrence to its full record (B-032). */
+  repoId: string;
 }) {
   const triage = TRIAGE[group.triage] ?? { tone: "muted" as const, label: group.triage };
   return (
@@ -746,6 +750,21 @@ function GroupDetail({
               <span className="ml-1.5 text-ink-3">
                 {location.capability} ·{" "}
                 <RelativeTime value={location.first_seen_at ?? null} />
+                {/* The whole record for this one occurrence (B-032): whether
+                    its lane can close it, whether a fix exists, what the
+                    platform could not work out. Facts that used to need four
+                    other pages. */}
+                {repoId ? (
+                  <>
+                    {" · "}
+                    <Link
+                      href={`/repos/${repoId}/findings/${location.finding_id}`}
+                      className="underline decoration-dotted underline-offset-2 hover:text-accent"
+                    >
+                      full record
+                    </Link>
+                  </>
+                ) : null}
               </span>
             </li>
           ))}

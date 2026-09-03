@@ -190,6 +190,25 @@ export async function getOpenFindings(
  * between a detail pane that always works and one that works for the first
  * hundred findings.
  */
+export type FindingRecord =
+  paths["/api/dashboard/findings/{finding_id}/record"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** Everything the platform knows about one finding, in one call (B-032). */
+export async function getFindingRecord(
+  findingId: string,
+): Promise<Result<FindingRecord>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/findings/{finding_id}/record",
+      { params: { path: { finding_id: findingId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the record") };
+    return { ok: true, data: data as FindingRecord };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getFinding(findingId: string): Promise<Result<Finding>> {
   try {
     const { data, response } = await backendClient().GET(

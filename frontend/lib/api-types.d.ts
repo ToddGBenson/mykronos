@@ -1330,6 +1330,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whole Finding Record
+         * @description Everything about one finding, in one call (B-032).
+         *
+         *     Eleven surfaces held pieces of this: the triage queue had the verdict, the
+         *     findings tab the occurrences, supply chain the fixed version, remediate
+         *     today the fix, scan health whether the lane could close it. Deciding what
+         *     to do about a single finding meant visiting five pages, and three of the
+         *     facts that would change the decision were not on the page where it got
+         *     made.
+         *
+         *     Assembled, never recomputed. Two implementations of "which findings does
+         *     this fix close" would eventually disagree and both would look right.
+         */
+        get: operations["whole_finding_record_api_dashboard_findings__finding_id__record_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -2607,6 +2637,30 @@ export interface components {
             recorded: string;
         };
         /**
+         * ClosureOut
+         * @description Whether this finding can close, and what is stopping it.
+         *
+         *     Typed rather than a loose dict: this block is the reason the record page
+         *     exists, and a `dict[str, Any]` generates `unknown` in the API types, which
+         *     pushes casts into every consumer and loses the field names at the boundary.
+         */
+        ClosureOut: {
+            /** Can Close */
+            can_close: boolean;
+            /** Lane */
+            lane: string;
+            /** Reason */
+            reason: string;
+            /** Required Absences */
+            required_absences: number;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Runs */
+            runs?: number | null;
+            /** Failure Rate */
+            failure_rate?: number | null;
+        };
+        /**
          * ControlOut
          * @description A declared mitigation (spec 28 §3).
          */
@@ -3211,6 +3265,24 @@ export interface components {
             raw_finding_json?: unknown;
         };
         /**
+         * FindingRecordOut
+         * @description One finding, with everything the platform knows about it (B-032).
+         *
+         *     An assembly over services that already exist. The order of the blocks is
+         *     the order somebody asks in: what is it, does it matter *here*, what do I
+         *     do, what happened and can it end.
+         */
+        FindingRecordOut: {
+            finding: components["schemas"]["FindingOut"];
+            /** Repo Full Name */
+            repo_full_name: string;
+            closure: components["schemas"]["ClosureOut"];
+            fix: components["schemas"]["FixOut"] | null;
+            package: components["schemas"]["PackageOut"] | null;
+            /** Missing Context */
+            missing_context: components["schemas"]["RecordGap"][];
+        };
+        /**
          * FindingStatus
          * @enum {string}
          */
@@ -3307,6 +3379,24 @@ export interface components {
             effort: string;
             /** Steps */
             steps: string[];
+        };
+        /**
+         * FixOut
+         * @description The change that would close this finding, and what else it closes.
+         */
+        FixOut: {
+            /** Fix Id */
+            fix_id: string;
+            /** Action */
+            action: string;
+            /** Effort */
+            effort: string;
+            /** Steps */
+            steps: string[];
+            /** Closes */
+            closes: number;
+            /** Rules */
+            rules: string[];
         };
         /**
          * GovernanceOut
@@ -3785,6 +3875,26 @@ export interface components {
             /** Owner Source */
             owner_source: string;
         };
+        /**
+         * PackageOut
+         * @description Supply-chain facts, joined rather than duplicated.
+         */
+        PackageOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem?: string | null;
+            /** Installed Version */
+            installed_version?: string | null;
+            /** Fixed Version */
+            fixed_version?: string | null;
+            /** Fixable */
+            fixable: boolean;
+            /** Direct */
+            direct?: boolean | null;
+            /** Advisories */
+            advisories?: number | null;
+        };
         /** PortfolioOut */
         PortfolioOut: {
             summary: components["schemas"]["PortfolioSummary"];
@@ -4139,6 +4249,13 @@ export interface components {
              * @default 0
              */
             files_unparseable: number;
+        };
+        /** RecordGap */
+        RecordGap: {
+            /** Input */
+            input: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * RegressionLinkRequest
@@ -6857,6 +6974,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReownOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    whole_finding_record_api_dashboard_findings__finding_id__record_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingRecordOut"];
                 };
             };
             /** @description Validation Error */

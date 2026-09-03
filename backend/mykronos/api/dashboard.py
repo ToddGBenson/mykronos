@@ -22,6 +22,7 @@ from sqlalchemy import select
 from mykronos import (
     briefing,
     controls,
+    finding_record,
     governance,
     guidance,
     incident,
@@ -56,6 +57,7 @@ from mykronos.db.models import (
     CapabilityGrant,
     RepoControl,
     RepoOnboarding,
+    RiskProfile,
     capability_config_for,
 )
 from mykronos.knowledge.capture import (
@@ -3428,4 +3430,172 @@ async def reown_findings(
         protected=report.protected,
         by_source=report.by_source,
         dry_run=dry_run,
+    )
+
+
+class RecordGap(BaseModel):
+    input: str
+    reason: str
+
+
+class ClosureOut(BaseModel):
+    """Whether this finding can close, and what is stopping it.
+
+    Typed rather than a loose dict: this block is the reason the record page
+    exists, and a `dict[str, Any]` generates `unknown` in the API types, which
+    pushes casts into every consumer and loses the field names at the boundary.
+    """
+
+    can_close: bool
+    lane: str
+    reason: str
+    required_absences: int
+    #: `datetime` because scan health returns one; serialised as ISO-8601.
+    last_run_at: datetime | None = None
+    runs: int | None = None
+    failure_rate: float | None = None
+
+
+class FixOut(BaseModel):
+    """The change that would close this finding, and what else it closes."""
+
+    fix_id: str
+    action: str
+    effort: str
+    steps: list[str]
+    closes: int
+    rules: list[str]
+
+
+class PackageOut(BaseModel):
+    """Supply-chain facts, joined rather than duplicated."""
+
+    package_name: str
+    ecosystem: str | None = None
+    installed_version: str | None = None
+    fixed_version: str | None = None
+    fixable: bool
+    direct: bool | None = None
+    advisories: int | None = None
+
+
+class FindingRecordOut(BaseModel):
+    """One finding, with everything the platform knows about it (B-032).
+
+    An assembly over services that already exist. The order of the blocks is
+    the order somebody asks in: what is it, does it matter *here*, what do I
+    do, what happened and can it end.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding: FindingOut
+    repo_full_name: str
+    closure: ClosureOut
+    fix: FixOut | None
+    package: PackageOut | None
+    missing_context: list[RecordGap]
+
+
+@router.get("/findings/{finding_id}/record", response_model=FindingRecordOut)
+async def whole_finding_record(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> FindingRecordOut:
+    """Everything about one finding, in one call (B-032).
+
+    Eleven surfaces held pieces of this: the triage queue had the verdict, the
+    findings tab the occurrences, supply chain the fixed version, remediate
+    today the fix, scan health whether the lane could close it. Deciding what
+    to do about a single finding meant visiting five pages, and three of the
+    facts that would change the decision were not on the page where it got
+    made.
+
+    Assembled, never recomputed. Two implementations of "which findings does
+    this fix close" would eventually disagree and both would look right.
+    """
+    catalog = request.app.state.catalog
+    queries = DashboardQueries(catalog)
+    row = queries.finding(finding_id, include_raw=principal.may_see_raw_output)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    repo_full_name = str(row.get("repo_full_name") or "")
+    capability = str(row.get("capability") or "")
+
+    lanes = {lane["capability"]: lane for lane in queries.scan_health(repo_full_name)}
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        profile = (
+            session.execute(
+                select(RiskProfile).where(
+                    RiskProfile.repo_onboarding_id == (onboarding.id if onboarding else None)
+                )
+            )
+            .scalars()
+            .first()
+            if onboarding is not None
+            else None
+        )
+        summary = surfaces.for_repo(session, repo_full_name) if onboarding else None
+        declared = (
+            len(summary.assets) + len(summary.entry_points) + len(summary.trust_boundaries)
+            if summary is not None
+            else 0
+        )
+
+    # Reachability lives on its own router; absent is the common case and is a
+    # fact worth reporting rather than an error worth raising.
+    reach_rows = catalog.query(
+        "SELECT analysed FROM reachability WHERE repo_full_name = ? LIMIT 1",
+        [repo_full_name],
+    ) if catalog.all_files("reachability") else []
+    analysed = bool(reach_rows and reach_rows[0][0])
+
+    return FindingRecordOut(
+        finding=FindingOut.model_validate(row),
+        repo_full_name=repo_full_name,
+        closure=ClosureOut(
+            **finding_record.closure(capability=capability, lane=lanes.get(capability))
+        ),
+        fix=(
+            FixOut(**found)
+            if (
+                found := finding_record.fix_for(
+                    catalog,
+                    repo_full_name=repo_full_name,
+                    rule_id=str(row.get("rule_id") or ""),
+                )
+            )
+            else None
+        ),
+        package=(
+            PackageOut(**pkg)
+            if (
+                pkg := finding_record.package_for(
+                    catalog,
+                    repo_full_name=repo_full_name,
+                    package_name=row.get("package_name"),
+                )
+            )
+            else None
+        ),
+        missing_context=[
+            RecordGap(**gap)
+            for gap in finding_record.missing_context(
+                reachability_analysed=analysed,
+                surfaces_declared=declared,
+                has_risk_profile=profile is not None,
+            )
+        ],
     )
