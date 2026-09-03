@@ -10,6 +10,8 @@ import {
   SeverityText,
 } from "@/components/primitives";
 import type { Severity } from "@/lib/api";
+import { PinRegressionTest } from "@/components/pin-regression-test";
+import { RemediationAction } from "@/components/remediation-action";
 
 export const dynamic = "force-dynamic";
 
@@ -190,6 +192,29 @@ export default async function FindingRecordPage({
                   </>
                 ) : null}
               </dl>
+            </div>
+          </section>
+
+          {/* The three actions, on the page that has the finding id — preview
+              what auto-remediation would do, open the draft pull request, and
+              pin the test that proves it stays fixed.
+
+              Preview before PR is deliberate and is the component's own rule:
+              a preview nobody acts on writes nothing, while generating a fix
+              opens a branch and a pull request on the real repository. */}
+          <section className="border border-rule bg-paper-2">
+            <div className="border-b border-rule-soft px-3 py-1.5">
+              <Label as="h2">Act on it</Label>
+            </div>
+            <div className="flex flex-col gap-3 px-3 py-2.5">
+              <RemediationAction findingId={findingId} />
+              <div className="border-t border-rule-soft pt-3">
+                <p className="mb-2 text-[13px] leading-relaxed text-ink-3">
+                  Nothing this platform has fixed is protected from coming back
+                  silently — 0 of 519 fixed findings here have a test pinned.
+                </p>
+                <PinRegressionTest findingId={findingId} />
+              </div>
             </div>
           </section>
 
