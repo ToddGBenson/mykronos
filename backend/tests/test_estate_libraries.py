@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import REPO
 from tests.test_onboarding import onboard
 
 
