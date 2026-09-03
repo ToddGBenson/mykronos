@@ -653,6 +653,8 @@ class DashboardQueries:
         rule_id: str | None = None,
         first_seen_after: datetime | None = None,
         first_seen_before: datetime | None = None,
+        pr_number: int | None = None,
+        commit_sha: str | None = None,
         limit: int = 100,
         offset: int = 0,
         include_raw: bool = False,
@@ -688,6 +690,32 @@ class DashboardQueries:
         if first_seen_before is not None:
             where.append("first_seen_at <= ?")
             params.append(first_seen_before)
+
+        # "What did this change introduce?" — matched on *first seen*, not last.
+        #
+        # A finding is attributable to a pull request when the scan run that
+        # first saw it belongs to that pull request. Matching on `scan_run_id`
+        # (the most recent sighting) would answer a different and far less
+        # useful question: every pre-existing finding the branch also happens to
+        # reproduce, which on a repository with a backlog is nearly all of them
+        # and tells the author nothing about their own work.
+        #
+        # `first_seen_after` was the closest thing to this before, and a time
+        # window is not a change window — two pull requests land in the same
+        # hour and neither author can tell which findings are theirs.
+        scoped: tuple[tuple[str, int | str | None], ...] = (
+            ("pr_number", pr_number),
+            ("commit_sha", commit_sha),
+        )
+        for scope_column, scope_value in scoped:
+            if scope_value is None:
+                continue
+            where.append(
+                "first_seen_scan_run_id IN "
+                f"(SELECT scan_run_id FROM scan_runs WHERE {scope_column} = ?)"
+            )
+            params.append(scope_value)
+
         clause = " AND ".join(where)
 
         total_rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)

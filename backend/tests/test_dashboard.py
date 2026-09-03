@@ -305,6 +305,73 @@ class TestFindings:
         assert body["total"] == 0
         assert body["findings"] == []
 
+    def test_filters_to_what_a_pull_request_introduced(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        seeded,
+        run_compaction,
+    ) -> None:
+        """`what did my change add?` — not `what does my branch reproduce?`
+
+        A second scan run, on a pull request, sees the three findings that
+        already existed *and* introduces one. Filtering by `pr_number` must
+        return only the new one: attribution is on the scan run that FIRST saw
+        a finding, never the most recent one. Matching on last-seen would hand
+        the author every pre-existing finding their branch happens to
+        reproduce, which on a repository with a backlog is nearly all of them.
+        """
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(
+            client,
+            auth,
+            scan_run_id="run-pr",
+            commit_sha="deadbeefcafe1234",
+            pr_number=42,
+        )
+        post_findings(
+            client,
+            auth,
+            [
+                # Already known — first seen by run-1, so not this PR's doing.
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="a"),
+                # New on this branch.
+                finding_payload(rule_id="CWE-798", severity="high", symbol="new"),
+            ],
+            scan_run_id="run-pr",
+        )
+        run_compaction()
+
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"pr_number": 42},
+            headers=admin_auth,
+        ).json()
+
+        assert body["total"] == 1
+        assert body["findings"][0]["rule_id"] == "CWE-798"
+
+        # The same answer by commit, because a check run has the sha and not
+        # always the pull request number.
+        by_sha = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"commit_sha": "deadbeefcafe1234"},
+            headers=admin_auth,
+        ).json()
+        assert by_sha["total"] == 1
+        assert by_sha["findings"][0]["rule_id"] == "CWE-798"
+
+    def test_an_unknown_pull_request_is_zero_not_an_error(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"pr_number": 9999},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 0
+
     def test_a_future_first_seen_after_excludes_everything(
         self, client: TestClient, admin_auth: dict[str, str], seeded
     ) -> None:

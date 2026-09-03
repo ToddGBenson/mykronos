@@ -2183,6 +2183,17 @@ class BriefingOut(BaseModel):
 async def post_deployment_briefing(
     request: Request,
     principal: PrincipalDep,
+    repo_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Narrow every section to one repository. Omit for the estate. "
+                "The reasoning is identical either way — lanes that cannot "
+                "close first, then cheapest work — applied to a different "
+                "denominator."
+            ),
+        ),
+    ] = None,
 ) -> BriefingOut:
     """What to do next about the open backlog (D-098).
 
@@ -2201,7 +2212,8 @@ async def post_deployment_briefing(
     A read. The actions it names are existing routes, and a person triggers
     them.
     """
-    report = briefing.build(request.app.state.catalog)
+    asset_id = _resolve_repo(request, repo_id) if repo_id else None
+    report = briefing.build(request.app.state.catalog, asset_id=asset_id)
     return BriefingOut(
         generated_at=report.generated_at,
         total_open=report.total_open,
@@ -2729,6 +2741,25 @@ async def repo_findings(
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     first_seen_after: Annotated[datetime | None, Query()] = None,
     first_seen_before: Annotated[datetime | None, Query()] = None,
+    pr_number: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description=(
+                "Findings this pull request introduced — matched on the scan run "
+                "that first saw them, not the most recent one. Answers 'what did "
+                "my change add?' rather than 'what does my branch also reproduce?'"
+            ),
+        ),
+    ] = None,
+    commit_sha: Annotated[
+        str | None,
+        Query(
+            min_length=7,
+            max_length=64,
+            description="Findings first seen by a scan of this commit.",
+        ),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FindingsPage:
@@ -2743,6 +2774,8 @@ async def repo_findings(
         rule_id=rule_id,
         first_seen_after=first_seen_after,
         first_seen_before=first_seen_before,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
         limit=limit,
         offset=offset,
         include_raw=principal.may_see_raw_output,

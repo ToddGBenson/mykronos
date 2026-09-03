@@ -6122,7 +6122,10 @@ export interface operations {
     };
     post_deployment_briefing_api_dashboard_briefing_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Narrow every section to one repository. Omit for the estate. The reasoning is identical either way — lanes that cannot close first, then cheapest work — applied to a different denominator. */
+                repo_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6136,6 +6139,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -6435,6 +6447,10 @@ export interface operations {
                 rule_id?: string | null;
                 first_seen_after?: string | null;
                 first_seen_before?: string | null;
+                /** @description Findings this pull request introduced — matched on the scan run that first saw them, not the most recent one. Answers 'what did my change add?' rather than 'what does my branch also reproduce?' */
+                pr_number?: number | null;
+                /** @description Findings first seen by a scan of this commit. */
+                commit_sha?: string | null;
                 limit?: number;
                 offset?: number;
             };
