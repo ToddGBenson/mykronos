@@ -4342,3 +4342,63 @@ true on its own — but a change to the gate's terms resets what it is evidence
 caught. That is the incident record the shadow-mode view says it cannot supply
 — it is the denominator for the question, not the answer to it — and one real
 entry in it changes the arithmetic completely.
+
+## D-103 — No single number on a compliance, testing or maturity view
+
+**2026-09-03.** Three views shipped in two days that each had an obvious
+headline figure available, and none of them shows one: SSDF adherence has no
+"68% compliant", the test estate has no test-maturity score, and neither
+reports a percentage anywhere.
+
+**The argument for a number is real.** People want one, it fits in a status
+report, and it makes two repositories comparable at a glance. That is exactly
+the problem.
+
+**The practices and test kinds are not equally weighted or equally
+applicable.** A library needs no post-deploy smoke test; SSDF PS.3 means
+something different for a service than for a package. A denominator that
+includes items a repository is correct not to do produces a score that punishes
+being right, and one that excludes them is a denominator nobody can reproduce.
+
+**And the rounding is the failure this platform exists to prevent.** A view
+that says "9 of 13 practices are evidenced, and here is what would evidence the
+other four" cannot be misread. "69% SSDF compliant" can be, will be, and gets
+shown to an auditor.
+
+Counts by status, and the reader does the arithmetic knowing what it is made
+of. Where a number would mislead on its own — an open finding count with a
+frozen lane behind it, coverage that was never measured — it is qualified in
+the same sentence rather than in a footnote, because the footnote is the thing
+nobody reads.
+
+## D-104 — Consult is not a chatbot, and grounding ships before phrasing
+
+**2026-09-03.** The brief asked for a "Consult the Champion" chat window. What
+shipped answers a fixed set of questions from the platform's own records, links
+each answer to the tab that produced it, and names six questions it cannot
+answer with the reason for each. There is no free-text box and no model.
+
+**The credential is the blocker and not the reason.** This repository holds no
+model API key and must not (spec 12 §2), so a chat window would have been
+blocked on the operator exactly as the notifier is (B-035). That alone would
+argue for waiting, not for building something else.
+
+**The reason is the order of the work.** A model answering "what should I fix
+first here" is only as good as the facts handed to it, and those facts are the
+whole of `consult.Facts` — which is now built, tested, and already what the
+fixed answers are made of. Adding a model later is a phrasing layer over the
+same struct (B-043). Building the phrasing first and the grounding afterwards
+is how assistants end up confidently wrong, and this is a platform whose only
+product is being believed about security.
+
+**The refusals are the load-bearing half.** The failure mode of an assistant is
+not saying "I do not know" — it is answering anyway. `consult.UNANSWERABLE`
+names the questions people will ask that this platform cannot answer:
+exploitability without a confirmed risk profile, which assertion failed inside
+a lane that records only totals (D-046), what a fix will cost, whether
+something is a false positive, what the code does, whether to ship. Those stay
+when a model arrives. A model that answers them anyway is worse than the list,
+because the list is what makes everything above it trustworthy.
+
+**It cannot act, by construction.** Every answer is a read. No dispositions, no
+acceptances, no scans started, no pull requests opened.

@@ -45,9 +45,9 @@ already shipped.
 
 ## Open
 
-Three, and **all three need the operator rather than code**. B-018 is a
-decision only they can make, B-035 needs a credential this repository must not
-hold, and B-042 is a call about this repository's CI budget. Writing code
+Four, and **all four need the operator rather than code**. B-018 is a decision
+only they can make, B-035 and B-043 each need a credential this repository must
+not hold, and B-042 is a call about this repository's CI budget. Writing code
 against any of them would be guessing.
 
 B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
@@ -125,6 +125,47 @@ rest of `.env` on 2026-08-23 or deliberately never set — so writing code befor
 that choice would be guessing. It was deferred on 2026-09-01 with the capability
 left enabled and inert, which this entry itself calls the one indefensible
 state; that is a deliberate hold, not an oversight.
+
+### B-043 — Free-text questions need a model credential this repo must not hold
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+The Consult tab answers a fixed set of questions from records and links each
+answer to the tab that produced it. It has no free-text box, and the brief
+asked for a chat window.
+
+**Two reasons it shipped without one, and only the first is a blocker.**
+
+This repository holds no model API key and must not (spec 12 §2). A chat window
+that needs one is blocked on the operator exactly as B-035 is, and shipping the
+box before the credential is a feature that fails on first use.
+
+The second is why this is M and not S: **grounding is the hard half.** A model
+answering "what should I fix first here" is only as good as the facts handed
+to it, and those facts are `consult.Facts` — already built, already tested,
+already the thing the fixed answers are made of. Adding a model is a phrasing
+layer over the same struct. Building the phrasing first and the grounding
+later is how assistants end up confidently wrong, which is the failure this
+platform can least afford: it exists to be believed about security.
+
+**The refusals are not a placeholder.** `consult.UNANSWERABLE` names six
+questions people will ask and this platform cannot answer, with the reason for
+each. Those stay when a model arrives — a model that answers them anyway is
+worse than the list, and the list is what makes the rest trustworthy.
+
+**Acceptance criteria**
+
+- The key reaches the backend the way every other secret does, via Vault.
+- Free text is answered *only* from `consult.Facts` and whatever the caller is
+  already authorised to read. No repository source, no lake queries the asker
+  could not run themselves.
+- Every sentence carries the same tab citation the fixed answers carry. An
+  answer that cannot cite is not shown.
+- It still cannot act: no dispositions, no acceptances, no scans, no PRs.
+- A question on the `UNANSWERABLE` list is refused with its stated reason
+  rather than attempted.
+
+---
 
 ### B-042 — Coverage is plumbed end to end and no pipeline writes it
 

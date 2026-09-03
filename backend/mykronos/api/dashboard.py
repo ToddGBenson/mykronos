@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from mykronos import (
     briefing,
+    consult,
     controls,
     finding_record,
     governance,
@@ -4230,5 +4231,166 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
             "Evidenced, not asserted. A lane that is enabled and has never reported "
             "evidences no testing, and a lane with runs but no coverage document is "
             "reported as never having measured coverage rather than as zero percent."
+        ),
+    )
+
+
+class ConsultAnswerOut(BaseModel):
+    key: str
+    question: str
+    answer: str
+    tab: str | None
+    evidence: list[str]
+
+
+class ConsultUnanswerableOut(BaseModel):
+    question: str
+    why: str
+
+
+class ConsultOut(BaseModel):
+    """What this platform knows about one repository, and what it does not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    answers: list[ConsultAnswerOut]
+    cannot_answer: list[ConsultUnanswerableOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/consult", response_model=ConsultOut)
+async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) -> ConsultOut:
+    """Consult the Champion — ask this platform what it knows about a repository.
+
+    Nine tabs is a filing system, not an answer. This is the answer: the
+    questions somebody actually arrives with, each answered from records, each
+    naming the tab where the reader can go and disagree with it.
+
+    **Not a chatbot, deliberately.** No model, no free-text box. It answers a
+    fixed set of questions and — the part that matters — names the questions it
+    *cannot* answer, with the reason. The failure mode of an assistant is not
+    saying "I do not know"; it is answering anyway.
+
+    Two reasons for that shape. This repository holds no model API key and must
+    not (spec 12 §2), so a chat window would be blocked on the operator exactly
+    as the notifier is. And grounding is the hard half regardless: a model
+    answering "what should I fix first" is only as good as the facts handed to
+    it, and those facts are what this endpoint is. B-043 adds the phrasing
+    layer over the same facts once a credential exists.
+
+    **It cannot act.** Every answer is a read. No dispositions, no acceptances,
+    no scans started, no pull requests opened.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+    catalog = request.app.state.catalog
+
+    facts = consult.Facts(repo_full_name=repo_full_name)
+
+    # The briefing already reasons about lanes that cannot close findings, and
+    # re-deriving it here would be a second answer to a question that has one.
+    try:
+        scoped = briefing.build(catalog, asset_id=repo_full_name)
+        facts.open_findings = scoped.total_open
+        facts.blocked_by_lane = scoped.blocked_findings
+        facts.stalled_lanes = tuple(lane.capability for lane in scoped.stalled)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not brief %s for consult", scrub(repo_full_name))
+
+    def scalar(sql: str, params: list[Any]) -> int:
+        try:
+            rows = catalog.query(sql, params)
+        except Exception:  # noqa: BLE001
+            logger.warning("Consult query failed for %s", scrub(repo_full_name))
+            return 0
+        return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+
+    facts.critical = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND severity = 'critical'",
+        [repo_full_name],
+    )
+    facts.high = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND severity = 'high'",
+        [repo_full_name],
+    )
+    facts.unowned = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND (owner IS NULL OR owner = '')",
+        [repo_full_name],
+    )
+    facts.accepted = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'accepted_risk'",
+        [repo_full_name],
+    )
+    # Unqualified means neither a review date nor a reason. Either alone still
+    # leaves a decision somebody can revisit; neither leaves a shrug.
+    facts.accepted_unqualified = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'accepted_risk' "
+        "AND accepted_until IS NULL "
+        "AND (accepted_reason_code IS NULL OR accepted_reason_code = '')",
+        [repo_full_name],
+    )
+
+    health = queries.scan_health(repo_full_name)
+    reporting = {
+        str(lane["capability"])
+        for lane in health
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+    kinds = test_estate.assess(
+        reporting_capabilities=reporting,
+        demonstrated_regressions=regression.coverage(catalog, repo_full_name).demonstrated,
+    )
+    facts.test_kinds_total = len(kinds)
+    facts.test_kinds_observed = sum(1 for kind in kinds if kind.presence == "observed")
+    facts.coverage_measured = any(
+        lane.coverage_state == "reported"
+        for lane in test_estate.lane_health(health, set())
+    )
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        enabled = set(row.enabled_capabilities or []) if row else set()
+        # A separate table, and row-exists is the fact that matters: a profile
+        # saying "we do not know yet" is an auditable answer, and no profile at
+        # all is why every environmental input defaults to the worst case.
+        facts.risk_profile_confirmed = bool(
+            row
+            and session.execute(
+                select(RiskProfile.id).where(RiskProfile.repo_onboarding_id == row.id)
+            )
+            .scalars()
+            .first()
+        )
+
+    ssdf_results = ssdf.assess(
+        reporting_capabilities=reporting,
+        enabled_capabilities=enabled,
+        confirmed_controls=set(),
+        known_controls=set(),
+        functions=_ssdf_functions(request, repo_full_name),
+    )
+    facts.ssdf_total = len(ssdf_results)
+    facts.ssdf_met = sum(1 for r in ssdf_results if r.status == "met")
+
+    return ConsultOut(
+        repo_full_name=repo_full_name,
+        answers=[ConsultAnswerOut(**vars(a)) for a in consult.build(facts)],
+        cannot_answer=[ConsultUnanswerableOut(**vars(u)) for u in consult.UNANSWERABLE],
+        note=(
+            "Answered from this platform's own records. Every answer names the tab "
+            "it came from, so you can check it. It cannot act, and the questions it "
+            "cannot answer are listed rather than guessed at."
         ),
     )
