@@ -45,9 +45,10 @@ already shipped.
 
 ## Open
 
-Four, and **all four need the operator rather than code**. B-018 is a decision
+Five, and **all five need the operator rather than code**. B-018 is a decision
 only they can make, B-035 and B-043 each need a credential this repository must
-not hold, and B-042 is a call about this repository's CI budget. Writing code
+not hold, B-042 is a call about this repository's CI budget, and B-044 is one
+permission grant that lights four built-and-waiting features. Writing code
 against any of them would be guessing.
 
 B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
@@ -164,6 +165,47 @@ worse than the list, and the list is what makes the rest trustworthy.
 - It still cannot act: no dispositions, no acceptances, no scans, no PRs.
 - A question on the `UNANSWERABLE` list is refused with its stated reason
   rather than attempted.
+
+---
+
+### B-044 — One App permission is holding four features shut
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`repo_governance` holds **zero rows**. Not stale ones — none, ever. Every
+governance read on this deployment returns unreadable:
+
+    GitHub refused the read: Could not read branch protection for
+    ToddGBenson/mykronos: {"message":"Resource not accessible ..."}
+
+The GitHub App does not carry `administration: read`. D-097 decided that
+permission is *optional* rather than required, and that decision is right —
+making it required would fail the spec 02 §8 permission smoke test for every
+installation that already exists. But nobody has granted it here, and the
+consequence is larger than the governance panel it was added for.
+
+**Four things are inert because of it, and none of them is broken.**
+
+1. The governance panel reports nine controls as `unknown`, correctly.
+2. **SSDF PS.1, PS.2 and part of PW.7** report "could not be read" — three of
+   the four practices `mykronos` cannot evidence, out of thirteen.
+3. **Oracle's governance term** is permanently `available: False`, so no
+   repository is scored on whether a bad change could get in.
+4. **Control drift** (D-105) will never fire. The sweep runs, finds nothing
+   readable, and records nothing — which is the correct behaviour and means
+   the feature sits waiting.
+
+**One click.** Granting `administration: read` on the App installation lights
+all four with no code change, which is also the proof that each was built
+right: none of them fabricated a value in its absence.
+
+**Acceptance criteria**
+
+- The permission is granted, or a decision is recorded that it will not be —
+  as D-053 did for DAST.
+- `repo_governance` carries a row per repository and the SSDF count moves.
+- The first drift sweep after the grant produces no drift, because a first
+  reading has nothing to compare against. That is expected, not a failure.
 
 ---
 
