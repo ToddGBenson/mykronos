@@ -98,7 +98,7 @@ export default async function TriagePage({
     return <ErrorPanel title="Queue unavailable" detail={result.error} />;
   }
 
-  const { items, open_by_severity, total_open, truncated } = result.data;
+  const { items, open_by_severity, total_open, truncated, ranking } = result.data;
 
   // The scanners' own remediation, fetched once for the whole estate rather
   // than per selection: the queue spans repositories, so a per-finding lookup
@@ -259,6 +259,23 @@ export default async function TriagePage({
           </Link>
         ))}
       </div>
+
+      {/* What the order is *not* made of, at the point of ordering (B-033).
+          The rank carries its working for every term it used; without this it
+          presented itself as a risk ranking while never having consulted
+          business context at all. Oracle's check run has said "not yet
+          consulted" since it shipped — this is the same honesty, on the page
+          where somebody decides what to work on. */}
+      {ranking?.not_consulted?.length ? (
+        <p className="max-w-prose border-l-2 border-high bg-high-wash px-2.5 py-1.5 text-[13px] leading-relaxed text-ink-2">
+          <span className="font-semibold text-high">Not consulted:</span>{" "}
+          {ranking.not_consulted.map((gap) => gap.input).join(", ")} —{" "}
+          {ranking.not_consulted[0]?.reason}.{" "}
+          <span className="text-ink-3">
+            This order is severity and threat intelligence, not business risk.
+          </span>
+        </p>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-1.5">
         <Label>Threat intel</Label>

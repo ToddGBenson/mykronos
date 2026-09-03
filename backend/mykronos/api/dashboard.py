@@ -46,7 +46,12 @@ from mykronos.ci import (
     pipeline_name_for,
     reconcile,
 )
-from mykronos.dashboard import STRIDE_CATEGORIES, DashboardQueries, PortfolioSummary
+from mykronos.dashboard import (
+    STRIDE_CATEGORIES,
+    DashboardQueries,
+    PortfolioSummary,
+    ranking_inputs,
+)
 from mykronos.db.models import (
     CapabilityGrant,
     RepoControl,
@@ -313,10 +318,32 @@ class TriageItem(BaseModel):
     )
 
 
+class NotConsulted(BaseModel):
+    """A ranking input this deployment could not use, and why."""
+
+    input: str
+    reason: str
+
+
+class RankingInputs(BaseModel):
+    """What the order is actually made of (B-033).
+
+    The rank already carries its working — every term it used, with points.
+    This is the other half: what it could not use. Without it a queue ordered
+    by severity and threat intel presents itself as ordered by risk, and those
+    are different claims about the same list.
+    """
+
+    consulted: list[str]
+    not_consulted: list[NotConsulted]
+    repos_without_a_risk_profile: list[str]
+
+
 class TriageQueue(BaseModel):
     items: list[TriageItem]
     open_by_severity: dict[str, int]
     total_open: int
+    ranking: RankingInputs
     truncated: bool = Field(
         description=(
             "Whether the limit cut the list short. A queue that silently stops "
@@ -1065,11 +1092,15 @@ async def triage(
             store=request.app.state.knowledge,
         )
 
+    with request.app.state.db.session() as session:
+        ranking = ranking_inputs(request.app.state.catalog, session)
+
     return TriageQueue(
         items=[TriageItem(**item) for item in items],
         open_by_severity=counts,
         total_open=sum(counts.values()),
         truncated=len(items) >= limit,
+        ranking=RankingInputs(**ranking),
     )
 
 

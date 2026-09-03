@@ -297,6 +297,59 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
     return (sum(term["points"] for term in terms), terms)
 
 
+def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
+    """Which ranking inputs this deployment can actually consult (B-033).
+
+    The rank carries its working — every term it *used* is listed with its
+    points. What it never said is what it could not use, and that omission let
+    a queue ordered by severity and threat intel present itself as ordered by
+    risk. Oracle's check run has said "not yet consulted" since it shipped;
+    this is the same honesty applied to the queue.
+
+    Business context is the gap that matters. `internet_facing`,
+    `data_classification` and `business_criticality` are recorded on a risk
+    profile and are not terms in `rank_terms` at all — so a queue on an estate
+    with no profiles is not a degraded risk ranking, it is a threat-intel
+    ranking, and those are different claims about the same list.
+    """
+    from mykronos.db.models import RepoOnboarding, RiskProfile
+
+    repos = [
+        str(row[0])
+        for row in catalog.query(
+            "SELECT DISTINCT asset_id FROM findings WHERE status = 'open'"
+        )
+    ]
+    with_profile = {
+        str(name)
+        for (name,) in session.execute(
+            select(RepoOnboarding.github_repo_full_name)
+            .join(RiskProfile, RiskProfile.repo_onboarding_id == RepoOnboarding.id)
+        ).all()
+    }
+    missing_profile = sorted(set(repos) - with_profile)
+
+    return {
+        "consulted": ["severity", "threat intel (KEV, EPSS)", "remediation target", "blast radius"],
+        "not_consulted": (
+            [
+                {
+                    "input": "business context",
+                    "reason": (
+                        "no risk profile on "
+                        + ", ".join(missing_profile)
+                        + " — internet exposure, data classification and business "
+                        "criticality are unset, and they are not terms in this rank"
+                    ),
+                }
+            ]
+            if missing_profile
+            else []
+        ),
+        "repos_without_a_risk_profile": missing_profile,
+    }
+
+
 @dataclass
 class CapabilityState:
     """Per-capability scan state for one repo.

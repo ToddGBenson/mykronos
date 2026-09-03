@@ -3653,6 +3653,16 @@ export interface components {
              */
             network_status_md: string;
         };
+        /**
+         * NotConsulted
+         * @description A ranking input this deployment could not use, and why.
+         */
+        NotConsulted: {
+            /** Input */
+            input: string;
+            /** Reason */
+            reason: string;
+        };
         /** OnboardRequest */
         OnboardRequest: {
             /** Github Repo Full Name */
@@ -4006,6 +4016,23 @@ export interface components {
             points: number;
             /** Detail */
             detail: string;
+        };
+        /**
+         * RankingInputs
+         * @description What the order is actually made of (B-033).
+         *
+         *     The rank already carries its working — every term it used, with points.
+         *     This is the other half: what it could not use. Without it a queue ordered
+         *     by severity and threat intel presents itself as ordered by risk, and those
+         *     are different claims about the same list.
+         */
+        RankingInputs: {
+            /** Consulted */
+            consulted: string[];
+            /** Not Consulted */
+            not_consulted: components["schemas"]["NotConsulted"][];
+            /** Repos Without A Risk Profile */
+            repos_without_a_risk_profile: string[];
         };
         /**
          * RawAccepted
@@ -5070,6 +5097,7 @@ export interface components {
             };
             /** Total Open */
             total_open: number;
+            ranking: components["schemas"]["RankingInputs"];
             /**
              * Truncated
              * @description Whether the limit cut the list short. A queue that silently stops at 100 reads as 'that is all of it'.
