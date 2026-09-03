@@ -115,6 +115,13 @@ Operational lessons worth carrying between projects are promoted to
 including gaps where a spec claims more than the code delivers — is in
 [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
+The subset of that backlog which this platform cannot do for itself — a
+credential it must not hold, or a decision only an operator can make — has
+step-by-step procedures in
+[`docs/OPERATOR-TASKS.md`](docs/OPERATOR-TASKS.md). None of those is a
+defect: each is a built feature waiting on an input, and each reports honestly
+that it cannot see rather than fabricating a value.
+
 ## Start here
 
 Read the specs in this order:
