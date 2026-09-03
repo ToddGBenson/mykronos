@@ -24,6 +24,7 @@ from mykronos import (
     briefing,
     consult,
     controls,
+    cvss,
     finding_record,
     governance,
     guidance,
@@ -38,6 +39,7 @@ from mykronos import (
     test_estate,
     worklist,
 )
+from mykronos import threat_intel as threat_intel_feed
 from mykronos.adminauth import PrincipalDep
 from mykronos.api.ingest import (
     installation_client_for_repo,
@@ -64,6 +66,7 @@ from mykronos.db.models import (
     RepoControl,
     RepoOnboarding,
     RiskProfile,
+    ThreatIntelMatch,
     capability_config_for,
 )
 from mykronos.knowledge.capture import (
@@ -3550,6 +3553,25 @@ class PackageOut(BaseModel):
     advisories: int | None = None
 
 
+class SeverityHereOut(BaseModel):
+    """This vulnerability's CVSS score, re-read for this system.
+
+    `environmental` equals `base` whenever nothing is known, by construction:
+    every undefined modifier takes the base metric's value, so a repository
+    with no confirmed risk profile is never quietly discounted. `stated` says
+    which of those two situations produced an equal pair.
+    """
+
+    vector: str
+    base: float
+    environmental: float
+    moved: bool
+    #: Whether anything about this system was actually stated. False with an
+    #: equal pair means "nobody has said", not "we checked and it matches".
+    stated: bool
+    because: list[str]
+
+
 class FindingRecordOut(BaseModel):
     """One finding, with everything the platform knows about it (B-032).
 
@@ -3565,7 +3587,61 @@ class FindingRecordOut(BaseModel):
     closure: ClosureOut
     fix: FixOut | None
     package: PackageOut | None
+    #: Absent where NVD has no v3 vector for this CVE, or where the finding
+    #: names no CVE at all — a Semgrep pattern and a ZAP alert never will.
+    #: Absent is the honest answer; a fabricated vector would produce a number
+    #: that looks like a standard and is not one.
+    severity_here: SeverityHereOut | None = None
     missing_context: list[RecordGap]
+
+
+def _severity_here(
+    request: Request, row: dict[str, Any], profile: Any
+) -> SeverityHereOut | None:
+    """This finding's CVSS score re-read for this repository, where possible.
+
+    Three ways this is `None`, all of them honest: the finding names no CVE
+    (a Semgrep pattern or a ZAP alert never will), NVD has published no v3
+    vector for it, or the lookup has not reached it yet. Inventing a vector
+    from the severity word would produce a figure that looks like a published
+    standard and is not one — which is the single worst thing this could do,
+    because the number would be quoted.
+    """
+    cve_id = threat_intel_feed.extract_cve(row.get("rule_id"), row.get("title"))
+    if not cve_id:
+        return None
+
+    with request.app.state.db.session() as session:
+        match = session.get(ThreatIntelMatch, cve_id)
+    vector = match.cvss_vector if match else None
+    if not vector:
+        return None
+
+    environment = (
+        cvss.environment_for(
+            internet_facing=profile.internet_facing,
+            data_classification=profile.data_classification,
+            business_criticality=profile.business_criticality,
+            compliance_scope=profile.compliance_scope,
+        )
+        if profile is not None
+        else cvss.Environment()
+    )
+
+    try:
+        scored = cvss.score(vector, environment)
+    except cvss.VectorError:
+        logger.warning("Stored vector for %s is unscoreable", scrub(cve_id))
+        return None
+
+    return SeverityHereOut(
+        vector=vector,
+        base=scored.base,
+        environmental=scored.environmental,
+        moved=scored.moved,
+        stated=environment.stated,
+        because=list(scored.because),
+    )
 
 
 @router.get("/findings/{finding_id}/record", response_model=FindingRecordOut)
@@ -3636,6 +3712,7 @@ async def whole_finding_record(
     return FindingRecordOut(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
+        severity_here=_severity_here(request, row, profile),
         closure=ClosureOut(
             **finding_record.closure(capability=capability, lane=lanes.get(capability))
         ),

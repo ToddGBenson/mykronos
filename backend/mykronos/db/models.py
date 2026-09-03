@@ -365,6 +365,15 @@ class ThreatIntelMatch(Base):
     kev_due_date: Mapped[date | None] = mapped_column(Date, default=None)
     epss_score: Mapped[float | None] = mapped_column(Float, default=None)
     epss_percentile: Mapped[float | None] = mapped_column(Float, default=None)
+    #: The published CVSS v3.x base vector, from NVD. Null until looked up, and
+    #: null forever for a CVE NVD has not scored — which is a real state and
+    #: not a zero. Stored as the vector rather than the score because the score
+    #: cannot be re-read for an environment and the vector can: that is the
+    #: entire difference between "7.5 everywhere" and "7.5 there, 5.9 here".
+    cvss_vector: Mapped[str | None] = mapped_column(String(128), default=None)
+    #: When the vector lookup last ran for this CVE, successful or not. Without
+    #: it a CVE NVD has no record of would be retried on every sweep forever.
+    vector_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

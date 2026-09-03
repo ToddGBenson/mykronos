@@ -10,6 +10,7 @@ import {
   SeverityText,
 } from "@/components/primitives";
 import type { Severity } from "@/lib/api";
+import type { components } from "@/lib/api-types";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
 
@@ -43,6 +44,7 @@ export default async function FindingRecordPage({
   }
 
   const { finding, repo_full_name, closure, fix, missing_context } = result.data;
+  const here = result.data.severity_here;
   const pkg = result.data.package;
 
   return (
@@ -99,6 +101,8 @@ export default async function FindingRecordPage({
           </p>
         </section>
       ) : null}
+
+      {here ? <SeverityHere here={here} /> : null}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
         <div className="flex flex-col gap-3">
@@ -253,5 +257,79 @@ export default async function FindingRecordPage({
         </div>
       </div>
     </div>
+  );
+}
+
+type SeverityHereData = components["schemas"]["SeverityHereOut"];
+
+/**
+ * The CVSS score, re-read for this system.
+ *
+ * A base score is a statement about a vulnerability in the abstract — the same
+ * number whether the affected service faces the internet holding card data or
+ * sits on a laptop that has been off for a year. This is the standard's own
+ * answer to that, computed rather than approximated.
+ *
+ * **The equal case is the one that needs words.** When nothing is known the two
+ * numbers are identical by construction: every undefined modifier takes the
+ * base value, so nothing is ever quietly discounted. Showing two matching
+ * figures with no explanation would read as "we checked and it matches", which
+ * is the opposite of what happened.
+ */
+function SeverityHere({ here }: { here: SeverityHereData }) {
+  const lower = here.environmental < here.base;
+
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="border-b border-rule-soft px-3 py-1.5">
+        <Label as="h2">Severity here</Label>
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-3 py-2.5">
+        <span className="flex items-baseline gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
+            base
+          </span>
+          <span className="tabular text-xl font-bold leading-none">
+            {here.base.toFixed(1)}
+          </span>
+        </span>
+        <span className="flex items-baseline gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
+            here
+          </span>
+          <span
+            className={`tabular text-xl font-bold leading-none ${
+              here.moved ? (lower ? "text-pass" : "text-critical") : ""
+            }`}
+          >
+            {here.environmental.toFixed(1)}
+          </span>
+        </span>
+
+        <span className="max-w-prose text-[13px] text-ink-2">
+          {here.moved ? (
+            <>
+              {lower ? "Lower" : "Higher"} here because{" "}
+              {here.because.join(", ")}.
+            </>
+          ) : here.stated ? (
+            // Stated and unmoved is a real result, not a missing one.
+            <>
+              Unchanged despite what is known ({here.because.join(", ")}) — the
+              impact sub-score is already at its cap.
+            </>
+          ) : (
+            <>
+              The same as the base score, because nothing has been stated about
+              this system. Every undefined metric takes the base value, so this
+              is an upper bound and never a discount.
+            </>
+          )}
+        </span>
+      </div>
+      <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
+        {here.vector}
+      </p>
+    </section>
   );
 }
