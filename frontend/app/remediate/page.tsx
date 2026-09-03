@@ -55,7 +55,7 @@ export default async function RemediatePage() {
     <div className="flex flex-col gap-5">
       <header className="flex flex-col gap-1">
         <h1 className="text-sm font-bold">How to remediate the open findings today</h1>
-        <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+        <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
           Ordered by what it costs you, cheapest first — not by severity. A
           critical nobody can close today belongs below {closing_soon} findings
           that close for free.
@@ -80,12 +80,12 @@ export default async function RemediatePage() {
           />
         ) : (
           <>
-            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+            <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
               Already fixed and absent from the newest successful scan. Closure
               is arithmetic from here — two consecutive successful scans, and
               these are counted.
             </p>
-            <ul className="flex flex-col gap-1 font-mono text-[10px]">
+            <ul className="flex flex-col gap-1 font-mono text-[12px]">
               {awaiting.map((a) => (
                 <li key={`${a.repo_full_name}:${a.capability}`} className="text-ink-2">
                   <strong className="text-ink">{a.findings}</strong> {a.capability} ·{" "}
@@ -114,7 +114,7 @@ export default async function RemediatePage() {
           />
         ) : (
           <>
-            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+            <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
               A finding closes only after two consecutive <em>successful</em>{" "}
               scans see it gone. These lanes are not producing them, so{" "}
               <strong className="text-ink">{blocked_findings} findings</strong>{" "}
@@ -135,7 +135,7 @@ export default async function RemediatePage() {
           <EmptyState title="Nothing open" detail="No open findings in scope." />
         ) : (
           <div className="flex flex-col gap-3">
-            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+            <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
               Grouped by the change rather than the finding or the rule. Where
               two scanner rules are answered by one edit, they appear once —
               derived from what the scanner said to do, never from a list kept
@@ -148,16 +148,16 @@ export default async function RemediatePage() {
                 open={fix.effort === "config" || fix.effort === "upgrade"}
               >
                 <summary className="cursor-pointer list-none">
-                  <span className="font-mono text-[11px] text-ink">{fix.action}</span>
-                  <span className="ml-2 font-mono text-[10px] text-ink-2">
+                  <span className="font-mono text-[13px] text-ink">{fix.action}</span>
+                  <span className="ml-2 font-mono text-[12px] text-ink-2">
                     closes {fix.findings}
                   </span>
                   {fix.rules.length > 1 ? (
-                    <span className="ml-2 font-mono text-[9px] text-accent">
+                    <span className="ml-2 font-mono text-[11px] text-accent">
                       across {fix.rules.length} rules
                     </span>
                   ) : null}
-                  <span className="ml-2 text-[8px] uppercase tracking-wide text-ink-3">
+                  <span className="ml-2 text-[10px] uppercase tracking-wide text-ink-3">
                     {fix.effort}
                   </span>
                 </summary>
@@ -166,20 +166,20 @@ export default async function RemediatePage() {
                     {fix.steps.map((step) => (
                       <li
                         key={step.slice(0, 32)}
-                        className="max-w-prose text-[10px] leading-relaxed text-ink-2"
+                        className="max-w-prose text-[12px] leading-relaxed text-ink-2"
                       >
                         {step}
                       </li>
                     ))}
                   </ol>
                 ) : (
-                  <p className="mt-1 max-w-prose text-[10px] leading-relaxed text-ink-3">
+                  <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-ink-3">
                     No standing procedure for this class — it is a judgement
                     about this finding, and the scanner&rsquo;s own text is in
                     the table below.
                   </p>
                 )}
-                <p className="mt-1 font-mono text-[9px] text-ink-3">
+                <p className="mt-1 font-mono text-[11px] text-ink-3">
                   {fix.repos.join(", ")}
                 </p>
               </details>
@@ -198,7 +198,7 @@ export default async function RemediatePage() {
           <EmptyState title="Nothing open" detail="No open findings in scope." />
         ) : (
           <div className="flex flex-col gap-4">
-            <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+            <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
               Taken from the scan itself — ZAP&apos;s <code>solution</code>,
               Trivy&apos;s <code>Fixed Version</code> — not from a general sense
               of what a class of finding usually needs. Each row says which,
@@ -208,18 +208,18 @@ export default async function RemediatePage() {
             {guidance.map((cap) => (
               <div key={cap.capability} className="flex flex-col gap-1">
                 <div className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="font-mono text-[11px] font-bold text-ink">
+                  <span className="font-mono text-[13px] font-bold text-ink">
                     {cap.capability}
                   </span>
-                  <span className="font-mono text-[10px] text-ink-2">{cap.count} open</span>
+                  <span className="font-mono text-[12px] text-ink-2">{cap.count} open</span>
                   {cap.unactionable > 0 ? (
-                    <span className="font-mono text-[9px] text-ink-3">
+                    <span className="font-mono text-[11px] text-ink-3">
                       — {cap.unactionable} with no fix published
                     </span>
                   ) : null}
                 </div>
                 <div className="scroll-x">
-                  <table className="w-full min-w-[680px] border-collapse font-mono text-[10px]">
+                  <table className="w-full min-w-[680px] border-collapse font-mono text-[12px]">
                     <thead>
                       <tr className="text-left text-ink-3">
                         <th className="px-2 py-1 text-right font-normal">Count</th>
@@ -233,14 +233,14 @@ export default async function RemediatePage() {
                           <td className="px-2 py-1 text-right text-ink">{rule.count}</td>
                           <td className="px-2 py-1 text-ink-2">
                             {rule.title}
-                            <span className="ml-1 text-[8px] uppercase tracking-wide text-ink-3">
+                            <span className="ml-1 text-[10px] uppercase tracking-wide text-ink-3">
                               {rule.effort}
                             </span>
                           </td>
                           <td className="max-w-[46ch] px-2 py-1 leading-snug text-ink-3">
                             {rule.fix}
                             {rule.source === "standing" ? (
-                              <span className="ml-1 text-[8px] uppercase tracking-wide text-ink-3">
+                              <span className="ml-1 text-[10px] uppercase tracking-wide text-ink-3">
                                 · ours, not the scanner&apos;s
                               </span>
                             ) : null}
@@ -260,7 +260,7 @@ export default async function RemediatePage() {
           table reads as a broken feature. */}
       <section className="flex flex-col gap-2">
         <Label>5 · What auto-remediation can take off you</Label>
-        <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+        <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
           <strong className="text-ink">
             {auto_fixable} of {total_open}
           </strong>
@@ -271,7 +271,7 @@ export default async function RemediatePage() {
           draft pull request a person merges; the client has no merge method
           and a test enforces that.
         </p>
-        <p className="text-[10px] text-ink-3">
+        <p className="text-[12px] text-ink-3">
           <Link href="/remediation" className="text-accent hover:underline">
             Remediation
           </Link>{" "}

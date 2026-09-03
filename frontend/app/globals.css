@@ -149,16 +149,24 @@ body {
 }
 
 body {
-  /* Mono for everything, including prose — the defining move of this
-     direction and the one with a real cost. Direction C split identifiers from
-     sentences deliberately; A gives that up to read as a single instrument
-     readout, which means the written rationales this platform is full of are
-     now set in a face that does not want to be read at length. That trade was
-     made with eyes open and is one line to reverse.
+  /* The prose became the thing that hurts, so this is the reversal the previous
+     note promised.
 
-     `--font-sans` is still declared and still loaded: the two-face split is a
-     token change away if the prose becomes the thing that hurts. */
-  font-family: var(--font-mono);
+     Mono for everything read as a single instrument readout, at the cost of the
+     written rationales this platform is full of being set in a face that does
+     not want to be read at length. A UX audit measured the result: 130 of 140
+     text elements on the portfolio page rendered at 11px or below, in mono,
+     against a 16px browser default and a 14–16px floor for sustained reading.
+     Mono is wider per character and needs *more* size than a sans, not less.
+
+     So: sans for sentences, mono for the things mono is good at — identifiers,
+     versions, paths, CVE numbers, timestamps, and any column of digits that has
+     to line up to be comparable. Those all name `font-mono` explicitly (see the
+     primitives) or carry `.tabular`, so they keep it; everything else inherits
+     a face built for reading. */
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
   font-feature-settings: "cv02", "cv03", "cv04";
 }
 
@@ -189,6 +197,22 @@ body {
 /* Digits in a column have to line up to be comparable at a glance. */
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* A 24×24 hit area without moving anything on screen.
+ *
+ * WCAG 2.2 §2.5.8 sets 24px as the minimum for a pointer target; an audit
+ * found 17 controls below it here, including the theme switcher at 20px tall
+ * and the repository sublinks at 14px. The padding grows the target and the
+ * negative margin gives back the space, so the control lands in exactly the
+ * same place it did before — the visual size is a design decision and stays
+ * as drawn, while the thing a trackpad has to hit gets bigger. */
+.tap {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding-block: 5px;
+  margin-block: -5px;
 }
 
 /* Wide content scrolls inside its own container; the page body never does. */

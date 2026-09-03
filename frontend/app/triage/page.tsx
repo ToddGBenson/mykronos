@@ -122,7 +122,13 @@ export default async function TriagePage({
 
   // Selection lives in the URL, like every other part of this view, so the row
   // somebody is looking at survives a refresh and can be sent to somebody else.
-  const selected = items.find((item) => item.finding_id === query.finding);
+  // Falls back to the first item rather than to an empty pane. Landing on an
+  // explanation of what the pane *would* show wastes two-thirds of the viewport
+  // and asks the reader to do something before the page does anything; opening
+  // on the top of the queue is also the right default, because the queue is
+  // ordered by what to work on next.
+  const selected =
+    items.find((item) => item.finding_id === query.finding) ?? items[0];
 
   const filterHref = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
@@ -137,12 +143,12 @@ export default async function TriagePage({
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Triage queue</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {total_open} open across the portfolio
         </span>
         <Link
           href="/"
-          className="ml-auto border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
+          className="ml-auto border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-accent hover:text-accent"
         >
           portfolio view
         </Link>
@@ -217,12 +223,12 @@ export default async function TriagePage({
           name="rule_id"
           defaultValue={query.rule_id ?? ""}
           placeholder="e.g. CWE-89 or CVE-2024-…"
-          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[9px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
         />
         {query.rule_id ? (
           <Link
             href={filterHref({ rule_id: undefined })}
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[9px] text-accent"
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
           >
             {query.rule_id} ✕
           </Link>
@@ -238,7 +244,7 @@ export default async function TriagePage({
           <Link
             key={mode}
             href={filterHref({ order: mode === "severity" ? undefined : mode })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            className={`border px-1.5 py-0.5 font-mono text-[11px] ${
               (query.order === "rank" ? "rank" : "severity") === mode
                 ? "border-accent bg-accent-wash text-accent"
                 : "border-rule text-ink-3 hover:border-accent"
@@ -258,7 +264,7 @@ export default async function TriagePage({
         <Label>Threat intel</Label>
         <Link
           href={filterHref({ kev_only: query.kev_only === "1" ? undefined : "1" })}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             query.kev_only === "1"
               ? "border-critical bg-critical-wash text-critical"
               : "border-rule text-ink-3 hover:border-accent"
@@ -268,7 +274,7 @@ export default async function TriagePage({
         </Link>
         <Link
           href={filterHref({ min_epss: query.min_epss === "0.5" ? undefined : "0.5" })}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             query.min_epss === "0.5"
               ? "border-high bg-high-wash text-high"
               : "border-rule text-ink-3 hover:border-accent"
@@ -312,10 +318,10 @@ export default async function TriagePage({
             {/* Scrolls on its own, so working an item never loses your place
                 in the queue — the single reason this shape is worth building
                 rather than widening the aside. */}
-            <div className="lg:w-[24rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+            <div className="lg:w-[30rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
               <ul className="flex flex-col">
                 {items.map((item) => {
-                  const on = query.finding === item.finding_id;
+                  const on = selected?.finding_id === item.finding_id;
                   return (
                     <li key={item.finding_id}>
                       <Link
@@ -331,18 +337,18 @@ export default async function TriagePage({
                         <span className="flex flex-wrap items-baseline gap-1.5">
                           <SeverityText severity={item.severity as Severity} />
                           {item.in_kev ? (
-                            <span className="font-mono text-[8px] uppercase tracking-wide text-critical">
+                            <span className="font-mono text-[10px] uppercase tracking-wide text-critical">
                               kev
                             </span>
                           ) : null}
-                          <span className="font-mono text-[9px] text-ink-3">
+                          <span className="font-mono text-[11px] text-ink-3">
                             {item.capability}
                           </span>
                         </span>
-                        <span className="line-clamp-2 text-[11px] leading-snug text-ink">
+                        <span className="line-clamp-3 text-[13px] leading-snug text-ink">
                           {item.title}
                         </span>
-                        <span className="truncate font-mono text-[9px] text-ink-3">
+                        <span className="truncate font-mono text-[11px] text-ink-3">
                           {item.repo_full_name}
                         </span>
                       </Link>
@@ -355,27 +361,21 @@ export default async function TriagePage({
             <div className="min-w-0 grow lg:overflow-y-auto lg:px-4">
               {selected ? (
                 <WorklistDetail item={selected} fix={fixByRule[selected.rule_id]} />
-              ) : (
-                <div className="border border-rule bg-paper-2 px-3 py-4 text-[11px] leading-relaxed text-ink-3">
-                  Choose a finding, or press <span className="font-mono">j</span>.
-                  Everything the old table showed in ten columns is here, with
-                  room to read it.
-                </div>
-              )}
+              ) : null}
             </div>
           </div>
         </>
       )}
 
       {truncated ? (
-        <p className="border-l-2 border-high bg-high-wash px-3 py-2 text-[11px] text-ink-2">
+        <p className="border-l-2 border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2">
           <strong className="text-high">Showing the first 100.</strong> There are{" "}
           {total_open} open findings in scope — narrow by severity or capability
           to see the rest.
         </p>
       ) : null}
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label>Reading this queue</Label>
         <br />
         Ordered by severity, then by <em>age</em> rather than recency: an old
@@ -416,10 +416,10 @@ function WorklistDetail({
         <span className="flex flex-wrap items-baseline gap-2">
           <SeverityText severity={item.severity as Severity} />
           {item.in_kev ? <Pill tone="critical">KEV</Pill> : null}
-          <span className="font-mono text-[10px] text-ink-3">{item.capability}</span>
+          <span className="font-mono text-[12px] text-ink-3">{item.capability}</span>
         </span>
         <h2 className="text-[13px] font-semibold leading-snug">{item.title}</h2>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {item.rule_id}
           {item.cve_id ? ` · ${item.cve_id}` : ""}
         </span>
@@ -430,31 +430,31 @@ function WorklistDetail({
         <div className="border-l-2 border-accent-2 bg-paper-3 px-2.5 py-2">
           <div className="flex flex-wrap items-baseline gap-2">
             <Label>What to do</Label>
-            <span className="text-[8px] uppercase tracking-wide text-ink-3">{fix.effort}</span>
+            <span className="text-[10px] uppercase tracking-wide text-ink-3">{fix.effort}</span>
             {fix.source === "standing" ? (
               <span
-                className="text-[8px] uppercase tracking-wide text-ink-3"
+                className="text-[10px] uppercase tracking-wide text-ink-3"
                 title="Written by this platform, not the scanner."
               >
                 ours, not the scanner&rsquo;s
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-ink">{fix.fix}</p>
+          <p className="mt-1 text-[14px] leading-relaxed text-ink">{fix.fix}</p>
         </div>
       ) : null}
 
       {item.triage ? (
         <div className="flex flex-col gap-1">
           <Label>What the classifier concluded</Label>
-          <span className="font-mono text-[10px] text-ink-2">
+          <span className="font-mono text-[12px] text-ink-2">
             {CLASSIFICATION_LABEL[item.triage] ?? item.triage}
           </span>
           {/* Was a `title` attribute on a table cell, so it existed only for
               somebody who hovered and knew to. It is the reasoning; it gets to
               be visible. */}
           {item.triage_rationale ? (
-            <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">
+            <p className="max-w-prose text-[14px] leading-relaxed text-ink-2">
               {item.triage_rationale}
             </p>
           ) : null}
@@ -470,18 +470,18 @@ function WorklistDetail({
         <Label>Where</Label>
         <Link
           href={`/repos/${item.repo_id}?tab=findings`}
-          className="font-mono text-[10px] text-accent hover:underline"
+          className="font-mono text-[12px] text-accent hover:underline"
         >
           {item.repo_full_name}
         </Link>
-        <span className="break-all font-mono text-[10px] text-ink-2">
+        <span className="break-all font-mono text-[12px] text-ink-2">
           {item.file_path
             ? `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`
             : item.package_name
               ? `${item.package_name}@${item.package_version ?? "?"}`
               : "—"}
         </span>
-        <span className="flex flex-wrap items-baseline gap-1.5 font-mono text-[9px] text-ink-3">
+        <span className="flex flex-wrap items-baseline gap-1.5 font-mono text-[11px] text-ink-3">
           first seen <RelativeTime value={item.first_seen_at} />
           {item.effort ? <>· {item.effort}</> : null}
           {/* `Verdict` rather than the raw string: it renders "not assessed"
@@ -498,7 +498,7 @@ function WorklistDetail({
         <div className="flex flex-col gap-0.5">
           <Label>Why it ranks here {item.rank ? `· ${item.rank.toFixed(0)}` : ""}</Label>
           {item.rank_terms.map((term) => (
-            <span key={term.detail} className="font-mono text-[9px] text-ink-2">
+            <span key={term.detail} className="font-mono text-[11px] text-ink-2">
               {term.points > 0 ? "+" : ""}
               {term.points} {term.detail}
             </span>

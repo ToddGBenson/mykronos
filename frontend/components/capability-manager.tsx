@@ -153,7 +153,7 @@ export function CapabilityManager({
                       "note" in meta ? `. ${meta.note}` : ""
                     }`
               }
-              className={`flex items-center gap-1 border px-2 py-1 font-mono text-[10px] transition-opacity ${
+              className={`flex items-center gap-1 border px-2 py-1 font-mono text-[12px] transition-opacity ${
                 working ? "opacity-40" : ""
               } ${
                 isPendingInstall
@@ -164,7 +164,7 @@ export function CapabilityManager({
               <span aria-hidden>{meta.icon}</span>
               {capability}
               <span
-                className={`text-[8px] uppercase tracking-wider ${
+                className={`text-[10px] uppercase tracking-wider ${
                   tone ? INDICATOR[tone].word : "text-ink-3"
                 }`}
               >
@@ -186,7 +186,7 @@ export function CapabilityManager({
         />
       ) : null}
       {error ? (
-        <p className="font-mono text-[10px] text-high">{error}</p>
+        <p className="font-mono text-[12px] text-high">{error}</p>
       ) : null}
     </div>
   );
@@ -218,7 +218,7 @@ function ExplainRedCapability({
     (stage && RED_REASON[stage.state]) ??
     "Enabled, and not answering — check the Enabled jobs section on the Harness tab for detail.";
   return (
-    <div className="border-l-2 border-critical bg-critical-wash px-3 py-2 text-[11px] text-ink-2">
+    <div className="border-l-2 border-critical bg-critical-wash px-3 py-2 text-[13px] text-ink-2">
       <p>
         <strong className="text-critical">{meta?.label ?? capability}</strong>{" "}
         {reason}
@@ -226,7 +226,7 @@ function ExplainRedCapability({
       <button
         type="button"
         onClick={onDisableAnyway}
-        className="mt-1.5 border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-critical hover:text-critical"
+        className="mt-1.5 border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical"
       >
         disable anyway
       </button>

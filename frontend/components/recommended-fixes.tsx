@@ -45,7 +45,7 @@ export function RecommendedFixes({ data }: { data: RepoGuidance }) {
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-baseline gap-3">
         <Label>Recommended fixes</Label>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           from the scan reports, grouped by the change
         </span>
         {actionable_findings > 0 ? (
@@ -55,7 +55,7 @@ export function RecommendedFixes({ data }: { data: RepoGuidance }) {
 
       {now.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <p className="max-w-prose text-[10px] leading-relaxed text-ink-2">
+          <p className="max-w-prose text-[12px] leading-relaxed text-ink-2">
             <strong className="text-ink">These need no judgement.</strong> A
             config value or a version bump, each closing every finding under it.
           </p>
@@ -67,7 +67,7 @@ export function RecommendedFixes({ data }: { data: RepoGuidance }) {
 
       {rest.length > 0 ? (
         <div className="flex flex-col gap-2 border-t border-rule pt-2">
-          <p className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+          <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
             The rest are judgements about this codebase. The scanner&rsquo;s own
             wording is here so the decision starts from what the tool actually
             said, rather than from a rule id.
@@ -76,7 +76,7 @@ export function RecommendedFixes({ data }: { data: RepoGuidance }) {
             <Fix key={fix.fix_id} fix={fix} open={false} />
           ))}
           {rest.length > 10 ? (
-            <p className="font-mono text-[9px] text-ink-3">
+            <p className="font-mono text-[11px] text-ink-3">
               …and {rest.length - 10} more. The full list is on{" "}
               <span className="text-ink-2">Remediate today</span>.
             </p>
@@ -97,18 +97,18 @@ function Fix({
   return (
     <details className="border-l-2 border-rule pl-3" open={open}>
       <summary className="cursor-pointer list-none">
-        <span className="font-mono text-[11px] text-ink">{fix.action}</span>
-        <span className="ml-2 font-mono text-[10px] text-ink-2">
+        <span className="font-mono text-[13px] text-ink">{fix.action}</span>
+        <span className="ml-2 font-mono text-[12px] text-ink-2">
           closes {fix.findings}
         </span>
         {/* More than one rule is the whole reason grouping by fix exists, so
             it is said rather than left to be noticed. */}
         {fix.rules.length > 1 ? (
-          <span className="ml-2 font-mono text-[9px] text-accent">
+          <span className="ml-2 font-mono text-[11px] text-accent">
             across {fix.rules.length} rules
           </span>
         ) : null}
-        <span className="ml-2 text-[8px] uppercase tracking-wide text-ink-3">
+        <span className="ml-2 text-[10px] uppercase tracking-wide text-ink-3">
           {fix.effort}
         </span>
       </summary>
@@ -118,20 +118,20 @@ function Fix({
           {fix.steps.map((step) => (
             <li
               key={step.slice(0, 32)}
-              className="max-w-prose text-[10px] leading-relaxed text-ink-2"
+              className="max-w-prose text-[12px] leading-relaxed text-ink-2"
             >
               {step}
             </li>
           ))}
         </ol>
       ) : (
-        <p className="mt-1 max-w-prose text-[10px] leading-relaxed text-ink-3">
+        <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-ink-3">
           No standing procedure for this class — it is a judgement about this
           finding, and the scanner&rsquo;s own text is what to start from.
         </p>
       )}
 
-      <p className="mt-1 font-mono text-[9px] text-ink-3">
+      <p className="mt-1 font-mono text-[11px] text-ink-3">
         {fix.rules.slice(0, 4).join(", ")}
         {fix.rules.length > 4 ? ` +${fix.rules.length - 4}` : ""}
       </p>

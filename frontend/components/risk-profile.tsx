@@ -88,16 +88,16 @@ export function RiskProfileCard({
     return (
       <div className="border border-rule bg-paper-2">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
-          <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink">
+          <h2 className="font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-ink">
             Risk profile
           </h2>
-          <span className="font-mono text-[10px] text-ink-3">
+          <span className="font-mono text-[12px] text-ink-3">
             what this application is — recorded, never inferred
           </span>
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-accent hover:text-accent"
+            className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent"
           >
             {current.exists ? "edit" : "record one"}
           </button>
@@ -105,7 +105,7 @@ export function RiskProfileCard({
 
         {current.exists ? (
           <div className="flex flex-col gap-2 px-3 py-2">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px]">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[12px]">
               <Fact label="Internet-facing" value={boolWord(current.internet_facing)} />
               <Fact label="Data" value={current.data_classification} />
               <Fact label="Criticality" value={current.business_criticality} />
@@ -120,11 +120,11 @@ export function RiskProfileCard({
               {current.owner ? <Fact label="Owner" value={current.owner} /> : null}
             </div>
             {current.notes ? (
-              <p className="max-w-prose whitespace-pre-wrap text-[11px] leading-relaxed text-ink-2">
+              <p className="max-w-prose whitespace-pre-wrap text-[14px] leading-relaxed text-ink-2">
                 {current.notes}
               </p>
             ) : null}
-            <p className="font-mono text-[9px] text-ink-3">
+            <p className="font-mono text-[11px] text-ink-3">
               {current.updated_by ? `recorded by ${current.updated_by}` : "recorded"}
               {current.updated_at ? (
                 <>
@@ -135,7 +135,7 @@ export function RiskProfileCard({
             </p>
           </div>
         ) : (
-          <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+          <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
             Nothing recorded. Oracle reports this input as{" "}
             <span className="font-mono">unavailable</span> and it contributes
             nothing — deliberately, rather than assuming an internal, low-criticality
@@ -150,10 +150,10 @@ export function RiskProfileCard({
   return (
     <div className="border border-accent bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-2">
-        <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink">
+        <h2 className="font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-ink">
           Risk profile
         </h2>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           every field is submitted — clearing one un-asserts it
         </span>
       </div>
@@ -199,7 +199,7 @@ export function RiskProfileCard({
                       : [...previous, regime],
                   )
                 }
-                className={`border px-1.5 py-0.5 font-mono text-[9px] uppercase ${
+                className={`border px-1.5 py-0.5 font-mono text-[11px] uppercase ${
                   scope.includes(regime)
                     ? "border-accent bg-accent-wash text-accent"
                     : "border-rule text-ink-3 hover:border-accent"
@@ -217,7 +217,7 @@ export function RiskProfileCard({
             value={owner}
             onChange={(event) => setOwner(event.target.value)}
             placeholder="a team or person — context only, never scored"
-            className="w-full max-w-md border border-rule bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+            className="w-full max-w-md border border-rule bg-paper px-1.5 py-0.5 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
           />
         </Row>
 
@@ -227,18 +227,18 @@ export function RiskProfileCard({
             onChange={(event) => setNotes(event.target.value)}
             rows={3}
             placeholder="why these choices — for whoever edits this next. Never scored."
-            className="w-full max-w-md border border-rule bg-paper px-1.5 py-1 font-mono text-[10px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+            className="w-full max-w-md border border-rule bg-paper px-1.5 py-1 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
           />
         </Row>
 
-        {error ? <p className="font-mono text-[10px] text-critical">{error}</p> : null}
+        {error ? <p className="font-mono text-[12px] text-critical">{error}</p> : null}
 
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={save}
             disabled={saving}
-            className={`border border-accent bg-accent-wash px-2 py-1 font-mono text-[10px] text-accent ${
+            className={`border border-accent bg-accent-wash px-2 py-1 font-mono text-[12px] text-accent ${
               saving ? "opacity-40" : "hover:bg-accent hover:text-paper"
             }`}
           >
@@ -248,7 +248,7 @@ export function RiskProfileCard({
             type="button"
             onClick={() => setEditing(false)}
             disabled={saving}
-            className="border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-critical hover:text-critical"
+            className="border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-critical hover:text-critical"
           >
             cancel
           </button>
@@ -303,7 +303,7 @@ function Choice({
           key={option.id}
           type="button"
           onClick={() => onSelect(selected === option.id ? null : option.id)}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             selected === option.id
               ? "border-accent bg-accent-wash text-accent"
               : "border-rule text-ink-3 hover:border-accent"
@@ -313,7 +313,7 @@ function Choice({
         </button>
       ))}
       {selected === null ? (
-        <span className="ml-1 font-mono text-[9px] text-ink-3">not stated</span>
+        <span className="ml-1 font-mono text-[11px] text-ink-3">not stated</span>
       ) : null}
     </div>
   );

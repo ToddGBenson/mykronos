@@ -52,7 +52,7 @@ export function PathToGreen({ repoId, path }: { repoId: string; path: Path | nul
     <div className="border border-accent bg-paper-2">
       <div className="border-b border-rule-soft bg-accent-wash px-3 py-2">
         <Label>What gets this to go</Label>
-        <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+        <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
           {path.note}
         </p>
       </div>
@@ -63,24 +63,24 @@ export function PathToGreen({ repoId, path }: { repoId: string; path: Path | nul
             key={step.finding_id}
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2 last:border-b-0"
           >
-            <span className="tabular w-4 font-mono text-[10px] text-ink-3">
+            <span className="tabular w-4 font-mono text-[12px] text-ink-3">
               {index + 1}
             </span>
             <SeverityText severity={step.severity as Severity} />
             <Link
               href={`/repos/${repoId}?tab=findings&finding=${step.finding_id}`}
-              className="font-mono text-[11px] font-semibold text-ink hover:text-accent"
+              className="font-mono text-[13px] font-semibold text-ink hover:text-accent"
               title={step.title}
             >
               {step.rule_id}
             </Link>
             {step.file_path ? (
-              <span className="font-mono text-[10px] text-ink-3">{step.file_path}</span>
+              <span className="font-mono text-[12px] text-ink-3">{step.file_path}</span>
             ) : null}
-            <span className="tabular ml-auto font-mono text-[10px] text-pass">
+            <span className="tabular ml-auto font-mono text-[12px] text-pass">
               −{step.points_removed.toFixed(1)}
             </span>
-            <span className="tabular font-mono text-[10px] text-ink-3">
+            <span className="tabular font-mono text-[12px] text-ink-3">
               → {step.score_after}
             </span>
             <Pill tone={BAND_TONE[step.recommendation_after] ?? "muted"}>
@@ -91,7 +91,7 @@ export function PathToGreen({ repoId, path }: { repoId: string; path: Path | nul
       </ol>
 
       {left > 0 ? (
-        <p className="border-t border-rule-soft px-3 py-2 font-mono text-[10px] text-ink-3">
+        <p className="border-t border-rule-soft px-3 py-2 font-mono text-[12px] text-ink-3">
           {left} further finding{left === 1 ? "" : "s"} not listed — the value here
           is the prefix, not the backlog.
         </p>

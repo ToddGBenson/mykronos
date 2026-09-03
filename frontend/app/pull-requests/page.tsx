@@ -62,18 +62,22 @@ export default async function PullRequestsPage({
   const others = pull_requests.filter((pr) => pr.kind === "other");
   // Selection in the URL, like every other list on this platform, so the row
   // somebody is looking at survives a refresh and can be sent to somebody else.
-  const selected = pull_requests.find((pr) => String(pr.number) === selectedNumber);
+  // Opens on the first pull request rather than on a sentence describing what
+  // the pane would contain if you clicked something.
+  const selected =
+    pull_requests.find((pr) => String(pr.number) === selectedNumber) ??
+    pull_requests[0];
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Pull requests</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {pull_requests.length} open across the portfolio
         </span>
         <Link
           href="/"
-          className="ml-auto border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
+          className="ml-auto border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-accent hover:text-accent"
         >
           portfolio view
         </Link>
@@ -94,14 +98,14 @@ export default async function PullRequestsPage({
       </div>
 
       {unreachable.length > 0 ? (
-        <div className="border-l-2 border-critical bg-critical-wash px-3 py-2 text-[11px] text-ink-2">
+        <div className="border-l-2 border-critical bg-critical-wash px-3 py-2 text-[13px] text-ink-2">
           <strong className="text-critical">
             {unreachable.length} repositor{unreachable.length === 1 ? "y" : "ies"} could
             not be read.
           </strong>{" "}
           Anything open there is missing from this list, so treat the count above as a
           floor rather than a total.
-          <ul className="mt-1 font-mono text-[10px] text-ink-3">
+          <ul className="mt-1 font-mono text-[12px] text-ink-3">
             {unreachable.map((row) => (
               <li key={row.repo_full_name}>
                 {row.repo_full_name} — {row.reason}
@@ -131,10 +135,10 @@ export default async function PullRequestsPage({
             the thing at all. */}
         <WorklistKeys ids={pull_requests.map((pr) => String(pr.number))} param="pr" />
         <div className="flex flex-col gap-3 lg:h-[calc(100vh-20rem)] lg:flex-row lg:gap-0">
-          <div className="lg:w-[22rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+          <div className="lg:w-[28rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
             <ul className="flex flex-col">
               {pull_requests.map((pr) => {
-                const on = String(pr.number) === selectedNumber;
+                const on = selected?.number === pr.number;
                 return (
                   <li key={`${pr.repo_full_name}#${pr.number}`}>
                     <Link
@@ -163,23 +167,23 @@ export default async function PullRequestsPage({
                             it is the one thing that changes whether this row is
                             worth opening at all. */}
                         {(pr.checks?.failed ?? 0) > 0 ? (
-                          <span className="font-mono text-[8px] uppercase tracking-wide text-critical">
+                          <span className="font-mono text-[10px] uppercase tracking-wide text-critical">
                             {pr.checks?.failed} failing
                           </span>
                         ) : null}
                         {pr.human_edited ? (
                           <span
-                            className="font-mono text-[8px] uppercase tracking-wide text-high"
+                            className="font-mono text-[10px] uppercase tracking-wide text-high"
                             title="Somebody committed to this branch, so Patchwork has stood down"
                           >
                             taken over
                           </span>
                         ) : null}
                       </span>
-                      <span className="line-clamp-2 text-[11px] leading-snug text-ink">
+                      <span className="line-clamp-3 text-[13px] leading-snug text-ink">
                         {pr.summary || pr.title}
                       </span>
-                      <span className="truncate font-mono text-[9px] text-ink-3">
+                      <span className="truncate font-mono text-[11px] text-ink-3">
                         {pr.repo_full_name} #{pr.number}
                       </span>
                     </Link>
@@ -192,25 +196,21 @@ export default async function PullRequestsPage({
           <div className="min-w-0 grow lg:overflow-y-auto lg:pl-4">
             {selected ? (
               <PullRequestDetail pr={selected} />
-            ) : (
-              <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
-                Choose a pull request, or press{" "}
-                <span className="font-mono">j</span>.
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       </>
       )}
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
-        <Label>Why there is no merge button</Label>
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
+        <Label as="h2">Why there is no merge button</Label>
         <br />
         Every row links out rather than merging here, and that is the design
         rather than an unfinished edge. A <Pill tone="warn">fix</Pill> changes
-        your application code, and spec 08 §3 makes &ldquo;Patchwork never merges
-        anything&rdquo; structural: there is no merge operation on the GitHub
-        client, in either implementation, and a test fails if one appears. A
+        your application code, and &ldquo;Patchwork never merges anything&rdquo; is
+        structural rather than a policy: there is no merge operation on the
+        GitHub client, in either implementation, and a test fails if one
+        appears. A
         platform that could merge its own proposals would have to be trusted
         differently from one that can only show them to you.{" "}
         <Pill tone="muted">install</Pill> pull requests carry only generated
@@ -218,7 +218,7 @@ export default async function PullRequestsPage({
         happens where the code lives.
       </p>
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label>Freshness</Label>
         <br />
         Every row is confirmed against GitHub when this page loads, not read
@@ -253,7 +253,7 @@ function PullRequestDetail({ pr }: { pr: PullRequestRow }) {
         <h2 className="text-[13px] font-semibold leading-snug">{pr.title}</h2>
         <a
           href={pr.url}
-          className="font-mono text-[10px] text-accent hover:underline"
+          className="font-mono text-[12px] text-accent hover:underline"
           target="_blank"
           rel="noreferrer"
         >
@@ -265,16 +265,16 @@ function PullRequestDetail({ pr }: { pr: PullRequestRow }) {
         <div className="flex flex-col gap-1">
           <Label>Why this exists</Label>
           {pr.summary ? (
-            <p className="text-[11px] leading-relaxed text-ink">{pr.summary}</p>
+            <p className="text-[14px] leading-relaxed text-ink">{pr.summary}</p>
           ) : null}
           {/* Was a `title` attribute on a truncated cell. It is the platform's
               own account of what it proposed and why; it gets to be read. */}
           {pr.detail ? (
-            <p className="max-w-prose text-[11px] leading-relaxed text-ink-2">{pr.detail}</p>
+            <p className="max-w-prose text-[14px] leading-relaxed text-ink-2">{pr.detail}</p>
           ) : null}
         </div>
       ) : (
-        <p className="text-[11px] leading-relaxed text-ink-3">
+        <p className="text-[14px] leading-relaxed text-ink-3">
           Mykronos did not open this one, so it has no rationale to offer —
           only what GitHub reports about it.
         </p>
@@ -289,7 +289,7 @@ function PullRequestDetail({ pr }: { pr: PullRequestRow }) {
         <Checks checks={pr.checks} />
       </div>
 
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-rule-soft pt-2 font-mono text-[9px] text-ink-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-rule-soft pt-2 font-mono text-[11px] text-ink-3">
         <span>
           opened <RelativeTime value={pr.opened_at} />
         </span>

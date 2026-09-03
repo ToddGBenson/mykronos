@@ -55,17 +55,17 @@ export function GroomButton({
         type="button"
         onClick={run}
         disabled={busy}
-        className={`self-start border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-accent hover:text-accent ${
+        className={`self-start border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent ${
           busy ? "opacity-40" : ""
         }`}
       >
         {busy ? "grooming…" : label}
       </button>
 
-      {error ? <p className="font-mono text-[9px] text-critical">{error}</p> : null}
+      {error ? <p className="font-mono text-[11px] text-critical">{error}</p> : null}
 
       {result ? (
-        <p className="max-w-prose font-mono text-[9px] text-ink-3">
+        <p className="max-w-prose font-mono text-[11px] text-ink-3">
           <a
             href={result.github_issue_url}
             target="_blank"

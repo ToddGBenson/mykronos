@@ -41,7 +41,7 @@ export function ThreatModelTab({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose border-l-2 border-rule bg-paper-2 px-3 py-2 text-[14px] leading-relaxed text-ink-2">
         <strong className="text-ink">Found, and what stops it.</strong> Every
         finding below traces to a real, open row — this is not a diagram or an
         AI-generated narrative. Where the reporting tool declared a CWE, the
@@ -53,7 +53,7 @@ export function ThreatModelTab({
       </p>
 
       {page.nothing_scanned ? (
-        <p className="max-w-prose border-l-2 border-high bg-high-wash px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+        <p className="max-w-prose border-l-2 border-high bg-high-wash px-3 py-2 text-[14px] leading-relaxed text-ink-2">
           <strong className="text-ink">Nothing has scanned this repository.</strong>{" "}
           Every category below is unassessed rather than clean. Said once here
           rather than six times underneath: it is one fact about the
@@ -73,7 +73,7 @@ export function ThreatModelTab({
               ["Vulnerable", page.supply_chain.vulnerable_dependency_count],
             ].map(([label, value]) => (
               <div key={label as string} className="bg-paper-2 px-3 py-2">
-                <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
+                <div className="font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
                   {label}
                 </div>
                 <div className="font-mono text-sm font-bold text-ink">{value}</div>
@@ -137,14 +137,14 @@ function StrideCategory({
             accumulate under it is either wrong, bypassed, or narrower than its
             description, and nothing here can decide which. */}
         {category.contradicted ? <Pill tone="critical">contradicted</Pill> : null}
-        <span className="max-w-prose text-[10px] leading-relaxed text-ink-3">
+        <span className="max-w-prose text-[12px] leading-relaxed text-ink-3">
           {category.reason}
         </span>
       </div>
 
       {category.findings.length === 0 ? null : (
         <div className="scroll-x">
-          <table className="w-full min-w-[640px] border-collapse font-mono text-[11px]">
+          <table className="w-full min-w-[640px] border-collapse font-mono text-[13px]">
             <tbody>
               {category.findings.map((finding) => (
                 <tr

@@ -103,7 +103,7 @@ export function WorkflowSwitches({
   if (page.unavailable) {
     return (
       <Section title="Workflows">
-        <p className="font-mono text-[11px] text-ink-3">{page.unavailable}</p>
+        <p className="font-mono text-[13px] text-ink-3">{page.unavailable}</p>
       </Section>
     );
   }
@@ -111,7 +111,7 @@ export function WorkflowSwitches({
   if (page.workflows.length === 0) {
     return (
       <Section title="Workflows">
-        <p className="font-mono text-[11px] text-ink-3">
+        <p className="font-mono text-[13px] text-ink-3">
           No capability with a workflow template is enabled here yet.
         </p>
       </Section>
@@ -120,7 +120,7 @@ export function WorkflowSwitches({
 
   return (
     <Section title="Workflows">
-      <table className="w-full border-collapse text-[11px]">
+      <table className="w-full border-collapse text-[13px]">
         <thead>
           <tr className="border-b border-rule text-left">
             <th className="py-1 pr-3 font-normal">
@@ -159,7 +159,7 @@ export function WorkflowSwitches({
                           ? `Stop ${row.workflow_file} now. No pull request; the file stays.`
                           : `Start ${row.workflow_file} again. No pull request.`
                       }
-                      className={`border px-1.5 py-0.5 font-mono text-[9px] transition-opacity ${
+                      className={`border px-1.5 py-0.5 font-mono text-[11px] transition-opacity ${
                         working ? "opacity-40" : ""
                       } ${
                         row.enabled
@@ -173,7 +173,7 @@ export function WorkflowSwitches({
                     // No switch for a file that is not there. The fix is an
                     // install pull request, and offering a toggle that can
                     // only 404 would send somebody looking for a bug.
-                    <span className="font-mono text-[9px] text-ink-3">—</span>
+                    <span className="font-mono text-[11px] text-ink-3">—</span>
                   )}
                 </td>
               </tr>
@@ -181,12 +181,12 @@ export function WorkflowSwitches({
           })}
         </tbody>
       </table>
-      <p className="mt-1.5 font-mono text-[10px] text-ink-3">
+      <p className="mt-1.5 font-mono text-[12px] text-ink-3">
         Switching a workflow off does not withdraw the capability — its grant
         still permits writes, and the coverage cross-check still expects it to
         report.
       </p>
-      {error ? <p className="mt-1 font-mono text-[10px] text-high">{error}</p> : null}
+      {error ? <p className="mt-1 font-mono text-[12px] text-high">{error}</p> : null}
     </Section>
   );
 }

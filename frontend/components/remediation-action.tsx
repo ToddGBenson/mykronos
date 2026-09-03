@@ -75,16 +75,16 @@ export function RemediationAction({ findingId }: { findingId: string }) {
   }
 
   if (loading) {
-    return <p className="font-mono text-[9px] text-ink-3">checking for an available fix…</p>;
+    return <p className="font-mono text-[11px] text-ink-3">checking for an available fix…</p>;
   }
   if (previewError) {
-    return <p className="font-mono text-[9px] text-critical">{previewError}</p>;
+    return <p className="font-mono text-[11px] text-critical">{previewError}</p>;
   }
   if (!preview) return null;
 
   if (fix) {
     return (
-      <p className="max-w-prose font-mono text-[9px] text-ink-3">
+      <p className="max-w-prose font-mono text-[11px] text-ink-3">
         {fix.stage === "pr_opened" && fix.fix_pr_url ? (
           <>
             <a
@@ -109,13 +109,13 @@ export function RemediationAction({ findingId }: { findingId: string }) {
     // to remediation_events, one vocabulary for "why nothing happened"
     // rather than a second one invented for this panel.
     return (
-      <p className="max-w-prose font-mono text-[9px] text-ink-3">{preview.rationale}</p>
+      <p className="max-w-prose font-mono text-[11px] text-ink-3">{preview.rationale}</p>
     );
   }
 
   return (
     <div className="flex flex-col gap-1.5">
-      <p className="max-w-prose font-mono text-[9px] text-ink-2">
+      <p className="max-w-prose font-mono text-[11px] text-ink-2">
         {preview.fixer_name}
         {typeof preview.fix_confidence === "number"
           ? ` · confidence ${preview.fix_confidence.toFixed(2)}`
@@ -124,7 +124,7 @@ export function RemediationAction({ findingId }: { findingId: string }) {
       {preview.fix_files ? (
         <div className="scroll-x max-h-32 border border-rule bg-paper">
           {Object.entries(preview.fix_files).map(([path, content]) => (
-            <pre key={path} className="p-2 font-mono text-[9px] leading-relaxed text-ink-2">
+            <pre key={path} className="p-2 font-mono text-[11px] leading-relaxed text-ink-2">
               <span className="text-ink-3">{path}</span>
               {"\n"}
               {content}
@@ -136,13 +136,13 @@ export function RemediationAction({ findingId }: { findingId: string }) {
         type="button"
         onClick={createPr}
         disabled={fixing}
-        className={`self-start border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-3 hover:border-accent hover:text-accent ${
+        className={`self-start border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent ${
           fixing ? "opacity-40" : ""
         }`}
       >
         {fixing ? "opening…" : "create PR"}
       </button>
-      {fixError ? <p className="font-mono text-[9px] text-critical">{fixError}</p> : null}
+      {fixError ? <p className="font-mono text-[11px] text-critical">{fixError}</p> : null}
     </div>
   );
 }

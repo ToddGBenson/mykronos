@@ -84,7 +84,7 @@ export function ThemeToggle() {
           type="button"
           onClick={() => pick(option.id)}
           aria-pressed={choice === option.id}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] lowercase tracking-[0.08em] ${
+          className={`inline-flex min-h-[24px] items-center border px-2 py-0.5 font-mono text-[11px] lowercase tracking-[0.08em] ${
             choice === option.id
               ? "border-accent bg-accent-wash text-accent"
               : "border-rule text-ink-3 hover:border-accent hover:text-accent"

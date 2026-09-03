@@ -50,20 +50,31 @@ const NAV: {
       { label: "Remediate today", href: "/remediate" },
       { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
-      { label: "Remediation", href: "/remediation" },
+      // "Remediation" and "Remediate today" sat adjacent, four characters
+      // apart, leading to different pages with different jobs. One is a
+      // worklist and one is a library, so they are now named that way: the
+      // difference has to be legible before the click, not after it.
+      { label: "Remediation library", href: "/remediation" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
     ],
   },
-  {
-    section: "Manage",
-    items: [
-      { label: "Repositories", href: "/" },
-      { label: "Risk decision policy", href: "/decisions#policy" },
-      { label: "Knowledge", href: "/retro" },
-    ],
-  },
 ];
+
+/**
+ * The "Manage" section is gone, and its absence is the fix.
+ *
+ * It held three items and no destinations of its own: "Repositories" pointed
+ * at `/` (Portfolio), "Knowledge" pointed at `/retro` (Retros), and "Risk
+ * decision policy" pointed at an anchor inside Decisions. Thirteen labels led
+ * to ten places.
+ *
+ * A sidebar is a map. When two labels lead to one location the map is wrong,
+ * the active-state highlight cannot be correct for both, and a reader building
+ * a model of the product quietly gets a worse one. Deleting the aliases is
+ * honest; the pages they pointed at all remain reachable under their real
+ * names, one line above.
+ */
 
 /**
  * Two faces, doing two different jobs (Direction C).
@@ -135,13 +146,22 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/" className="font-mono text-xs font-bold tracking-[0.14em]">
               MYKRONOS
             </Link>
-            <span className="font-mono text-[10px] text-ink-3">
+            <span className="font-mono text-[12px] text-ink-3">
               AppSec control plane
             </span>
             <div className="ml-auto flex items-center gap-3">
               <ThemeToggle />
-              <span className="border border-rule px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-3">
-                Phase 7 · admin
+              {/* "Phase 7 · admin" used to sit here — the project's internal
+                  delivery phase, in the corner every interface uses for
+                  identity. It told the reader nothing they could act on and
+                  implied the product was a roadmap they were watching rather
+                  than a tool they were using. The role is the half that was
+                  ever about them, so the role is what stayed. */}
+              <span
+                className="border border-rule px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3"
+                title="Your role. Admin can enable capabilities, dispatch scans, and record dispositions."
+              >
+                admin
               </span>
             </div>
           </header>
@@ -153,14 +173,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             >
               {NAV.map((group) => (
                 <div key={group.section} className="mb-2">
-                  <p className="px-3 pb-1 pt-2 font-mono text-[9px] uppercase tracking-[0.13em] text-ink-3 opacity-70">
+                  <p className="px-3 pb-1 pt-2 font-mono text-[11px] uppercase tracking-[0.13em] text-ink-3 opacity-70">
                     {group.section}
                   </p>
                   {group.items.map((item) => (
                     <Link
                       key={item.label}
                       href={item.href}
-                      className="block border-l-2 border-transparent px-3 py-1.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:bg-paper-3"
+                      className="block border-l-2 border-transparent px-3 py-1.5 font-mono text-[13px] text-ink-2 hover:border-accent hover:bg-paper-3"
                     >
                       {item.label}
                     </Link>

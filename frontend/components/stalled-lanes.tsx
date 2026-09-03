@@ -28,7 +28,7 @@ import type { StalledLane } from "@/lib/api";
 export function StalledLanes({ lanes }: { lanes: StalledLane[] }) {
   if (!lanes.length) {
     return (
-      <p className="font-mono text-[10px] text-ink-3">
+      <p className="font-mono text-[12px] text-ink-3">
         Every lane is reporting. Findings can close.
       </p>
     );
@@ -45,7 +45,7 @@ export function StalledLanes({ lanes }: { lanes: StalledLane[] }) {
         <Lane key={`${lane.repo_full_name}:${lane.capability}`} lane={lane} />
       ))}
       {idle.length ? (
-        <p className="text-[10px] leading-snug text-ink-3">
+        <p className="text-[12px] leading-snug text-ink-3">
           Also stalled, holding nothing open:{" "}
           {idle.map((lane) => `${lane.repo_full_name} ${lane.capability}`).join(", ")}.
           Nothing is stuck behind these, but they are not watching either.
@@ -96,24 +96,24 @@ function Lane({ lane }: { lane: StalledLane }) {
   return (
     <div className="border-l-2 border-rule pl-3">
       <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="font-mono text-[11px] text-ink">{lane.capability}</span>
-        <span className="font-mono text-[10px] text-ink-2">{lane.repo_full_name}</span>
-        <span className="font-mono text-[9px] text-ink-3">— {state_line}</span>
+        <span className="font-mono text-[13px] text-ink">{lane.capability}</span>
+        <span className="font-mono text-[12px] text-ink-2">{lane.repo_full_name}</span>
+        <span className="font-mono text-[11px] text-ink-3">— {state_line}</span>
       </div>
 
-      <p className="mt-0.5 text-[10px] text-ink-2">
+      <p className="mt-0.5 text-[12px] text-ink-2">
         holding <strong className="text-ink">{lane.open_findings}</strong> finding
         {lane.open_findings === 1 ? "" : "s"} open
       </p>
       {lane.detail ? (
-        <p className="mt-0.5 max-w-[70ch] font-mono text-[9px] leading-snug text-ink-3">
+        <p className="mt-0.5 max-w-[70ch] font-mono text-[11px] leading-snug text-ink-3">
           {lane.detail}
         </p>
       ) : null}
 
       <div className="mt-1 flex flex-wrap items-center gap-2">
         {state === "dispatched" ? (
-          <span className="font-mono text-[9px] text-ink-3">
+          <span className="font-mono text-[11px] text-ink-3">
             dispatched — two successful runs will close what is stuck
           </span>
         ) : (
@@ -122,12 +122,12 @@ function Lane({ lane }: { lane: StalledLane }) {
             onClick={() => void dispatch()}
             disabled={pending}
             title={lane.action.effect}
-            className="border border-rule px-1.5 py-0.5 font-mono text-[9px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
+            className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
           >
             re-run {lane.capability}
           </button>
         )}
-        <span className="max-w-[52ch] text-[9px] leading-snug text-ink-3">
+        <span className="max-w-[52ch] text-[11px] leading-snug text-ink-3">
           {failing
             ? "Repair the job first — a re-run of a broken workflow fails again and closes nothing."
             : "The lane was working when it stopped, so this is the fix."}
@@ -135,7 +135,7 @@ function Lane({ lane }: { lane: StalledLane }) {
       </div>
 
       {state === "error" ? (
-        <p className="mt-1 max-w-[52ch] text-[9px] leading-snug text-critical">{message}</p>
+        <p className="mt-1 max-w-[52ch] text-[11px] leading-snug text-critical">{message}</p>
       ) : null}
     </div>
   );

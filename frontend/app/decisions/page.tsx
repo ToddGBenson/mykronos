@@ -48,7 +48,7 @@ export default async function DecisionsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Risk decisions</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {assessed.length} assessed
           {unassessed > 0 ? ` · ${unassessed} not assessed` : ""}
         </span>
@@ -58,7 +58,7 @@ export default async function DecisionsPage() {
         <section className="flex flex-col gap-2">
           <div>
             <h2 className="text-sm font-bold">Shadow mode</h2>
-            <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+            <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
               Oracle is advisory by default, which makes the last{" "}
               {shadow.data.window_days} days a free experiment: every{" "}
               <span className="font-mono">no go</span> that merged anyway is a
@@ -93,13 +93,13 @@ export default async function DecisionsPage() {
           </div>
 
           {shadow.data.decisions_with_a_known_outcome === 0 ? (
-            <p className="border border-dashed border-rule bg-paper-2 px-3 py-2 text-[11px] text-ink-3">
+            <p className="border border-dashed border-rule bg-paper-2 px-3 py-2 text-[13px] text-ink-3">
               No judged pull request has closed yet, so there is nothing to
               measure. The counters start moving on the first merge after
               Oracle scores a pull request.
             </p>
           ) : (
-            <p className="border-l-2 border-rule bg-paper-2 px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+            <p className="border-l-2 border-rule bg-paper-2 px-3 py-2 text-[14px] leading-relaxed text-ink-2">
               {shadow.data.interpretation}
             </p>
           )}
@@ -111,28 +111,28 @@ export default async function DecisionsPage() {
       <section className="flex flex-col gap-2">
         <div>
           <h2 className="text-sm font-bold">Standing scores</h2>
-          <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             Refreshed daily, ranked by the pre-clamp score so two repositories
             both showing 100 still have an order.
           </p>
         </div>
 
         {assessed.length === 0 ? (
-          <p className="border border-dashed border-rule bg-paper-2 px-3 py-3 text-[11px] text-ink-3">
+          <p className="border border-dashed border-rule bg-paper-2 px-3 py-3 text-[13px] text-ink-3">
             No repository has enabled the <span className="font-mono">oracle</span>{" "}
             capability yet. Scanning without it is deliberate and supported —
             consent to being scanned is not consent to being scored.
           </p>
         ) : (
           <div className="scroll-x border border-rule">
-            <table className="w-full min-w-[640px] border-collapse bg-paper-2 font-mono text-[11px]">
+            <table className="w-full min-w-[640px] border-collapse bg-paper-2 font-mono text-[13px]">
               <thead>
                 <tr className="border-b-2 border-ink-2 text-left">
                   {["Repository", "Score", "Verdict", "Open C/H", "Assessed"].map(
                     (heading) => (
                       <th
                         key={heading}
-                        className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                        className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                       >
                         {heading}
                       </th>
@@ -183,7 +183,7 @@ export default async function DecisionsPage() {
       <section className="flex flex-col gap-2">
         <div>
           <h2 className="text-sm font-bold">What is driving the score</h2>
-          <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             The table above says which repositories are worst. This says why —
             every term summed across the fleet, from the snapshot each decision
             already stores. One decision per repository, its latest, so a
@@ -195,20 +195,20 @@ export default async function DecisionsPage() {
         {!terms.ok ? (
           <ErrorPanel title="Term analytics unavailable" detail={terms.error} />
         ) : terms.data.terms.length === 0 ? (
-          <p className="border border-dashed border-rule bg-paper-2 px-3 py-3 text-[11px] text-ink-3">
+          <p className="border border-dashed border-rule bg-paper-2 px-3 py-3 text-[13px] text-ink-3">
             No standing decision in the last {terms.data.window_days} days has
             any scoring term. Either nothing is onboarded to Oracle yet, or
             every repository is genuinely at zero.
           </p>
         ) : (
           <div className="scroll-x border border-rule">
-            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[11px]">
+            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[13px]">
               <thead>
                 <tr className="border-b-2 border-ink-2 text-left">
                   {["Term", "Points", "Repos", "…scoring no go"].map((heading) => (
                     <th
                       key={heading}
-                      className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                      className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                     >
                       {heading}
                     </th>
@@ -237,7 +237,7 @@ export default async function DecisionsPage() {
         )}
 
         {terms.ok && terms.data.terms.length > 0 ? (
-          <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
             {terms.data.note}
           </p>
         ) : null}
@@ -251,14 +251,14 @@ export default async function DecisionsPage() {
           <div className="flex flex-col gap-1.5">
             <Label>Versions that have scored something</Label>
             <div className="scroll-x border border-rule">
-              <table className="w-full min-w-[520px] border-collapse bg-paper-2 font-mono text-[11px]">
+              <table className="w-full min-w-[520px] border-collapse bg-paper-2 font-mono text-[13px]">
                 <thead>
                   <tr className="border-b-2 border-ink-2 text-left">
                     {["Version", "Decisions", "Repos", "no go", "Last used"].map(
                       (heading) => (
                         <th
                           key={heading}
-                          className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                          className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                         >
                           {heading}
                         </th>
@@ -275,7 +275,7 @@ export default async function DecisionsPage() {
                       <td className="px-2 py-2 text-ink">
                         {entry.version}
                         {entry.current ? (
-                          <span className="ml-1.5 text-[9px] text-accent">
+                          <span className="ml-1.5 text-[11px] text-accent">
                             in force
                           </span>
                         ) : null}
@@ -295,19 +295,19 @@ export default async function DecisionsPage() {
                 </tbody>
               </table>
             </div>
-            <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
+            <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
               {history.data.note}
             </p>
           </div>
         ) : null}
 
         {policy.ok ? (
-              <span className="font-mono text-[11px] font-normal text-ink-3">
+              <span className="font-mono text-[13px] font-normal text-ink-3">
                 v{policy.data.version}
               </span>
             ) : null}
           </h2>
-          <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             {policy.ok
               ? policy.data.note
               : "The rules every score above was produced from."}
@@ -316,10 +316,10 @@ export default async function DecisionsPage() {
 
         {policy.ok ? (
           <>
-            <pre className="scroll-x max-h-96 border border-rule bg-paper-2 p-3 font-mono text-[10px] leading-relaxed">
+            <pre className="scroll-x max-h-96 border border-rule bg-paper-2 p-3 font-mono text-[12px] leading-relaxed">
               {JSON.stringify(policy.data.source, null, 2)}
             </pre>
-            <p className="text-[11px] text-ink-3">
+            <p className="text-[13px] text-ink-3">
               <Label>Why this is readable by everyone</Label>
               <br />
               A risk score you are not allowed to inspect is one people learn to

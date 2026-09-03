@@ -29,7 +29,7 @@ function duration(seconds: number | null | undefined): string {
 function EfficacyTable({ rows, keyLabel }: { rows: Row[]; keyLabel: string }) {
   if (rows.length === 0) {
     return (
-      <p className="px-3 py-3 text-[11px] text-ink-3">
+      <p className="px-3 py-3 text-[13px] text-ink-3">
         Nothing recorded — no fix has been generated yet.
       </p>
     );
@@ -37,14 +37,14 @@ function EfficacyTable({ rows, keyLabel }: { rows: Row[]; keyLabel: string }) {
 
   return (
     <div className="scroll-x">
-      <table className="w-full min-w-[640px] border-collapse font-mono text-[11px]">
+      <table className="w-full min-w-[640px] border-collapse font-mono text-[13px]">
         <thead>
           <tr className="border-b border-rule text-left">
             {[keyLabel, "Attempts", "PRs", "Merged", "Verified", "Still open", "Unverified", "Median"].map(
               (heading) => (
                 <th
                   key={heading}
-                  className="whitespace-nowrap px-2 py-1.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                  className="whitespace-nowrap px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
                 >
                   {heading}
                 </th>
@@ -109,11 +109,11 @@ export function FixEfficacyPanel({ efficacy }: { efficacy: FixEfficacy }) {
     <div className="flex flex-col gap-3">
       <div className="border-l-2 border-accent bg-accent-wash px-3 py-2">
         <Label>Did the fixes work?</Label>
-        <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+        <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
           {efficacy.note}
         </p>
         {merged > 0 ? (
-          <p className="mt-1.5 font-mono text-[10px] text-ink-3">
+          <p className="mt-1.5 font-mono text-[12px] text-ink-3">
             {verified} of {merged} merged fix{merged === 1 ? "" : "es"} verified as
             removing the finding.
           </p>
