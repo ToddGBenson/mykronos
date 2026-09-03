@@ -60,16 +60,27 @@ class TestTheDigest:
     ) -> None:
         """An empty weekly message is a training exercise in ignoring weekly
         messages."""
-        seed(client, auth, run_compaction)
+        seed(client, auth, run_compaction, count=0)
 
         assert digest.build(catalog) == []
 
-    def test_unowned_findings_are_not_addressed_to_anyone(
+    def test_findings_that_fell_to_the_account_are_addressed_to_it(
         self, client: TestClient, auth, catalog: Catalog, run_compaction
     ) -> None:
+        """Previously these reached nobody, which was the point of B-034.
+
+        Ownership now falls to the account the repository belongs to when
+        CODEOWNERS is readable and matches nothing, so the digest has somewhere
+        to send them. The weakness travels with the answer — `owner_source` is
+        `repo_owner`, not `codeowners` — but a weekly message somebody can
+        reassign beats work addressed to no one.
+        """
         seed(client, auth, run_compaction, count=3)
 
-        assert digest.build(catalog) == []
+        digests = digest.build(catalog)
+
+        assert [d.owner for d in digests] == ["example-org"]
+        assert digests[0].top_unclaimed, "the account's queue is what it is sent"
 
     def test_an_overdue_finding_reaches_its_owner(
         self, client: TestClient, auth, catalog: Catalog, run_compaction

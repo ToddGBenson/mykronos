@@ -214,9 +214,12 @@ class TestTheQueue:
         self._seed(client, admin_auth, run_compaction)
 
         body = client.get(
-            "/api/dashboard/triage", params={"owner": "unresolved"}, headers=admin_auth
+            "/api/dashboard/triage", params={"owner": "unclaimed"}, headers=admin_auth
         ).json()
 
+        # `unclaimed`, not `unresolved`: since ownership gained a
+        # repository-owner rung these findings have an owner, and the queue
+        # worth asking for is the one nobody has taken by name.
         assert len(body["items"]) == 2
 
     def test_an_unknown_order_is_refused(

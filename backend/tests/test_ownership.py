@@ -83,7 +83,7 @@ class TestResolutionAtIngest:
 
         assert owners(catalog) == [("@org/payments", "codeowners")]
 
-    def test_a_path_no_pattern_matches_is_unresolved(
+    def test_a_path_no_pattern_matches_falls_to_the_account(
         self,
         client: TestClient,
         auth: dict[str, str],
@@ -98,7 +98,7 @@ class TestResolutionAtIngest:
         post_findings(client, auth, [finding_payload()])
         run_compaction()
 
-        assert owners(catalog) == [(None, "unresolved")]
+        assert owners(catalog) == [("example-org", "repo_owner")]
 
     def test_no_codeowners_file_is_unresolved(
         self,
@@ -107,14 +107,21 @@ class TestResolutionAtIngest:
         catalog: Catalog,
         run_compaction: Any,
     ) -> None:
-        """The common case in this portfolio, and it must not guess."""
+        """The common case in this portfolio.
+
+        It still must not guess a *team* — no manifest is inferred, no path is
+        invented. It falls to the account the repository belongs to, tagged so
+        the weakness of the answer travels with it: 282 finding groups on the
+        live estate were unowned while routing was switched on, and an unowned
+        finding is one nobody has agreed to fix.
+        """
         onboard(client)
 
         post_scan(client, auth)
         post_findings(client, auth, [finding_payload()])
         run_compaction()
 
-        assert owners(catalog) == [(None, "unresolved")]
+        assert owners(catalog) == [("example-org", "repo_owner")]
 
     def test_an_unonboarded_repo_ingests_without_an_owner(
         self,
@@ -123,13 +130,17 @@ class TestResolutionAtIngest:
         catalog: Catalog,
         run_compaction: Any,
     ) -> None:
-        """No installation to read a file with is one more way of not knowing.
-        It is emphatically not an ingest failure."""
+        """No installation to read a file with is not an ingest failure.
+
+        Distinct from a *failed* read: there is no client to ask, which is a
+        state this deployment knows it is in rather than one it discovered by
+        an error. So the account still applies.
+        """
         post_scan(client, auth)
         assert post_findings(client, auth, [finding_payload()]).status_code == 200
         run_compaction()
 
-        assert owners(catalog) == [(None, "unresolved")]
+        assert owners(catalog) == [("example-org", "repo_owner")]
 
     def test_github_failing_does_not_fail_the_ingest(
         self,
@@ -175,20 +186,21 @@ class TestFindingsWithNoPath:
         # about who owns this dependency.
         assert owners(catalog) == [("@org/platform", "profile")]
 
-    def test_a_dependency_finding_with_no_profile_is_unresolved(
+    def test_a_dependency_finding_with_no_profile_falls_to_the_account(
         self,
         client: TestClient,
         auth: dict[str, str],
         catalog: Catalog,
         run_compaction: Any,
     ) -> None:
+        """Still not a guessed team — just the account, tagged as such."""
         onboard(client)
 
         post_scan(client, auth)
         post_findings(client, auth, [dependency_finding()])
         run_compaction()
 
-        assert owners(catalog) == [(None, "unresolved")]
+        assert owners(catalog) == [("example-org", "repo_owner")]
 
 
 class TestCaching:
@@ -461,10 +473,18 @@ class TestTheOwnerFilter:
         github: FakeGitHubClient,
         run_compaction: Any,
     ) -> None:
-        """Work nobody is answerable for yet is the most important list here."""
+        """Work nobody has *claimed* is still the most important list here.
+
+        It is no longer spelled `unresolved` on a repository whose CODEOWNERS
+        could be read: those findings fall to the account, and the queue worth
+        asking for is the one nobody has taken responsibility for by name.
+        `unresolved` now means what it says — we could not work it out — and is
+        rarer and more serious for it. `unclaimed` is the queue that replaced
+        it: an owner exists, and only because the repository has one.
+        """
         repo_id = self._seed_two_teams(client, auth, admin_auth, github, run_compaction)
 
-        page = self._page(client, viewer_auth, repo_id, owner="unresolved")
+        page = self._page(client, viewer_auth, repo_id, owner="unclaimed")
 
         assert [g["rule_id"] for g in page["groups"]] == ["CFG"]
 
