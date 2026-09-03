@@ -25,6 +25,7 @@ import { ScanHealthBoxes } from "@/components/scan-health";
 import { ReleaseEvidence, SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
+import { SsdfTab } from "@/components/ssdf";
 import { ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
@@ -49,6 +50,7 @@ import {
   getRiskProfile,
   getRiskProfileProposal,
   getGovernance,
+  getSsdf,
   getScanHealth,
   getScanRunTrend,
   getSscs,
@@ -61,7 +63,7 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Eight tabs, in this order (spec 18 §2).
+ * Ten tabs, in this order (spec 18 §2).
  *
  * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
  * scan health, enabled jobs — promoted to the default landing tab rather than
@@ -83,6 +85,12 @@ const TABS = [
   { id: "insider", label: "Insider Threat" },
   { id: "decisions", label: "Risk Decision" },
   { id: "remediation", label: "Remediation" },
+  // Last, because it is the only tab nobody opens to do work: it answers
+  // "what can we show an assessor" rather than "what should I fix". Its own
+  // tab rather than a panel under Insider Threat — that tab is about who
+  // merged what, and adherence is a different question with a different
+  // reader.
+  { id: "adherence", label: "Adherence" },
 ] as const;
 
 export default async function RepoPage({
@@ -211,6 +219,8 @@ export default async function RepoPage({
         <FindingsTab repoId={repoId} query={query} />
       ) : tab === "remediate" ? (
         <RemediateToday repoId={repoId} />
+      ) : tab === "adherence" ? (
+        <AdherenceTab repoId={repoId} />
       ) : tab === "harness" ? (
         <TestHarnessTab repoId={repoId} enabled={[...enabledSet].sort()} />
       ) : (
@@ -801,6 +811,14 @@ async function AegisTab({ repoId }: { repoId: string }) {
       />
     </div>
   );
+}
+
+async function AdherenceTab({ repoId }: { repoId: string }) {
+  const result = await getSsdf(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Adherence unavailable" detail={result.error} />;
+  }
+  return <SsdfTab data={result.data} />;
 }
 
 async function PatchworkTab({ repoId }: { repoId: string }) {
