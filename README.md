@@ -102,6 +102,11 @@ export MYKRONOS_GITHUB_APP_KEY_HOST_PATH=/path/to/app.pem
 mykronos briefing
 ```
 
+New to it? [`docs/GUIDE.md`](docs/GUIDE.md) is the shortest path to being
+useful — part one for reading the dashboard and deciding what to work on, part
+two for standing it up, onboarding a repository, and teaching a scanner to
+report into it.
+
 Implementation decisions the specs do not settle — and the ones that became
 spec changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 Operational lessons worth carrying between projects are promoted to
