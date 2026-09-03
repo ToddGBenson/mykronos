@@ -31,7 +31,23 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Remediate today — Mykronos" };
 
 export default async function RemediatePage() {
-  const briefing = await getBriefing();
+  return <RemediateToday />;
+}
+
+/**
+ * The page body, scoped or not.
+ *
+ * Exported because the same reasoning answers two different questions. The
+ * estate view asks "where is the worst of it"; a repository's own tab asks
+ * "what do I do about *this* service today", which is the question somebody
+ * who owns one service actually has and the only one they can act on.
+ *
+ * One component rather than two, and one query behind it, because a scoped
+ * view that could disagree with the estate view would be a bug nobody would
+ * catch — both would look plausible and only one could be right.
+ */
+export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
+  const briefing = await getBriefing(repoId);
   if (!briefing.ok) {
     return <ErrorPanel title="Cannot answer that right now" detail={briefing.error} />;
   }

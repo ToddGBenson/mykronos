@@ -40,7 +40,7 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 from mykronos import guidance
 from mykronos.lake.catalog import Catalog
@@ -486,7 +486,9 @@ def _last_success(catalog: Catalog, repo: str, capability: str) -> datetime | No
     return rows[0][0] if rows and rows[0][0] is not None else None
 
 
-def _concentration(catalog: Catalog, capability: str, limit: int = 5) -> list[tuple[str, int]]:
+def _concentration(
+    catalog: Catalog, capability: str, limit: int = 5, *, asset_id: str | None = None
+) -> list[tuple[str, int]]:
     """Where a class's findings pile up — package for dependency-shaped
     capabilities, rule for the rest.
 
@@ -494,14 +496,19 @@ def _concentration(catalog: Catalog, capability: str, limit: int = 5) -> list[tu
     backlog, "twenty of them are libc6" is a base image.
     """
     column = "package_name" if capability in ("containers", "atlas") else "rule_id"
+    scope = "" if asset_id is None else " AND asset_id = ?"
+    params: list[Any] = [capability]
+    if asset_id is not None:
+        params.append(asset_id)
+    params.append(limit)
     rows = catalog.query(
         f"""
         SELECT coalesce({column}, '(unattributed)'), count(*)
         FROM findings
-        WHERE status = 'open' AND capability = ?
+        WHERE status = 'open' AND capability = ?{scope}
         GROUP BY 1 ORDER BY 2 DESC LIMIT ?
         """,
-        [capability, limit],
+        params,
     )
     return [(_short(str(name)), int(count)) for name, count in rows]
 
@@ -519,19 +526,54 @@ def _short(identifier: str) -> str:
     return tail if len(tail) > 3 else identifier
 
 
-def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
-    """The whole briefing, from the lake."""
+class _RepoScoped(Protocol):
+    """Anything the briefing lists that belongs to one repository."""
+
+    repo_full_name: str
+
+
+_T = TypeVar("_T", bound=_RepoScoped)
+
+
+def _only(rows: list[_T], asset_id: str | None) -> list[_T]:
+    """Keep the rows belonging to one repository, or all of them."""
+    if asset_id is None:
+        return rows
+    return [row for row in rows if row.repo_full_name == asset_id]
+
+
+def build(
+    catalog: Catalog, *, now: datetime | None = None, asset_id: str | None = None
+) -> Briefing:
+    """The whole briefing, from the lake.
+
+    `asset_id` narrows every section to one repository. The estate-wide view
+    answers "where is the worst of it"; the scoped one answers "what do I do
+    about *this* repository today", which is the question somebody who owns one
+    service actually has. Both are the same reasoning — cheapest first, lanes
+    that cannot close ahead of findings that can — applied to a different
+    denominator.
+
+    Scoped by filtering rather than by re-querying wherever the underlying
+    structure is already keyed by repository, so the two views cannot drift
+    apart: a difference between them would be a bug in one query, and there is
+    only one query.
+    """
     from mykronos.schemas import utcnow
 
     stamp = now or utcnow()
     open_counts = _open_by_capability(catalog)
+    if asset_id is not None:
+        open_counts = {
+            key: count for key, count in open_counts.items() if key[0] == asset_id
+        }
 
     # From the scan rather than from a category. `guidance` reads what each
     # tool actually said; this is the one number out of it the terminal
     # briefing needs.
     no_fix = {
         summary.capability: summary.unactionable
-        for summary in guidance.by_rule(catalog)
+        for summary in guidance.by_rule(catalog, asset_id=asset_id)
         if summary.unactionable
     }
 
@@ -544,7 +586,7 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
             capability=capability,
             open_findings=count,
             route=ROUTES.get(capability, "No standing route recorded for this class."),
-            concentrated_in=_concentration(catalog, capability),
+            concentrated_in=_concentration(catalog, capability, asset_id=asset_id),
             action=CLASS_ACTIONS.get(capability),
             no_fix_available=no_fix.get(capability, 0),
         )
@@ -554,8 +596,8 @@ def build(catalog: Catalog, *, now: datetime | None = None) -> Briefing:
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
-        stalled=stalled_lanes(catalog, now=stamp),
-        awaiting=awaiting_closure(catalog),
+        stalled=_only(stalled_lanes(catalog, now=stamp), asset_id),
+        awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
         # secrets fixer needs a credential in source rather than a reference.

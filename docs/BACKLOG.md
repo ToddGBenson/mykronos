@@ -45,11 +45,23 @@ already shipped.
 
 ## Open
 
-One, and it needs the operator rather than code. Everything else from the
-2026-09-01 monitoring sweep, and all three gaps that writing
-[`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed. Every one
-was reproduced against the live system before it was written; the evidence is
-in each entry rather than a link to a dashboard that will have moved on.
+Five. Everything from the 2026-09-01 monitoring sweep, and all three gaps that
+writing [`finding-lifecycle.md`](finding-lifecycle.md) exposed, is in Closed.
+Every entry here was reproduced against the live system before it was written;
+the evidence is in each entry rather than a link to a dashboard that will have
+moved on.
+
+**Two need the operator rather than code.** B-018 is a decision only they can
+make, and B-035 needs a credential this repository must not hold. Writing code
+against either would be guessing.
+
+**B-032 through B-035 came from a DevSecOps assessment of the workflow on
+2026-09-03**, and they share a shape worth noticing: none of them is a missing
+feature. The finding record is an assembly over eleven services that already
+exist; the risk model is built and unpopulated; routing is switched on and
+nothing is routed; the notifier is configured and addressed to nobody. The
+platform's capabilities are ahead of its wiring, which is a better problem than
+the reverse and a different one from the backlog it usually collects.
 
 **B-018** is a decision, not a defect. Both answers are defensible and only the
 operator knows which is true — whether the Azure principal was lost with the
@@ -86,6 +98,134 @@ enabled and inert is not.
 - Either `cloud-posture` can run, or `cloud` is not presented as enabled.
 - Whichever way it goes is written down, as D-053 did for DAST.
 - Distinct from B-015: `cloud`'s zero is real, and must keep reading as real.
+
+---
+
+### B-032 — A finding has no record of its own
+
+**Size:** L **State:** open **Verified:** 2026-09-03
+
+One finding's story is spread across eleven surfaces, and deciding what to do
+about a single one currently means visiting five pages. Taking
+`CVE-2026-11822` / `libsqlite3-0` on `ToddGBenson/TheHub` as the worked example,
+here is where its facts live today:
+
+| fact | lives in |
+| --- | --- |
+| verdict, rationale, claim, snooze | triage queue |
+| group, occurrences, disposition | repo findings tab |
+| code snippet, raw scanner output | `GET /api/dashboard/findings/{id}` |
+| CVE, EPSS, KEV | threat intelligence |
+| package, **fixed version**, direct/transitive | supply chain |
+| the fix, its effort, how many it closes | remediate today |
+| CWE → STRIDE | threat model |
+| whether the lane can close it | scan health |
+| whether a regression test is pinned | regression coverage |
+| whether it is auto-fixable | patchwork |
+| what it is dangerous *with* | toxic combinations |
+
+Three of the facts that would change the decision — whether a fix exists,
+whether the lane can close it, whether the code is reachable — are not on the
+page where the decision gets made. The design proposal is approved; this entry
+is the build.
+
+**Four things are genuinely new.** The rest is assembly over services that
+already exist.
+
+- `GET /api/dashboard/findings/{id}/record` — one call returning the whole
+  record instead of eleven.
+- **Closure status per finding.** Does not exist at finding level anywhere
+  today; it is inferable from scan health if you know to go and look. Joining
+  the finding's lane to scan health and the absence counter is what stops
+  somebody fixing a defect twice because the first fix appeared not to work.
+- **Fix-group membership from the finding.** Guidance groups by change already;
+  only the reverse index is missing.
+- **Package facts on the finding** — `fixed_version`, `direct`, ecosystem,
+  joined from supply chain.
+
+**Acceptance criteria**
+
+- One page answers, in this order: what is it, does it matter *here*, what do I
+  do, what happened and can it end.
+- Every action is inline — claim, snooze, disposition, owner, due date, groom,
+  pin a regression test, preview a patch. The record is where the work happens,
+  not a report about work happening elsewhere.
+- "Can it close?" is stated explicitly, naming the lane and its health.
+- Missing context is visible rather than absent: a finding with no reachability
+  analysis and no declared exposure says so, because that is why it is ranked
+  by severity rather than by risk (see B-033).
+- The eleven surfaces keep working. This is a join, not a migration.
+
+**Provenance:** proposed and approved 2026-09-03 after a DevSecOps assessment of
+the workflow. Design, with the real values above rendered:
+`claude.ai/code/artifact/6dff82d0-e4dd-41a7-a7b4-60c78ca708e6`.
+
+---
+
+### B-033 — Risk ranking presents itself as risk while running on severity
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+Nothing populates the context the risk model is built to weigh:
+
+```
+risk profile exists    0 of 4 repositories
+surfaces declared      0 of 4 repositories
+reachability analysed  2 of 4 repositories
+```
+
+`internet_facing`, `data_classification` and `business_criticality` are null
+everywhere, so scoring degrades to severity — and the interface presents the
+result as risk without saying which one the reader is looking at. A wrong label
+on a real number is worse than a missing number.
+
+**Acceptance criteria**
+
+- Either the profiles are filled, or every surface that ranks says what it is
+  ranking by.
+- The degradation is visible at the point of ranking, not in documentation.
+
+**Provenance:** DevSecOps assessment, 2026-09-03.
+
+---
+
+### B-034 — 282 finding groups, 0 owners, routing enabled
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+`MYKRONOS_ROUTING_ENABLED=true` and every open finding group on the estate is
+unassigned; 255 of 282 also have no due date. An unowned finding is one nobody
+has agreed to fix, and the queue is currently a very good reading experience
+rather than a work assignment.
+
+**Acceptance criteria**
+
+- A default owner exists — CODEOWNERS, or the repository owner — so the empty
+  state is a starting point somebody can argue with rather than a blank.
+- Unowned is visible as a state worth fixing, not as an empty column.
+
+**Provenance:** DevSecOps assessment, 2026-09-03.
+
+---
+
+### B-035 — The notifier is configured and addressed to nobody
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY=high` and `MYKRONOS_ROUTING_ENABLED=true`
+are both set; `MYKRONOS_SLACK_WEBHOOK_URL` is empty. Everything in the platform
+is therefore pull: a new critical, a KEV match, or a lane going silent reaches
+somebody only if they remember to look.
+
+**Needs the operator, not code** — the webhook URL is a credential this
+repository must not hold.
+
+**Acceptance criteria**
+
+- Either a webhook is configured, or the absence is recorded as a decision the
+  way D-053 recorded paused DAST, so it stops reading as an oversight.
+
+**Provenance:** DevSecOps assessment, 2026-09-03.
 
 ---
 

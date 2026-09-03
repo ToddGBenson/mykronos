@@ -15,6 +15,7 @@ import {
 } from "@/components/open-findings";
 import { RecommendedFixes } from "@/components/recommended-fixes";
 import { RemediationTab } from "@/components/remediation";
+import { RemediateToday } from "@/app/remediate/page";
 import { AgeForecast } from "@/components/forecast";
 import { GovernancePanel, MergeCounts } from "@/components/governance";
 import { PathToGreen } from "@/components/path-to-green";
@@ -70,6 +71,11 @@ export const dynamic = "force-dynamic";
 const TABS = [
   { id: "dashboard", label: "Dashboard" },
   { id: "findings", label: "Findings" },
+  // Directly after Findings, because it is the same backlog asked the next
+  // question. Findings says what is outstanding here; this says which of it is
+  // work today — and it is the estate page's reasoning applied to one
+  // repository rather than a second, quietly different, ranking.
+  { id: "remediate", label: "Remediate today" },
   { id: "harness", label: "Harness" },
   { id: "threat-model", label: "Threat Model" },
   { id: "sscs", label: "Supply chain" },
@@ -202,6 +208,8 @@ export default async function RepoPage({
         <ThreatModelTabPanel repoId={repoId} />
       ) : tab === "findings" ? (
         <FindingsTab repoId={repoId} query={query} />
+      ) : tab === "remediate" ? (
+        <RemediateToday repoId={repoId} />
       ) : tab === "harness" ? (
         <TestHarnessTab repoId={repoId} enabled={[...enabledSet].sort()} />
       ) : (

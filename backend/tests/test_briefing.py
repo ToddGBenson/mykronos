@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from mykronos import briefing
 from mykronos.schemas import utcnow as _utcnow
-from tests.conftest import finding_payload, post_findings, post_scan
+from tests.conftest import REPO, finding_payload, post_findings, post_scan
 
 
 def _scan(client, auth, run_id: str, findings: list[dict], *, status: str = "success") -> None:
@@ -302,3 +302,49 @@ class TestActions:
             assert capability in briefing.ROUTES, (
                 f"{capability} has a coverage verdict but no route in the briefing"
             )
+
+
+
+class TestScopedToOneRepository:
+    """`Remediate today` is a per-repository page as well as an estate one.
+
+    Somebody who owns one service has a different question from somebody who
+    owns the estate, and the same reasoning answers both — so the scoped view
+    filters the estate structures rather than running its own queries. If the
+    two could disagree, one of them would be wrong and nobody would know which.
+    """
+
+    def test_it_narrows_to_the_repository_asked_for(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _scan(client, auth, "run-2", [], status="failure")
+        run_compaction()
+
+        whole = briefing.build(catalog)
+        mine = briefing.build(catalog, asset_id=REPO)
+
+        # This estate has one repository, so scoping to it must be lossless —
+        # the cheapest possible check that the filter matches on the right key.
+        assert mine.total_open == whole.total_open
+        assert [lane.repo_full_name for lane in mine.stalled] == [REPO]
+        assert mine.blocked_findings == whole.blocked_findings
+
+    def test_an_unknown_repository_is_empty_rather_than_the_estate(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The dangerous failure would be a filter that silently does nothing
+        and hands somebody the whole estate labelled as their repository."""
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _scan(client, auth, "run-2", [], status="failure")
+        run_compaction()
+
+        assert briefing.build(catalog).total_open == 1
+
+        scoped = briefing.build(catalog, asset_id="nobody/nothing")
+
+        assert scoped.total_open == 0
+        assert scoped.stalled == []
+        assert scoped.classes == []

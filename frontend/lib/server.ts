@@ -586,10 +586,12 @@ export async function getVulnerabilityManagement(): Promise<
  * the defect was fixed. On 2026-09-01 that was 431 of 475 open findings, and
  * every other surface reported them as work somebody was neglecting.
  */
-export async function getBriefing(): Promise<Result<Briefing>> {
+/** `repoId` narrows every section to one repository; omit it for the estate. */
+export async function getBriefing(repoId?: string): Promise<Result<Briefing>> {
   try {
     const { data, response } = await backendClient().GET("/api/dashboard/briefing", {
       cache: "no-store",
+      ...(repoId ? { params: { query: { repo_id: repoId } } } : {}),
     });
     if (!data) {
       return { ok: false, error: describe(response, "Could not load the briefing") };
