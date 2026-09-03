@@ -76,12 +76,75 @@ def decision_to_row(decision: Decision, *, gate_outcome: str | None = None) -> d
     }
 
 
-def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
+def _introduced_section(introduced: list[dict[str, Any]]) -> list[str]:
+    """What this change brought in, worst first."""
+    if not introduced:
+        return [
+            "### This change introduced nothing",
+            "",
+            "No new open finding is attributable to this commit. The score "
+            "below describes the backlog that was already here.",
+            "",
+        ]
+
+    by_severity: dict[str, int] = {}
+    for row in introduced:
+        by_severity[row["severity"]] = by_severity.get(row["severity"], 0) + 1
+    tally = ", ".join(
+        f"{by_severity[sev]} {sev}"
+        for sev in ("critical", "high", "medium", "low", "info")
+        if by_severity.get(sev)
+    )
+
+    lines = [
+        f"### This change introduced {len(introduced)} finding"
+        f"{'' if len(introduced) == 1 else 's'} — {tally}",
+        "",
+        "| Severity | Lane | Rule | Where |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in introduced:
+        where = row.get("file_path") or "—"
+        if row.get("line_start"):
+            where = f"{where}:{row['line_start']}"
+        lines.append(
+            f"| {row['severity']} | {row['capability']} | "
+            f"`{row['rule_id']}` | {where} |"
+        )
+    lines += [
+        "",
+        "<sub>Attributed by the scan run that first saw each finding, so a "
+        "finding your branch merely reproduces is not counted against it.</sub>",
+        "",
+    ]
+    return lines
+
+
+def render_check_run_summary(
+    decision: Decision,
+    *,
+    blocking: bool,
+    introduced: list[dict[str, Any]] | None = None,
+) -> str:
     """The Markdown a developer reads on their pull request.
 
     For most people this is the entire product, so it shows the arithmetic
     rather than just the verdict: a score you cannot check is a score you
     eventually stop believing.
+
+    **`introduced` leads, and the score follows it.** The score describes the
+    repository's whole open backlog — the right answer to "how much risk does
+    this carry" and the wrong one to "should this ship". On a repository with
+    330 open findings the number barely moves between commits, so an author
+    reading only the score sees the same check whether their change added a
+    critical or removed one. What they can act on is the short list of things
+    the change itself brought in, which is why it goes above the arithmetic
+    rather than below it.
+
+    Passing `None` renders the summary without the section, which is not the
+    same as passing `[]` — an empty list is the good news that this change
+    introduced nothing, and saying so is the most reassuring thing this check
+    can report.
     """
     snapshot = decision.inputs_snapshot
     totals = snapshot["totals"]
@@ -92,7 +155,15 @@ def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
         "",
         decision.reasoning,
         "",
+    ]
+
+    if introduced is not None:
+        lines += _introduced_section(introduced)
+
+    lines += [
         "### How this score was reached",
+        "",
+        "_The repository's whole open backlog, not this change._",
         "",
         "| Contribution | Input | Arithmetic |",
         "| ---: | --- | --- |",
@@ -195,6 +266,21 @@ class OracleService:
         published = PublishedDecision(decision=decision, blocking=blocking)
 
         if github is not None and commit_sha and decision_type != "portfolio":
+            # Read once, here, rather than inside the renderer: the renderer is
+            # pure and tested on its own, and a check run that fails to publish
+            # should not be a query the catalog ran for nothing.
+            try:
+                introduced = _dashboard_queries(self.catalog).introduced_rows(
+                    repo_full_name, commit_sha
+                )
+            except Exception:  # noqa: BLE001 - the score is still worth posting
+                logger.warning(
+                    "Could not read introduced findings for %s@%s; posting the "
+                    "check run without that section.",
+                    repo_full_name,
+                    commit_sha,
+                )
+                introduced = None
             try:
                 published.check_run_id = await github.create_check_run(
                     repo_full_name,
@@ -209,7 +295,9 @@ class OracleService:
                         f"{decision.recommendation.replace('_', ' ')} — "
                         f"{decision.overall_risk_score}/100"
                     ),
-                    summary=render_check_run_summary(decision, blocking=blocking),
+                    summary=render_check_run_summary(
+                        decision, blocking=blocking, introduced=introduced
+                    ),
                 )
                 row["github_check_run_id"] = published.check_run_id
             except GitHubError as exc:

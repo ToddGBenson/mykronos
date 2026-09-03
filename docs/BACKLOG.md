@@ -55,13 +55,60 @@ moved on.
 make, and B-035 needs a credential this repository must not hold. Writing code
 against either would be guessing.
 
-**B-032 through B-035 came from a DevSecOps assessment of the workflow on
-2026-09-03**, and they share a shape worth noticing: none of them is a missing
-feature. The finding record is an assembly over eleven services that already
-exist; the risk model is built and unpopulated; routing is switched on and
-nothing is routed; the notifier is configured and addressed to nobody. The
-platform's capabilities are ahead of its wiring, which is a better problem than
-the reverse and a different one from the backlog it usually collects.
+**B-032 through B-038 came from a DevSecOps assessment of the workflow on
+2026-09-03**, and they share a shape worth noticing: almost none of them is a
+missing feature. The finding record is an assembly over eleven services that
+already exist; the risk model is built and unpopulated; routing is switched on
+and nothing is routed; the notifier is configured and addressed to nobody; the
+check run's introduced-findings query has existed since D-048 and only the gate
+reads it. The platform's capabilities are ahead of its wiring, which is a better
+problem than the reverse and a different one from the backlog it usually
+collects.
+
+B-038 is the exception and the only one that is genuinely absent.
+
+### The sequence, and why
+
+Ordered by what each one unlocks rather than by size, because three of these are
+prerequisites for something else being worth doing.
+
+**1 · B-036 — the check run names the change.** Days of work, and it is the
+first thing that makes the platform visible to somebody who is not on the
+security team. Every other item on this list improves a page that developers do
+not currently open; this one improves the only surface they cannot avoid.
+Unblocked by the pull-request scoping already shipped.
+
+**2 · B-034 — ownership.** Cheap, and it gates the value of everything
+downstream: a notification about an unowned finding has nowhere to go, and a
+finding record with an empty owner field is a record of an unmade decision. Do
+this before B-035 or the alerts will be broadcasts.
+
+**3 · B-035 — the notifier.** One environment variable once somebody supplies
+the URL, and it converts the whole platform from pull to push. Held only because
+the credential cannot live in this repository.
+
+**4 · B-033 — say what the ranking is.** The honest half is small: the ranking
+degrades to severity when no risk profile exists, and every surface that ranks
+should say which one it is doing. Filling the profiles in is the operator's
+half and needs nobody's code.
+
+**5 · B-032 — the finding record.** The largest, and deliberately not first.
+It is an assembly, and it assembles better once ownership is real (2) and the
+ranking is labelled (4) — building it first would mean shipping a record whose
+owner field is always empty and whose "does this matter here" block cannot
+answer its own question.
+
+**6 · B-037 — the current SBOM.** Real, and it has no dependents. It moves the
+day somebody is asked for it.
+
+**7 · B-038 — local feedback.** Last, because it needs a decision about what
+this product is before it needs code, and that decision is not urgent while the
+CI loop works.
+
+**Not on this list:** turning the gate on. The shadow-mode evidence is there —
+0 of 30 merges refused in ninety days by the gate that runs now, against 30 of
+30 by the composite gate D-083 retired — and the call belongs to whoever owns
+the consequence of a blocked release, not to this file.
 
 **B-018** is a decision, not a defect. Both answers are defensible and only the
 operator knows which is true — whether the Azure principal was lost with the
@@ -224,6 +271,92 @@ repository must not hold.
 
 - Either a webhook is configured, or the absence is recorded as a decision the
   way D-053 recorded paused DAST, so it stops reading as an oversight.
+
+**Provenance:** DevSecOps assessment, 2026-09-03.
+
+---
+
+### B-036 — The check run scores the repository and never names the change
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`Mykronos / risk decision` renders a score, the arithmetic that produced it, and
+which modifiers were unavailable. What it never says is the one thing the author
+of the change can act on: **what this pull request introduced.**
+
+The score describes the whole open backlog, which is the right answer to "how
+much risk does this repository carry" and the wrong one to "should this ship".
+On a repository with 330 open findings the number barely moves, so the check
+reads the same whether the change added a critical or fixed one.
+
+**Most of this already exists.** `Queries.introduced_by()` has been computing
+exactly this since D-048 — same `first_seen_scan_run_id` join the pull-request
+filter now uses — but it returns counts by severity and only the gate consumes
+them. The missing piece is a row-returning variant and a section in the summary.
+
+**Acceptance criteria**
+
+- The check run names the findings the change introduced, not only a count.
+- Nothing introduced says so plainly, because "this change added nothing" is the
+  common case and the most reassuring thing the check can report.
+- The standing score stays. It answers a different question and both are worth
+  having on the page; they just have to be labelled as different questions.
+
+**Provenance:** DevSecOps assessment, 2026-09-03. Unblocked by the pull-request
+scoping in #182.
+
+---
+
+### B-037 — There is no way to ask for the current SBOM
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+`GET /api/dashboard/repos/{id}/sscs/sbom` requires an `evidence_id` and returns
+422 without one. Tying an SBOM to a release artifact is arguably more correct
+than a floating "current" one — an SBOM without a build is a guess — but
+"what is in production right now" is the question customers, auditors and
+incident responders actually ask, and answering it today requires knowing an
+evidence id first.
+
+The incident case is the sharp one: a CVE lands, and the question is whether we
+ship the affected package *anywhere*. `sscs/packages` answers that per
+repository; nothing answers it as an artifact somebody can hand over.
+
+**Acceptance criteria**
+
+- A repository's most recent release evidence is reachable without knowing its
+  id, or the endpoint says which evidence to ask for.
+- The correctness of build-pinned SBOMs is preserved — this is a lookup, not a
+  floating document.
+
+**Provenance:** DevSecOps assessment, 2026-09-03.
+
+---
+
+### B-038 — Nothing runs before `git push`
+
+**Size:** L **State:** open **Verified:** 2026-09-03
+
+There is no pre-commit hook, no local scan command, and no editor path. The
+`mykronos` CLI is an operator's tool — tokens, lake compaction, briefings — and
+the fastest feedback a developer can get is a CI run after a push.
+
+Defensible for a control plane: the scanners live in CI and the platform reads
+them. But four of the open findings on this estate are committed credentials,
+which is exactly the class a pre-commit hook exists to stop, and the cheapest
+finding is the one that never reaches a branch.
+
+**This is the one entry that needs a decision before scoping.** A thin path —
+`mykronos scan --staged` shelling out to gitleaks and semgrep, reusing the
+existing adapters — is days. An editor integration is a different product. The
+platform's stated position is that it is a control plane and not a scanner, and
+that position is either still true or it is not.
+
+**Acceptance criteria**
+
+- Either a local path exists, or "the loop starts at push" is recorded as a
+  decision the way D-053 recorded paused DAST, so it stops reading as an
+  omission.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
 
