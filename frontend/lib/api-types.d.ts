@@ -1478,6 +1478,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/ssdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Ssdf
+         * @description Which SSDF practices this repository can evidence (SP 800-218).
+         *
+         *     **Evidence, never intent.** A practice is met only when the platform
+         *     observed something that meets it — a lane that *reported*, a control GitHub
+         *     confirmed. An enabled-but-silent capability evidences nothing, because
+         *     otherwise a repository could claim coverage by flipping a toggle, which is
+         *     the move the maturity model was written to refuse.
+         *
+         *     **No percentage, deliberately.** "68% SSDF compliant" is the number
+         *     everybody wants and it is not a real quantity: the practices are not
+         *     equally weighted, not equally applicable, and a single number invites
+         *     exactly the rounding this endpoint exists to prevent. Counts by status, and
+         *     the reader does their own arithmetic knowing what it is made of.
+         *
+         *     Practices this platform cannot assess are absent rather than reported unmet.
+         *     PO.1 and PO.2 are organisational and no scanner observes them; listing them
+         *     as failures would teach people to ignore the ones that mean something.
+         */
+        get: operations["repo_ssdf_api_dashboard_repos__repo_id__ssdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -4159,6 +4195,25 @@ export interface components {
              */
             overdue_findings: number;
         };
+        /** PracticeOut */
+        PracticeOut: {
+            /** Practice Id */
+            practice_id: string;
+            /** Group */
+            group: string;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Evidence */
+            evidence: string[];
+            /** Missing */
+            missing: string[];
+            /** How To Evidence */
+            how_to_evidence: string;
+            /** Nist 800 53 */
+            nist_800_53: string[];
+        };
         /**
          * ProfileProposalOut
          * @description What the platform can and cannot say about a repository (B-041).
@@ -5002,6 +5057,22 @@ export interface components {
             evidence: components["schemas"]["SscsEvidenceOut"][];
             /** @description Convenience for the header; the same row as evidence[0]. */
             latest?: components["schemas"]["SscsEvidenceOut"] | null;
+        };
+        /**
+         * SsdfOut
+         * @description SSDF adherence for one repository, evidenced rather than asserted.
+         */
+        SsdfOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Practices */
+            practices: components["schemas"]["PracticeOut"][];
+            /** Note */
+            note: string;
         };
         /** StageCoverageOut */
         StageCoverageOut: {
@@ -7306,6 +7377,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProfileProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_ssdf_api_dashboard_repos__repo_id__ssdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsdfOut"];
                 };
             };
             /** @description Validation Error */
