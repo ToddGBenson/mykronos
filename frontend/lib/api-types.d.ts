@@ -2928,6 +2928,25 @@ export interface components {
             why: string;
         };
         /**
+         * ControlDriftOut
+         * @description One control changing state, recorded when it happened.
+         */
+        ControlDriftOut: {
+            /** Control Key */
+            control_key: string;
+            /** From State */
+            from_state: string;
+            /** To State */
+            to_state: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Regression */
+            regression: boolean;
+        };
+        /**
          * ControlOut
          * @description A declared mitigation (spec 28 §3).
          */
@@ -3697,6 +3716,11 @@ export interface components {
             governance_score?: number | null;
             /** Controls */
             controls?: components["schemas"]["ControlStateOut"][];
+            /**
+             * Drift
+             * @description Controls that changed state since the platform last looked, newest first. A transition *to* `unknown` is a read that failed rather than a control that was removed — a revoked permission and a security regression must never look the same.
+             */
+            drift?: components["schemas"]["ControlDriftOut"][];
             /**
              * Merges
              * @description Counts by repository over the window, never by author (spec 06 §9). Each is a statement about a control whose remedy is a settings change.

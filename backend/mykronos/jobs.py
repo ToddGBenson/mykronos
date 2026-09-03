@@ -1029,3 +1029,92 @@ async def self_check(
             "self-check %s: %s", name, "ok" if result.reachable else scrub(result.detail)
         )
     return checks
+
+
+@dataclass
+class GovernanceSweepResult:
+    """What one pass over every repository's change controls found."""
+
+    read: int = 0
+    unreadable: int = 0
+    drifted: int = 0
+    #: The transitions themselves, worst kind first, for the caller to log.
+    changes: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        if not self.drifted:
+            return f"{self.read} read, {self.unreadable} unreadable, nothing changed"
+        return (
+            f"{self.read} read, {self.unreadable} unreadable, "
+            f"{self.drifted} control(s) changed: {'; '.join(self.changes)}"
+        )
+
+
+async def sweep_governance(
+    db: Database, factory: GitHubClientFactory
+) -> GovernanceSweepResult:
+    """Re-read every repository's change controls and record what moved.
+
+    **Monitoring is the thing that happens when nobody is looking.** Governance
+    has always been read live, so the console has never shown a stale control —
+    but the read only happened when somebody opened the panel, and nothing
+    compared one reading to the next. A repository could drop its review
+    requirement and the only trace would be a score nobody was watching.
+
+    This is the sweep that makes it a control rather than a dashboard. It runs
+    on a timer, reads every onboarded repository, and files one row per
+    transition.
+
+    Two things it is careful not to say. A control that becomes `unknown` is a
+    read that failed, not a control that was removed — a revoked permission and
+    a security regression must never look the same. And a repository's first
+    reading produces no drift at all: with nothing to compare against, treating
+    every control as having moved from `unknown` would file nine regressions
+    for a repository that has done nothing.
+
+    Safe to run twice: a re-read that sees no change writes nothing.
+    """
+    from mykronos import governance as governance_module
+
+    result = GovernanceSweepResult()
+
+    with db.session() as session:
+        repos = list(
+            session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status == "active")
+            ).scalars()
+        )
+
+    for repo in repos:
+        try:
+            posture = await governance_module.read(
+                factory.for_installation(repo.github_installation_id),
+                repo.github_repo_full_name,
+                repo.default_branch,
+            )
+        except (GitHubError, httpx2.HTTPError) as exc:
+            # One repository failing must not end the sweep: the next one may
+            # be the one that drifted.
+            result.unreadable += 1
+            logger.warning(
+                "Governance sweep could not read %s: %s",
+                scrub(repo.github_repo_full_name),
+                scrub(str(exc)),
+            )
+            continue
+
+        if not posture.readable:
+            result.unreadable += 1
+            continue
+
+        result.read += 1
+        with db.session() as session:
+            for change in governance_module.remember(session, posture):
+                result.drifted += 1
+                result.changes.append(
+                    f"{change.repo_full_name} {change.control_key} "
+                    f"{change.from_state}->{change.to_state}"
+                )
+            session.commit()
+
+    return result

@@ -61,6 +61,10 @@ class Facts:
     ssdf_total: int = 0
     libraries: int = 0
     vulnerable_libraries: int = 0
+    #: Controls that came off since the platform last looked. Not "changed":
+    #: a control being turned on is good news and a read that failed is a
+    #: permissions problem, and neither belongs in an alert.
+    controls_regressed: tuple[str, ...] = ()
     risk_profile_confirmed: bool = False
 
 
@@ -288,7 +292,29 @@ def build(facts: Facts) -> list[Answer]:
             )
         )
 
-    # 7. The one that gates most of the others, and the only answer here that
+    # 7. The only answer here about something that *happened* rather than
+    #    something that is. Placed above the profile note because a control
+    #    that came off last night outranks a standing caveat.
+    if facts.controls_regressed:
+        answers.append(
+            Answer(
+                key="drift",
+                question="Has anything been weakened recently?",
+                answer=(
+                    f"{_plural(len(facts.controls_regressed), 'control')} came off "
+                    "since the platform last looked: "
+                    + ", ".join(c.replace("_", " ") for c in facts.controls_regressed)
+                    + "."
+                ),
+                tab="insider",
+                evidence=[
+                    "Somebody changed that deliberately. A control that could "
+                    "not be read is a separate thing and is not counted here."
+                ],
+            )
+        )
+
+    # 8. The one that gates most of the others, and the only answer here that
     #    is about the platform rather than the repository.
     if not facts.risk_profile_confirmed:
         answers.append(

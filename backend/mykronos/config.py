@@ -160,6 +160,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    governance_sweep_interval_seconds: int = Field(
+        default=21_600,
+        ge=1,
+        description=(
+            "Re-reads every onboarded repository's change controls and records "
+            "any that moved (spec 30). Six-hourly: a control coming off is a "
+            "security regression somebody made deliberately, and detection "
+            "that waits a day is detection somebody else finds first. Also "
+            "what keeps the stored posture inside the 14-day staleness window "
+            "Oracle scores against, which until now depended on a person "
+            "opening the panel."
+        ),
+    )
+
     insider_risk_default_retention_days: int = Field(
         default=90,
         ge=1,

@@ -688,7 +688,59 @@ class RepoGovernance(Base):
     #: How many of the nine controls the read actually resolved. A score of 80
     #: over two controls is not the same claim as 80 over nine.
     controls_read: Mapped[int] = mapped_column(Integer, default=0)
+    #: The per-control states as last read, keyed by control key. Still current
+    #: state and still not a time series — it is the same reading the columns
+    #: above summarise, kept in full so the *next* read can tell what changed.
+    #: A score dropping from 80 to 60 says something moved; this says which
+    #: control, which is the difference between a number and an action.
+    control_states: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     read_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<RepoGovernance {self.repo_full_name} score={self.governance_score}>"
+
+
+class ControlDrift(Base):
+    """One control changing state, recorded when it happens (spec 30).
+
+    **A transition is not a time series, which is why this exists alongside
+    `RepoGovernance` rather than replacing its single row.** That row is
+    right: storing every reading of a setting would be noise, and the current
+    state is what scores. But a control that was enforced on Monday and is not
+    on Thursday is an *event* — somebody did that — and the platform read both
+    states and told nobody.
+
+    That is the gap this closes. Governance is read live on every panel render,
+    so the console has always shown the truth; nothing compared today's truth
+    to yesterday's. A repository could quietly drop its review requirement and
+    the only trace would be a score nobody was watching.
+
+    **Recorded on the sweep, not on the render.** Detection that depends on
+    somebody opening a page is not monitoring. The scheduled sweep reads every
+    onboarded repository whether or not anyone is looking, which is the whole
+    difference between a dashboard and a control.
+    """
+
+    __tablename__ = "control_drift"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # Every required column here carries a default it will never actually
+    # write: the constructor always supplies one. They are declared because
+    # `add_missing_columns` has to be able to add any of them to a table that
+    # already has rows, and a column with no default has no value for those —
+    # which a drift guard in the schema tests checks rather than trusts.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    control_key: Mapped[str] = mapped_column(String(64), default="")
+    #: `on` | `off` | `partial` | `unknown`, the same four states the control
+    #: itself has. A transition *to* `unknown` is a read that failed, not a
+    #: control that was removed, and the two must never be conflated: one is a
+    #: permissions problem and the other is a security regression.
+    from_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    to_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<ControlDrift {self.repo_full_name} {self.control_key} "
+            f"{self.from_state}->{self.to_state}>"
+        )

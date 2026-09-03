@@ -45,6 +45,7 @@ from mykronos.jobs import (
     route_open_findings,
     score_portfolio,
     sweep_acceptances,
+    sweep_governance,
     verify_merged_fixes,
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
@@ -278,6 +279,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # In a thread: it rewrites partitions, same as the other sweeps.
             await asyncio.to_thread(sweep_acceptances, app.state.catalog)
 
+        async def _governance() -> None:
+            # Not in a thread: it is HTTP-bound, one call per repository, and
+            # awaiting it lets the rest of the app serve while GitHub answers.
+            result = await sweep_governance(app.state.db, app.state.github_factory)
+            # Logged at warning only when something moved. A control coming off
+            # is the one governance event worth waking somebody for; "nothing
+            # changed" every six hours is how a log stops being read.
+            if result.drifted:
+                logger.warning("Governance sweep: %s", result.summary())
+            else:
+                logger.info("Governance sweep: %s", result.summary())
+
         async def _stale_drafts() -> None:
             await close_superseded_fixes(
                 app.state.db,
@@ -317,6 +330,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
+            ("governance", settings.governance_sweep_interval_seconds, _governance),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             # Off unless opted in: this job messages people.
             *(

@@ -4402,3 +4402,42 @@ because the list is what makes everything above it trustworthy.
 
 **It cannot act, by construction.** Every answer is a read. No dispositions, no
 acceptances, no scans started, no pull requests opened.
+
+## D-105 — A transition is not a time series
+
+**2026-09-03.** `RepoGovernance` stores one row per repository, replaced on
+every read, and its docstring gives the reason: *"this is configuration, and a
+time series of a setting is not evidence the way a scan result is."* That is
+right and stays.
+
+Control drift is recorded anyway, and the two are not in tension. **A time
+series is every reading; a transition is the readings that differ.** Storing
+"pull requests were required at 06:00, 12:00, 18:00 and 00:00" is noise —
+1,460 rows a year per repository per control, none of them an event. Storing
+"signed commits stopped being required on 2026-09-03" is one row, and somebody
+did that.
+
+**What was actually missing.** Governance has always been read live, so the
+console has never shown a stale control. Nothing compared one reading to the
+next. A repository could drop its review requirement and the only trace would
+be a score nobody was watching — the platform read both states and told
+nobody.
+
+**Detection that waits for a page view is not monitoring.** The read happened
+on render, so a repository nobody opened was a repository nobody was watching.
+The sweep runs six-hourly against every onboarded repository whether or not
+anyone is looking, which is the difference between a dashboard and a control.
+It also keeps the stored posture inside the fourteen-day staleness window
+Oracle scores against, which until now depended on a person opening a panel.
+
+**Three things it refuses to conflate.** A control becoming `unknown` is a read
+that failed, not a control that was removed — one is a revoked App permission
+and the other is a security regression, and sending somebody to the wrong one
+wastes the alert. A control appearing in the reading for the first time is a
+change in what the App can see, not in how the repository is governed. And a
+repository's first reading produces no drift at all: with nothing to compare
+against, treating every control as having moved from `unknown` would file nine
+regressions for a repository that has done nothing.
+
+**Only regressions reach the Consult answer.** A control being turned on is
+good news and does not belong in an answer about weakening.
