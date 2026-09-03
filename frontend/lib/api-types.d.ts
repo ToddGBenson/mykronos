@@ -1441,6 +1441,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/risk-profile/proposal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Risk Profile Proposal
+         * @description Propose a risk profile from evidence, for a person to confirm.
+         *
+         *     0 of 4 repositories here have one, so `internet_facing`,
+         *     `data_classification` and `business_criticality` are unset everywhere — and
+         *     the triage queue now says out loud that it ranks by severity and threat
+         *     intelligence rather than by risk, because the context it would weigh does
+         *     not exist.
+         *
+         *     Asking humans to fill in a form has failed everywhere it has been tried, so
+         *     this proposes and a person confirms. The rule that keeps it honest is that
+         *     an absent field stays absent: a builder that guessed "internal, low
+         *     criticality" whenever it could not tell would be worse than the empty
+         *     profile, because an empty profile is visibly empty and a guessed one looks
+         *     like an answer.
+         *
+         *     The most useful thing here is not the proposals. It is
+         *     `what_would_settle_it` on the ones it refuses to guess — the empty form
+         *     becomes a short list of evidence to go and get.
+         */
+        get: operations["risk_profile_proposal_api_dashboard_repos__repo_id__risk_profile_proposal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -4123,6 +4160,20 @@ export interface components {
             overdue_findings: number;
         };
         /**
+         * ProfileProposalOut
+         * @description What the platform can and cannot say about a repository (B-041).
+         */
+        ProfileProposalOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Already Confirmed */
+            already_confirmed: boolean;
+            /** Proposals */
+            proposals: components["schemas"]["ProposalOut"][];
+            /** Note */
+            note: string;
+        };
+        /**
          * PromotionApproval
          * @description Which candidate is being approved. Keyed the same way
          *     `find_cross_project_candidates` groups them — by (source_type, subject),
@@ -4148,6 +4199,19 @@ export interface components {
             reasons_withheld: number;
             /** Note */
             note: string;
+        };
+        /** ProposalOut */
+        ProposalOut: {
+            /** Field */
+            field: string;
+            /** Value */
+            value: unknown | null;
+            /** Confidence */
+            confidence: string;
+            /** Evidence */
+            evidence: string;
+            /** What Would Settle It */
+            what_would_settle_it?: string | null;
         };
         /**
          * ProvenanceSignals
@@ -7211,6 +7275,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LibrariesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    risk_profile_proposal_api_dashboard_repos__repo_id__risk_profile_proposal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileProposalOut"];
                 };
             };
             /** @description Validation Error */

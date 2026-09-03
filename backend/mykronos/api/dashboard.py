@@ -30,6 +30,7 @@ from mykronos import (
     inventory,
     regression,
     reown,
+    risk_profile_builder,
     supply_chain,
     surfaces,
     worklist,
@@ -3809,5 +3810,116 @@ async def estate_libraries(
             "dependency the SBOM did not resolve — vendored code, or a library "
             "inside a base image — is outside this view. Container findings "
             "are where the second of those shows up."
+        ),
+    )
+
+
+class ProposalOut(BaseModel):
+    field: str
+    value: Any | None
+    confidence: str
+    evidence: str
+    what_would_settle_it: str | None = None
+
+
+class ProfileProposalOut(BaseModel):
+    """What the platform can and cannot say about a repository (B-041)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    already_confirmed: bool
+    proposals: list[ProposalOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/risk-profile/proposal", response_model=ProfileProposalOut)
+async def risk_profile_proposal(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ProfileProposalOut:
+    """Propose a risk profile from evidence, for a person to confirm.
+
+    0 of 4 repositories here have one, so `internet_facing`,
+    `data_classification` and `business_criticality` are unset everywhere — and
+    the triage queue now says out loud that it ranks by severity and threat
+    intelligence rather than by risk, because the context it would weigh does
+    not exist.
+
+    Asking humans to fill in a form has failed everywhere it has been tried, so
+    this proposes and a person confirms. The rule that keeps it honest is that
+    an absent field stays absent: a builder that guessed "internal, low
+    criticality" whenever it could not tell would be worse than the empty
+    profile, because an empty profile is visibly empty and a guessed one looks
+    like an answer.
+
+    The most useful thing here is not the proposals. It is
+    `what_would_settle_it` on the ones it refuses to guess — the empty form
+    becomes a short list of evidence to go and get.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        profile = (
+            session.execute(
+                select(RiskProfile).where(
+                    RiskProfile.repo_onboarding_id == onboarding.id
+                )
+            )
+            .scalars()
+            .first()
+            if onboarding is not None
+            else None
+        )
+        summary = surfaces.for_repo(session, repo_full_name) if onboarding else None
+
+    declared = (
+        len(summary.assets) + len(summary.entry_points) + len(summary.trust_boundaries)
+        if summary is not None
+        else 0
+    )
+
+    # The ownership ladder's own answer, rather than a second implementation of
+    # it — the two disagreeing about who owns a repository would be worse than
+    # either being wrong.
+    owner_rows = (
+        catalog.query(
+            "SELECT owner, owner_source FROM findings WHERE asset_id = ? "
+            "AND owner IS NOT NULL AND owner <> '' LIMIT 1",
+            [repo_full_name],
+        )
+        if catalog.all_files("findings")
+        else []
+    )
+    owner = str(owner_rows[0][0]) if owner_rows else None
+    owner_source = str(owner_rows[0][1]) if owner_rows else None
+
+    proposal = risk_profile_builder.propose(
+        catalog,
+        repo_full_name,
+        declared_surfaces=declared,
+        owner=owner,
+        owner_source=owner_source,
+        already_confirmed=profile is not None,
+    )
+
+    return ProfileProposalOut(
+        repo_full_name=proposal.repo_full_name,
+        already_confirmed=proposal.already_confirmed,
+        proposals=[ProposalOut(**vars(item)) for item in proposal.proposals],
+        note=(
+            "Proposed, not applied. A field this cannot evidence stays unknown "
+            "and the score assumes the worst, which is what CVSS's "
+            "environmental metrics already do with an undefined modifier — a "
+            "comfortable default here would look like an answer."
         ),
     )
