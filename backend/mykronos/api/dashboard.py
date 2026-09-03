@@ -3950,6 +3950,53 @@ class SsdfOut(BaseModel):
     note: str
 
 
+async def _ssdf_assess(
+    request: Request, repo_full_name: str, installation_id: Any, default_branch: str,
+    *, reporting: set[str], enabled: set[str],
+) -> list[ssdf.PracticeResult]:
+    """The SSDF assessment, in one place because two surfaces report it.
+
+    The Consult tab answers "what can we evidence to an assessor" and links to
+    the Adherence tab. Those two numbers disagreeing would be worse than the
+    Consult tab not answering at all — it is the whole basis of that surface
+    that every sentence is checkable on the tab it cites. So there is one code
+    path and not two similar ones, which is the same reasoning the briefing
+    uses for its scoped and estate views.
+
+    The governance read is the part that would have diverged: the first cut of
+    Consult passed empty control sets, which agreed with the Adherence tab only
+    for as long as the App lacked `administration: read` on every repository.
+    """
+    confirmed: set[str] = set()
+    known: set[str] = set()
+    try:
+        posture = await governance.read(
+            request.app.state.github_factory.for_installation(installation_id),
+            repo_full_name,
+            default_branch,
+            source_paths=_source_paths(request, repo_full_name),
+        )
+        if posture.readable:
+            for control in posture.controls:
+                known.add(control.key)
+                if control.state == "pass":
+                    confirmed.add(control.key)
+    except Exception:  # noqa: BLE001 — capability evidence still stands
+        logger.warning(
+            "Could not read governance for %s; SSDF practices that depend on "
+            "repository controls will report them as unread rather than absent.",
+            scrub(repo_full_name),
+        )
+
+    return ssdf.assess(
+        reporting_capabilities=reporting,
+        enabled_capabilities=enabled,
+        confirmed_controls=confirmed,
+        known_controls=known,
+        functions=_ssdf_functions(request, repo_full_name),
+    )
+
+
 def _ssdf_functions(request: Request, repo_full_name: str) -> dict[str, ssdf.FunctionState]:
     """What the platform's own functions have on record for this repository.
 
@@ -4091,33 +4138,9 @@ async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> 
     # states — and a stale posture is worse than none here, because a
     # compliance view built on a setting somebody changed last week is a
     # claim about a repository that no longer exists.
-    confirmed: set[str] = set()
-    known: set[str] = set()
-    try:
-        posture = await governance.read(
-            request.app.state.github_factory.for_installation(installation_id),
-            repo_full_name,
-            default_branch,
-            source_paths=_source_paths(request, repo_full_name),
-        )
-        if posture.readable:
-            for control in posture.controls:
-                known.add(control.key)
-                if control.state == "pass":
-                    confirmed.add(control.key)
-    except Exception:  # noqa: BLE001 — capability evidence still stands
-        logger.warning(
-            "Could not read governance for %s; SSDF practices that depend on "
-            "repository controls will report them as unread rather than absent.",
-            scrub(repo_full_name),
-        )
-
-    results = ssdf.assess(
-        reporting_capabilities=reporting,
-        enabled_capabilities=enabled,
-        confirmed_controls=confirmed,
-        known_controls=known,
-        functions=_ssdf_functions(request, repo_full_name),
+    results = await _ssdf_assess(
+        request, repo_full_name, installation_id, default_branch,
+        reporting=reporting, enabled=enabled,
     )
 
     return SsdfOut(
@@ -4362,6 +4385,8 @@ async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) 
             .first()
         )
         enabled = set(row.enabled_capabilities or []) if row else set()
+        installation_id = row.github_installation_id if row else None
+        default_branch = row.default_branch if row else ""
         # A separate table, and row-exists is the fact that matters: a profile
         # saying "we do not know yet" is an auditable answer, and no profile at
         # all is why every environmental input defaults to the worst case.
@@ -4374,12 +4399,12 @@ async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) 
             .first()
         )
 
-    ssdf_results = ssdf.assess(
-        reporting_capabilities=reporting,
-        enabled_capabilities=enabled,
-        confirmed_controls=set(),
-        known_controls=set(),
-        functions=_ssdf_functions(request, repo_full_name),
+    # The same call the Adherence tab makes, not a similar one. This answer
+    # links to that tab, and two numbers that disagree would undo the only
+    # thing that makes this surface trustworthy.
+    ssdf_results = await _ssdf_assess(
+        request, repo_full_name, installation_id, default_branch,
+        reporting=reporting, enabled=enabled,
     )
     facts.ssdf_total = len(ssdf_results)
     facts.ssdf_met = sum(1 for r in ssdf_results if r.status == "met")
