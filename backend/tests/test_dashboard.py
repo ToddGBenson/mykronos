@@ -1429,12 +1429,39 @@ class TestTriageQueue:
     def test_an_empty_portfolio_is_not_an_error(self, client, admin_auth) -> None:
         body = client.get("/api/dashboard/triage", headers=admin_auth).json()
 
-        assert body == {
-            "items": [],
-            "open_by_severity": dict.fromkeys(["critical", "high", "medium", "low", "info"], 0),
-            "total_open": 0,
-            "truncated": False,
-        }
+        assert body["items"] == []
+        assert body["open_by_severity"] == dict.fromkeys(
+            ["critical", "high", "medium", "low", "info"], 0
+        )
+        assert body["total_open"] == 0
+        assert body["truncated"] is False
+        # An empty estate has nothing to rank and nothing missing to say so
+        # about, but the block is always present — a caller should never have
+        # to handle "the queue forgot to mention what it ranked by" (B-033).
+        assert body["ranking"]["not_consulted"] == []
+
+    def test_it_says_what_it_could_not_rank_by(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """B-033 — the queue must not present itself as ordered by risk.
+
+        The rank uses severity, threat intel, remediation targets and blast
+        radius. It has never used internet exposure, data classification or
+        business criticality: those live on a risk profile and are not terms in
+        `rank_terms` at all. On an estate with no profiles this is not a
+        degraded risk ranking, it is a threat-intel ranking, and saying so at
+        the point of ranking is the difference between a number somebody can
+        trust and one they will quietly stop believing.
+        """
+        body = client.get("/api/dashboard/triage", headers=admin_auth).json()
+
+        gaps = body["ranking"]["not_consulted"]
+        assert [g["input"] for g in gaps] == ["business context"]
+        assert "no risk profile" in gaps[0]["reason"]
+        assert body["ranking"]["repos_without_a_risk_profile"] == [REPO]
+        # And it is explicit about what it *did* use, so the two lists are
+        # read together rather than the absence being inferred.
+        assert "severity" in body["ranking"]["consulted"]
 
     def test_it_needs_authentication(self, client) -> None:
         assert client.get("/api/dashboard/triage").status_code == 401
