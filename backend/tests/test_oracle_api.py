@@ -421,3 +421,80 @@ class TestGateTemplate:
             # YAML 1.1 parses a bare `on:` as the boolean True, which is why
             # this checks both spellings rather than the obvious one.
             assert "on" in parsed or True in parsed, f"{capability} has no triggers"
+
+
+
+class TestTheCheckRunNamesTheChange:
+    """The score describes the backlog; the author needs the delta.
+
+    On a repository with a large backlog the score barely moves between
+    commits, so an author reading only the number sees the same check whether
+    their change added a critical or removed one.
+    """
+
+    def _decision(self, client, seeded):
+        from mykronos.oracle import OracleEngine, load_policy
+
+        engine = OracleEngine(
+            client.app.state.catalog, load_policy(get_settings().oracle_policy_path)
+        )
+        return engine.evaluate(REPO, decision_type="pr_gate", commit_sha="x")
+
+    def test_it_lists_what_the_change_introduced(self, client, oracle_auth, seeded) -> None:
+        summary = render_check_run_summary(
+            self._decision(client, seeded),
+            blocking=False,
+            introduced=[
+                {
+                    "severity": "critical",
+                    "capability": "secrets",
+                    "rule_id": "generic-api-key",
+                    "title": "Exposed secret",
+                    "file_path": "app/config.py",
+                    "line_start": 12,
+                },
+                {
+                    "severity": "medium",
+                    "capability": "sast",
+                    "rule_id": "avoid-sqlalchemy-text",
+                    "title": "Raw SQL",
+                    "file_path": "app/db.py",
+                    "line_start": 40,
+                },
+            ],
+        )
+
+        assert "introduced 2 findings" in summary
+        assert "1 critical, 1 medium" in summary
+        assert "generic-api-key" in summary
+        assert "app/config.py:12" in summary
+        # The section has to come before the arithmetic: what you can act on
+        # outranks the standing score, on the one page you cannot avoid.
+        assert summary.index("introduced 2 findings") < summary.index(
+            "How this score was reached"
+        )
+
+    def test_introducing_nothing_is_stated_rather_than_omitted(
+        self, client, oracle_auth, seeded
+    ) -> None:
+        """The common case, and the most reassuring thing the check can say.
+
+        An empty list is good news; `None` means the query could not run. They
+        must not render the same.
+        """
+        summary = render_check_run_summary(
+            self._decision(client, seeded), blocking=False, introduced=[]
+        )
+
+        assert "introduced nothing" in summary
+
+    def test_an_unavailable_query_omits_the_section_and_keeps_the_score(
+        self, client, oracle_auth, seeded
+    ) -> None:
+        summary = render_check_run_summary(
+            self._decision(client, seeded), blocking=False, introduced=None
+        )
+
+        before_arithmetic = summary.split("How this score was reached")[0]
+        assert "introduced" not in before_arithmetic
+        assert "How this score was reached" in summary

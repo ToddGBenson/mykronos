@@ -1805,6 +1805,52 @@ class DashboardQueries:
         )
         return {str(severity): int(count) for severity, count in rows}
 
+    def introduced_rows(
+        self, repo_full_name: str, commit_sha: str, *, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        """The findings a commit introduced, named rather than counted.
+
+        `introduced_by` answers "how many, and how bad" — enough for a gate to
+        decide. This answers "which ones", which is what the person who wrote
+        the commit needs, and it is the same join so the two can never
+        disagree about what "introduced" means.
+
+        Worst first and capped: a check run summary is read in a narrow column
+        on a pull request, and a change that introduced sixty findings is
+        better served by the worst twenty-five and a count than by sixty rows
+        nobody scrolls.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT f.severity, f.capability, f.rule_id, f.title,
+                   f.file_path, f.line_start
+            FROM findings f
+            WHERE f.asset_id = ?
+              AND f.status = 'open'
+              AND f.first_seen_scan_run_id IN (
+                    SELECT scan_run_id FROM scan_runs
+                    WHERE repo_full_name = ? AND commit_sha = ?
+              )
+            ORDER BY CASE f.severity
+                       WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                       WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+                     f.capability, f.rule_id
+            LIMIT ?
+            """,
+            [repo_full_name, repo_full_name, commit_sha, limit],
+        )
+        return [
+            {
+                "severity": str(severity),
+                "capability": str(capability),
+                "rule_id": str(rule_id),
+                "title": str(title),
+                "file_path": None if file_path is None else str(file_path),
+                "line_start": None if line_start is None else int(line_start),
+            }
+            for severity, capability, rule_id, title, file_path, line_start in rows
+        ]
+
     def vulnerability_management(self, repo_full_name: str | None = None) -> dict[str, Any]:
         """What is outstanding, how old, and what was accepted (PIP-9).
 
