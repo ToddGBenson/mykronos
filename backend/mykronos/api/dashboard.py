@@ -31,6 +31,7 @@ from mykronos import (
     regression,
     reown,
     risk_profile_builder,
+    ssdf,
     supply_chain,
     surfaces,
     worklist,
@@ -3921,5 +3922,123 @@ async def risk_profile_proposal(
             "and the score assumes the worst, which is what CVSS's "
             "environmental metrics already do with an undefined modifier — a "
             "comfortable default here would look like an answer."
+        ),
+    )
+
+
+class PracticeOut(BaseModel):
+    practice_id: str
+    group: str
+    title: str
+    status: str
+    evidence: list[str]
+    missing: list[str]
+    how_to_evidence: str
+    nist_800_53: list[str]
+
+
+class SsdfOut(BaseModel):
+    """SSDF adherence for one repository, evidenced rather than asserted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    counts: dict[str, int]
+    practices: list[PracticeOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/ssdf", response_model=SsdfOut)
+async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> SsdfOut:
+    """Which SSDF practices this repository can evidence (SP 800-218).
+
+    **Evidence, never intent.** A practice is met only when the platform
+    observed something that meets it — a lane that *reported*, a control GitHub
+    confirmed. An enabled-but-silent capability evidences nothing, because
+    otherwise a repository could claim coverage by flipping a toggle, which is
+    the move the maturity model was written to refuse.
+
+    **No percentage, deliberately.** "68% SSDF compliant" is the number
+    everybody wants and it is not a real quantity: the practices are not
+    equally weighted, not equally applicable, and a single number invites
+    exactly the rounding this endpoint exists to prevent. Counts by status, and
+    the reader does their own arithmetic knowing what it is made of.
+
+    Practices this platform cannot assess are absent rather than reported unmet.
+    PO.1 and PO.2 are organisational and no scanner observes them; listing them
+    as failures would teach people to ignore the ones that mean something.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+
+    # Reporting, not enabled: a lane with successful runs behind it.
+    reporting = {
+        str(lane["capability"])
+        for lane in queries.scan_health(repo_full_name)
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{repo_full_name} is not onboarded.",
+            )
+        enabled = set(row.enabled_capabilities or [])
+        installation_id = row.github_installation_id
+        default_branch = row.default_branch
+
+    # Read live, the same way the governance panel does. A stored reading
+    # carries only a count of controls, and this needs their individual
+    # states — and a stale posture is worse than none here, because a
+    # compliance view built on a setting somebody changed last week is a
+    # claim about a repository that no longer exists.
+    confirmed: set[str] = set()
+    known: set[str] = set()
+    try:
+        posture = await governance.read(
+            request.app.state.github_factory.for_installation(installation_id),
+            repo_full_name,
+            default_branch,
+            source_paths=_source_paths(request, repo_full_name),
+        )
+        if posture.readable:
+            for control in posture.controls:
+                known.add(control.key)
+                if control.state == "pass":
+                    confirmed.add(control.key)
+    except Exception:  # noqa: BLE001 — capability evidence still stands
+        logger.warning(
+            "Could not read governance for %s; SSDF practices that depend on "
+            "repository controls will report them as unread rather than absent.",
+            scrub(repo_full_name),
+        )
+
+    results = ssdf.assess(
+        reporting_capabilities=reporting,
+        enabled_capabilities=enabled,
+        confirmed_controls=confirmed,
+        known_controls=known,
+    )
+
+    return SsdfOut(
+        repo_full_name=repo_full_name,
+        counts=ssdf.summarise(results),
+        practices=[PracticeOut(**vars(result)) for result in results],
+        note=(
+            "Evidenced, not asserted. A capability that is enabled and has never "
+            "reported evidences nothing, and a control this platform could not "
+            "read is unknown rather than absent. The 800-53 families named against "
+            "each practice are cross-references, not claims — whether an SSDF "
+            "practice satisfies a given control is an assessor's judgement."
         ),
     )
