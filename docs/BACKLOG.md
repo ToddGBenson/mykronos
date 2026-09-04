@@ -45,11 +45,25 @@ already shipped.
 
 ## Open
 
-Five, and **all five need the operator rather than code**. B-018 is a decision
-only they can make, B-035 and B-043 each need a credential this repository must
-not hold, B-042 is a call about this repository's CI budget, and B-044 is one
-permission grant that lights four built-and-waiting features. Writing code
+Thirteen. **Six need the operator rather than code**: B-018 is a decision only
+they can make, B-035 and B-043 each need a credential this repository must not
+hold, B-042 is a call about this repository's CI budget, B-044 is one
+permission grant that lights four built-and-waiting features, and B-052 is one
+repository grant that lets binnacle be scanned at all. Writing code
 against any of them would be guessing.
+
+**Four arrived from the 2026-09-03 second sweep, and they are one story told
+four ways: nothing here checks that a scan covered anything.** B-045 is the
+instance — TheHub has been scanned on `main` since 2026-08-19 while every commit
+lands on `develop`, so 330 findings describe a tree eight days stale. B-046 is
+the reason nobody saw it: the stalled-lane detector measures silence, not
+coverage, and a lane re-scanning one frozen commit reports healthy forever.
+B-047 is the exit that does not exist for the 32 findings a disabled capability
+left behind. B-048 is the same blind spot from the other side — two lanes
+scanning one repository at different path bases, each supplying the other's
+absence evidence, and `parity` recommending that the wrong one be retired
+because it compares what a lane reports and never what it reaches.
+B-045 is a decision; B-046, B-047 and B-048 are code. B-050 is the one that is neither: four live vulnerabilities in TheHub, found by reading all twenty-one of its high findings by hand because B-045 means no scanner has looked at that code in sixteen days. B-051 came from asking what the other repositories look like, and is the widest gap here: four of the account's eleven repositories are watched at all, and two of the four are green because their analyser cannot read the language they are written in. B-049 arrived last and only because the operator half of B-033 was finally done: filling in the four risk profiles turned an accurate disclosure off without changing the rank behind it.
 
 B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
 The risk gate was asked about at the same time and stays advisory, recorded as
@@ -298,6 +312,531 @@ repository must not hold.
 
 ---
 
+### B-045 — TheHub is scanned on a branch nobody merges to
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+Mykronos's own record of TheHub says `default_branch: develop`. Its Concourse
+pipeline watches `main`. Nothing reconciles the two, and the gap is now eight
+days wide.
+
+- `origin/main` is at `7197a028`, dated 2026-08-26. No merge since.
+- `origin/develop` has commits through 2026-09-03 — eight of them that day.
+- `develop` was scanned **295 times**, the last on **2026-08-19**. Not once since.
+- Every TheHub scan run after that date carries
+  `commit_sha = 7197a02837377eef0af70f14746102df33286de7` — the same frozen
+  commit, re-scanned and recorded `success` each time.
+
+TheHub's active branch has therefore been unscanned for sixteen days, and its
+330 open findings describe a commit that is eight days behind the code people
+are actually writing.
+
+**This is not B-024.** That entry was the ingestion token (D-097) and it closed
+correctly — scanning did resume, at 2026-09-01 20:07. It resumed against
+`main`, so the repair bought nothing that lasts.
+
+The branch is a parameter, `((thehub-branch))`, set by
+`deploy/concourse/set-thehub-pipeline.ps1` and defaulting to `main` under an
+operator directive dated 2026-08-18. That script's own comment records the
+failure mode exactly: "the repository said `develop` while the applied pipeline
+watched `main`, and nothing anywhere reconciled the two." It was written about a
+working-tree divergence. The same sentence now describes the platform.
+
+The directive was reasonable. It assumed the flow is PR -> merge to `main` ->
+pipeline runs. That flow has not produced a merge in eight days, so what needs
+re-deciding is the assumption, not the script.
+
+**Acceptance criteria**
+
+- A decision recorded on which branch TheHub is scanned on — matching
+  `default_branch`, or stating in writing why it does not.
+- If `develop`: the pipeline re-applied with `-Branch develop`, and a scan run
+  recorded whose `commit_sha` is on `develop`.
+- The 330 frozen findings re-evaluated against a current commit.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-046 — A lane pinned to a stale commit reports as healthy
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+The briefing leads with lanes that cannot close findings, which is the right
+thing to lead with. It measures **wall-clock silence** — how long since this
+capability last reported. It does not measure whether the scan covered anything
+new.
+
+A pipeline pinned to a branch that has stopped moving produces a successful run
+on schedule, forever, against an unchanging commit. It never appears in that
+section. TheHub's lanes surfaced only because they *also* went quiet for two
+days (B-045); had the pipeline held its ten-hour cadence, 330 findings would
+have been frozen against a stale tree with every indicator green.
+
+Mykronos already holds both halves — `repo_onboarding.default_branch` and
+`scan_runs.branch` / `scan_runs.commit_sha`. Nothing compares them.
+
+Two checks, and the second is the one missing everywhere:
+
+1. **Branch drift** — the branch a lane scans is not the repository's default
+   branch.
+2. **Commit staleness** — consecutive successful runs carrying the same
+   `commit_sha`. A lane re-scanning ground it has already covered is not
+   watching, whatever its cadence says.
+
+The second also catches what the first cannot: a lane on the *right* branch
+whose checkout is pinned or cached.
+
+**Acceptance criteria**
+
+- The briefing and `/api/dashboard/repos/{repo_id}/scan-health` report a lane
+  whose recent successful runs share one `commit_sha`, naming the commit and
+  the date it stuck.
+- Branch drift against `default_branch` is surfaced per repository.
+- TheHub reproduces both today, and stops reproducing them when B-045 lands.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-047 — Disabling a capability strands its findings open forever
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`ToddGBenson/TheHub` has `enabled_capabilities: aegis, atlas, containers, sast,
+secrets`. `dast` is not among them. It holds **32 open findings**, and the
+briefing reports that lane silent for fifteen days.
+
+Those 32 cannot close by any path the platform offers. Closure requires two
+consecutive *successful* scans that no longer observe the finding (spec 05 §5).
+A capability that is switched off will never produce one, so absence can never
+be established. They are not open because anything is unfixed — they are open
+because the only mechanism that could close them has been removed.
+
+This is the closure rule working exactly as designed and arriving somewhere it
+has no exit from. The rule is right; the fix is not to relax it, but to make
+removing a capability an explicit decision about what it was holding.
+
+**Acceptance criteria**
+
+- Disabling a capability requires a disposition for its open findings, or
+  records one automatically with a written reason naming the removal.
+- Findings stranded this way are distinguishable from merely stale ones, in the
+  briefing and in the vulnerability-management view.
+- TheHub's 32 `dast` findings reach a recorded state.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`mykronos` is scanned by both CIs during the migration, and the two lanes
+disagree about paths. Concourse checks out into `repo/`, Actions at the root, so
+checkov's identical output lands as two separate findings:
+
+    CKV_GHA_7  repo/.github/workflows/promote.yml:34   first seen 2026-08-30
+    CKV_GHA_7  .github/workflows/promote.yml:34        first seen 2026-09-01
+
+On 2026-09-03 the two alternated all day about eight minutes apart, same tool
+and version (checkov 3.2.334), one reporting five findings and the other two —
+different counts because they also cover different trees.
+
+Three effects. Open IaC counts are inflated. A finding has to be dispositioned
+twice, and was on 2026-09-03. And the lanes supply each other's absence
+evidence, so which findings close is decided by which lane ran last.
+
+**The obvious fix is the wrong one, and `parity` recommends it.**
+`mykronos parity ToddGBenson/mykronos` reports Actions at least as good on every
+capability and better on two — `dast` and `functional` are `failed` under
+Concourse and `reporting` under Actions, verdict `improved`. Read literally,
+that says retire Concourse.
+
+It is not comparing like with like. `parity` compares whether each capability
+**reports**, never what it **reaches**:
+
+| | Concourse `dast` | Actions `dast` |
+|---|---|---|
+| Runner | worker on this LAN | `runs-on: ubuntu-latest`, GitHub-hosted |
+| Target | `((demo-host))` — an internal address | `localhost` inside the runner |
+| Stack | a deployment that outlives the build | ephemeral, built and seeded per run |
+
+A GitHub-hosted runner cannot reach an RFC1918 address on this network. So the
+Actions lane is not a better version of the Concourse one — it is the only one
+that can run *without* the LAN, and the Concourse one is the only one that can
+scan anything actually deployed on it. Retiring Concourse would not consolidate
+a duplicate; it would permanently remove the only path to scanning an internal
+deployment, including TheHub's own prod, and would foreclose the network
+capability the README already describes as having an authorization model and an
+ingest path but no scanner.
+
+This is the same caveat the README states about DAST — "reached a deployment,
+which is not the same as internet-facing — that lane runs inside CI against an
+ephemeral stack" — arriving as a decision rather than a disclosure. The honest
+verdict for a capability whose two lanes reach different things is not
+`improved`; it is that they are not comparable.
+
+The Concourse `dast` and `functional` lanes being `failed` is therefore a bug to
+fix, not evidence for retirement.
+
+**Acceptance criteria**
+
+- The path base is normalised so both lanes produce one finding, and no
+  rule/line pair appears under two `file_path` values for one repository.
+- `parity` distinguishes a capability whose lanes reach different targets from
+  one where a lane is simply better, and does not return `improved` for the
+  first. Reaching an internal target is stated where the verdict is.
+- A decision recorded that Concourse is retained for internal-target scanning,
+  so the next reader of `parity` does not re-derive the wrong conclusion.
+- The Concourse `dast` and `functional` failures are diagnosed on their merits.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). The retirement
+recommendation was corrected by the operator the same day; the original entry
+had repeated `parity`'s verdict without checking what either lane reached.
+
+---
+
+### B-049 — Filling in a risk profile silences the disclosure without changing the rank
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+B-033 gave the triage queue a disclosure: what the rank consulted, and what it
+could not. It was accurate, and its closing note was sharper than the story —
+business context "is not a term in `rank_terms` at all, so this was a
+threat-intel ranking presenting itself as a risk one."
+
+The disclosure is wired to whether a **profile exists**, not to whether the rank
+**uses one**. `ranking_inputs` (`dashboard.py:315`) computes
+`missing_profile = repos - repos_with_a_profile` and emits the "business
+context — not consulted" line only when that set is non-empty. `consulted` is a
+hardcoded four-element list that never contains business context at all.
+
+So filling the profiles in — the operator half B-033 left open — turns an
+accurate warning off:
+
+| | `not_consulted` | is business context a rank term? |
+|---|---|---|
+| Before (no profiles) | "business context — no risk profile on …" | no |
+| After (profiles set)  | `[]` | **still no** |
+
+`rank_terms` (`dashboard.py:241`) is unchanged by this: its terms are severity,
+`in_kev`, `epss`, `overdue`/`due_soon`, `blast_radius`, `repo_is_no_go`,
+`orphaned` and `fixable`. Not one reads `internet_facing`,
+`data_classification` or `business_criticality`. The queue now reports that
+nothing is un-consulted while consulting exactly what it did before.
+
+This could not be seen until a profile existed, which is why it survived
+B-033's own review. It was found by filling all four in on 2026-09-03.
+
+**The profiles are not wasted** — `oracle/engine.py:719-747` reads all three,
+and mykronos's portfolio decision now carries `Handles confidential data
+(+10.0)`. The Oracle consumes business context; the queue does not. That is the
+defect: two rankings on one estate disagree about which inputs exist.
+
+**Acceptance criteria**
+
+- Either the rank gains terms for the three profile fields, or `not_consulted`
+  reports business context whenever it is not a term — regardless of whether a
+  profile exists.
+- `consulted` is derived from the terms the rank can actually produce rather
+  than restated as a literal.
+- With all four profiles set, the queue's claim about its own inputs is true.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-050 — Six live TheHub vulnerabilities, verified against `develop`
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+TheHub's twenty-one open high SAST findings were read one by one at the scanned
+commit `7197a028`. Seventeen were dispositioned — fifteen `avoid-sqlalchemy-text`
+false positives, one Dockerfile finding accepted on a verified compensating
+control, one local-script XML parse accepted with a date. **Four are real**, and
+because B-045 means the scanner is stuck on a frozen `main`, each was re-checked
+against `origin/develop` by hand. All four are still present in the code people
+are writing.
+
+The fix lands in TheHub's repository, not this one. It is recorded here because
+the findings are Mykronos's, they cannot close until TheHub ships, and this is
+where the operator will look — it should be mirrored to TheHub rather than
+worked from here.
+
+**1 & 2 — Script injection in the production deploy workflow.**
+`.github/workflows/deploy-prod.yml`, `run-shell-injection`, at lines 67 and 107
+on `main` and 71 and 109 on `develop`:
+
+    echo "reason: ${{ inputs.reason }}"
+    echo "operator note: ${{ inputs.reason }}"
+
+A free-text `workflow_dispatch` input interpolated straight into a shell `run:`
+block. GitHub substitutes before the shell parses, so `"; curl … | sh; #`
+executes. The job holds `secrets.HOMELAB_SSH_KEY`, `HOMELAB_HOST` and
+`HOMELAB_USER`, so the payoff is the homelab SSH key.
+
+Likelihood is genuinely low — `workflow_dispatch` needs repository write, and
+someone with write can already edit workflows. It is still worth fixing: repo
+write and *trusted with the prod SSH key* are not the same grant, and the fix is
+one line. Pass it through `env:` and reference `$REASON`, which is what this
+platform's own `promote.yml:69` and `demo-and-dast.yml:250` already do.
+
+**3 & 4 — Unauthenticated encryption of intimacy data.**
+`backend/services/intimacy_service.py:59` and `:67`,
+`crypto-mode-without-authentication`. AES-256-CBC with no authentication tag, on
+a module whose own docstring is "privacy-first encrypted intimacy tracking" —
+the most sensitive data class in the estate, and the reason TheHub's risk profile
+now records `data_classification: confidential`.
+
+CBC without a MAC is malleable: anyone who can write the `intimacy_logs` row —
+direct database access, a tampered or restored backup, an injection elsewhere —
+can alter the ciphertext, and nothing detects it.
+
+**The integrity control that looks like one is not one.** `_hash_data` (line 75)
+is documented "SHA-256 hash for deduplication / integrity" and stored as
+`data_hash` at line 129. It is **never read back** — no comparison exists
+anywhere in the module — and it is an unkeyed digest, so anyone who alters the
+ciphertext can recompute it. It provides deduplication. The docstring claims
+integrity twice over that the code does not deliver.
+
+**Not overstated:** there is no practical padding oracle. `list_logs` (line 158)
+catches `Exception` broadly and returns the same response shape for a padding
+failure and a JSON failure, so the two are not distinguishable to a caller. The
+exception text does reach the log, which is a much weaker vector.
+
+**Adjacent, not flagged by the rule:** `_get_encryption_key` derives the key as a
+bare `hashlib.sha256(raw)` of `INTIMACY_ENCRYPTION_KEY`. That is adequate only
+while the variable holds the high-entropy value the error message suggests
+(`secrets.token_hex(32)`); a single fast hash over a passphrase is brute-forcible.
+HKDF is the right primitive if the input is already a key.
+
+**The migration is unusually cheap, and the module is why.** These logs
+auto-purge after seven days. Switching `_encrypt` to `AESGCM` and keeping the CBC
+path in `_decrypt` for one purge cycle retires the old format without a
+backfill — after seven days no CBC row exists and the fallback is deleted.
+
+**5 & 6 — Escaping applied everywhere except a few fields (added 2026-09-03).**
+`react-unsanitized-method` at `frontend/js/dashboard/compliance-monthly.js:728`
+and `finances.js:2460`. Both build markup in a template literal and hand it to
+`insertAdjacentHTML`, and both escape *most* of what they interpolate — which is
+what makes the gaps read as oversights rather than decisions:
+
+- `compliance-monthly.js` wraps `content.topic` and `content.overview` in
+  `escapeHtml()`, then writes `${data.completion_message}` raw.
+- `finances.js` wraps `cat.category_name` and `cat.reason`, then writes
+  `${cat.icon}` raw and `${label}` raw, where `label` falls back to `cat.status`
+  when the status is not in its lookup map.
+
+**None of the three is exploitable today, and each for a different reason** —
+which is the argument for fixing them rather than closing them.
+`completion_message` is a server-side string literal
+(`backend/api/compliance_monthly.py:857`). `cat.icon` is
+`Column(String(10))` (`models/financial_budget.py:23`), and ten characters will
+not carry a working script payload. `cat.status` is computed server-side, not
+stored from input.
+
+Each is one `escapeHtml()` call, and each becomes a live stored XSS the moment
+its field's source, length limit or content changes — on a system that is
+internet-facing and holds personal financial data. `music.js:3968`, flagged by
+the neighbouring `raw-html-format` rule, is the counter-example: it wraps every
+interpolation in `_esc()` and was dispositioned as a false positive.
+
+**Also worth carrying:** the two nginx findings were accepted rather than
+dismissed on the same reasoning. `proxy_set_header Host $host` is safe only
+because no handler in TheHub builds a URL from the request host today — a
+search finds `request.url.path` and nothing else — and the h2c `Upgrade`
+passthrough is safe only because uvicorn implements no h2c upgrade. Both are
+properties of the current code, not of the proxy.
+
+**Acceptance criteria**
+
+- `deploy-prod.yml` passes `inputs.reason` through `env:`; no `${{ }}` expansion
+  of a user-supplied value remains inside a `run:` body.
+- `intimacy_service` encrypts with an AEAD (AES-GCM), and a tampered ciphertext
+  raises rather than returning `{}`.
+- `data_hash` is either verified on read or its docstring stops claiming
+  integrity.
+- The three unescaped interpolations are wrapped in `escapeHtml()`.
+- The four findings close on two consecutive successful scans — which requires
+  B-045 first, since the lane cannot currently see `develop` at all.
+
+**The classifier was right about all twenty-one.** Every `avoid-sqlalchemy-text`
+finding was labelled `likely_false_positive` and all four of these were labelled
+`true_positive`, with no misses in either direction. The manual pass confirmed
+the separation rather than correcting it, which is worth recording: it is the
+first time the triage classifier has been checked finding-by-finding against a
+whole severity band, and the dampening it produces can be trusted that much more
+for it.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-051 — SAST is language-blind, and two repositories are green because nothing can read them
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+`keel` has recorded **47 successful SAST runs and zero findings, ever**. Its
+`secrets` and `atlas` lanes are the same: 33 and 17 clean runs, one finding in
+the repository's whole history, and that one a false positive. `personal-soc` has
+nine clean `secrets` runs and has never recorded a finding either.
+
+That reads as two well-kept repositories. It is not what happened.
+
+**keel's analyser cannot read most of keel.** Its `sast` lane runs CodeQL
+2.26.3, and CodeQL supports no shell language at all. GitHub's own byte counts:
+
+| repo | composition | analysable by its configured SAST | actually analysed |
+|---|---|---|---|
+| `mykronos` | Python 80%, TypeScript 13% | 93% | 93% |
+| `TheHub` | Python 67%, JavaScript 16% | 84% | 84% |
+| **`keel`** | **Shell 69%**, Python 21%, JS 9% | **30%** | 30% |
+| **`personal-soc`** | **PowerShell 100%** | **0%** | **no `sast` capability at all** |
+| `binnacle` | Shell 67%, Python 23%, JS 9% | 32% | **0% — not onboarded** |
+
+219 KB of keel's shell has never been read by any analyser in this platform, and
+every run over it reported success. `personal-soc` is worse in a quieter way: it
+carries one capability, `secrets`, so gitleaks greps its content and nothing ever
+examines its PowerShell for a defect. Its 30 KB has never been analysed by
+anything.
+
+**This is the platform's own thesis, one level down.** Mykronos leads with silent
+lanes because "a lane that reports nothing looks exactly like a clean
+repository". A lane that reports nothing *because it cannot read the language*
+looks exactly the same, and this one reports `success` while doing it — so it
+does not appear in the stalled-lane section, does not appear in scan health, and
+does not appear as a gap anywhere. It appears as a clean repo. The information
+needed to catch it is one API call away: GitHub publishes `/languages` per
+repository, and the adapter registry already knows which tool serves each
+capability.
+
+Related to B-046 and the same family: a lane whose runs are green while it
+watches nothing. B-046 is about a lane pinned to a stale commit; this is a lane
+pointed at a language its tool does not implement.
+
+**Coverage across the account, since this is the first time it has been
+counted.** Eleven repositories exist; **four are onboarded**. Of the seven that
+are not, one matters now — **`binnacle`**, private, pushed 2026-08-31, 30 shell
+scripts, 46 workflow YAMLs and 9 Python files, with no scanning of any kind. It
+is a fork of `keel` and inherits the same shell-heavy shape.
+
+The other six were examined by hand rather than assumed, and none is urgent:
+`blog.toddbenson.net` (private, last pushed 2026-03-20), `apc` (an empty
+repository), and four dormant since 2021 or earlier. Two of those are public and
+were checked directly because a dormant repository still leaks:
+`configFiles` holds cheatsheets and bookmarks with no credential files, and
+`terraform-project` commits **no `.tfstate`** — its `0.0.0.0/0` rules are all
+`egress`, its SSH ingress is restricted to a single /24, and only its web tier is
+open. The one note is that the /24 is a real administrative range published in a
+public repository.
+
+**The unread code was read once, by hand, on 2026-09-03 — and it is clean.**
+That result is the argument for the capability, not against it: it took a person
+with a container and an afternoon to learn something the platform should report
+on every push.
+
+- **`keel` and `binnacle` shell** — ShellCheck 0.10.0 over all 30 scripts in
+  each: **27 findings, none above `info`, in both**, and the two repositories
+  produce byte-identical results because binnacle is a fork. The only
+  security-adjacent hits are three `SC2086` unquoted expansions, and all three
+  are deliberate: `sprint.sh:268` word-splits a git-derived file list into
+  `printf` on purpose, and `ci/scripts/codeql.sh:74` wraps its unquoted `find`
+  pattern in `set -f` / `set +f` precisely because the author knew. The six
+  `SC2102` hits are ShellCheck misreading GitHub API bracket syntax in
+  `configure-github.sh` — a script whose job is to *turn on* secret scanning,
+  push protection and Dependabot updates.
+- **`personal-soc` PowerShell** — all 608 lines read directly. No
+  `Invoke-Expression`, no `DownloadString`, no `-ExecutionPolicy Bypass`, no
+  credential literals. Native commands are invoked with the call operator and
+  separate arguments rather than composed shell strings, and the HIBP query at
+  `Invoke-BreachCheck.ps1:28` wraps the address in `[uri]::EscapeDataString`.
+  The sharpest thing in it is deliberate: `Get-WifiPosture.ps1:26` runs
+  `netsh wlan show profile key=clear`, which yields the PSK in cleartext, and
+  then exports only `KeyLen` — the length of the key content, never the key.
+  It answers "is this passphrase short" without writing a passphrase to disk.
+- **`binnacle` also carries a fixed RCE worth reading** —
+  `ci/scripts/atlas-evidence.sh:120-135` documents a first version that sourced
+  the ingestion API's response body as shell, in a container holding the
+  Mykronos token, and the positional-and-validated parse that replaced it.
+
+So the finding is not that this code is bad. It is that **four of eleven
+repositories are watched, two of the four are watched by a tool that cannot read
+them, and the only reason anyone knows the difference today is a manual pass
+that will not run again.**
+
+**Acceptance criteria**
+
+- A repository's languages are compared against what its configured capabilities
+  can analyse, and a gap is reported where the briefing already reports silent
+  lanes — naming the share of the codebase nothing reads.
+- `keel` and `binnacle` gain a shell analyser (ShellCheck, or semgrep's bash
+  rules) alongside CodeQL; `personal-soc` gains one that reads PowerShell
+  (PSScriptAnalyzer). CodeQL supports neither language, so enabling `sast` on
+  `personal-soc` as it stands would add a second green lane over unread code
+  rather than coverage.
+- `binnacle` is onboarded, or a decision is recorded that it will not be.
+- The estate view states how many repositories exist versus how many are
+  watched. Four of eleven was not visible anywhere before this entry.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from the
+question "what about the other repositories" — which the platform could not
+answer because it only knows the ones it was told about.
+
+---
+
+### B-052 — binnacle is onboarded and one repository grant short of being scanned
+
+**Size:** XS **State:** open **Verified:** 2026-09-03
+
+`ToddGBenson/binnacle` was registered on 2026-09-03 (`POST /api/repos`, id
+`8a597725`) and sits at **`pending_install` with zero capabilities**, because the
+install PR cannot be opened:
+
+    GitHub rejected the change: GET /repos/ToddGBenson/binnacle/pulls
+    -> 404: {"message":"Not Found"}
+
+**A 404 rather than a 403 is the diagnosis.** GitHub hides a repository's
+existence from a token that has no grant for it. Checked directly with a minted
+installation token:
+
+| request | result |
+|---|---|
+| `GET /repos/ToddGBenson/keel` | 200 |
+| `GET /repos/ToddGBenson/mykronos` | 200 |
+| `GET /repos/ToddGBenson/binnacle` | **404** |
+| `GET /installation/repositories` | 4 repos: TheHub, mykronos, keel, personal-soc |
+
+Installation 152755402 is scoped to *selected repositories* and binnacle is not
+among them. Nothing is misconfigured in this platform and no code is missing —
+the App simply cannot see the repository.
+
+**This is B-044's shape a second time**: a built-and-waiting capability held shut
+by one setting in GitHub's UI. Add `binnacle` to the App installation's
+repository list, then re-run the capability PATCH; the registration is
+idempotent and already in place.
+
+Worth doing because binnacle is the largest coverage gap in the estate (B-051):
+private, pushed 2026-08-31, 30 shell scripts, 46 workflow YAMLs and 9 Python
+files, with no scanning of any kind. `atlas`, `sast` and `secrets` — matching
+`keel`, which it is a fork of — is the starting set.
+
+**Acceptance criteria**
+
+- `binnacle` appears in `GET /installation/repositories`.
+- `PATCH /api/repos/8a597725-.../capabilities` with
+  `["atlas","sast","secrets"]` opens an install PR.
+- The repo reaches `active` and records its first scan run.
+- Note B-051: CodeQL cannot read 67% of binnacle, so `sast` alone will report
+  green over its shell. The grant is necessary and not sufficient.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Registration was
+attempted and the blocker found rather than predicted; the `pending_install` row
+is deliberate and accurate — it records intent and disappears when the PR merges.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
@@ -314,9 +853,14 @@ into entries here:
   siblings pass. Recorded in
   [`current-state/keel-pipeline-inventory.md`](current-state/keel-pipeline-inventory.md)
   as F3, along with three never-run jobs; keel's work belongs in keel's repo.
-- **Two overdue critical findings on TheHub.** Past their `due_at` and open.
-  That is the ownership-and-deadlines mechanism working as designed (spec 24) —
-  a thing for somebody to do, not a defect in the platform.
+- **Two overdue critical findings on TheHub** — *resolved 2026-09-03.* Both were
+  false positives in `concourse/pipelines/thehub.yml`: gitleaks matched the
+  Concourse variable placeholder `((anthropic-api-key))` and a line inside an
+  escaped YAML flow scalar. Every credential in that file resolves to a Vault
+  placeholder and the file holds no literal secret. Dispositioned with reasons.
+  Worth keeping because the mechanism worked and the input did not: all four of
+  this estate's critical findings were false positives, which is what a critical
+  count has to survive to mean anything.
 
 ---
 
