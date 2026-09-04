@@ -72,6 +72,12 @@ param(
     # because a garden task container's localhost is its own, not this machine's.
     [string]$DemoUrl = "http://192.168.0.14:8002",
     [string]$ProdUrl = "http://192.168.0.14:8000",
+    # The standing staging environment, which nothing scanned until 2026-09-03.
+    # 8081, not 8009: thehub-staging-frontend is the nginx that serves the SPA
+    # and is where the missing security headers are - the backend on 8009 sets
+    # its own. Deployed out of band by TheHub's deploy.sh, so `dast-staging`
+    # runs on the daily timer rather than after a deploy job.
+    [string]$StagingUrl = "http://192.168.0.14:8081",
     [string]$ReleaseBucket = "thehub-releases",
 
     # TheHub's own API, for reporting pipeline stages into its DevSecOps and
@@ -394,6 +400,7 @@ try {
         "scan-timezone: $TimeZone",
         "thehub-demo-url: $DemoUrl",
         "thehub-prod-url: $ProdUrl",
+        "thehub-staging-url: $StagingUrl",
         "thehub-release-bucket: $ReleaseBucket",
         "deploy-timeout-minutes: $DeployTimeoutMinutes",
         # Where this pipeline reports its stages back to, so TheHub's own
@@ -496,4 +503,5 @@ Write-Host "functional-dast paused: D-053, no resource budget for the scan yet."
 Write-Host "`nDelivering branch '$Branch'." -ForegroundColor Green
 Write-Host "  demo: $DemoUrl (automatic, once Oracle clears it)"
 Write-Host "  prod: $ProdUrl (waits for you to trigger deploy-prod)"
+Write-Host "  staging: $StagingUrl (dast-staging, on the daily timer)"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

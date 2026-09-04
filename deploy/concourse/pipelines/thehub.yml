@@ -71,7 +71,7 @@ groups:
   - name: quality
     jobs: [unit, qa, prompt-evals]
   - name: security
-    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture]
+    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture, dast-staging]
   - name: build
     jobs: [build, containers]
   - name: demo
@@ -2710,6 +2710,146 @@ jobs:
           STAGE: dast_headers
           STATUS: success
           TARGET_ENV: prod
+
+  # -- Unauthenticated baseline DAST: Staging -------------------------------
+  #
+  # Staging had never been scanned by anything. `dast-demo` targets
+  # ((thehub-demo-url)) and `dast-prod` targets ((thehub-url)); the standing
+  # staging environment on 8081 appears in neither, and a 2026-09-03 baseline
+  # run by hand found four rules with no counterpart anywhere in the lake --
+  # 10038 (no CSP), 10020 (no anti-clickjacking), 10021 (no
+  # X-Content-Type-Options) and 10036 (nginx version in the Server header).
+  # Production serves all of those correctly, so the two environments do not
+  # share a security posture and a result from one does not describe the other.
+  #
+  # **Time-triggered, not `passed:`, and that is the honest shape.** Staging is
+  # deployed out of band -- `thehub-staging-frontend` runs nginx over a
+  # locally-built `thehub-main-backend-staging` image, put there by TheHub's own
+  # deploy.sh rather than by this pipeline. There is no upstream job here whose
+  # success means "staging now runs this commit", so gating on one would assert
+  # something untrue. `daily` says what this actually is: a standing environment
+  # checked on a clock.
+  #
+  # **What `commit_sha` means here, because it is weaker than elsewhere.** For
+  # dast-demo and dast-prod the sha is the commit the upstream deploy shipped.
+  # Staging's deployed sha is not knowable to this job: /health returns only
+  # {"status":"healthy"}, /api/version is authenticated, and the image is built
+  # off-pipeline. So this reports the tip of ((thehub-branch)) at scan time,
+  # which is "what the branch looked like when staging was scanned" and NOT
+  # "what staging is running". Read it that way. The fix is an unauthenticated
+  # build-sha endpoint -- the image already carries HUB_BUILD_SHA as an env var
+  # for exactly this class of question -- and until that exists, saying so here
+  # beats a sha that silently means something different from the two jobs above.
+  #
+  # **This job reports only `success` to TheHub, like every other job here, and
+  # that is a known defect rather than a choice.**
+  # `test_every_job_reports_all_four_terminal_states_per_stage` already fails
+  # over fifteen stages for it; adding this one makes sixteen. The cause is
+  # structural -- `on_failure` is spent on *slack_alert, and Concourse allows one
+  # per job, so reporting a failure to both needs a `do:` wrapper across every
+  # job at once. Fixing it here alone would leave the test just as red while
+  # making this job inconsistent with its two siblings. Tracked in B-055.
+  - name: dast-staging
+    public: true
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: daily
+        trigger: true
+      - get: source
+      - get: python
+      - get: zap
+      - *preflight
+      # One task, for the same reason dast-demo uses one: Concourse creates
+      # output volumes root-owned and this image runs as the unprivileged `zap`
+      # user, so a separate upload task cannot read the report.
+      - task: zap-baseline
+        image: zap
+        timeout: 45m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          params:
+            <<: *mykronos_env
+            TARGET_URL: ((thehub-staging-url))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # Reachability first (L0001). Staging is deployed by hand, so
+                # "nobody has brought it up since the last reboot" is a normal
+                # state here in a way it is not for demo -- and an unreachable
+                # target produces an empty report that reads as a clean one.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                  exit 1
+                fi
+
+                # zap-baseline hardcodes /zap/wrk as its report directory and
+                # checks only that it exists; the image ships without it.
+                mkdir -p /zap/wrk
+
+                # -I: informational warnings do not fail the run -- the severity
+                # decision is Mykronos's. -m 5 bounds the spider.
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                # 0 = nothing, 1 = a FAIL, 2 = warnings. All are results.
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                test -s /zap/wrk/zap.json || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+
+                pip install --quiet --user --break-system-packages \
+                  --no-warn-script-location \
+                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
+                  echo "::error::Could not install the Mykronos uploader."
+                  exit 1
+                }
+
+                # The source volume is root-owned and this task runs as `zap`,
+                # so git refuses it as dubious ownership; the git resource in
+                # this same build put it there, so marking it safe is correct.
+                git config --global --add safe.directory "$PWD/source"
+                COMMIT_SHA=$(git -C source rev-parse HEAD)
+
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::Could not determine the commit under scan."
+                  exit 1
+                }
+
+                python3 -m mykronos.upload \
+                  --capability dast --tool zap \
+                  --results-path /zap/wrk \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$COMMIT_SHA" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false || {
+                  echo "::error::Uploading the DAST findings to Mykronos failed."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
+
+      - <<: *hub_report
+        params:
+          HUB_URL: ((thehub-url))
+          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+          SCANNED_BRANCH: ((thehub-branch))
+          STAGE: dast_headers
+          STATUS: success
+          TARGET_ENV: staging
 
   # -- Functional tests, then DAST seeded by their traffic -----------------
   #
