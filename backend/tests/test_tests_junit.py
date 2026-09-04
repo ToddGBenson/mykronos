@@ -126,3 +126,45 @@ class TestRegistration:
         assert default_tool("functional") == "junit"
         assert default_tool("qa") == "junit"
         assert get_adapter("unit", "junit").pattern == "*.xml"
+
+
+class TestAHostileReportCannotExhaustMemory:
+    """The archive is re-parsed server-side, so the parser is a trust boundary.
+
+    `mykronos reprocess` re-reads archived tool output (spec 05 §5a) with the
+    current adapter, on the backend host, long after the runner that uploaded
+    it is gone. A stdlib parser expands internal entities, so a few hundred
+    bytes of declarations become as many characters as the author asks for.
+    """
+
+    #: ~320 bytes. Under `xml.etree` the name attribute expands to 1,000,000
+    #: characters; two more levels reach a hundred million.
+    BOMB = (
+        b'<?xml version="1.0"?>\n'
+        b"<!DOCTYPE testsuite [\n"
+        b'<!ENTITY a "AAAAAAAAAA">\n'
+        b'<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">\n'
+        b'<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">\n'
+        b'<!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">\n'
+        b'<!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;">\n'
+        b'<!ENTITY f "&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;">\n'
+        b"]>\n"
+        b'<testsuite name="&f;" tests="1" failures="0" errors="0"/>'
+    )
+
+    def test_entity_expansion_is_refused(self) -> None:
+        result = normalize(self.BOMB, context())
+
+        assert result.scan_status is ScanStatus.PARTIAL_FAILURE
+        assert result.findings == []
+
+    def test_it_says_why_rather_than_raising(self) -> None:
+        """A hostile archive must not crash reprocess halfway through a repo."""
+        result = normalize(self.BOMB, context())
+
+        assert any("not parseable JUnit XML" in w for w in result.warnings)
+
+    def test_a_well_formed_report_still_parses(self) -> None:
+        result = normalize(report(tests=3), context())
+
+        assert result.scan_status is ScanStatus.SUCCESS

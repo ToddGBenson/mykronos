@@ -33,6 +33,9 @@ from __future__ import annotations
 
 from xml.etree import ElementTree
 
+from defusedxml import ElementTree as SafeElementTree
+from defusedxml.common import DefusedXmlException
+
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.schemas import ScanStatus
 
@@ -114,9 +117,17 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         result.warn("No test report was produced, so no suite is known to have run.")
         return result
 
+    # defusedxml, not ElementTree. "The build's own output" was true of the
+    # runner that produced this file and is not true of where it is parsed:
+    # the raw report is archived (spec 05 §7) and `mykronos reprocess`
+    # re-parses it server-side with the current adapter. The stdlib parser
+    # expands internal entities, so a report of a few hundred bytes can
+    # exhaust the backend's memory. DefusedXmlException is caught alongside
+    # ParseError so such a report is a partial failure that says so, rather
+    # than an unhandled crash mid-reprocess.
     try:
-        root = ElementTree.fromstring(text)  # noqa: S314 - the build's own output
-    except ElementTree.ParseError as exc:
+        root = SafeElementTree.fromstring(text)
+    except (ElementTree.ParseError, DefusedXmlException) as exc:
         result.scan_status = ScanStatus.PARTIAL_FAILURE
         result.warn(f"Test report is not parseable JUnit XML: {exc}")
         return result
