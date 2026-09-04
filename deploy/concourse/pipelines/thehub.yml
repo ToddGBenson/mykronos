@@ -1530,7 +1530,7 @@ jobs:
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 SHORT=$(git -C source rev-parse --short HEAD)
 
                 # Syft, pinned, scanning the checkout. `cyclonedx-py
@@ -2182,7 +2182,7 @@ jobs:
                 HOSTPORT=${MINIO_ENDPOINT#*://}
                 export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 echo "Requesting $ENVIRONMENT deploy of $SHA"
 
                 # Concourse publishes a pointer. It does not connect to the
@@ -2758,7 +2758,7 @@ jobs:
                 # one. Marking it safe is correct here: the repository was
                 # placed there by the git resource in this same build.
                 git config --global --add safe.directory "$PWD/source"
-                COMMIT_SHA=$(git -C source rev-parse HEAD)
+                COMMIT_SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
 
                 # A scan that cannot say what it scanned is not a result (L0001,
                 # the same rule the reachability check above enforces).
@@ -2918,7 +2918,7 @@ jobs:
                 # one. Marking it safe is correct here: the repository was
                 # placed there by the git resource in this same build.
                 git config --global --add safe.directory "$PWD/source"
-                COMMIT_SHA=$(git -C source rev-parse HEAD)
+                COMMIT_SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
 
                 # A scan that cannot say what it scanned is not a result (L0001,
                 # the same rule the reachability check above enforces).
@@ -3543,7 +3543,7 @@ jobs:
                 HOSTPORT=${MINIO_ENDPOINT#*://}
                 export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
-                SHA=$(git -C source rev-parse HEAD)
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 echo "Requesting $ENVIRONMENT deploy of $SHA"
 
                 # Concourse publishes a pointer. It does not connect to the

@@ -1,6 +1,16 @@
+#Requires -Version 7
+# ^ pwsh only. These scripts build their docker invocation with
+# ProcessStartInfo.ArgumentList, which .NET Framework 4.x (Windows
+# PowerShell 5.1) does not have - there it is $null and .Add() fails with
+# "You cannot call a method on a null-valued expression", naming neither
+# the shell nor the cause. ArgumentList keeps each argument separate, and
+# the single-string alternative would put a Vault token on the command
+# line, so this requires the newer shell rather than working around it.
+#
+# Run with:  pwsh -File .\<script>.ps1 ...
 <#
 .SYNOPSIS
-  Read, write and list secrets — for Concourse pipelines and for personal use.
+  Read, write and list secrets - for Concourse pipelines and for personal use.
 
 .DESCRIPTION
   Two mounts, deliberately different:
@@ -10,13 +20,13 @@
                    concourse/<team>/<pipeline>/<name>   pipeline-specific
                    concourse/<team>/<name>              shared across a team
                  A pipeline then refers to it as ((name)) and the VALUE NEVER
-                 ENTERS the pipeline config — which is the entire point, because
+                 ENTERS the pipeline config - which is the entire point, because
                  `fly get-pipeline` prints config back to anyone on the team.
 
     personal/    KV v2, for everything else on this host: API keys, licence
                  keys, recovery codes, the things that otherwise end up in a
                  note or a shell profile. v2 keeps version history, so
-                 overwriting a secret does not destroy the previous value —
+                 overwriting a secret does not destroy the previous value -
                  `-Undo` brings it back.
 
   Values are never echoed unless you ask for them with -Reveal, so this is safe
@@ -58,9 +68,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Vault needs a token and this script never supplied one, so every call came
+# back 403 - including `get` and `list`, not just writes. The root token lives
+# in vault/init.json, gitignored, the same file vault-unseal.ps1 reads.
+#
+# Held in an environment variable and never passed as an argument: `-e
+# VAULT_TOKEN` with no value forwards this process's variable into the
+# container, so the token never appears in any command line. The AppRole a
+# pipeline uses cannot write here - that 403 is the policy working - which is
+# why this is the root token and why the file it comes from is not committed.
+$initFile = Join-Path $PSScriptRoot 'vault\init.json'
+if (-not (Test-Path $initFile)) {
+  Write-Error "Missing $initFile - that is where the root token lives. Vault cannot be read or written without it."
+}
+$env:VAULT_TOKEN = (Get-Content $initFile -Raw | ConvertFrom-Json).root_token
+if (-not $env:VAULT_TOKEN) { Write-Error "No root_token in $initFile." }
+
 function Invoke-Vault {
   param([string[]] $VaultArgs)
-  $out = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -i $Container vault @VaultArgs 2>&1
+  $out = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN -i $Container vault @VaultArgs 2>&1
   if ($LASTEXITCODE -ne 0) {
     if ($out -match 'Vault is sealed') {
       Write-Error "Vault is sealed. Run .\vault-unseal.ps1 first."
@@ -111,7 +137,7 @@ switch ($Action) {
     # never appears on a command line where `ps` could see it.
     $secure = Read-Host -Prompt "Value for $path" -AsSecureString
     $plain = [System.Net.NetworkCredential]::new('', $secure).Password
-    if (-not $plain) { Write-Error "Empty value refused — use 'delete' to remove a secret." }
+    if (-not $plain) { Write-Error "Empty value refused - use 'delete' to remove a secret." }
 
     # Piped on stdin (`value=-`) rather than passed as an argument, for the same
     # reason: an argument is visible in the container's process list.
@@ -125,6 +151,7 @@ switch ($Action) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'docker'
     foreach ($a in @('exec', '-e', 'VAULT_ADDR=http://127.0.0.1:8200',
+                     '-e', 'VAULT_TOKEN',
                      '-i', $Container, 'vault', 'kv', 'put', $path, 'value=-')) {
       $psi.ArgumentList.Add($a)
     }
@@ -147,7 +174,7 @@ switch ($Action) {
     # Read the length back. A secret that stored two bytes longer than it
     # should is exactly the failure this rewrite fixes, so it is worth
     # confirming rather than assuming - and the length is safe to print.
-    $check = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 $Container `
+    $check = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN $Container `
       vault read -format=json $path 2>$null | Out-String
     if ($check) {
       $stored = ($check | ConvertFrom-Json).data
@@ -170,7 +197,7 @@ switch ($Action) {
     }
     $meta = Invoke-Vault @('kv', 'metadata', 'get', '-format=json', $path) | Out-String
     $current = ($meta | ConvertFrom-Json).data.current_version
-    if ($current -lt 2) { Write-Error "$path has only one version — nothing to roll back to." }
+    if ($current -lt 2) { Write-Error "$path has only one version - nothing to roll back to." }
     Invoke-Vault @('kv', 'rollback', "-version=$($current - 1)", $path) | Out-Null
     Write-Host "Rolled $path back to version $($current - 1)." -ForegroundColor Green
   }
@@ -179,7 +206,7 @@ switch ($Action) {
     Invoke-Vault @('kv', 'delete', $path) | Out-Null
     Write-Host "Deleted $path" -ForegroundColor Green
     if ($Scope -eq 'personal') {
-      Write-Host "Soft delete — 'undo' can still recover it. Use 'vault kv metadata delete' to destroy." -ForegroundColor DarkGray
+      Write-Host "Soft delete - 'undo' can still recover it. Use 'vault kv metadata delete' to destroy." -ForegroundColor DarkGray
     }
   }
 }
