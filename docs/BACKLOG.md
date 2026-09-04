@@ -312,7 +312,7 @@ repository must not hold.
 
 ---
 
-### B-045 — TheHub is scanned on a branch nobody merges to
+### B-045 — TheHub is scanned on a branch nobody merges to — **done**
 
 **Size:** S **State:** open **Verified:** 2026-09-03
 
@@ -353,6 +353,16 @@ re-deciding is the assumption, not the script.
 - If `develop`: the pipeline re-applied with `-Branch develop`, and a scan run
   recorded whose `commit_sha` is on `develop`.
 - The 330 frozen findings re-evaluated against a current commit.
+
+**Closed 2026-09-04.** The pipeline now watches `develop`. Getting there
+took more than re-pointing it: `unit` was red on `develop`, and every scan
+lane carries `passed: [unit]`, so the branch could not be scanned at all until
+the twelve promotion-gate tests went green (B-055, TheHub #278/#279). The
+branch question itself turned out to be forced rather than chosen — see B-056:
+a lane has no branch dimension, so scanning `develop` while gating `main` is
+not expressible, and the 2026-08-18 directive was the only option available.
+The accepted cost is that `deploy-demo` now auto-deploys `develop` to the demo
+environment; production is untouched, since `deploy-prod` carries no trigger.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
@@ -1042,6 +1052,58 @@ against this copy and pass.
 half-closed 2026-09-04. The first version of this entry said the gate had never
 been wired; it had, on TheHub's `main`, and the real defect was that the applied
 copy never received it.
+
+---
+
+### B-056 — A lane is a repository and a capability, with no room for a branch
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+Lane health groups by capability alone (`dashboard.py:2124`):
+
+    SELECT capability, max(coalesce(completed_at, started_at))
+    FROM scan_runs
+    WHERE repo_full_name = ?  GROUP BY capability
+
+`scan_runs` carries a `branch` column and nothing reads it here. So a
+repository cannot have two branches scanned under one capability: both write to
+the same lane, and since closure requires two consecutive successful scans that
+no longer observe a finding (spec 05 §5), alternating branches flip findings
+between open and fixed depending on which tree ran last. That is B-048's defect
+— two producers, one lane — arrived from a different direction.
+
+**It forces an either/or that is not a real one.** TheHub's pipeline both
+*scans* and *gates*: `deploy-demo` requires
+`passed: [secrets, sast, dependencies, containers, prompt-evals, iac]`, and
+Concourse's `passed:` constrains versions of the resource being fetched, so a
+job cannot be gated on `unit`-of-main while fetching `develop`. Scanning
+therefore follows whichever branch the deploy path follows.
+
+The right answer — **scan `develop` because that is where the code is, gate
+deploys on `main` because that is what ships** — needs a second scan lane, and a
+second scan lane on the same capability is the collision above. So the 2026-08-18
+directive was not a preference; it was the only expressible option.
+
+**What was chosen instead, on 2026-09-04:** point the whole pipeline at
+`develop`. One producer per lane, no collision, and scanning follows the code.
+The cost is the one the directive named — `deploy-demo` now auto-deploys
+`develop` to the demo environment and can race `deploy.sh`. Production is
+unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
+
+**Acceptance criteria**
+
+- Lane health, and the two-consecutive-scans closure rule, are evaluated per
+  `(repo, capability, branch)` rather than per `(repo, capability)`.
+- A repository can declare which branch a capability's lane is *expected* on, so
+  a scan of another branch is recorded without disturbing that lane's health.
+- With that in place, TheHub can scan `develop` and gate `main` at once, and the
+  either/or above stops being one.
+- B-048 is re-read against this: mykronos's duplicate IaC findings are the same
+  defect with two CIs instead of two branches.
+
+**Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
+implement "scan develop, deploy from main" and discovering the platform cannot
+express it.
 
 ---
 
