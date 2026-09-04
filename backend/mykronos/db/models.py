@@ -116,6 +116,21 @@ class RepoOnboarding(Base):
     #: default that installs Actions workflows into a repository whose
     #: Actions were deliberately removed is a default that undoes a decision.
     scanned_by: Mapped[str] = mapped_column(String(32), default="concourse")
+    #: A deliberately-vulnerable corpus, scanned by the real pipelines so the
+    #: detectors can be graded against known ground truth (spec 23 §1.2).
+    #:
+    #: **Excluded from every aggregate, and that is the whole reason the flag
+    #: exists.** Seeded vulnerabilities are real findings in the lake — they
+    #: have to be, or grading them would test a different code path from the
+    #: one that runs — so without this the corpus becomes, permanently, the
+    #: fleet's worst repository, and deliberately vulnerable code is counted
+    #: as estate risk. The portfolio summary, the trend series and the
+    #: maturity model all skip it.
+    #:
+    #: Its own findings, decisions and scans are untouched: the bench repo has
+    #: a page like any other, because a benchmark whose results nobody can
+    #: open is a benchmark nobody trusts.
+    synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
 
     #: Capabilities whose workflow-install PR has actually merged. This is the
     #: live set; `pending_capabilities` is what has been requested but not yet
@@ -126,7 +141,6 @@ class RepoOnboarding(Base):
     pending_pr_number: Mapped[int | None] = mapped_column(Integer, default=None)
 
     default_branch: Mapped[str] = mapped_column(String(255), default="main")
-    auto_merge_workflow_prs: Mapped[bool] = mapped_column(Boolean, default=False)
 
     onboarded_by: Mapped[str] = mapped_column(String(255), default="")
     onboarded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -351,6 +365,15 @@ class ThreatIntelMatch(Base):
     kev_due_date: Mapped[date | None] = mapped_column(Date, default=None)
     epss_score: Mapped[float | None] = mapped_column(Float, default=None)
     epss_percentile: Mapped[float | None] = mapped_column(Float, default=None)
+    #: The published CVSS v3.x base vector, from NVD. Null until looked up, and
+    #: null forever for a CVE NVD has not scored — which is a real state and
+    #: not a zero. Stored as the vector rather than the score because the score
+    #: cannot be re-read for an environment and the vector can: that is the
+    #: entire difference between "7.5 everywhere" and "7.5 there, 5.9 here".
+    cvss_vector: Mapped[str | None] = mapped_column(String(128), default=None)
+    #: When the vector lookup last ran for this CVE, successful or not. Without
+    #: it a CVE NVD has no record of would be retried on every sweep forever.
+    vector_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -400,4 +423,381 @@ class AuditLogEntry(Base):
             f"<AuditLogEntry {self.created_at.isoformat()} {self.actor} "
             f"{self.action} {self.entity_type}:{self.entity_id} "
             f"{json.dumps(self.detail, default=str)}>"
+        )
+
+
+class TriageState(Base):
+    """Who is working on a finding, and what they have put off (spec 27 §3).
+
+    **Operational, not lake, and the distinction is the design.** Every other
+    observation in this platform is append-only in the lake because its history
+    is evidence. A claim is not evidence about a finding — it is a fact about
+    who is working on it this week, it changes many times a day, and the lake's
+    compaction and partitioning model is built for scan results (spec 05 §2).
+    The same reasoning `RiskProfile` and `ReachabilityReport` already follow.
+
+    **A snooze is not a disposition, and must never become one.** It hides a
+    row from the default queue until its date; it does not touch
+    `Finding.status`. A snoozed finding is still open, still scores in Oracle,
+    still goes overdue if it goes overdue (spec 24 §2). `accepted_risk` is a
+    decision about the vulnerability; this is a decision about the week, and
+    collapsing the two would let "not now" quietly become "not ever" — which
+    is precisely the state spec 24 §3 exists to stop acceptances drifting into.
+
+    One row per finding, created on first claim or snooze. Absence means
+    nobody has touched it, which is the common case and costs nothing to
+    store.
+    """
+
+    __tablename__ = "triage_state"
+
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Denormalised from the finding so the queue can scope without a lake
+    #: read, and so a repository being offboarded can purge its rows.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+
+    #: A handle, matching `Finding.owner`'s vocabulary. Null once released or
+    #: expired — the row stays, because a snooze may still be live on it.
+    claimed_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: When an unreleased claim lapses. Visible in the UI as it approaches
+    #: rather than released silently: an abandoned claim that vanishes without
+    #: a trace is indistinguishable from work nobody ever started.
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    #: A date, not a timestamp. "Come back to this on Tuesday" is the actual
+    #: intent, and an hour-precise snooze invites arguments about timezones
+    #: that nobody wants to have about a queue.
+    snoozed_until: Mapped[date | None] = mapped_column(Date, default=None)
+    #: Required when snoozing. A row that reappears with no reason recorded is
+    #: one whose deferral nobody can review, which is the failure mode spec 11
+    #: §4 keeps naming.
+    snooze_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<TriageState {self.finding_id[:12]} claimed_by={self.claimed_by} "
+            f"snoozed_until={self.snoozed_until}>"
+        )
+
+
+class RepoSurface(Base):
+    """An asset, an entry point, or a trust boundary this repository has
+    (B-029).
+
+    **The three quarters of a threat model the platform did not hold.**
+    `RepoControl`'s own docstring says a threat model is made of assets, entry
+    points, trust boundaries and mitigations, and that the tab had one of the
+    four. It has had mitigations since spec 28 §3. This is the other three.
+
+    Why it matters is the same argument that produced controls, one step
+    earlier: a tab built only from findings can say what was found and never
+    what is *at stake*. "Twelve mediums in the payments service" and "twelve
+    mediums in the internal changelog renderer" are the same row today, and
+    they are not the same risk.
+
+    **Declared, never verified, and the wording never blurs the two.** The same
+    rule `RepoControl` follows. A row here is a person asserting something,
+    which is weaker and clearer than a machine implying it, and it is useful
+    the day somebody types it. Nothing in this platform can currently confirm
+    that a database holds customer records; pretending otherwise would make
+    the tab confidently wrong about the thing it exists to be right about.
+
+    Operational rather than lake, for the reason `RepoControl` gives: this is
+    an editable statement about the present, corrected in place when it turns
+    out to be wrong, not an append-only observation whose history is evidence.
+    """
+
+    __tablename__ = "repo_surfaces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: Denormalised for the same two reasons as `RepoControl.repo_full_name`.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    #: asset | entry_point | trust_boundary. One row is one of them: a thing
+    #: that is both an asset and an entry point is two facts about the same
+    #: subsystem, and declaring it twice is honest and separately reviewable —
+    #: the same argument `RepoControl.stride` makes for not taking a list.
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    #: How exposed this is: internet | internal | local | unknown. `unknown` is
+    #: the default and is a real answer — a platform that guessed "internal"
+    #: would be understating risk by default, which is the wrong direction to
+    #: be wrong in.
+    exposure: Mapped[str] = mapped_column(String(32), default="unknown")
+    #: What is at stake: pii | financial | credentials | source | public |
+    #: unknown. Only meaningful for an asset, and empty elsewhere rather than
+    #: defaulted to something that reads as a claim.
+    sensitivity: Mapped[str] = mapped_column(String(32), default="unknown")
+    #: A route, a file, an ADR, a diagram. Optional for the reason
+    #: `RepoControl.evidence_ref` is: requiring it means the register only ever
+    #: holds what somebody had time to document.
+    evidence_ref: Mapped[str] = mapped_column(String(512), default="")
+    declared_by: Mapped[str] = mapped_column(String(255), default="")
+    declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
+class RepoControl(Base):
+    """A mitigation somebody declared for this repository (spec 28 §3).
+
+    **A threat model is made of four things and this platform had one.**
+    Assets, entry points, trust boundaries, mitigations. The Threat Model tab
+    had findings, grouped six ways: it could say what was found and not what
+    stops it. As scanning improves that tab can only ever grow more red, and a
+    team that spends a quarter adding controls sees no change at all. This is
+    the row that changes it.
+
+    **Operational, not lake, and for the reason `TriageState` gives.** Every
+    observation in the lake is append-only because its history is evidence —
+    you have to be able to say what a finding looked like in March. A declared
+    control is not an observation: it is an editable statement about the
+    present, corrected in place when it turns out to be wrong, and the lake's
+    compaction and partitioning model is built for scan results (spec 05 §2).
+    Spec 28 §3.2 named a lake table; that was written before the distinction
+    `RiskProfile`, `ReachabilityReport` and `TriageState` all already follow,
+    and D-089 records the deviation rather than leaving the spec and the code
+    disagreeing.
+
+    **A declared control says "a person asserted this", which is a weaker and
+    clearer claim than a machine implying it.** Admin-authored first,
+    discovered later: spec 23 §2's entry-point inventory is what eventually
+    populates this from the codebase, and a register that waits for it stays
+    unbuilt for a year. `verified_by_capability` is where it stops being a
+    wiki — a control claiming `authentication` on a route DAST reports as
+    unauthenticated is a contradiction the platform can detect, and the tab
+    renders it as one rather than resolving it.
+    """
+
+    __tablename__ = "repo_controls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: Denormalised rather than a foreign key to `repo_onboardings`, so the
+    #: threat-model query can scope without a join and an offboarded
+    #: repository's rows can be purged by name — the same call `TriageState`
+    #: makes, for the same two reasons.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    #: Which STRIDE category this mitigates. One, not a list: a control that
+    #: claims to mitigate four categories is a description of a subsystem
+    #: rather than a control, and declaring it four times is both honest and
+    #: individually verifiable.
+    stride: Mapped[str] = mapped_column(String(32), index=True)
+    #: authentication | authorization | input_validation | output_encoding |
+    #: secrets_management | logging | rate_limiting | encryption
+    kind: Mapped[str] = mapped_column(String(32))
+    description: Mapped[str] = mapped_column(Text, default="")
+    #: A file path, a route, a policy document, a test id. Optional on
+    #: purpose: refusing a control without one would mean the register only
+    #: ever holds the controls somebody had time to document, and the tab
+    #: renders an evidence-free control as the weaker claim it is.
+    evidence_ref: Mapped[str] = mapped_column(String(512), default="")
+    #: The capability that could contradict this control if it found something
+    #: — `dast` for an authentication claim, `secrets` for a secrets-management
+    #: one. Empty means nothing in the platform can check it, which the tab
+    #: says rather than implying the control is verified.
+    verified_by_capability: Mapped[str] = mapped_column(String(32), default="")
+    #: When a person last confirmed this is still true. A mitigation nobody has
+    #: checked since last year is a belief, and the tab should say which of the
+    #: two it is showing.
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    declared_by: Mapped[str] = mapped_column(String(255), default="")
+    declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<RepoControl {self.repo_full_name} {self.stride}/{self.kind}>"
+
+
+class NetassessRun(Base):
+    """The last network-assessment run this platform accepted (spec 32 §4.4).
+
+    **One row, superseded outright by the next run**, like `RepoGovernance` and
+    for the same reason: what matters is the current inventory and when it
+    arrived, not a time series. The zip archive in MinIO is the history, and it
+    is written by the publisher rather than by this platform.
+
+    **`inventory_csv` is kept because the next run needs something to diff
+    against.** The Concourse task fetched the previous archive from MinIO to
+    get it, which is the one thing that made the job need an object store at
+    all; keeping the inventory here is what lets the judgement run without one.
+    It is a few dozen rows of MAC, address and label for hosts on a home LAN.
+
+    Operational rather than lake: a host inventory is configuration this
+    platform reads, not a finding it produced. Nothing here reaches a risk
+    score, exactly as spec 14 §5 requires — a network finding carries an asset,
+    and this is not a finding.
+    """
+
+    __tablename__ = "netassess_runs"
+
+    #: `personal-soc`, or whichever repository owns the scan. Scoped by
+    #: repository rather than global because nothing else in this schema is
+    #: global, and a second network under a second repository should not need
+    #: a migration.
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: `netassess-2026.8.9.zip` — the publisher's key, kept verbatim so a
+    #: person can find the archive this row was derived from.
+    run_key: Mapped[str] = mapped_column(String(255), default="")
+    #: The scan's own date, parsed from the key. Distinct from `received_at`:
+    #: a run published late is stale by the first and fresh by the second, and
+    #: the freshness check is about the scan rather than the upload.
+    run_date: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    inventory_csv: Mapped[str] = mapped_column(Text, default="")
+    #: Whether the run was believable. A run that failed verification is still
+    #: recorded — "the last scan was bad" is the fact the freshness check needs,
+    #: and discarding it would make a degraded scanner look like a silent one.
+    believable: Mapped[bool] = mapped_column(Boolean, default=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<NetassessRun {self.repo_full_name} {self.run_key}>"
+
+
+class RepoGovernance(Base):
+    """The last read of this repository's change controls (spec 30 §1.2).
+
+    **Operational, not lake, and current state rather than history.** This is
+    configuration: branch protection either requires two reviews right now or
+    it does not, and a time series of a setting is not evidence of anything the
+    way a scan result is. The same call `ReachabilityReport` makes, one row per
+    repository, superseded outright by the next read.
+
+    **Stored at all only because Oracle cannot make an HTTP call.** The panel
+    reads GitHub live — a setting somebody changed in the UI ten seconds ago
+    must not still be reported as it was — and this row is the copy the risk
+    engine reads when it scores. `read_at` is therefore load-bearing rather
+    than decorative: a score resting on a six-week-old reading of a setting is
+    exactly the failure this platform keeps refusing to ship, so the term goes
+    `available: False` once the reading is stale.
+
+    Not a `RiskProfile` column, though spec 30 §4 puts governance "into the
+    profile". A profile is admin-authored — every field of it is somebody's
+    stated belief about what the application is — and a machine-read setting
+    sitting in the same row would be indistinguishable from one, which is
+    exactly the distinction spec 21 §1 built that table around.
+    """
+
+    __tablename__ = "repo_governance"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: 0-100, or null where too little could be read to say. Null is not zero:
+    #: a repository whose settings the App may not read has no posture, not a
+    #: bad one.
+    governance_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    #: `branch_protection` | `ruleset` | `both` | `none`.
+    source: Mapped[str] = mapped_column(String(32), default="none")
+    #: How many of the nine controls the read actually resolved. A score of 80
+    #: over two controls is not the same claim as 80 over nine.
+    controls_read: Mapped[int] = mapped_column(Integer, default=0)
+    #: The per-control states as last read, keyed by control key. Still current
+    #: state and still not a time series — it is the same reading the columns
+    #: above summarise, kept in full so the *next* read can tell what changed.
+    #: A score dropping from 80 to 60 says something moved; this says which
+    #: control, which is the difference between a number and an action.
+    control_states: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    read_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<RepoGovernance {self.repo_full_name} score={self.governance_score}>"
+
+
+class JobRun(Base):
+    """Whether the platform's own scheduled work is still running.
+
+    **The platform tells four repositories what is wrong with them and had no
+    record of whether it was itself working.** `_every` catches every failure,
+    logs it, and retries on the next tick — which is the right behaviour and
+    means a job that has thrown on every run for a fortnight looks exactly like
+    one that has never had a problem. The evidence was one line in a log file
+    nobody tails.
+
+    That matters most for the jobs whose silence is invisible. If
+    `reconcile-absences` stops, findings never close and every count on every
+    page slowly becomes wrong in the safe-looking direction. If `acceptances`
+    stops, an acceptance past its review date stays accepted. Neither raises
+    anything anywhere.
+
+    One row per job, current state rather than history — the same rule
+    `RepoGovernance` follows, and for the same reason. What matters is whether
+    it is running now and when it last actually worked, not a log of every
+    tick.
+
+    `last_succeeded_at` is separate from `last_run_at` on purpose: a job that
+    runs every six hours and fails every time has a recent `last_run_at`, and
+    reading only that would report a dead job as healthy.
+    """
+
+    __tablename__ = "job_runs"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: The last time it finished without raising. A job whose failures are
+    #: caught and retried has a fresh `last_run_at` for ever.
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Since the last success. One failure is a bad day; twenty is a job that
+    #: is not going to fix itself.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    #: Scrubbed, and only the most recent. The full history is in the log; this
+    #: is here so a surface can say what went wrong without asking anyone to
+    #: open one.
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    #: How often it is meant to run, so a reader can tell a job that is late
+    #: from one that simply has a long interval.
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=0)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<JobRun {self.name} failures={self.consecutive_failures}>"
+
+
+class ControlDrift(Base):
+    """One control changing state, recorded when it happens (spec 30).
+
+    **A transition is not a time series, which is why this exists alongside
+    `RepoGovernance` rather than replacing its single row.** That row is
+    right: storing every reading of a setting would be noise, and the current
+    state is what scores. But a control that was enforced on Monday and is not
+    on Thursday is an *event* — somebody did that — and the platform read both
+    states and told nobody.
+
+    That is the gap this closes. Governance is read live on every panel render,
+    so the console has always shown the truth; nothing compared today's truth
+    to yesterday's. A repository could quietly drop its review requirement and
+    the only trace would be a score nobody was watching.
+
+    **Recorded on the sweep, not on the render.** Detection that depends on
+    somebody opening a page is not monitoring. The scheduled sweep reads every
+    onboarded repository whether or not anyone is looking, which is the whole
+    difference between a dashboard and a control.
+    """
+
+    __tablename__ = "control_drift"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # Every required column here carries a default it will never actually
+    # write: the constructor always supplies one. They are declared because
+    # `add_missing_columns` has to be able to add any of them to a table that
+    # already has rows, and a column with no default has no value for those —
+    # which a drift guard in the schema tests checks rather than trusts.
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    control_key: Mapped[str] = mapped_column(String(64), default="")
+    #: `on` | `off` | `partial` | `unknown`, the same four states the control
+    #: itself has. A transition *to* `unknown` is a read that failed, not a
+    #: control that was removed, and the two must never be conflated: one is a
+    #: permissions problem and the other is a security regression.
+    from_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    to_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<ControlDrift {self.repo_full_name} {self.control_key} "
+            f"{self.from_state}->{self.to_state}>"
         )

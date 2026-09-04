@@ -16,6 +16,7 @@ import {
   type CiPage,
   type Finding,
   type FindingsPage,
+  type GovernancePosture,
   type InsiderRiskPage,
   type MaturityReport,
   type OpenFindingsPage,
@@ -35,6 +36,12 @@ import {
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
+  type Briefing,
+  type RepoGuidance,
+  type RepoSurfaces,
+  type SupplyChainPackages,
+  type VulnerabilityManagement,
+  type WorkflowsPage,
 } from "./api";
 import type { paths } from "./api-types";
 
@@ -183,6 +190,66 @@ export async function getOpenFindings(
  * between a detail pane that always works and one that works for the first
  * hundred findings.
  */
+export type FindingRecord =
+  paths["/api/dashboard/findings/{finding_id}/record"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** Everything the platform knows about one finding, in one call (B-032). */
+export async function getFindingRecord(
+  findingId: string,
+): Promise<Result<FindingRecord>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/findings/{finding_id}/record",
+      { params: { path: { finding_id: findingId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the record") };
+    return { ok: true, data: data as FindingRecord };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type EstateLibraries =
+  paths["/api/dashboard/libraries"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** Every library the estate carries, and where — the consolidation view. */
+export async function getLibraries(
+  ecosystem?: string,
+): Promise<Result<EstateLibraries>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/libraries", {
+      cache: "no-store",
+      ...(ecosystem ? { params: { query: { ecosystem } } } : {}),
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load libraries") };
+    return { ok: true, data: data as EstateLibraries };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type RiskProfileProposal =
+  paths["/api/dashboard/repos/{repo_id}/risk-profile/proposal"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/** What the platform can evidence about a repository, and what it refuses to
+ *  guess (B-041). Rendered where the empty profile form would otherwise be. */
+export async function getRiskProfileProposal(
+  repoId: string,
+): Promise<Result<RiskProfileProposal>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/risk-profile/proposal",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the proposal") };
+    }
+    return { ok: true, data: data as RiskProfileProposal };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getFinding(findingId: string): Promise<Result<Finding>> {
   try {
     const { data, response } = await backendClient().GET(
@@ -202,6 +269,9 @@ export async function getTriage(query: {
   rule_id?: string;
   kev_only?: boolean;
   min_epss?: number;
+  owner?: string;
+  order?: string;
+  triage?: string;
 }): Promise<Result<TriageQueue>> {
   try {
     const { data, response } = await backendClient().GET("/api/dashboard/triage", {
@@ -212,6 +282,9 @@ export async function getTriage(query: {
           rule_id: query.rule_id as never,
           kev_only: query.kev_only as never,
           min_epss: query.min_epss as never,
+          owner: query.owner as never,
+          order: query.order as never,
+          triage: query.triage as never,
           limit: 100,
         },
       },
@@ -358,6 +431,60 @@ export async function getInsiderRisk(
   }
 }
 
+/**
+ * Which packages are vulnerable and which of them have somewhere to go
+ * (B-027). Separate from `getSscs` on purpose: the trust score is a summary
+ * that renders instantly, and this joins two lake tables per repository.
+ */
+export async function getVulnerablePackages(
+  repoId: string,
+): Promise<Result<SupplyChainPackages>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/sscs/packages",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load vulnerable packages") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** What this repository is, so the threat model can say what is at stake. */
+/** The scanners' own remediation for one repository (B-030). */
+export async function getRepoGuidance(repoId: string): Promise<Result<RepoGuidance>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/guidance",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load remediation guidance") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/surfaces",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the surface register") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
   try {
     const { data, response } = await backendClient().GET(
@@ -366,6 +493,21 @@ export async function getSscs(repoId: string): Promise<Result<SscsPage>> {
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load supply-chain evidence") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getWorkflows(repoId: string): Promise<Result<WorkflowsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/repos/{repo_id}/workflows",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load workflow state") };
     }
     return { ok: true, data };
   } catch (error) {
@@ -470,6 +612,51 @@ export async function getMaturity(): Promise<Result<MaturityReport>> {
     });
     if (!data) return { ok: false, error: describe(response, "Could not load maturity") };
     return { ok: true, data: data as MaturityReport };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getVulnerabilityManagement(): Promise<
+  Result<VulnerabilityManagement>
+> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/vulnerability-management",
+      { cache: "no-store" },
+    );
+    if (!data) {
+      return {
+        ok: false,
+        error: describe(response, "Could not load vulnerability management"),
+      };
+    }
+    return { ok: true, data: data as VulnerabilityManagement };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The post-deployment briefing (D-098).
+ *
+ * Its first section is why it exists: a finding closes only after two
+ * consecutive *successful* scans see it gone, so a lane that is failing — or
+ * that quietly stopped running — freezes its findings open however thoroughly
+ * the defect was fixed. On 2026-09-01 that was 431 of 475 open findings, and
+ * every other surface reported them as work somebody was neglecting.
+ */
+/** `repoId` narrows every section to one repository; omit it for the estate. */
+export async function getBriefing(repoId?: string): Promise<Result<Briefing>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/briefing", {
+      cache: "no-store",
+      ...(repoId ? { params: { query: { repo_id: repoId } } } : {}),
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the briefing") };
+    }
+    return { ok: true, data: data as Briefing };
   } catch (error) {
     return failure(error);
   }
@@ -580,6 +767,173 @@ export async function getRemediationDigest(): Promise<Result<RemediationDigest>>
     });
     if (!data) {
       return { ok: false, error: describe(response, "Could not load the digest") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type FixEfficacy =
+  paths["/api/patchwork/efficacy"]["get"]["responses"]["200"]["content"]["application/json"];
+
+export async function getFixEfficacy(): Promise<Result<FixEfficacy>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/patchwork/efficacy", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load fix efficacy") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The controls that would catch a bad change (spec 30).
+ *
+ * Read live on every render rather than from a snapshot: branch protection is
+ * configuration somebody can change in the GitHub UI in ten seconds, and a
+ * panel still reporting two required reviews after they were turned off would
+ * be worse than no panel.
+ */
+export async function getGovernance(
+  repoId: string,
+): Promise<Result<GovernancePosture>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/governance",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read the controls") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type TestEstateView =
+  paths["/api/dashboard/repos/{repo_id}/tests"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * What testing exists for this repository, and what kinds of it do not.
+ *
+ * Distinct from `getScanHealth`, which answers whether the lanes are running.
+ * This answers whether the lanes that exist are the testing this repository
+ * ought to have, which is the question nothing on the platform asked before.
+ */
+export async function getTestEstate(repoId: string): Promise<Result<TestEstateView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/tests",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read the test estate") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type ConsultView =
+  paths["/api/dashboard/repos/{repo_id}/consult"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * What this platform knows about a repository, and what it does not.
+ *
+ * Uncached: this is the surface somebody opens *instead of* reading the tabs,
+ * so an answer here that disagrees with the tab it links to would be worse
+ * than no answer at all.
+ */
+export async function getConsult(repoId: string): Promise<Result<ConsultView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/consult",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not consult") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type PlatformHealthView =
+  paths["/api/dashboard/platform-health"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Is the platform itself working?
+ *
+ * Uncached, and more obviously so than anything else here: this is the page
+ * somebody opens when they suspect the platform is lying to them, and a cached
+ * answer to "is Vault sealed" is worth precisely nothing.
+ */
+export async function getPlatformHealth(): Promise<Result<PlatformHealthView>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/platform-health", {
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not read platform health") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type SsdfView =
+  paths["/api/dashboard/repos/{repo_id}/ssdf"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Which SSDF practices this repository can evidence (SP 800-218).
+ *
+ * Uncached for the same reason as the governance read it partly depends on:
+ * this is the view somebody screenshots for an auditor, and a practice
+ * reported as met on the strength of a branch rule that was removed last week
+ * is the one wrong answer that matters here.
+ */
+export async function getSsdf(repoId: string): Promise<Result<SsdfView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/ssdf",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not assess adherence") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export type IncidentView =
+  paths["/api/dashboard/incident"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Are we affected by this? (spec 29 §2)
+ *
+ * Read under time pressure by somebody who has just been paged, so nothing
+ * here is fetched lazily and nothing is cached: an answer from ten minutes ago
+ * is exactly the kind of thing that gets somebody to stand down early.
+ */
+export async function getIncident(query: string): Promise<Result<IncidentView>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/incident", {
+      params: { query: { q: query } },
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not run the lookup") };
     }
     return { ok: true, data };
   } catch (error) {

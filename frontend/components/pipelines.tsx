@@ -1,18 +1,19 @@
 /**
  * Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a).
  *
- * A link, not a mirror. Concourse's own UI is the authority on its state, and
- * restating a build outcome here would create a second version of it to
- * disagree with. What this adds is knowing *which* pipeline, from a page
- * already about this repository — which until now meant knowing by heart.
+ * A link, not a mirror. The CI's own UI — Concourse's, or GitHub's Actions
+ * tab — is the authority on its state, and restating a build outcome here
+ * would create a second version of it to disagree with. What this adds is
+ * knowing *which* pipeline, from a page already about this repository — which
+ * until now meant knowing by heart.
  *
  * Both rows are indicator lights with the state written next to them. The
  * distinction they exist to keep visible: a stage nobody enabled and a stage
  * that is enabled and not answering render as the same absence everywhere
  * else, and only one of them is a problem.
  *
- * The panel also distinguishes "no pipeline covers this repo" from "Concourse
- * did not answer". Those look identical if you only render an absence, and a
+ * The panel also distinguishes "nothing covers this repo" from "the CI did
+ * not answer". Those look identical if you only render an absence, and a
  * coverage gap and an outage need entirely different responses.
  */
 
@@ -22,12 +23,14 @@ import {
   Label,
   Pill,
   RelativeTime,
-  Section,
   type IndicatorTone,
 } from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
 
-/** Concourse's vocabulary, mapped to the palette the rest of the app uses. */
+/** The platform's shared build-status vocabulary, mapped to the palette the
+ *  rest of the app uses. Concourse reports these words natively; GitHub's
+ *  run conclusions are translated into them in `ci.py` (spec 32 §7), so this
+ *  mapping serves both and neither CI leaks its own spelling into the UI. */
 function jobTone(status: string | null | undefined): IndicatorTone {
   if (status === "succeeded") return "ok";
   if (status === "failed" || status === "errored") return "bad";
@@ -43,7 +46,7 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border border-rule bg-paper-2 px-3 py-2">
       <Label>Built and scanned by</Label>
       <a
-        className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+        className="font-mono text-[13px] text-accent underline-offset-2 hover:underline"
         href={ci.github_url}
         target="_blank"
         rel="noreferrer"
@@ -51,16 +54,21 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
         github.com/{ci.repo_full_name}
       </a>
       <a
-        className="font-mono text-[11px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
+        className="font-mono text-[13px] text-ink-3 underline-offset-2 hover:text-accent hover:underline"
         href={ci.github_actions_url}
         target="_blank"
         rel="noreferrer"
       >
         Actions
       </a>
-      {ci.pipeline_url ? (
+      {/* Only Concourse gets a third link. An Actions-scanned repository
+          reports `pipeline: "github-actions"` and a `pipeline_url` pointing
+          at the same Actions tab already linked above (spec 32 §7) — showing
+          it again, labelled "Concourse", would be a duplicate link and a
+          false one. */}
+      {ci.pipeline_url && ci.pipeline !== "github-actions" ? (
         <a
-          className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+          className="font-mono text-[13px] text-accent underline-offset-2 hover:underline"
           href={ci.pipeline_url}
           target="_blank"
           rel="noreferrer"
@@ -130,11 +138,11 @@ export function JobLights({ ci }: { ci: CiPage }) {
 
   if (ci.unavailable) {
     return (
-      <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-3">{ci.unavailable}</p>
+      <p className="px-3 py-2 text-[14px] leading-relaxed text-ink-3">{ci.unavailable}</p>
     );
   }
   if (jobs.length === 0) {
-    return <p className="px-3 py-2 text-[11px] text-ink-3">This pipeline has no jobs.</p>;
+    return <p className="px-3 py-2 text-[13px] text-ink-3">This pipeline has no jobs.</p>;
   }
 
   return (
@@ -167,13 +175,13 @@ function JobTile({ job }: { job: CiJob }) {
 
   const body = (
     <div className={`flex flex-col gap-1 border-l-2 bg-paper-2 p-2.5 ${border}`}>
-      <span className="font-mono text-[10px] text-ink-2">{job.name}</span>
+      <span className="font-mono text-[12px] text-ink-2">{job.name}</span>
       <span
         className={`font-mono text-xs font-bold uppercase tracking-[0.06em] ${INDICATOR[tone].word}`}
       >
         {job.status ?? "not run"}
       </span>
-      <span className="font-mono text-[9px] leading-relaxed text-ink-3">
+      <span className="font-mono text-[11px] leading-relaxed text-ink-3">
         {job.build_name ? `#${job.build_name}` : "no build yet"}
         {job.finished_at ? (
           <>
@@ -218,7 +226,7 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
       <Label>Ran, but nothing arrived</Label>
       <ul className="mt-1 flex flex-col gap-0.5">
         {problems.map((row) => (
-          <li key={row.job} className="font-mono text-[10px] text-ink-2">
+          <li key={row.job} className="font-mono text-[12px] text-ink-2">
             <span className="font-bold">{row.job}</span> succeeded
             {row.built_at ? (
               <>
@@ -255,27 +263,14 @@ export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
  * (spec 17 §2.3) — rendering `PipelineLinks` a second time inside the tab
  * would say the same two links twice on one page load.
  */
-export function PipelineCoverage({ ci }: { ci: CiPage }) {
-  return (
-    <Section title="Enabled jobs" detail={ci.pipeline ?? "no Concourse pipeline"}>
-      <JobLights ci={ci} />
-      <ReportingGaps reporting={ci.reporting ?? []} />
-    </Section>
-  );
-}
 
-/**
- * The links and both light rows, as the dashboard lays them out.
- *
- * One definition rather than one per page: two copies of "which sections, in
- * which order, under which headings" is two things to keep in step, and the
- * one that drifts is always the one nobody is looking at.
- */
-export function PipelinesPanel({ ci }: { ci: CiPage }) {
-  return (
-    <>
-      <PipelineLinks ci={ci} />
-      <PipelineCoverage ci={ci} />
-    </>
-  );
-}
+// `PipelineCoverage` and `PipelinesPanel` lived here until the Dashboard tab
+// merged Scan health and Enabled jobs into one Checks section. Both were
+// wrappers whose only job was to say which sections go in which order under
+// which headings, and the merge is now the answer to that. `JobLights` and
+// `ReportingGaps` are composed directly by the section; `PipelineLinks` is
+// still used at the top of every repository tab.
+//
+// `PipelinesPanel` had no callers even before this — worth noting rather than
+// deleting quietly, because it was the second definition of a layout that had
+// drifted from the one actually rendering.

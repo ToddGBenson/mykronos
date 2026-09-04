@@ -147,6 +147,11 @@ class ScanRunSubmission(BaseModel):
     #: already archived via `raw_output_ref` for anyone who needs it. Null
     #: for the common case of nothing specific to add beyond `scan_status`.
     detail: str | None = Field(default=None, max_length=200)
+    #: Coverage the runner reported, 0..1 (spec 31 §4). Null means the report
+    #: did not carry it — a different fact from 0.0, which means the runner
+    #: measured and found none, and the tab distinguishes them.
+    line_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    branch_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -205,6 +210,19 @@ class FindingSubmission(BaseModel):
     address: str | None = Field(default=None, max_length=100)
     port: int | None = Field(default=None, ge=0, le=65535)
 
+    cwe_ids: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "CWE identifiers the *tool* declared, normalised to `CWE-89` form "
+            "(spec 28 §1). A list, not a field: a rule legitimately maps to "
+            "several, and picking one would be the adapter inventing "
+            "precision. Empty means the tool said nothing — which is absent, "
+            "not 'no CWE applies', and the STRIDE mapping depends on that "
+            "distinction."
+        ),
+    )
+
     raw_finding_json: dict[str, Any] = Field(
         default_factory=dict,
         description="Original tool record, preserved verbatim (spec 05 §3).",
@@ -255,7 +273,7 @@ class SubSignal(BaseModel):
 
 
 class InsiderRiskSubmission(BaseModel):
-    """What the Aegis workflow posts (spec 06 §3, §4).
+    """What the insider-risk workflow posts (spec 06 §3, §4).
 
     No `repo_full_name` and no `signal_id`: the repo comes from the token and
     the id is derived server-side from repo + PR + commit, so a re-run on an
@@ -377,8 +395,68 @@ class ReachabilitySubmission(BaseModel):
     )
 
 
+class ProvenanceSignals(BaseModel):
+    """How this repository builds, as the runner observed it (spec 29 §3).
+
+    Every existing trust-score term is a fact about *dependencies*. Nothing
+    scored the integrity of the repository's own outputs — whether its commits
+    are signed, whether its artefacts carry a provenance attestation, whether
+    what it deploys is pinned by digest rather than by a tag somebody can move
+    underneath it.
+
+    **Every field is nullable and null means "not determined", never "no".** A
+    repository whose default branch this platform cannot read has not failed
+    the signed-commits check; it has not been checked. Scoring the two the
+    same way is how a permissions problem becomes a supply-chain verdict.
+
+    Observations, not a score — the same division spec 07 §7 makes an
+    acceptance criterion. The runner reports what it saw; the weighting lives
+    in the platform, so it can change without a resync across every onboarded
+    repository.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    signed_commits_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Verified signatures as a fraction of commits on the default "
+            "branch in the last 90 days. Null where the branch could not be "
+            "read."
+        ),
+    )
+    signed_commits_sampled: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many commits the ratio is over. A ratio of 1.0 across two "
+            "commits is not the same claim as 1.0 across two hundred, and the "
+            "term reports the sample so the number can be judged."
+        ),
+    )
+    attestation_present: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a build provenance attestation exists for the published "
+            "artefact. Presence only: verifying contents is a larger piece of "
+            "work, and the field is named for exactly that reason so a "
+            "repository never reads as `attested` on an attestation that does "
+            "not verify (spec 29 §5)."
+        ),
+    )
+    digest_pinned_deployment: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the deployed image is pinned by digest rather than by a "
+            "tag somebody can move underneath it."
+        ),
+    )
+
+
 class SscsEvidenceSubmission(BaseModel):
-    """What the Atlas workflow posts (spec 07 §3, §4).
+    """What the dependency (SCA) workflow posts (spec 07 §3, §4).
 
     Counts rather than a trust score: the score is computed server-side from
     §5's formula so it is reproducible and cannot drift between the workflow's
@@ -401,6 +479,16 @@ class SscsEvidenceSubmission(BaseModel):
             "Minimal SLSA-style statement: builder id, source repo and commit, "
             "workflow run id, timestamp. Straight from the runner's GITHUB_* "
             "environment."
+        ),
+    )
+    provenance_signals: ProvenanceSignals = Field(
+        default_factory=lambda: ProvenanceSignals(),
+        description=(
+            "How this repository builds (spec 29 §3). Distinct from "
+            "`provenance` above, which records *this* build's identity: these "
+            "are scored, and every one of them is absent by default so a "
+            "repository that reports none scores exactly as it did before "
+            "they existed."
         ),
     )
 
@@ -451,6 +539,11 @@ class ReachabilityAccepted(BaseModel):
 class AtlasAccepted(BaseModel):
     accepted: int
     evidence_id: str
+    #: How many resolved components went into the inventory (spec 29 §1).
+    #: Zero for a submission carrying no SBOM ref, and for one whose archived
+    #: SBOM could not be read — the evidence row is written either way, and
+    #: the workflow log says which happened.
+    components_recorded: int = 0
     #: Null when the scan resolved no dependencies (spec 07 §5a). The workflow
     #: prints this, so a repository that pinned nothing sees "not assessed"
     #: rather than a score it did not earn.
@@ -475,6 +568,108 @@ class RawAccepted(BaseModel):
 
     raw_output_ref: str
     bytes_written: int
+
+
+class NetassessSubmission(BaseModel):
+    """One network-assessment run, pushed by the host that produced it
+    (spec 32 §4.4).
+
+    **Push rather than pull, and that is the whole design decision.** The scan
+    runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+    addresses, which is measured rather than assumed — and the publisher that
+    archives it to MinIO already runs there. Having the backend poll an object
+    store instead would mean an S3 client it does not otherwise need, MinIO
+    credentials it does not otherwise hold, and a schedule to guess at when the
+    arrival is already an event somebody could just report.
+
+    **Files, not an archive.** Two text files are what the judgement reads; a
+    zip would mean unpacking attacker-controlled entries inside the ingestion
+    path for no gain. The archive still goes to MinIO, which remains the
+    history — this platform stores what it needs to compare against next week.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_key: str = Field(
+        min_length=1,
+        max_length=255,
+        description="The publisher's object name, e.g. `netassess-2026.8.9.zip`.",
+    )
+    inventory_csv: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`inventory.csv` verbatim. Empty means the run enumerated nothing.",
+    )
+    network_status_md: str = Field(
+        default="",
+        max_length=1_000_000,
+        description="`network-status.md` verbatim. Empty means the scan did not finish.",
+    )
+
+
+class NetassessAccepted(BaseModel):
+    believable: bool
+    problems: list[str] = Field(default_factory=list)
+    host_count: int = 0
+    hosts_appeared: list[str] = Field(default_factory=list)
+    hosts_disappeared: list[str] = Field(default_factory=list)
+    detail: str = ""
+
+
+class LaneFailure(BaseModel):
+    """A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
+
+    Every Concourse job carries `on_failure: *slack_alert`. On Actions most
+    lanes need no equivalent, because `mykronos.upload` registers a ScanRun
+    before it interprets anything and finalises in a `finally` — so a failed
+    scan already reaches Slack through the ingestion path that records it.
+
+    Two cases that path cannot cover, and this exists for both:
+
+    *A lane with nothing to upload.* `delivery.yml` builds, publishes and
+    promotes, and produces no findings by design — `ci.py` says its absence
+    from the lake is not a fault. A failed build currently tells nobody.
+
+    *A lane that died before its upload step.* A failed checkout or a failing
+    fail-fast probe leaves no ScanRun, so the capability reads as never having
+    run rather than as having broken.
+
+    **This writes nothing to the lake.** It is a message, not evidence. A
+    build failure is not a finding, has no severity, and must not reach a risk
+    score — which is the same rule D-046 applies to test lanes, one step
+    further out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lane: str = Field(
+        min_length=1,
+        max_length=100,
+        description="Which lane failed, as a person would name it: `publish`, `promote`.",
+    )
+    detail: str = Field(
+        default="",
+        max_length=1_000,
+        description="What went wrong, in one or two lines. Rendered verbatim.",
+    )
+    commit_sha: str = Field(default="", max_length=100)
+    run_url: str = Field(
+        default="",
+        max_length=500,
+        description="Where to go and look. The whole point of the message.",
+    )
+
+    @field_validator("run_url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("run_url must be an http(s) URL.")
+        return value
+
+
+class LaneFailureAccepted(BaseModel):
+    notified: bool
+    detail: str
 
 
 class HealthResponse(BaseModel):

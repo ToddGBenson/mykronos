@@ -2,11 +2,12 @@ import Link from "next/link";
 
 import { getPortfolio } from "@/lib/server";
 import {
-  CapabilityDots,
+  CapabilityGrid,
+  CapabilityGridHeader,
+  CapabilityLegend,
   Crumb,
   EmptyState,
   ErrorPanel,
-  Label,
   Pill,
   RelativeTime,
   ScoreMeter,
@@ -35,7 +36,7 @@ export default async function PortfolioPage({
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Portfolio</h1>
-        <span className="font-mono text-[11px] text-ink-3">
+        <span className="font-mono text-[13px] text-ink-3">
           {summary.active_repos} active
           {repos.length !== summary.active_repos
             ? ` · ${repos.length - summary.active_repos} other`
@@ -43,13 +44,13 @@ export default async function PortfolioPage({
         </span>
         <Link
           href={includeRemoved ? "/" : "/?removed=1"}
-          className="ml-auto border border-rule px-2 py-1 font-mono text-[10px] text-ink-3 hover:border-accent hover:text-accent"
+          className="ml-auto border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-accent hover:text-accent"
         >
           {includeRemoved ? "hide removed" : "include removed"}
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
         <StatTile
           label="Open critical"
           value={summary.open_critical}
@@ -57,7 +58,7 @@ export default async function PortfolioPage({
         />
         <StatTile label="Open high" value={summary.open_high} />
         <StatTile
-          label="Oracle: no go"
+          label="Risk decision: no go"
           value={summary.repos_no_go}
           sub={
             summary.repos_not_assessed
@@ -76,6 +77,15 @@ export default async function PortfolioPage({
           value={summary.repos_with_stale_scans}
           sub="repos"
         />
+        {/* A deadline this organisation set, or one CISA set in KEV, that has
+            passed. Distinct from age: a large backlog inside its windows shows
+            zero here, which is the whole point of having targets. */}
+        <StatTile
+          label="Overdue"
+          value={summary.overdue_findings}
+          sub="past their target"
+          alert={summary.overdue_findings > 0}
+        />
       </div>
 
       {repos.length === 0 ? (
@@ -91,18 +101,27 @@ export default async function PortfolioPage({
         />
       ) : (
         <div className="scroll-x border border-rule">
-          <table className="w-full min-w-[860px] border-collapse bg-paper-2 font-mono text-[11px]">
+          <table className="w-full min-w-[860px] border-collapse bg-paper-2 font-mono text-[13px]">
             <thead>
               <tr className="border-b-2 border-ink-2 text-left">
-                {["Repository", "Capabilities", "Risk", "Oracle", "Open", "Last scan"].map(
+                {["Repository", "Capabilities", "Risk", "Risk decision", "Open", "Last scan"].map(
                   (heading) => (
                     <th
                       key={heading}
-                      className={`whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3 ${
+                      className={`whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3 ${
                         heading === "Open" ? "text-right" : ""
                       }`}
                     >
                       {heading}
+                      {/* The capability names live in the header, read once,
+                          rather than in a tooltip on each of fifteen cells in
+                          every row. This is the half of the fix that removes
+                          the hovering; the cells below carry only state. */}
+                      {heading === "Capabilities" ? (
+                        <span className="mt-1 block font-normal normal-case tracking-normal">
+                          <CapabilityGridHeader />
+                        </span>
+                      ) : null}
                     </th>
                   ),
                 )}
@@ -117,7 +136,7 @@ export default async function PortfolioPage({
                   <td className="px-2 py-2">
                     <Link
                       href={`/repos/${repo.repo_id}`}
-                      className="font-semibold text-ink hover:text-accent"
+                      className="tap font-semibold text-ink hover:text-accent"
                     >
                       {repo.repo_full_name}
                     </Link>
@@ -128,13 +147,27 @@ export default async function PortfolioPage({
                         </Pill>
                       </span>
                     ) : null}
+                    {/* Said on the row rather than left to be discovered
+                        (spec 23 §1.5). A repository whose findings are
+                        excluded from every number above it, with nothing on
+                        the page saying so, is how somebody comes to distrust
+                        the numbers. */}
+                    {repo.synthetic ? (
+                      <span className="ml-2">
+                        <Pill tone="muted">
+                          <span title="A seeded benchmark corpus. Scanned like any other repository and counted in no portfolio total.">
+                            benchmark
+                          </span>
+                        </Pill>
+                      </span>
+                    ) : null}
                     <span className="ml-2 inline-flex gap-1.5 align-baseline">
                       <a
                         href={repo.github_url}
                         target="_blank"
                         rel="noreferrer"
                         title={`${repo.repo_full_name} on GitHub`}
-                        className="text-[9px] text-ink-3 underline decoration-dotted hover:text-accent"
+                        className="tap text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
                       >
                         github
                       </a>
@@ -144,7 +177,7 @@ export default async function PortfolioPage({
                           target="_blank"
                           rel="noreferrer"
                           title="Concourse pipeline"
-                          className="text-[9px] text-ink-3 underline decoration-dotted hover:text-accent"
+                          className="tap text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
                         >
                           pipeline
                         </a>
@@ -153,7 +186,7 @@ export default async function PortfolioPage({
                   </td>
 
                   <td className="px-2 py-2">
-                    <CapabilityDots
+                    <CapabilityGrid
                       enabled={repo.enabled_capabilities}
                       pending={repo.pending_capabilities ?? []}
                       live={repo.capability_states
@@ -209,21 +242,28 @@ export default async function PortfolioPage({
         </div>
       )}
 
-      <p className="max-w-prose text-[11px] leading-relaxed text-ink-3">
-        <Label>Reading this table</Label>
-        <br />
-        Fifteen capability slots per repo, in pipeline-stage order, so coverage
-        gaps read down the column. A solid dot is live — implemented and
-        actually reporting scans. A hollow dot outlined in the accent is
-        implemented but not yet reporting (or pending its install PR), which is
-        a claim of coverage without evidence yet. Open is the count of open
-        findings; the severity breakdown lives on each repo&rsquo;s page. Risk
-        is Oracle&rsquo;s standing score, refreshed daily. A repo showing{" "}
-        <span className="font-mono">not assessed</span> has not enabled{" "}
-        <span className="font-mono">oracle</span> — that is a choice, not a gap.
-        For what to work on next rather than which repo is worst, use the{" "}
-        <Crumb href="/triage">triage queue</Crumb>.
-      </p>
+      {/* This used to be 130 words of prose explaining how to decode the
+          capability column, and it was the receipt for that column being
+          undecodable. Most of it is now carried by the display itself: the
+          header names the fifteen slots, and the legend below says what the
+          three cell states mean, next to the cells that use them.
+
+          What survives here is the part that was never about decoding —
+          where to go next, and the fact that `not assessed` is a choice
+          somebody made rather than a gap in the data. */}
+      <div className="flex flex-col gap-2">
+        <CapabilityLegend />
+        <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
+          Capability slots read in pipeline-stage order, so coverage gaps read
+          down the column. Open is the count of open findings; the severity
+          breakdown lives on each repo&rsquo;s page. Risk is Oracle&rsquo;s
+          standing score, refreshed daily — a repo showing{" "}
+          <span className="font-mono">not assessed</span> has not enabled{" "}
+          <span className="font-mono">oracle</span>, which is a choice rather
+          than a gap. For what to work on next rather than which repo is worst,
+          use the <Crumb href="/triage">triage queue</Crumb>.
+        </p>
+      </div>
     </div>
   );
 }

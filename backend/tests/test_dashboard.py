@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from mykronos.schemas import Severity
+from mykronos.schemas import Severity, utcnow
 from tests.conftest import (
     CAPABILITY,
     REPO,
@@ -106,6 +106,64 @@ class TestPortfolio:
         assert any(s["capability"] == "sast" for s in row["capability_states"]), (
             "granted capabilities get a per-capability state row"
         )
+
+    def test_every_capability_gets_a_row_not_only_the_enabled_ones(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """B-008. The list was built from `sorted(enabled)`, so a capability
+        nobody turned on was simply absent — and so was one that was enabled
+        and had never reported. Two different answers, one empty space."""
+        from mykronos.schemas import Capability
+
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        named = {s["capability"] for s in row["capability_states"]}
+
+        assert named >= {c.value for c in Capability}, (
+            f"missing rows for {sorted({c.value for c in Capability} - named)}; "
+            "a stage with no row is a stage nobody can see is unconfigured"
+        )
+
+    def test_not_enabled_is_distinguishable_from_enabled_and_silent(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """The distinction the entry was filed for. Both show no scan; only
+        one of them is somebody's problem."""
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        # The auth fixture grants sast, and nothing has scanned yet.
+        assert states["sast"]["enabled"] is True
+        assert states["sast"]["has_scanned"] is False
+
+        # dast was never granted for this repo.
+        assert states["dast"]["enabled"] is False
+        assert states["dast"]["has_scanned"] is False
+
+        assert states["sast"] != states["dast"], (
+            "the two states must not be identical, or the page cannot tell "
+            "'enabled and silent' from 'not configured here'"
+        )
+
+    def test_a_capability_that_scanned_is_reported_however_it_was_enabled(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """`has_scanned` is read for every capability rather than assumed
+        false for the disabled ones: a repo can report under a capability its
+        installer ledger never listed, and dropping that row would hide a scan
+        that actually happened."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        post_scan(client, auth)
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["sast"]["has_scanned"] is True
+        assert states["sast"]["last_scan_at"] is not None
 
     def test_an_actions_repo_still_reads_from_the_installer_ledger(
         self, client: TestClient, admin_auth: dict[str, str], auth
@@ -246,6 +304,73 @@ class TestFindings:
         ).json()
         assert body["total"] == 0
         assert body["findings"] == []
+
+    def test_filters_to_what_a_pull_request_introduced(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        seeded,
+        run_compaction,
+    ) -> None:
+        """`what did my change add?` — not `what does my branch reproduce?`
+
+        A second scan run, on a pull request, sees the three findings that
+        already existed *and* introduces one. Filtering by `pr_number` must
+        return only the new one: attribution is on the scan run that FIRST saw
+        a finding, never the most recent one. Matching on last-seen would hand
+        the author every pre-existing finding their branch happens to
+        reproduce, which on a repository with a backlog is nearly all of them.
+        """
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(
+            client,
+            auth,
+            scan_run_id="run-pr",
+            commit_sha="deadbeefcafe1234",
+            pr_number=42,
+        )
+        post_findings(
+            client,
+            auth,
+            [
+                # Already known — first seen by run-1, so not this PR's doing.
+                finding_payload(rule_id="CWE-89", severity="critical", symbol="a"),
+                # New on this branch.
+                finding_payload(rule_id="CWE-798", severity="high", symbol="new"),
+            ],
+            scan_run_id="run-pr",
+        )
+        run_compaction()
+
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"pr_number": 42},
+            headers=admin_auth,
+        ).json()
+
+        assert body["total"] == 1
+        assert body["findings"][0]["rule_id"] == "CWE-798"
+
+        # The same answer by commit, because a check run has the sha and not
+        # always the pull request number.
+        by_sha = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"commit_sha": "deadbeefcafe1234"},
+            headers=admin_auth,
+        ).json()
+        assert by_sha["total"] == 1
+        assert by_sha["findings"][0]["rule_id"] == "CWE-798"
+
+    def test_an_unknown_pull_request_is_zero_not_an_error(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        body = client.get(
+            f"/api/dashboard/repos/{seeded}/findings",
+            params={"pr_number": 9999},
+            headers=admin_auth,
+        ).json()
+        assert body["total"] == 0
 
     def test_a_future_first_seen_after_excludes_everything(
         self, client: TestClient, admin_auth: dict[str, str], seeded
@@ -391,7 +516,12 @@ class TestStatusWriteBack:
         finding_id = self._first_finding(client, admin_auth, seeded)
         client.patch(
             f"/api/dashboard/findings/{finding_id}/status",
-            json={"status": "accepted_risk", "reason": "staging only"},
+            json={
+                "status": "accepted_risk",
+                "reason": "staging only",
+                "accepted_reason_code": "not_exploitable_here",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
@@ -564,7 +694,12 @@ class TestOpenFindings:
 
         client.patch(
             f"/api/dashboard/findings/{accepted}/status",
-            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            json={
+                "status": "accepted_risk",
+                "reason": "behind the VPN",
+                "accepted_reason_code": "compensating_control",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
@@ -582,7 +717,12 @@ class TestOpenFindings:
         accepted = self._group(page, "CWE-79")["locations"][0]["finding_id"]
         client.patch(
             f"/api/dashboard/findings/{accepted}/status",
-            json={"status": "accepted_risk", "reason": "behind the VPN"},
+            json={
+                "status": "accepted_risk",
+                "reason": "behind the VPN",
+                "accepted_reason_code": "compensating_control",
+                "indefinite": True,
+            },
             headers=admin_auth,
         )
 
@@ -1289,12 +1429,39 @@ class TestTriageQueue:
     def test_an_empty_portfolio_is_not_an_error(self, client, admin_auth) -> None:
         body = client.get("/api/dashboard/triage", headers=admin_auth).json()
 
-        assert body == {
-            "items": [],
-            "open_by_severity": dict.fromkeys(["critical", "high", "medium", "low", "info"], 0),
-            "total_open": 0,
-            "truncated": False,
-        }
+        assert body["items"] == []
+        assert body["open_by_severity"] == dict.fromkeys(
+            ["critical", "high", "medium", "low", "info"], 0
+        )
+        assert body["total_open"] == 0
+        assert body["truncated"] is False
+        # An empty estate has nothing to rank and nothing missing to say so
+        # about, but the block is always present — a caller should never have
+        # to handle "the queue forgot to mention what it ranked by" (B-033).
+        assert body["ranking"]["not_consulted"] == []
+
+    def test_it_says_what_it_could_not_rank_by(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """B-033 — the queue must not present itself as ordered by risk.
+
+        The rank uses severity, threat intel, remediation targets and blast
+        radius. It has never used internet exposure, data classification or
+        business criticality: those live on a risk profile and are not terms in
+        `rank_terms` at all. On an estate with no profiles this is not a
+        degraded risk ranking, it is a threat-intel ranking, and saying so at
+        the point of ranking is the difference between a number somebody can
+        trust and one they will quietly stop believing.
+        """
+        body = client.get("/api/dashboard/triage", headers=admin_auth).json()
+
+        gaps = body["ranking"]["not_consulted"]
+        assert [g["input"] for g in gaps] == ["business context"]
+        assert "no risk profile" in gaps[0]["reason"]
+        assert body["ranking"]["repos_without_a_risk_profile"] == [REPO]
+        # And it is explicit about what it *did* use, so the two lists are
+        # read together rather than the absence being inferred.
+        assert "severity" in body["ranking"]["consulted"]
 
     def test_it_needs_authentication(self, client) -> None:
         assert client.get("/api/dashboard/triage").status_code == 401
@@ -1497,6 +1664,42 @@ class TestSbomDownload:
 
         assert response.status_code == 403
 
+    def test_omitting_the_id_serves_the_newest_build(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """B-037 — "what is in production right now".
+
+        Pinning an SBOM to a build stays correct; requiring the caller to know
+        which build made answering the common question impossible without a
+        lookup nothing in the interface told them to do.
+        """
+        repo_id, _evidence_id = self._seed(client, admin_auth, run_compaction)
+        settings = client.app.state.settings
+        sbom_path = settings.datalake_dir / "raw" / "example" / "sbom.json"
+        sbom_path.parent.mkdir(parents=True, exist_ok=True)
+        sbom_path.write_text('{"bomFormat": "CycloneDX"}')
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom", headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"bomFormat": "CycloneDX"}
+
+    def test_a_repository_with_no_sbom_says_why(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """Distinct from "wrong id". Nothing has been built yet, and saying so
+        is the difference between a dead end and an explanation."""
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/sscs/sbom", headers=admin_auth
+        )
+
+        assert response.status_code == 404
+        assert "recorded against a release" in response.json()["detail"]
+
     def test_an_unknown_evidence_id_is_404(
         self, client, admin_auth, run_compaction
     ) -> None:
@@ -1562,3 +1765,626 @@ def test_severity_enum_covers_every_portfolio_bucket() -> None:
     from mykronos.dashboard import SEVERITIES
 
     assert set(SEVERITIES) == {s.value for s in Severity}
+
+
+class TestVulnerabilityManagement:
+    """The management half of vulnerability management (B-010, PIP-9).
+
+    "What is open" was answerable from the beginning. "How long has it been
+    open, what did we decide not to fix, and on what grounds" is the part a
+    programme is actually made of, and the grounds are the part that decays.
+    """
+
+    def _page(self, client: TestClient, admin_auth: dict[str, str]) -> Any:
+        response = client.get(
+            "/api/dashboard/vulnerability-management", headers=admin_auth
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    def test_aging_carries_the_capability(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Severity and age say how bad; capability says where to go. Sixty
+        high findings older than ninety days is a number to be alarmed by;
+        "they are all container CVEs from one base image" is the thing to
+        act on, and without this the reader opens every one to find out."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="high")])
+        run_compaction()
+
+        page = self._page(client, admin_auth)
+
+        assert page["aging"], "an open finding should produce an aging row"
+        row = page["aging"][0]
+        assert set(row) == {"severity", "capability", "age_band", "count"}
+        assert row["capability"] == "sast"
+
+    def test_an_acceptance_is_listed_with_its_grounds_not_just_counted(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """Counts cannot say what was accepted or why, and the why is the
+        half that stops being true."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload()])
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "no upstream patch yet",
+                "accepted_reason_code": "no_vendor_fix",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        page = self._page(client, admin_auth)
+
+        assert page["accepted_risk"], "the count breakdown still stands"
+        detail = page["accepted_risk_detail"]
+        assert len(detail) == 1
+        assert detail[0]["accepted_reason_code"] == "no_vendor_fix"
+        assert str(detail[0]["accepted_until"]).startswith("2027-01-01")
+        assert detail[0]["finding_id"] == finding_id
+
+    def test_an_acceptance_whose_premise_expired_is_flagged_fixable(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """`no_vendor_fix` is the one premise a scan can contradict, which is
+        why the sweep re-opens that and nothing else (spec 24 §3.2). A row
+        here is mid-flight or on grounds the sweep cannot check — either way
+        it is what a person should be looking at."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    package_name="lodash",
+                    # The advisory's fix travels in the raw record, not as a
+                    # column -- which is where the sweep reads it from too.
+                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                )
+            ],
+        )
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "no upstream patch",
+                "accepted_reason_code": "no_vendor_fix",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        detail = self._page(client, admin_auth)["accepted_risk_detail"]
+
+        assert detail[0]["fixed_version"] == "4.17.22"
+        assert detail[0]["now_fixable"] is True
+
+    def test_an_acceptance_on_other_grounds_is_not_called_fixable(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, catalog
+    ) -> None:
+        """A fix existing does not contradict "not exploitable here". Calling
+        it fixable would send somebody to re-litigate a decision that is still
+        true, which is how a review queue becomes noise."""
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    package_name="lodash",
+                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                )
+            ],
+        )
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+        client.patch(
+            f"/api/dashboard/findings/{finding_id}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "the parser is never reached from an entry point",
+                "accepted_reason_code": "not_exploitable_here",
+                "accepted_until": "2027-01-01",
+            },
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        detail = self._page(client, admin_auth)["accepted_risk_detail"]
+
+        assert detail[0]["fixed_version"] == "4.17.22"
+        assert detail[0]["now_fixable"] is False
+
+    def test_a_viewer_may_read_it(
+        self, client: TestClient, admin_auth: dict[str, str], viewer_auth
+    ) -> None:
+        """A read. The person asking what is outstanding is not always an
+        admin, and making them one to answer it would be the wrong trade."""
+        onboard(client, admin_auth)
+
+        assert (
+            client.get(
+                "/api/dashboard/vulnerability-management", headers=viewer_auth
+            ).status_code
+            == 200
+        )
+
+
+class TestCapabilitiesThatReportElsewhere:
+    """Three capabilities never write a ScanRun, and never will (B-015).
+
+    Aegis assesses a pull request and writes an `InsiderRiskSignal` (spec 06
+    §3); Oracle writes a `RiskDecision`; Patchwork writes a
+    `RemediationEvent`. Reading only `scan_runs` reported all three silent on
+    every repository for ever — the kind of permanent false alarm the codebase
+    already names in `last_successful_scan_at`, which special-cases aegis for
+    exactly this reason.
+
+    It became worth fixing when B-008 turned "enabled and silent" from an
+    absence a caller inferred into a state a caller is invited to act on.
+    """
+
+    def test_aegis_reports_through_its_own_table(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, buffer
+    ) -> None:
+        onboard(client, admin_auth, scanned_by="concourse")
+        buffer.append(
+            "insider_risk_signals",
+            [
+                {
+                    "signal_id": "s1",
+                    "repo_full_name": REPO,
+                    "pr_number": 7,
+                    "evaluated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["aegis"]["has_scanned"] is True, (
+            "aegis assessed a pull request and the portfolio still reports it "
+            "as having never reported"
+        )
+        assert states["aegis"]["last_scan_at"] is not None
+
+    def test_a_capability_with_nothing_recorded_is_still_silent(
+        self, client: TestClient, admin_auth: dict[str, str], auth
+    ) -> None:
+        """The fix must not make everything look busy. `cloud` genuinely has
+        produced nothing, and that zero has to keep reading as a real zero
+        (B-018)."""
+        onboard(client, admin_auth, scanned_by="concourse")
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["cloud"]["has_scanned"] is False
+        assert states["aegis"]["has_scanned"] is False, (
+            "with no signal recorded, aegis is silent like anything else"
+        )
+
+    def test_no_capability_is_permanently_silent(self) -> None:
+        """The guard that survives the next capability.
+
+        Every capability must be able to set `has_scanned` *somehow* — either
+        by writing a ScanRun, or by appearing in `REPORTS_ELSEWHERE`. A new
+        capability that reports through a table of its own and is not listed
+        here would be silent for ever, which is the defect this class exists
+        to close, and it would be silent quietly.
+        """
+        from mykronos.adapters.registry import supported_tools
+        from mykronos.dashboard import REPORTS_ELSEWHERE
+        from mykronos.schemas import Capability
+
+        for capability in Capability:
+            name = capability.value
+            writes_scan_runs = bool(supported_tools(name))
+            if writes_scan_runs or name in REPORTS_ELSEWHERE:
+                continue
+            raise AssertionError(
+                f"{name!r} has no adapter (so writes no ScanRun) and is not in "
+                "REPORTS_ELSEWHERE, so the portfolio will report it silent on "
+                "every repository for ever. Add the table it does write."
+            )
+
+    def test_a_real_scan_run_wins_over_the_weaker_signal(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction, buffer
+    ) -> None:
+        """If one of these ever starts writing runs too, the run is the better
+        answer. The overlay must not overwrite it."""
+        onboard(client, admin_auth, scanned_by="concourse")
+        post_scan(client, auth)
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        # The auth fixture posts a sast run; sast is not in REPORTS_ELSEWHERE
+        # and must keep its real status rather than gaining a synthetic one.
+        assert states["sast"]["last_scan_status"] == "success"
+
+
+class TestTheQueueCarriesTheClassification:
+    """B-019. The ranked, portfolio-wide queue took nine filters and not the
+    one that says what the machine concluded.
+
+    The per-repository findings view has had a `triage` filter since spec 18.
+    So the classification existed, was displayed and was filterable — on the
+    one surface that can only show a single repository at a time. "Show me
+    everything the machine could not judge" meant one request per repository,
+    which is not a worklist.
+    """
+
+    @staticmethod
+    def _activate(client: TestClient) -> None:
+        """The queue only shows repositories whose status is `active`, and
+        `onboard` leaves one pending. Same step `test_worklist_state` takes."""
+        from sqlalchemy import select as _select
+
+        from mykronos.db.models import RepoOnboarding as _RepoOnboarding
+
+        with client.app.state.db.session() as session:
+            row = session.execute(
+                _select(_RepoOnboarding).where(
+                    _RepoOnboarding.github_repo_full_name == REPO
+                )
+            ).scalars().one()
+            row.status = "active"
+
+    def _queue(self, client: TestClient, admin_auth: dict[str, str], **params):
+        response = client.get(
+            "/api/dashboard/triage", headers=admin_auth, params=params
+        )
+        assert response.status_code == 200
+        return response.json()["items"]
+
+    def test_every_row_carries_a_classification_and_a_reason(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Stamped whether or not anybody filtered, the same contract the KEV
+        badge has. A caller should not need a second request to render it."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        items = self._queue(client, admin_auth)
+
+        assert items, "expected the seeded finding in the queue"
+        for item in items:
+            assert item["triage"]
+            assert item["triage_rationale"], (
+                "spec 01 §6 makes an unexplained verdict a bug, and a row "
+                "labelled 'needs human judgment' with no reason is one"
+            )
+
+    def test_it_filters_to_one_classification(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        everything = self._queue(client, admin_auth)
+        classification = everything[0]["triage"]
+        filtered = self._queue(client, admin_auth, triage=classification)
+
+        assert filtered
+        assert {i["triage"] for i in filtered} == {classification}
+
+    def test_filtering_to_another_classification_excludes_it(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """The filter has to exclude as well as include, or it is decoration."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(severity="critical")])
+        run_compaction()
+
+        mine = self._queue(client, admin_auth)[0]["triage"]
+        other = (
+            "true_positive" if mine != "true_positive" else "likely_false_positive"
+        )
+
+        assert self._queue(client, admin_auth, triage=other) == []
+
+    def test_an_unknown_classification_is_refused(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """A typo must not silently return the whole queue, which is what an
+        unvalidated filter does — the same fall-through B-006 fixed on the
+        repo page's tab parameter."""
+        onboard(client, admin_auth)
+        self._activate(client)
+
+        response = client.get(
+            "/api/dashboard/triage",
+            headers=admin_auth,
+            params={"triage": "definitely-not-a-classification"},
+        )
+
+        assert response.status_code == 422
+
+    def test_the_filter_composes_with_ranking(
+        self, client: TestClient, admin_auth: dict[str, str], auth, run_compaction
+    ) -> None:
+        """Filtering must narrow the queue, not replace its order. A
+        needs-human-judgment critical should still outrank a low."""
+        onboard(client, admin_auth)
+        self._activate(client)
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(severity="critical", symbol="a", code_snippet="a"),
+                finding_payload(severity="low", symbol="b", code_snippet="b"),
+            ],
+        )
+        run_compaction()
+
+        ranked = self._queue(client, admin_auth, order="rank")
+        classification = ranked[0]["triage"]
+        filtered = self._queue(
+            client, admin_auth, order="rank", triage=classification
+        )
+
+        assert filtered
+        assert [i["finding_id"] for i in filtered] == [
+            i["finding_id"] for i in ranked if i["triage"] == classification
+        ]
+
+
+class TestReviewingWhatTheClassifierConcluded:
+    """B-020. The classifier labels findings and deliberately cannot act on
+    them: a machine that could set `false_positive` would eventually dismiss a
+    real finding, silently.
+
+    So the label waits for a person, and until this existed the only way to
+    answer it was to open the right repository and disposition by hand. The
+    evidence that this was not happening: 43 false positives ever recorded,
+    all of them sast and secrets, against 234 open container findings.
+    """
+
+    def _seed(self, client, admin_auth, auth, run_compaction, **overrides):
+        onboard(client, admin_auth)
+        post_scan(client, auth)
+        post_findings(client, auth, [finding_payload(**overrides)])
+        run_compaction()
+        return str(
+            client.app.state.catalog.query("SELECT finding_id FROM findings")[0][0]
+        )
+
+    def _review(self, client, admin_auth, finding_id, **body):
+        return client.post(
+            f"/api/dashboard/findings/{finding_id}/classification-review",
+            json=body,
+            headers=admin_auth,
+        )
+
+    def _status(self, client, finding_id) -> str:
+        return str(
+            client.app.state.catalog.query(
+                "SELECT status FROM findings WHERE finding_id = ?", [finding_id]
+            )[0][0]
+        )
+
+    def test_rejecting_the_classifier_leaves_the_finding_open(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """The half that recorded nothing before. Agreement already left a
+        trace; disagreement did not, so a classifier calling real findings
+        false positives looked exactly like one nobody had reviewed."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(
+            client, admin_auth, finding_id, agrees=False, reason="reachable from the API"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["agreed"] is False
+        assert response.json()["recorded"] == "classifier rejection"
+        assert self._status(client, finding_id) == "open"
+
+    def test_a_rejection_is_written_to_the_knowledge_store(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """A verdict nothing ever contradicts is a verdict nobody is
+        checking, so the contradiction has to be recorded somewhere."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        self._review(
+            client, admin_auth, finding_id, agrees=False, reason="reachable from the API"
+        )
+
+        entries = client.app.state.knowledge.active_entries()
+        assert any(
+            entry.source_type == "classification_rejected" for entry, _ in entries
+        )
+
+    def test_a_rejection_does_not_dampen_the_rule(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """It teaches about the classifier, not about the rule. Quietening a
+        rule because somebody said its finding was real would invert the whole
+        loop."""
+        from mykronos.knowledge.capture import TEACHES_ABOUT_THE_RULE
+
+        assert "classification_rejected" not in TEACHES_ABOUT_THE_RULE
+
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+        self._review(client, admin_auth, finding_id, agrees=False, reason="real")
+
+        entries = {
+            entry.source_type for entry, _ in client.app.state.knowledge.active_entries()
+        }
+        assert "finding_dismissal" not in entries, (
+            "a rejection must not be recorded as a dismissal, which is what "
+            "dampening reads"
+        )
+
+    def test_agreeing_needs_a_reason(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """A bare click is recorded low-confidence and barred from promotion
+        (spec 11 §4), and dampening reads the reason rather than the count."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(client, admin_auth, finding_id, agrees=True, reason="  ")
+
+        assert response.status_code in (409, 422)
+        assert self._status(client, finding_id) == "open"
+
+    def test_it_refuses_to_dismiss_what_the_machine_declined_to_judge(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """The one thing this endpoint must not become a shortcut for.
+        Agreeing with `needs_human_judgment` would dismiss a finding the
+        classifier explicitly did not call a false positive."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = self._review(
+            client, admin_auth, finding_id, agrees=True, reason="looks fine to me"
+        )
+
+        assert response.status_code == 409
+        assert "not 'likely_false_positive'" in response.json()["detail"]
+        assert self._status(client, finding_id) == "open"
+
+    def test_a_viewer_cannot_review(
+        self, client: TestClient, admin_auth, viewer_auth, auth, run_compaction
+    ) -> None:
+        """No path lets a classification become a disposition without a person
+        entitled to make one."""
+        finding_id = self._seed(client, admin_auth, auth, run_compaction)
+
+        response = client.post(
+            f"/api/dashboard/findings/{finding_id}/classification-review",
+            json={"agrees": False, "reason": "real"},
+            headers=viewer_auth,
+        )
+
+        assert response.status_code == 403
+
+    def test_an_unknown_finding_is_a_404(
+        self, client: TestClient, admin_auth
+    ) -> None:
+        onboard(client, admin_auth)
+
+        assert self._review(
+            client, admin_auth, "f" * 64, agrees=False, reason="x"
+        ).status_code == 404
+
+
+class TestTheFindingRecord:
+    """One finding, with everything the platform knows about it (B-032)."""
+
+    def test_it_assembles_the_blocks(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        listed = client.get(
+            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
+        ).json()["findings"][0]
+
+        body = client.get(
+            f"/api/dashboard/findings/{listed['finding_id']}/record", headers=admin_auth
+        ).json()
+
+        assert body["finding"]["finding_id"] == listed["finding_id"]
+        assert body["repo_full_name"] == REPO
+        # The block that earns the page: it exists nowhere else at finding level.
+        assert "can_close" in body["closure"]
+        assert body["closure"]["required_absences"] == 2
+        assert body["closure"]["lane"] == listed["capability"]
+
+    def test_it_says_what_it_cannot_tell_you(
+        self, client: TestClient, admin_auth: dict[str, str], seeded
+    ) -> None:
+        """A record that silently omits reachability reads as "not reachable".
+
+        Naming the absent inputs is what keeps "does this matter here" an
+        honest question rather than one severity answers by default.
+        """
+        listed = client.get(
+            f"/api/dashboard/repos/{seeded}/findings", headers=admin_auth
+        ).json()["findings"][0]
+
+        body = client.get(
+            f"/api/dashboard/findings/{listed['finding_id']}/record", headers=admin_auth
+        ).json()
+
+        gaps = {gap["input"] for gap in body["missing_context"]}
+        assert {"reachability", "exposure", "business context"} <= gaps
+
+    def test_an_empty_fixed_version_is_not_fixable(self) -> None:
+        """The scanner writes "" when there is no published fix.
+
+        `is not None` reported `fixable: true` with nothing to upgrade to,
+        which is the most misleading thing this block could say on an estate
+        where 239 of 242 container findings have no upstream fix at all.
+        """
+        from types import SimpleNamespace
+
+        from mykronos import finding_record as record
+
+        class _Catalog:
+            pass
+
+        package = SimpleNamespace(
+            package_name="libsqlite3-0",
+            ecosystem="image",
+            installed_version="3.46.1",
+            fixed_version="",
+            direct=None,
+            advisories=7,
+        )
+        analysis = SimpleNamespace(packages=[package])
+
+        import mykronos.supply_chain as sc
+
+        original = sc.vulnerable_packages
+        sc.vulnerable_packages = lambda *a, **k: analysis  # type: ignore[assignment]
+        try:
+            out = record.package_for(
+                _Catalog(), repo_full_name=REPO, package_name="libsqlite3-0"
+            )
+        finally:
+            sc.vulnerable_packages = original  # type: ignore[assignment]
+
+        assert out is not None
+        assert out["fixable"] is False
+        assert out["fixed_version"] is None
+
+    def test_an_unknown_finding_is_404(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        assert (
+            client.get(
+                "/api/dashboard/findings/nope/record", headers=admin_auth
+            ).status_code
+            == 404
+        )

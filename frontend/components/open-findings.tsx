@@ -24,6 +24,10 @@
 
 import Link from "next/link";
 
+import { WorklistKeys } from "@/components/worklist";
+
+import { FilterSelect } from "@/components/filter-select";
+
 import { DispositionForm } from "@/components/disposition";
 import { GroomButton } from "@/components/groom-button";
 import { RemediationAction } from "@/components/remediation-action";
@@ -98,23 +102,67 @@ export type FindingsQuery = {
   triage?: string;
   /** "1" when set — only groups Patchwork produced a fix for (spec 19 §3.2). */
   fixable?: string;
+  /** A CODEOWNERS handle or team, or one of two queues: `unresolved` (the
+   *  platform could not work it out) and `unclaimed` (nobody has taken it by
+   *  name — it has an owner only because the repository does). */
+  owner?: string;
+  /** overdue | due_soon | on_track | no_target (spec 24 §2.4). */
+  due?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
   finding?: string;
 };
 
+/** A deadline, shown as its state first and its date second.
+ *
+ *  `no_target` renders as an em dash rather than as "on track": a finding with
+ *  no deadline is unmeasured, and this column must not imply otherwise. */
+function DueCell({
+  state,
+  at,
+  source,
+}: {
+  state?: string;
+  at?: string | null;
+  source?: string | null;
+}) {
+  if (!state || state === "no_target" || !at) {
+    return <span className="text-ink-3" title="No remediation target applies">—</span>;
+  }
+  const tone =
+    state === "overdue" ? "critical" : state === "due_soon" ? "warn" : "muted";
+  const when = new Date(at).toISOString().slice(0, 10);
+  return (
+    <Pill
+      tone={tone}
+      title={
+        source === "kev"
+          ? `CISA KEV due date: ${when}`
+          : `Remediation target from policy: ${when}`
+      }
+    >
+      {state === "overdue" ? "overdue" : when}
+      {source === "kev" ? " · KEV" : ""}
+    </Pill>
+  );
+}
+
 export function OpenFindings({
   repoId,
   page,
   query,
   detail,
+  fixByRule = {},
 }: {
   repoId: string;
   page: OpenFindingsPage;
   query: FindingsQuery;
   /** Rendered in the aside when one occurrence is selected. */
   detail?: React.ReactNode;
+  /** Rule id -> what the scanner said to do about it. Empty when the guidance
+   *  fetch failed, which costs the "what to do" block and nothing else. */
+  fixByRule?: Record<string, { fix: string; source: string; effort: string }>;
 }) {
   const href = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
@@ -129,9 +177,11 @@ export function OpenFindings({
     return `/repos/${repoId}?${next.toString()}`;
   };
 
-  const selected = query.group
-    ? page.groups.find((group) => group.group_key === query.group)
-    : undefined;
+  // Same default as the triage queue: the first group, not an empty pane.
+  const selected =
+    (query.group
+      ? page.groups.find((group) => group.group_key === query.group)
+      : undefined) ?? page.groups[0];
 
   return (
     <div className="flex flex-col gap-3">
@@ -167,29 +217,47 @@ export function OpenFindings({
           }
         />
       ) : (
-        <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="min-w-0 flex-1">
-            <GroupTable groups={page.groups} query={query} href={href} />
-            {page.truncated ? (
-              <p className="mt-1 font-mono text-[9px] text-high">
-                Showing the worst {page.shown} of {page.matching}. Filter by
-                severity or capability to reach the rest — a list that silently
-                stops reads as &ldquo;that is all of it&rdquo;.
-              </p>
-            ) : null}
-          </div>
+        <>
+          {/* Layout option 2, as applied to the triage queue. The eight-column
+              table this replaces could not live in a narrow pane — it carried a
+              680px minimum and would have scrolled sideways inside a column —
+              so the same trade is made here: the list keeps what you scan for
+              and the columns move right, where there is room to read them. */}
+          <WorklistKeys
+            ids={page.groups.map((group) => group.group_key)}
+            param="group"
+            clears={["finding"]}
+          />
+          <div className="flex flex-col gap-3 lg:h-[calc(100vh-22rem)] lg:flex-row lg:gap-0">
+            <div className="lg:w-[28rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
+              <GroupList
+                groups={page.groups}
+                selectedKey={selected?.group_key}
+                href={href}
+              />
+              {page.truncated ? (
+                <p className="px-2 py-1 font-mono text-[11px] text-high">
+                  Showing the worst {page.shown} of {page.matching}. Filter to
+                  reach the rest — a list that silently stops reads as
+                  &ldquo;that is all of it&rdquo;.
+                </p>
+              ) : null}
+            </div>
 
-          <aside className="w-full shrink-0 lg:w-[26rem]">
-            {selected ? (
-              <GroupDetail group={selected} query={query} href={href} detail={detail} />
-            ) : (
-              <div className="border border-dashed border-rule bg-paper-2 p-4 text-[11px] text-ink-3">
-                Select a row to see every place it was reported, why it was
-                triaged that way, and to record a disposition.
-              </div>
-            )}
-          </aside>
-        </div>
+            <div className="min-w-0 grow lg:overflow-y-auto lg:pl-4">
+              {selected ? (
+                <GroupDetail
+                  group={selected}
+                  query={query}
+                  href={href}
+                  detail={detail}
+                  remediation={fixByRule[selected.rule_id]}
+                  repoId={repoId}
+                />
+              ) : null}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -209,29 +277,26 @@ function Filters({
   const status = query.status ?? "open";
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Status</Label>
-        {STATUSES.map((entry) => (
-          <Link
-            key={entry.id}
-            href={href({
-              status: entry.id === "open" ? undefined : entry.id,
-              ...CLEAR_SELECTION,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              status === entry.id
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {entry.label}
-          </Link>
-        ))}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* `open` is the default rather than an option that reads as a filter:
+            selecting it removes the parameter, which is what every link into
+            this view already produces. */}
+        <FilterSelect
+          label="Status"
+          name="status"
+          value={query.status}
+          anyLabel="open (default)"
+          clears={["group", "finding"]}
+          options={STATUSES.filter((entry) => entry.id !== "open").map((entry) => ({
+            value: entry.id,
+            label: entry.label,
+          }))}
+        />
         {/* The three numbers are different facts and all three get said: how
             much is outstanding, how much the filters kept, and how much of
             that the grouping collapsed. A single number here would be read as
             whichever one the reader expected. */}
-        <span className="ml-auto font-mono text-[10px] text-ink-3">
+        <span className="ml-auto font-mono text-[12px] text-ink-3">
           {page.total} {status.replace("_", " ")}
           {page.matching !== page.total ? ` · ${page.matching} match the filters` : ""} ·{" "}
           {page.groups.length} row{page.groups.length === 1 ? "" : "s"}
@@ -239,28 +304,27 @@ function Filters({
         </span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Severity</Label>
-        {(["critical", "high", "medium", "low", "info"] as Severity[]).map((severity) => (
-          <Link
-            key={severity}
-            href={href({
-              severity: query.severity === severity ? undefined : severity,
-              ...CLEAR_SELECTION,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
-              query.severity === severity
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {severity} {page.by_severity[severity] ?? 0}
-          </Link>
-        ))}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* The counts move into the option labels rather than being lost:
+            "how many criticals" is the question that made the chips worth
+            reading, and a bare dropdown would have thrown it away. */}
+        <FilterSelect
+          label="Severity"
+          name="severity"
+          value={query.severity}
+          anyLabel="Any severity"
+          clears={["group", "finding"]}
+          options={(["critical", "high", "medium", "low", "info"] as Severity[]).map(
+            (severity) => ({
+              value: severity,
+              label: `${severity} (${page.by_severity[severity] ?? 0})`,
+            }),
+          )}
+        />
         {query.capability ? (
           <Link
             href={href({ capability: undefined, ...CLEAR_SELECTION })}
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[9px] text-accent"
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
           >
             {query.capability} ✕
           </Link>
@@ -285,12 +349,12 @@ function Filters({
           name="rule_id"
           defaultValue={query.rule_id ?? ""}
           placeholder="e.g. CWE-89 or CVE-2024-…"
-          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[9px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
         />
         {query.rule_id ? (
           <Link
             href={href({ rule_id: undefined, ...CLEAR_SELECTION })}
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[9px] text-accent"
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
           >
             {query.rule_id} ✕
           </Link>
@@ -307,7 +371,7 @@ function Filters({
             kev_only: query.kev_only === "1" ? undefined : "1",
             ...CLEAR_SELECTION,
           })}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             query.kev_only === "1"
               ? "border-critical bg-critical-wash text-critical"
               : "border-rule text-ink-3 hover:border-accent"
@@ -320,7 +384,7 @@ function Filters({
             min_epss: query.min_epss === "0.5" ? undefined : "0.5",
             ...CLEAR_SELECTION,
           })}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             query.min_epss === "0.5"
               ? "border-high bg-high-wash text-high"
               : "border-rule text-ink-3 hover:border-accent"
@@ -341,7 +405,7 @@ function Filters({
             fixable: query.fixable === "1" ? undefined : "1",
             ...CLEAR_SELECTION,
           })}
-          className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
             query.fixable === "1"
               ? "border-pass bg-pass-wash text-pass"
               : "border-rule text-ink-3 hover:border-accent"
@@ -362,7 +426,7 @@ function Filters({
               triage: query.triage === id ? undefined : id,
               ...CLEAR_SELECTION,
             })}
-            className={`border px-1.5 py-0.5 font-mono text-[9px] ${
+            className={`border px-1.5 py-0.5 font-mono text-[11px] ${
               query.triage === id
                 ? "border-accent bg-accent-wash text-accent"
                 : "border-rule text-ink-3 hover:border-accent"
@@ -392,10 +456,10 @@ function ToxicCombinations({
   return (
     <div className="border border-critical bg-critical-wash">
       <div className="flex flex-wrap items-baseline gap-x-3 border-b border-critical/30 px-3 py-2">
-        <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-critical">
+        <h3 className="font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-critical">
           Toxic combinations
         </h3>
-        <span className="font-mono text-[10px] text-ink-2">
+        <span className="font-mono text-[12px] text-ink-2">
           {combinations.length} set{combinations.length === 1 ? "" : "s"} of findings
           that are worse together than apart
         </span>
@@ -406,13 +470,13 @@ function ToxicCombinations({
             <div className="flex flex-wrap items-baseline gap-2">
               <SeverityText severity={combination.severity} />
               <span className="text-[12px] font-semibold">{combination.name}</span>
-              <span className="font-mono text-[9px] text-ink-3">
+              <span className="font-mono text-[11px] text-ink-3">
                 {combination.rule_id}
               </span>
             </div>
             <ul className="mt-1 flex flex-col gap-0.5">
               {combination.members.map((member) => (
-                <li key={member.finding_id} className="font-mono text-[10px] text-ink-2">
+                <li key={member.finding_id} className="font-mono text-[12px] text-ink-2">
                   <span aria-hidden>
                     {CAPABILITY_META[member.capability as keyof typeof CAPABILITY_META]?.icon}
                   </span>{" "}
@@ -424,7 +488,7 @@ function ToxicCombinations({
                 </li>
               ))}
             </ul>
-            <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+            <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
               {plain(combination.rationale)}
             </p>
             <div className="mt-1.5">
@@ -459,7 +523,7 @@ function ThreatIntelBadge({ group }: { group: FindingGroup }) {
       {highEpss ? (
         <span
           title={`${group.cve_id}: ${((group.epss_score ?? 0) * 100).toFixed(0)}% EPSS — probability of exploitation in the next 30 days`}
-          className="font-mono text-[8px] font-bold uppercase tracking-wider text-high"
+          className="font-mono text-[10px] font-bold uppercase tracking-wider text-high"
         >
           {((group.epss_score ?? 0) * 100).toFixed(0)}% EPSS
         </span>
@@ -468,114 +532,83 @@ function ThreatIntelBadge({ group }: { group: FindingGroup }) {
   );
 }
 
-function GroupTable({
+/**
+ * The queue, compact enough to live in a column.
+ *
+ * Replaces an eight-column table with a 680px minimum width, which could not
+ * sit in a pane and would have scrolled sideways inside one. Severity, the
+ * problem, and how many places it was found are what somebody scans for;
+ * owner, due date, age and the rest are in the detail, where they are readable
+ * rather than truncated.
+ *
+ * The toxic-combination marker stays in the list. It is the one flag whose
+ * whole purpose is to be noticed without being looked for — its members are
+ * individually unremarkable by definition, so a reader scanning severity would
+ * pass straight over it.
+ */
+function GroupList({
   groups,
-  query,
+  selectedKey,
   href,
 }: {
   groups: FindingGroup[];
-  query: FindingsQuery;
+  /** Passed in rather than re-derived from the query: the page falls back to
+   *  the first group when nothing is selected, and a list that recomputed that
+   *  rule separately would eventually disagree with the pane beside it. */
+  selectedKey?: string;
   href: (patch: Record<string, string | undefined>) => string;
 }) {
   return (
-    <div className="scroll-x border border-rule">
-      <table className="w-full min-w-[680px] border-collapse bg-paper-2 font-mono text-[11px]">
-        <thead>
-          <tr className="border-b-2 border-ink-2 text-left">
-            {["Sev", "Problem", "Where", "Found by", "Triage", "Age"].map((heading) => (
-              <th
-                key={heading}
-                className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
-              >
-                {heading}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((group) => {
-            const triage = TRIAGE[group.triage] ?? { tone: "muted" as const, label: group.triage };
-            const first = group.locations[0];
-            return (
-              <tr
-                key={group.group_key}
-                className={`border-b border-rule-soft last:border-b-0 hover:bg-paper-3 ${
-                  query.group === group.group_key ? "bg-accent-wash" : ""
-                } ${group.toxic_combination_ids?.length ? "border-l-2 border-l-critical" : ""}`}
-              >
-                <td className="px-2 py-2">
-                  <SeverityText severity={group.severity} />
-                  <ThreatIntelBadge group={group} />
-                  {group.fixable ? (
-                    <span
-                      className="ml-1"
-                      title="Patchwork produced a fix for this — open the row to review it."
-                    >
-                      <Pill tone="pass">fix</Pill>
-                    </span>
-                  ) : null}
-                </td>
-                <td className="px-2 py-2">
-                  <Link
-                    href={href({ ...CLEAR_SELECTION, group: group.group_key })}
-                    className="text-ink hover:text-accent"
+    <ul className="flex flex-col">
+      {groups.map((group) => {
+        const on = selectedKey === group.group_key;
+        return (
+          <li key={group.group_key}>
+            <Link
+              href={href({ ...CLEAR_SELECTION, group: group.group_key })}
+              scroll={false}
+              aria-current={on ? "true" : undefined}
+              className={`flex flex-col gap-0.5 border-b border-rule-soft px-2.5 py-2 ${
+                on
+                  ? "border-l-2 border-l-accent bg-accent-wash"
+                  : "border-l-2 border-l-transparent hover:bg-paper-3"
+              }`}
+            >
+              <span className="flex flex-wrap items-baseline gap-1.5">
+                <SeverityText severity={group.severity} />
+                {group.toxic_combination_ids?.length ? (
+                  <span
+                    className="font-mono text-[10px] uppercase tracking-wide text-critical"
+                    title="Part of a toxic combination — individually unremarkable, dangerous together"
                   >
-                    {group.rule_id}
-                  </Link>
-                  <div className="max-w-[36ch] truncate text-[10px] text-ink-3">
-                    {group.title}
-                  </div>
-                </td>
-                <td className="max-w-[24ch] px-2 py-2 text-ink-2">
-                  <span className="block truncate">
-                    {group.package_name ?? first?.file_path ?? "—"}
-                    {first?.line_start ? `:${first.line_start}` : ""}
+                    combo
                   </span>
-                  {group.occurrences > 1 ? (
-                    <span className="text-[9px] text-ink-3">
-                      + {group.occurrences - 1} more occurrence
-                      {group.occurrences === 2 ? "" : "s"}
-                    </span>
-                  ) : null}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2 text-ink-3">
-                  {group.capabilities.map((capability) => (
-                    // Found By, clickable (spec 18 §5.2): the capability filter
-                    // already existed in the filter bar; this connects the
-                    // column that already shows it to the same filter rather
-                    // than leaving it a second, unclickable display of the
-                    // same fact.
-                    <Link
-                      key={capability}
-                      href={href({
-                        capability: query.capability === capability ? undefined : capability,
-                        ...CLEAR_SELECTION,
-                      })}
-                      title={
-                        CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ??
-                        capability
-                      }
-                      className={
-                        query.capability === capability ? "underline decoration-accent" : ""
-                      }
-                    >
-                      {CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.icon ?? "•"}
-                    </Link>
-                  ))}
-                  <span className="ml-1 text-[9px]">{group.capabilities.join(", ")}</span>
-                </td>
-                <td className="whitespace-nowrap px-2 py-2">
-                  <Pill tone={triage.tone}>{triage.label}</Pill>
-                </td>
-                <td className="whitespace-nowrap px-2 py-2 tabular text-ink-3">
-                  {typeof group.age_days === "number" ? `${group.age_days}d` : "—"}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                ) : null}
+                {group.fixable ? (
+                  <span
+                    className="font-mono text-[10px] uppercase tracking-wide text-accent"
+                    title="Auto-remediation produced a fix for this"
+                  >
+                    fix
+                  </span>
+                ) : null}
+                <span className="font-mono text-[11px] text-ink-3">
+                  {group.capabilities.join(", ")}
+                </span>
+              </span>
+              <span className="line-clamp-3 text-[13px] leading-snug text-ink">
+                {group.title}
+              </span>
+              <span className="font-mono text-[11px] text-ink-3">
+                {group.occurrences}&times;
+                {group.owner ? ` · ${group.owner}` : ""}
+                {group.age_days != null ? ` · ${group.age_days}d` : ""}
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -584,44 +617,124 @@ function GroupDetail({
   query,
   href,
   detail,
+  remediation,
+  repoId,
 }: {
   group: FindingGroup;
   query: FindingsQuery;
   href: (patch: Record<string, string | undefined>) => string;
   detail?: React.ReactNode;
+  remediation?: { fix: string; source: string; effort: string };
+  /** Needed only to link each occurrence to its full record (B-032). */
+  repoId: string;
 }) {
   const triage = TRIAGE[group.triage] ?? { tone: "muted" as const, label: group.triage };
   return (
     <div className="flex flex-col gap-3 border border-rule bg-paper-2 p-3">
       <div>
-        <SeverityText severity={group.severity} />
+        <span className="flex flex-wrap items-baseline gap-1.5">
+          <SeverityText severity={group.severity} />
+          {/* Renders nothing unless KEV or EPSS ≥ 0.5, so it costs no room when
+              there is nothing to say — and when there is, it outranks the
+              severity beside it. */}
+          <ThreatIntelBadge group={group} />
+        </span>
         <h3 className="mt-1 text-sm font-semibold leading-snug">{group.title}</h3>
-        <p className="mt-1 font-mono text-[10px] text-ink-3">
+        <p className="mt-1 font-mono text-[12px] text-ink-3">
           {group.rule_id} · {group.capabilities.join(", ")}
           {group.cvss_score ? ` · CVSS ${group.cvss_score}` : ""}
         </p>
       </div>
 
+      {/* First, because it is why somebody opened the row. The pane used to
+          lead with the classifier's verdict and the scanner's description —
+          two paragraphs about the problem before anything about the answer. */}
+      {remediation ? (
+        <div className="border-l-2 border-accent-2 bg-paper-3 px-2.5 py-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <Label>What to do</Label>
+            <span className="text-[10px] uppercase tracking-wide text-ink-3">
+              {remediation.effort}
+            </span>
+            {remediation.source === "standing" ? (
+              <span
+                className="text-[10px] uppercase tracking-wide text-ink-3"
+                title="Written by this platform, not by the scanner. Gitleaks reports a match and no remedy, for instance."
+              >
+                ours, not the scanner&rsquo;s
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-1 text-[14px] leading-relaxed text-ink">{remediation.fix}</p>
+        </div>
+      ) : null}
+
       <div>
         <Pill tone={triage.tone}>{triage.label}</Pill>
-        <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+        <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
           {group.triage_rationale}
         </p>
       </div>
 
+      {/* Collapsible rather than a nested scrollbar. `max-h-32` on the
+          scanner's own prose put a second scroll region inside a pane that was
+          already scrolling, so reading the whole description meant a
+          scrollbar somebody had to find first. */}
       {group.description ? (
-        <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-ink-2">
-          {group.description}
-        </p>
+        <details>
+          <summary className="cursor-pointer list-none">
+            <Label>Why the scanner flagged it</Label>
+            <span className="ml-1.5 font-mono text-[11px] text-ink-3">
+              {group.description.length > 240 ? "expand" : ""}
+            </span>
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-ink-2">
+            {group.description}
+          </p>
+        </details>
       ) : null}
+
+      {/* Owner, due and age lived in table columns that no longer exist. They
+          are facts about who answers for this and when it is late — the two
+          questions a triage conversation opens with — so they get a row of
+          their own rather than being dropped with the table. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-y border-rule-soft py-1.5">
+        <span className="font-mono text-[11px] text-ink-3">
+          owner{" "}
+          {group.owner ? (
+            <Link
+              href={href({ owner: query.owner === group.owner ? undefined : group.owner })}
+              className={query.owner === group.owner ? "text-accent" : "text-ink-2 hover:text-accent"}
+            >
+              {group.owner}
+            </Link>
+          ) : (
+            // Absent, and now genuinely rare. Ownership falls to the account
+            // the repository belongs to when CODEOWNERS can be read and
+            // matches nothing (B-034), so reaching here means the platform
+            // could not work it out at all — which is worth looking at rather
+            // than shrugging past.
+            <Link
+              href={href({ owner: query.owner === "unclaimed" ? undefined : "unclaimed" })}
+              className="text-critical hover:underline"
+            >
+              nobody — show the queue
+            </Link>
+          )}
+        </span>
+        <DueCell state={group.due_state} at={group.due_at} source={group.due_source} />
+        {group.age_days != null ? (
+          <span className="font-mono text-[11px] text-ink-3">{group.age_days}d old</span>
+        ) : null}
+      </div>
 
       <div>
         <Label>
           {group.occurrences} occurrence{group.occurrences === 1 ? "" : "s"}
         </Label>
         <ul className="mt-1 flex flex-col gap-0.5">
-          {group.locations.map((location) => (
-            <li key={location.finding_id} className="font-mono text-[10px]">
+          {group.locations.slice(0, 12).map((location) => (
+            <li key={location.finding_id} className="font-mono text-[12px]">
               <Link
                 href={href({ finding: location.finding_id })}
                 className={`hover:text-accent ${
@@ -637,14 +750,37 @@ function GroupDetail({
               <span className="ml-1.5 text-ink-3">
                 {location.capability} ·{" "}
                 <RelativeTime value={location.first_seen_at ?? null} />
+                {/* The whole record for this one occurrence (B-032): whether
+                    its lane can close it, whether a fix exists, what the
+                    platform could not work out. Facts that used to need four
+                    other pages. */}
+                {repoId ? (
+                  <>
+                    {" · "}
+                    <Link
+                      href={`/repos/${repoId}/findings/${location.finding_id}`}
+                      className="underline decoration-dotted underline-offset-2 hover:text-accent"
+                    >
+                      full record
+                    </Link>
+                  </>
+                ) : null}
               </span>
             </li>
           ))}
         </ul>
+        {group.locations.length > 12 ? (
+          <p className="mt-1 font-mono text-[11px] text-ink-3">
+            +{group.locations.length - 12} more occurrence
+            {group.locations.length - 12 === 1 ? "" : "s"}. Capped so the
+            disposition control below stays reachable — a row with twenty-three
+            identical locations used to push it off the end of the pane.
+          </p>
+        ) : null}
       </div>
 
       {detail ?? (
-        <p className="border-t border-rule pt-2 text-[10px] text-ink-3">
+        <p className="border-t border-rule pt-2 text-[12px] text-ink-3">
           Choose an occurrence to see its detail and record a disposition
           against it. A disposition applies to the occurrence, not to the row —
           accepting the risk in one file is not accepting it everywhere.

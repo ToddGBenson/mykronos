@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gzip
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 
 import pytest
 
+from mykronos import threat_intel
 from mykronos.db import Database
 from mykronos.db.models import ThreatIntelMatch
 from mykronos.threat_intel import (
@@ -28,6 +30,12 @@ def db(tmp_path) -> Iterator[Database]:
     database.create_all()
     yield database
     database.close()
+
+
+@pytest.fixture
+def session(db: Database) -> Iterator[object]:
+    with db.session() as opened:
+        yield opened
 
 
 class TestExtractCve:
@@ -260,3 +268,146 @@ def test_refresh_result_ok_requires_both_feeds_to_have_answered() -> None:
     assert RefreshResult(written=1).ok
     assert not RefreshResult(written=0, kev_error="boom").ok
     assert not RefreshResult(written=0, epss_error="boom").ok
+
+class TestTheFeedsAreActuallyReachable:
+    """The bug that made this whole page decorative.
+
+    EPSS answers `302 Found` with a relative Location naming the day's file,
+    and httpx does not follow redirects unless asked — so `raise_for_status()`
+    raised on the redirect and every refresh stored a `fetched_at` with no
+    score. 110 CVEs matched to open findings, 0 with an EPSS score, for as long
+    as it had been deployed. Fixing it scored 96 of them and surfaced one at
+    73% into a band nobody could previously see.
+    """
+
+    def _capture(self, monkeypatch, module):
+        seen: dict[str, object] = {}
+
+        class _Response:
+            content = gzip.compress(
+                b"cve,epss,percentile\nCVE-2026-1000,0.5,0.9\n"
+            )
+            text = ""
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> object:
+                return {"vulnerabilities": []}
+
+        def fake_get(url, **kwargs):
+            seen["url"] = url
+            seen.update(kwargs)
+            return _Response()
+
+        monkeypatch.setattr(module.httpx2, "get", fake_get)
+        return seen
+
+    def test_epss_follows_redirects(self, monkeypatch) -> None:
+        from mykronos import threat_intel
+
+        seen = self._capture(monkeypatch, threat_intel)
+        threat_intel.default_fetch_epss()
+
+        assert seen.get("follow_redirects") is True, (
+            "EPSS 302s to a dated file; without this every score is silently absent"
+        )
+
+    def test_kev_follows_redirects(self, monkeypatch) -> None:
+        """KEV serves 200 today. There is no reason to be the one that breaks
+        when it stops."""
+        from mykronos import threat_intel
+
+        seen = self._capture(monkeypatch, threat_intel)
+        threat_intel.default_fetch_kev()
+
+        assert seen.get("follow_redirects") is True
+
+
+V31 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"
+V30 = "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+
+
+class TestVectorLookup:
+    """Base vectors from NVD, so a score can be re-read for one system.
+
+    The platform stored `cvss_score` and no vector, which meant every finding
+    carried one number for every system in the world. A score cannot be
+    recomputed for an environment; a vector can, and that is the whole
+    difference.
+    """
+
+    def test_prefers_v31_over_v30_and_ignores_v2(self) -> None:
+        """A v2 vector fed to the v3 environmental formula would produce a
+        number in the right range and the wrong units."""
+        payload = {
+            "vulnerabilities": [
+                {
+                    "cve": {
+                        "metrics": {
+                            "cvssMetricV2": [
+                                {"cvssData": {"vectorString": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}}
+                            ],
+                            "cvssMetricV30": [{"cvssData": {"vectorString": V30}}],
+                            "cvssMetricV31": [{"cvssData": {"vectorString": V31}}],
+                        }
+                    }
+                }
+            ]
+        }
+
+        assert threat_intel.parse_nvd_vector(payload) == V31
+
+    def test_an_unscored_cve_returns_none_rather_than_raising(self) -> None:
+        """Reserved CVEs and the Debian `TEMP-` identifiers this estate is full
+        of have no NVD record at all. That is a real state and must be
+        storable, not an error."""
+        for payload in ({}, {"vulnerabilities": []}, {"vulnerabilities": [{"cve": {}}]}, None):
+            assert threat_intel.parse_nvd_vector(payload) is None
+
+    def test_only_rows_without_a_vector_are_looked_up(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2021-44228", cvss_vector=V31))
+        session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
+        session.flush()
+
+        asked: list[str] = []
+
+        def fetch(cve_id: str) -> object:
+            asked.append(cve_id)
+            return {}
+
+        threat_intel.refresh_vectors(session, fetch=fetch, sleep=lambda _: None)
+
+        assert asked == ["CVE-2014-0160"]
+
+    def test_a_miss_is_recorded_so_it_is_not_retried_forever(self, session) -> None:
+        """Two thirds of this estate's container findings carry identifiers NVD
+        has never heard of. Retrying those daily would be the whole budget."""
+        session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
+        session.flush()
+
+        threat_intel.refresh_vectors(session, fetch=lambda _: {}, sleep=lambda _: None)
+
+        row = session.get(ThreatIntelMatch, "CVE-2014-0160")
+        assert row is not None
+        assert row.cvss_vector is None
+        assert row.vector_checked_at is not None
+
+        asked: list[str] = []
+        threat_intel.refresh_vectors(
+            session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None
+        )
+        assert asked == []
+
+    def test_a_failed_lookup_leaves_the_row_for_next_time(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
+        session.flush()
+
+        def boom(_: str) -> object:
+            raise RuntimeError("NVD is down")
+
+        found = threat_intel.refresh_vectors(session, fetch=boom, sleep=lambda _: None)
+
+        row = session.get(ThreatIntelMatch, "CVE-2014-0160")
+        assert found == 0
+        assert row is not None and row.vector_checked_at is None

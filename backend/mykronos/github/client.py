@@ -44,6 +44,24 @@ REQUIRED_PERMISSIONS = {
     "metadata": "read",
 }
 
+#: Permissions that unlock a capability without being required for one
+#: (spec 30 §1.2). Deliberately separate from the set above, and the
+#: separation is the decision rather than a filing choice.
+#:
+#: `administration: read` is what lets the platform read branch protection and
+#: rulesets. Putting it in `REQUIRED_PERMISSIONS` would fail the spec 02 §8
+#: permission smoke test for **every installation that already exists**,
+#: turning an additive new panel into a breaking change for the whole estate —
+#: and it would do so to read settings that are useful and are not necessary
+#: for anything else the platform does.
+#:
+#: An App without it reports every governance control as `unknown`, with the
+#: reason and the permission named. That is the correct outcome: a permissions
+#: gap is not a security failure and must never be scored as one.
+OPTIONAL_PERMISSIONS = {
+    "administration": "read",
+}
+
 WORKFLOW_PATH_PREFIX = ".github/workflows/"
 
 
@@ -71,6 +89,55 @@ class IssueRef:
 
     number: int
     url: str
+
+
+@dataclass(frozen=True)
+class WorkflowRef:
+    """One workflow as GitHub knows it (spec 32 §6).
+
+    `state` is GitHub's own vocabulary and is deliberately passed through
+    rather than reduced to a boolean. `disabled_manually` and
+    `disabled_inactivity` are both "not running" and they are not the same
+    fact: the first is somebody's decision, the second is GitHub switching a
+    scheduled workflow off after 60 days without a push. Collapsing them
+    hides a real coverage gap behind a deliberate pause.
+
+    Known values: `active`, `disabled_manually`, `disabled_inactivity`,
+    `disabled_fork`. Unknown values pass through unaltered — a vocabulary
+    GitHub extends must not become an exception here.
+    """
+
+    #: The filename, e.g. `mykronos-sast.yml`. The identifier every other
+    #: method here takes, and the one the installer chose.
+    file_name: str
+    name: str
+    state: str
+    url: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return self.state == "active"
+
+
+@dataclass(frozen=True)
+class WorkflowRun:
+    """One completed workflow run (spec 32 §7).
+
+    The Actions analogue of Concourse's `finished_build`, and carrying the
+    same three things a link needs: what it was, how it ended, and when.
+    Deliberately not the run's logs — those hold scanner output, and spec 15
+    §4a's rule that the status read never reads logs is not weakened by
+    changing which CI it reads.
+    """
+
+    workflow_file: str
+    #: GitHub's `conclusion`, verbatim. Translated to the platform's status
+    #: vocabulary in `ci.py`, where the two systems are already reconciled,
+    #: rather than here — this stays a transport.
+    conclusion: str | None
+    run_number: int | None
+    url: str
+    finished_at: datetime | None
 
 
 @dataclass
@@ -177,6 +244,19 @@ class GitHubClient(Protocol):
         in the list looking like outstanding work forever.
         """
 
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        """Every open pull request on a repository, whoever opened it.
+
+        The dashboard listed only the ones Mykronos itself opened — installs
+        and Patchwork fixes — which made a page named "Pull requests" show
+        nothing for a repository with fifteen open. A security platform that
+        cannot see the changes people are actually proposing is looking at the
+        wrong half of the repository.
+        """
+        ...
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary: ...
@@ -223,6 +303,29 @@ class GitHubClient(Protocol):
         summary is the product, not a log line.
         """
 
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        """Branch protection for one branch, or `None` if there is none.
+
+        `None` and `{}` are different answers and both are real (spec 30 §1):
+        `None` means the branch is unprotected, which is a finding; a raised
+        `GitHubError` means the platform could not look, which is not. The
+        caller has to keep them apart, so this never converts one into the
+        other.
+        """
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        """The newer ruleset model, which increasingly supersedes branch
+        protection and which a repository may use *instead* (spec 30 §1.2).
+
+        Read as well as branch protection rather than in place of it: a
+        repository can have either, both, or neither, and reading only the
+        older model would report a modern, well-governed repository as
+        unprotected.
+        """
+
+
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
     async def dispatch_workflow(
@@ -238,6 +341,57 @@ class GitHubClient(Protocol):
         (spec 17 §2.5). Fire-and-forget: GitHub's own dispatch API returns no
         run id synchronously, so there is nothing to hand back — the new run
         shows up wherever scan results already show up, once it completes."""
+
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]: ...
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        """The most recent *completed* run of each workflow (spec 32 §7).
+
+        One call for the whole repository, not one per workflow. The
+        per-workflow endpoint would be tidier and would spend a request per
+        lane on every read, against an installation rate limit shared with
+        token rotation, the installer and Patchwork (§7.1) — the status
+        panel is the least important consumer of that budget and must not be
+        the greediest.
+
+        Completed only, matching Concourse's `finished_build`: a run in
+        progress has no outcome, and reporting one as anything would invent
+        a result.
+
+        **Known limitation: one page, and the page is repository-wide.** The
+        100 newest completed runs across ALL workflows, so an infrequent lane
+        in a busy repository falls off the end and comes back with no run at
+        all - indistinguishable here from a workflow that has never run.
+
+        Seen on ToddGBenson/keel on 2026-08-29: `pr-governance` and `ci`
+        accounted for 66 of the 100, the oldest entry was 2026-08-13, and
+        `mykronos-atlas` last ran on 2026-08-12. It had run five times and
+        failed five times, and read `not_run`.
+
+        Not fixed by paginating, which spends the request budget this single
+        call exists to protect (§7.1). The honest fix is the per-workflow
+        `runs` endpoint for lanes missing from the page - one extra request
+        each, only for the lanes that need it. Left undone deliberately
+        rather than unknowingly: a lane can still read as never-run when it
+        has merely been quiet, and this is the reason.
+        """
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        """Turn one installed workflow on or off without touching the file
+        (spec 32 §6).
+
+        The off switch spec 03 §3 did not have. Its `--soft-disable` sets the
+        job to `if: false`, which is a commit, a pull request and a review
+        round-trip — and what an operator needs when a lane is misbehaving is
+        the `fly pause` equivalent that takes effect now. Installing and
+        uninstalling stay pull requests, because those add and remove code;
+        this only changes whether existing code runs.
+
+        `workflow_file` is the filename, as with `dispatch_workflow`, so a
+        caller never looks up a numeric id first. GitHub returns 204 with no
+        body."""
 
     async def create_issue(
         self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
@@ -280,14 +434,30 @@ class FakeRepo:
     check_runs: list[dict[str, Any]] = field(default_factory=list)
     dispatched_workflows: list[dict[str, Any]] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
+    #: Spec 30 §1. `None` is the default and means *unprotected*, which is the
+    #: honest default for a fake repository nobody has configured — and is a
+    #: different answer from "could not read", which is a raised error.
+    branch_protection: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rulesets: list[dict[str, Any]] = field(default_factory=list)
+    #: Workflow state by filename (spec 32 §6). Absent means the workflow
+    #: exists as a file and GitHub has not been told otherwise, which is
+    #: `active` — the same default a freshly merged install PR produces.
+    workflow_states: dict[str, str] = field(default_factory=dict)
+    #: Latest completed run per workflow filename (spec 32 §7). Absent means
+    #: the workflow exists and has never finished a run — which is a real
+    #: state (`not_run`) and not an error.
+    workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
 
 
 class FakeGitHubClient:
     """In-memory GitHub, enforcing the preconditions that actually bite.
 
-    `permissions` defaults to the correct post-D-008 set. Narrowing it is how
-    the tests prove the installer fails loudly — and says why — when the App
-    is registered without `workflows: write` or `secrets: write`.
+    `permissions` defaults to the correct post-D-008 set, plus the optional
+    grants. Narrowing it is how the tests prove the installer fails loudly —
+    and says why — when the App is registered without `workflows: write` or
+    `secrets: write`, and how they prove the governance panel degrades to
+    `unknown` rather than to a row of red crosses without
+    `administration: read`.
     """
 
     def __init__(
@@ -296,7 +466,11 @@ class FakeGitHubClient:
         permissions: dict[str, str] | None = None,
     ) -> None:
         self.repos = repos or {}
-        self.permissions = dict(REQUIRED_PERMISSIONS if permissions is None else permissions)
+        self.permissions = dict(
+            {**REQUIRED_PERMISSIONS, **OPTIONAL_PERMISSIONS}
+            if permissions is None
+            else permissions
+        )
         self.calls: list[tuple[str, str]] = []
         #: Bodies by PR number, so a test can assert what a reviewer would
         #: actually read rather than only that a PR was opened.
@@ -401,6 +575,10 @@ class FakeGitHubClient:
             url=f"https://github.com/{repo_full_name}/pull/{self._next_pr_number}",
             head_branch=head,
             draft=draft,
+            # Recorded rather than discarded. The fake took a title and threw
+            # it away, so every pull request it produced had an empty one and
+            # any test asserting on titles was quietly asserting against "".
+            title=title,
         )
         self._next_pr_number += 1
         repo.pull_requests.append(pr)
@@ -416,6 +594,16 @@ class FakeGitHubClient:
             if pr.number == number:
                 return pr
         raise GitHubError(f"Pull request #{number} not found", status=404)
+
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        self.calls.append(("list_open_pull_requests", repo_full_name))
+        return [
+            pr
+            for pr in self._repo(repo_full_name).pull_requests
+            if pr.state == "open" and not pr.merged
+        ][:limit]
 
     async def get_pull_request(
         self, repo_full_name: str, number: int
@@ -505,6 +693,18 @@ class FakeGitHubClient:
         )
         return check_id
 
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        self.calls.append(("get_branch_protection", f"{repo_full_name}:{branch}"))
+        self._require("administration", "read", "Reading branch protection")
+        return self._repo(repo_full_name).branch_protection.get(branch)
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        self.calls.append(("get_rulesets", repo_full_name))
+        self._require("administration", "read", "Reading rulesets")
+        return list(self._repo(repo_full_name).rulesets)
+
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         self.calls.append(("get_installation", str(installation_id)))
         try:
@@ -526,6 +726,52 @@ class FakeGitHubClient:
         repo.dispatched_workflows.append(
             {"workflow_file": workflow_file, "ref": ref, "inputs": inputs or {}}
         )
+
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]:
+        self.calls.append(("list_workflows", repo_full_name))
+        self._require("actions", "read", "Listing workflows")
+        repo = self._repo(repo_full_name)
+        out: list[WorkflowRef] = []
+        for path in sorted(repo.files):
+            if not path.startswith(WORKFLOW_PATH_PREFIX):
+                continue
+            file_name = path[len(WORKFLOW_PATH_PREFIX) :]
+            out.append(
+                WorkflowRef(
+                    file_name=file_name,
+                    name=file_name,
+                    state=repo.workflow_states.get(file_name, "active"),
+                    url=f"https://github.com/{repo_full_name}/actions/workflows/{file_name}",
+                )
+            )
+        return out
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        self.calls.append(("latest_workflow_runs", repo_full_name))
+        self._require("actions", "read", "Reading workflow runs")
+        repo = self._repo(repo_full_name)
+        return [
+            run
+            for name, run in sorted(repo.workflow_runs.items())
+            if f"{WORKFLOW_PATH_PREFIX}{name}" in repo.files
+        ]
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        self.calls.append(
+            ("set_workflow_state", f"{repo_full_name}/{workflow_file}={enabled}")
+        )
+        self._require("actions", "write", "Enabling or disabling a workflow")
+        repo = self._repo(repo_full_name)
+        # 404 on a workflow that is not installed, as GitHub does. Silently
+        # recording state for a file that does not exist would let a caller
+        # "disable" a capability that was never installed and report success.
+        if f"{WORKFLOW_PATH_PREFIX}{workflow_file}" not in repo.files:
+            raise GitHubError(
+                f"{repo_full_name} has no workflow {workflow_file}", status=404
+            )
+        repo.workflow_states[workflow_file] = "active" if enabled else "disabled_manually"
 
     async def create_issue(
         self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
@@ -697,6 +943,37 @@ class RestGitHubClient:
     async def get_repo(self, repo_full_name: str) -> dict[str, Any]:
         return dict(await self._json("GET", f"/repos/{repo_full_name}"))
 
+    async def get_branch_protection(
+        self, repo_full_name: str, branch: str
+    ) -> dict[str, Any] | None:
+        response = await self._request(
+            "GET", f"/repos/{repo_full_name}/branches/{branch}/protection"
+        )
+        if response.status_code == 404:
+            # GitHub returns 404 for "this branch is not protected", which is
+            # an answer and not a failure. Returned as `None` so the caller can
+            # report *unprotected*; a 403 still raises, because "we were not
+            # allowed to look" must never render as "there is no protection".
+            return None
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Could not read branch protection for {repo_full_name}: "
+                f"{response.text[:400]}",
+                status=response.status_code,
+            )
+        return dict(response.json())
+
+    async def get_rulesets(self, repo_full_name: str) -> list[dict[str, Any]]:
+        # `includes_parents` so an organisation-level ruleset counts: a
+        # repository governed entirely from the org would otherwise report as
+        # having no rules at all.
+        rules = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/rulesets",
+            params={"includes_parents": "true"},
+        )
+        return list(rules) if isinstance(rules, list) else []
+
     async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
         response = await self._request(
             "GET", f"/repos/{repo_full_name}/contents/{path}", params={"ref": ref}
@@ -854,6 +1131,50 @@ class RestGitHubClient:
             head_sha=str((item.get("head") or {}).get("sha", "")),
         )
 
+    async def list_open_pull_requests(
+        self, repo_full_name: str, *, limit: int = 100
+    ) -> list[PullRequest]:
+        """Open pull requests, newest first.
+
+        One page only. A repository with more than a hundred open pull
+        requests has a problem this view cannot help with, and paginating for
+        it would slow the common case for every other repository.
+
+        `changed_files` is deliberately absent: the list endpoint does not
+        return it, and fetching it would mean a second call per pull request.
+        The detail view has it for the one somebody opens.
+        """
+        # Errors propagate. A repository the App cannot see is a real answer
+        # for this view and the caller reports it as unreachable — swallowing
+        # it here would render "no open pull requests", which is the one thing
+        # it definitely does not mean.
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/pulls",
+            params={
+                "state": "open",
+                "sort": "created",
+                "direction": "desc",
+                "per_page": min(limit, 100),
+            },
+        )
+        items = payload if isinstance(payload, list) else []
+        return [
+            PullRequest(
+                number=int(item["number"]),
+                url=str(item["html_url"]),
+                head_branch=(item.get("head") or {}).get("ref", ""),
+                state=str(item.get("state", "open")),
+                merged=bool(item.get("merged_at")),
+                draft=bool(item.get("draft", False)),
+                title=str(item.get("title", "")),
+                created_at=_parse_time(item.get("created_at")),
+                changed_files=None,
+                head_sha=str((item.get("head") or {}).get("sha", "")),
+            )
+            for item in items[:limit]
+        ]
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary:
@@ -981,6 +1302,66 @@ class RestGitHubClient:
             "POST",
             f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/dispatches",
             json={"ref": ref, "inputs": inputs or {}},
+        )
+
+    async def list_workflows(self, repo_full_name: str) -> list[WorkflowRef]:
+        """Every workflow GitHub knows about in this repository, with its
+        state (spec 32 §6).
+
+        One page. A repository with more than 100 workflows exists in theory
+        and not in this estate, and paginating a status read that §7.1 already
+        wants to spend as few calls as possible on would buy nothing.
+        """
+        payload = await self._json(
+            "GET", f"/repos/{repo_full_name}/actions/workflows", params={"per_page": 100}
+        )
+        out: list[WorkflowRef] = []
+        for item in payload.get("workflows", []) or []:
+            # `path` is `.github/workflows/<file>`; every other method here
+            # takes the bare filename, so this normalises once rather than
+            # making each caller strip it.
+            path = str(item.get("path", ""))
+            file_name = path.rsplit("/", 1)[-1]
+            if not file_name:
+                continue
+            out.append(
+                WorkflowRef(
+                    file_name=file_name,
+                    name=str(item.get("name") or file_name),
+                    state=str(item.get("state") or "active"),
+                    url=str(item.get("html_url") or ""),
+                )
+            )
+        return out
+
+    async def latest_workflow_runs(self, repo_full_name: str) -> list[WorkflowRun]:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/actions/runs",
+            params={"per_page": 100, "status": "completed"},
+        )
+        # Newest first, per GitHub. Keeping the first run seen for each
+        # workflow is therefore keeping the latest, without sorting.
+        latest: dict[str, WorkflowRun] = {}
+        for item in payload.get("workflow_runs", []) or []:
+            file_name = str(item.get("path", "")).rsplit("/", 1)[-1]
+            if not file_name or file_name in latest:
+                continue
+            latest[file_name] = WorkflowRun(
+                workflow_file=file_name,
+                conclusion=str(item["conclusion"]) if item.get("conclusion") else None,
+                run_number=int(item["run_number"]) if item.get("run_number") else None,
+                url=str(item.get("html_url") or ""),
+                finished_at=_parse_time(item.get("updated_at")),
+            )
+        return list(latest.values())
+
+    async def set_workflow_state(
+        self, repo_full_name: str, workflow_file: str, *, enabled: bool
+    ) -> None:
+        verb = "enable" if enabled else "disable"
+        await self._json(
+            "PUT", f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/{verb}"
         )
 
     async def create_issue(

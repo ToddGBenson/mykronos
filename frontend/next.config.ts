@@ -45,29 +45,14 @@ const securityHeaders = [
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=(), payment=()",
   },
-  {
-    // 'unsafe-inline' for styles is Tailwind's runtime, and dropping it would
-    // break the application rather than harden it. Scripts get no such
-    // exemption: 'self' only, which is the half that matters for XSS.
-    //
-    // `connect-src 'self'` is load-bearing rather than boilerplate - the
-    // dashboard talks to its own API server-side, so a browser has no reason
-    // to reach any other origin, and saying so turns exfiltration into a CSP
-    // violation.
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data:",
-      "font-src 'self' data:",
-      "connect-src 'self'",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "object-src 'none'",
-    ].join("; "),
-  },
+  // Content-Security-Policy is NOT here. It lives in `proxy.ts`, because it
+  // needs a per-request nonce and this file is static.
+  //
+  // What was here served `script-src 'self'` with no nonce and no
+  // `'unsafe-inline'`, and the App Router needs inline scripts to hydrate. The
+  // browser blocked them, React threw #412, and every client component on the
+  // site was inert — the header was present, correct-looking, and breaking the
+  // application. A header that ships is not a header that works.
 ];
 
 const nextConfig: NextConfig = {

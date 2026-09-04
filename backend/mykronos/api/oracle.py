@@ -193,7 +193,7 @@ async def evaluate(
         background.add_task(
             request.app.state.notifier.send,
             Notification(
-                title="Oracle refused a commit",
+                title="A risk decision refused a commit",
                 detail=(
                     f"Score {published.decision.overall_risk_score}. "
                     f"{published.decision.reasoning or 'No reasoning recorded.'}\n"
@@ -236,8 +236,9 @@ async def evaluate(
 async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, Any]:
     """The policy currently in force, verbatim (spec 09 §7).
 
-    Readable by viewers as well as admins. Anyone whose pull request Oracle
-    judges is entitled to see how the number was produced — a risk score you
+    Readable by viewers as well as admins. Anyone whose pull request the
+    risk-decision engine judges is entitled to see how the number was
+    produced — a risk score you
     are not allowed to inspect is one people learn to route around.
     """
     policy = request.app.state.oracle_policy
@@ -279,6 +280,7 @@ async def shadow_mode(
     request: Request,
     principal: PrincipalDep,
     days: Annotated[int, Query(ge=1, le=730)] = 90,
+    repo_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """What blocking mode would have done, had it been on (spec 09 §6).
 
@@ -291,8 +293,20 @@ async def shadow_mode(
     shadowed by the parameterised one.
     """
     since = utcnow() - timedelta(days=days)
-    report = _service(request).shadow_mode_report(since=since)
-    return {"window_days": days, "since": since.isoformat(), **report}
+    # Imported at call time: `api.dashboard` imports Oracle's models, so a
+    # module-level import here would close the loop.
+    from mykronos.api.dashboard import _resolve_repo
+
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    report = _service(request).shadow_mode_report(
+        since=since, repo_full_name=repo_full_name
+    )
+    return {
+        "window_days": days,
+        "since": since.isoformat(),
+        "repo_full_name": repo_full_name,
+        **report,
+    }
 
 
 @router.get("/term-analytics")
@@ -348,7 +362,8 @@ async def override_decision(
 
     The decision itself is never rewritten — spec 09 §10 needs past decisions
     to stay reproducible. The override is recorded *alongside* it, so the
-    history shows both what Oracle said and what the human did about it.
+    history shows both what the risk decision said and what the human did
+    about it.
 
     spec 09 §6 calls these "exactly the data that should most influence policy
     tuning over time", which is why the reason is mandatory rather than

@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import RepoOnboarding, WorkflowInstallEvent
-from mykronos.github.client import ChecksSummary, GitHubError
+from mykronos.github.client import ChecksSummary, GitHubError, PullRequest
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.lake.catalog import Catalog
 
@@ -234,36 +234,118 @@ async def _confirm(
     )
 
 
+async def _list_repo(
+    repo_full_name: str,
+    installation_id: int,
+    owned: dict[int, _Candidate],
+    factory: GitHubClientFactory,
+) -> tuple[list[PullRequestRow], tuple[str, str] | None]:
+    """Every open pull request on one repository, Mykronos's own annotated.
+
+    One listing call per repository rather than one detail call per pull
+    request Mykronos remembers opening. That is both cheaper and complete: the
+    old shape could only ever return what the platform already knew about, so
+    a repository with fifteen human pull requests rendered as empty.
+    """
+    github = factory.for_installation(installation_id)
+    try:
+        pull_requests = await github.list_open_pull_requests(repo_full_name)
+    except GitHubError as exc:
+        return [], (repo_full_name, str(exc))
+
+    async def _row(pull_request: PullRequest) -> PullRequestRow:
+        checks: ChecksSummary | None = None
+        if pull_request.head_sha:
+            try:
+                checks = await github.get_checks_summary(
+                    repo_full_name, pull_request.head_sha
+                )
+            except GitHubError as exc:
+                # A missing check summary is a missing column, not a missing
+                # row.
+                logger.debug(
+                    "No check summary for %s#%s: %s",
+                    repo_full_name,
+                    pull_request.number,
+                    exc,
+                )
+
+        # `kind` is what the page is read for: an install turns scanning on, a
+        # fix proposes a change to your code, and `other` is somebody else's
+        # work that this platform has an opinion about but did not author.
+        candidate = owned.get(pull_request.number)
+        return PullRequestRow(
+            repo_full_name=repo_full_name,
+            number=pull_request.number,
+            url=pull_request.url,
+            kind=candidate.kind if candidate else "other",
+            title=pull_request.title,
+            state=pull_request.state,
+            merged=pull_request.merged,
+            draft=pull_request.draft,
+            branch=pull_request.head_branch,
+            opened_at=pull_request.created_at,
+            changed_files=pull_request.changed_files,
+            summary=candidate.summary if candidate else "",
+            detail=candidate.detail if candidate else "",
+            capabilities=candidate.capabilities if candidate else [],
+            finding_id=candidate.finding_id if candidate else None,
+            checks=checks,
+            human_edited=candidate.human_edited if candidate else False,
+        )
+
+    return list(await asyncio.gather(*(_row(pr) for pr in pull_requests))), None
+
+
 async def open_pull_requests(
     session: Session, catalog: Catalog, factory: GitHubClientFactory
 ) -> PullRequestList:
-    """Everything Mykronos has open across every onboarded repository."""
+    """Every open pull request across every onboarded repository.
+
+    This used to return only the ones Mykronos itself opened, which made a page
+    called "Pull requests" show nothing for a repository with fifteen open. A
+    security platform that cannot see the changes people are actually proposing
+    is looking at the wrong half of the repository.
+
+    What Mykronos opened is still distinguished rather than merged in — `kind`
+    keeps install, fix and other apart, and the platform's own rationale still
+    travels with its own rows.
+    """
     repos = {
         row.github_repo_full_name: row.github_installation_id
         for row in session.execute(select(RepoOnboarding)).scalars()
     }
 
-    candidates = _install_candidates(session) + _fix_candidates(session, catalog, repos)
+    # What the platform believes it opened, indexed per repository so a listing
+    # can annotate rather than re-fetch.
+    owned: dict[str, dict[int, _Candidate]] = {}
+    for candidate in _install_candidates(session) + _fix_candidates(session, catalog, repos):
+        owned.setdefault(candidate.repo_full_name, {})[candidate.number] = candidate
 
-    # Concurrently: this is two GitHub round trips per pull request, and doing
-    # them in series is what makes a dashboard page feel broken.
-    confirmed = await asyncio.gather(
-        *(_confirm(candidate, factory) for candidate in candidates)
+    # Concurrently across repositories: in series this is one round trip per
+    # repository before the page can render anything.
+    listed = await asyncio.gather(
+        *(
+            _list_repo(repo_full_name, installation_id, owned.get(repo_full_name, {}), factory)
+            for repo_full_name, installation_id in repos.items()
+        )
     )
 
     result = PullRequestList()
-    for row, failure in confirmed:
-        if row is not None:
-            result.pull_requests.append(row)
+    for rows, failure in listed:
+        result.pull_requests.extend(rows)
         if failure is not None:
             result.unreachable.append(failure)
 
-    # Fixes before installs, oldest first. A fix is a proposal about your code
-    # and an install is configuration; and within either, the one that has been
-    # waiting longest is the one going stale.
+    # Fixes, then installs, then everyone else's; oldest first within each. A
+    # fix is a proposal about your code and an install is configuration, and
+    # both are things this platform is answerable for — so they sort above work
+    # it is only reporting on. Within any group, the one waiting longest is the
+    # one going stale.
+    order = {"fix": 0, "install": 1}
     result.pull_requests.sort(
         key=lambda row: (
-            row.kind != "fix",
+            order.get(row.kind, 2),
             row.opened_at or datetime.max.replace(tzinfo=None),
         )
     )

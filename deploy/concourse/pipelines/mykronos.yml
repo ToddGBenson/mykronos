@@ -280,6 +280,52 @@ jobs:
   # `build` on it would turn "one signal is inert" into "nothing ships".
   - name: pin-check
     public: true
+    # Concurrency, in two rounds on 2026-08-25, and the second round is the
+    # one that mattered.
+    #
+    # Round one added `quality-a`/`-b` here because the quality stage was the
+    # only unbounded one. That was true and insufficient: the groups were
+    # *per stage*, and per-stage caps sum. With `scan-heavy-a`/`-b` already
+    # holding two and the image jobs on `serial: true` holding one each, five
+    # heavy jobs ran together on two workers -- `pin-check`, `frontend`,
+    # `sast`, `iac` and `publish-frontend`. A 15-minute image build sat at 38
+    # minutes against a 45-minute ceiling, and a 10-minute scan at 33.
+    #
+    # Round two replaced every one of those with a single pair, `worker-a`
+    # and `worker-b`, across the whole pipeline. Two groups because there are
+    # two workers: the cap is now a fact about the box rather than an
+    # accident of how the stages were divided. `serial: true` on the image
+    # jobs stopped them stacking with *themselves* and did nothing about
+    # standing beside four other heavy jobs, which is what they were doing.
+    #
+    # thehub.yml reached the same conclusion first, from an OOM that killed
+    # the scheduler; it uses one group because it has one worker. The cost is
+    # the same one its comment names: the fan-out is a queue, and a full run
+    # is the sum of its lanes over two rather than the longest one. On a box
+    # that also hosts thehub's stack and this platform's own containers, that
+    # was always closer to the truth than the diagram suggested.
+    #
+    # The original note follows, because the first round's evidence is still
+    # why any of this is here:
+    #
+    # Concurrency added 2026-08-25, after six merges in ten minutes started
+    # six overlapping runs of this whole stage: five `unit` builds at once,
+    # each running the full suite, plus overlapping `lint-and-types` and
+    # `frontend`. A suite that takes 23 minutes was at 1h23m and climbing,
+    # both workers sat at ~600% CPU, and `frontend` and `pin-check` failed on
+    # `timeout exceeded` — starvation, not code. The mykronos-frontend
+    # container went unhealthy while still serving 200s.
+    #
+    # The security stage was already bounded by `scan-heavy-a`/`-b` on
+    # 2026-08-15; the five quality jobs were the only ones in this file left
+    # unbounded, which is why they were the ones that piled up.
+    #
+    # Two groups rather than one, matching the two workers: the stage can
+    # still use the box fully, and cannot exceed it. Being in a group also
+    # makes each job serial with *itself*, which is the part that actually
+    # bit — five builds of one job, one per commit, four of them already
+    # superseded before they finished.
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -312,6 +358,7 @@ jobs:
 
   - name: unit
     public: true
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -394,6 +441,7 @@ jobs:
 
   - name: lint-and-types
     public: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -481,6 +529,7 @@ jobs:
 
   - name: qa-spec-links
     public: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -526,6 +575,7 @@ jobs:
   # retired: lint, build, and the contract check that matters more than either.
   - name: frontend
     public: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -681,7 +731,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -754,7 +804,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -902,7 +952,33 @@ jobs:
                 # Counts, not a score. The trust formula lives in the platform
                 # so it is reproducible and cannot drift between CI systems
                 # (spec 07 §5, §7).
-                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json)
+                #
+                # --sbom enables the license pass (spec 22 §1). Without it
+                # `licenses_seen` stays empty, which the platform reads as
+                # not-computed rather than as no-licenses-found. This call
+                # omitted it while the Actions path passed it, so whether a
+                # repository had license evidence depended on which CI system
+                # finished last — the evidence write is an upsert and both
+                # scan the same commits. Intermittent missing data, which is
+                # the hardest shape to diagnose from a dashboard (B-005).
+                #
+                # No `-f` guard, unlike the Actions template: that one skips
+                # the SBOM on pull requests, while this task has already
+                # exited non-zero above if the document has no components.
+                SBOM_ARGS="--sbom sbom-out/sbom-${SHORT}.cdx.json"
+
+                # Opt-in per spec 07 §7: freshness queries the npm and PyPI
+                # registries for each package's last publish date, which is an
+                # outbound call to a third party and is never on by default.
+                # Off here, so `stale_dependencies` stays honestly
+                # not-measured rather than a zero meaning "never asked"
+                # (spec 22 §2.1, B-004).
+                if [ "${ATLAS_CHECK_FRESHNESS:-false}" = "true" ]; then
+                  SBOM_ARGS="$SBOM_ARGS --check-freshness --staleness-threshold-days ${ATLAS_STALENESS_THRESHOLD_DAYS:-730}"
+                fi
+
+                # shellcheck disable=SC2086  # deliberate word splitting
+                ECOSYSTEMS=$(python -m mykronos.atlas_counts evidence/osv.json $SBOM_ARGS)
 
                 PROVENANCE=$(jq -nc \
                   --arg builder "concourse" \
@@ -972,7 +1048,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1017,7 +1093,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1143,7 +1219,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-a]
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1300,7 +1376,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial_groups: [scan-heavy-b]
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1418,9 +1494,10 @@ jobs:
 
   - name: oracle-gate
     public: true
-    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
-    # single commit fanned out onto the one worker and left thehub with
-    # 11 builds pending and 0 started for hours.
+    # `serial: true`, not a worker group. This asks the platform to score a
+    # commit and posts a check run: it is an API call, not a build, and
+    # putting it in the two-slot cap would make a gate queue behind a
+    # twenty-minute image build for work that takes seconds.
     serial: true
     on_failure: *slack_alert
     on_error: *slack_alert
@@ -1536,8 +1613,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
 
       - task: promote-tags
         timeout: 10m
@@ -1566,10 +1668,9 @@ jobs:
 
   - name: build
     public: true
-    # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
-    # single commit fanned out onto the one worker and left thehub with
-    # 11 builds pending and 0 started for hours.
-    serial: true
+    # In the cap: this compiles the wheel the image jobs consume, and it is
+    # real work on a worker rather than an API call.
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1642,7 +1743,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-a]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1663,8 +1764,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
       - task: kaniko
         timeout: 45m
         config:
@@ -1693,7 +1819,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1714,8 +1840,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
       - task: kaniko
         timeout: 45m
         config:
@@ -1753,7 +1904,7 @@ jobs:
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
-    serial: true
+    serial_groups: [worker-b]
     on_failure: *slack_alert
     on_error: *slack_alert
     plan:
@@ -1780,8 +1931,33 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                # `.git/ref` first, and `git` only if it is missing.
+                #
+                # The git resource already writes the checked-out SHA to
+                # `.git/ref`, so installing a package to run `rev-parse` was
+                # buying a value that was on disk before this task started.
+                # It cost the whole 5m budget on 2026-08-25 when the box was
+                # contended: publish-backend/86 and publish-frontend/87 both
+                # died in this task, on `apt-get update`, having done no work
+                # of their own. A step that fails without attempting its
+                # purpose is the worst kind to keep.
+                #
+                # The fallback stays because the ref file is a property of
+                # the resource rather than of Concourse, and a task that
+                # silently produced an empty SHA would tag an image `:` and
+                # be far harder to diagnose than a slow apt-get.
+                if [ -s source/.git/ref ]; then
+                  tr -d '\n' < source/.git/ref > meta/sha
+                else
+                  echo "No source/.git/ref; falling back to installing git." >&2
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  git -C source rev-parse HEAD | tr -d '\n' > meta/sha
+                fi
+                # Never let an empty or malformed SHA leave this task: it
+                # becomes an image tag downstream, and `image:` with nothing
+                # after the colon fails much further from the cause.
+                grep -Eq '^[0-9a-f]{40}$' meta/sha \
+                  || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
 
       - task: scan-images
         timeout: 45m

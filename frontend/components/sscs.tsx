@@ -16,7 +16,19 @@ import {
 } from "@/components/primitives";
 import type { SscsEvidence } from "@/lib/api";
 
-type ScoreTerm = { key: string; penalty: number; detail: string; count: number };
+type ScoreTerm = {
+  key: string;
+  penalty: number;
+  detail: string;
+  count: number;
+  /**
+   * Absent on the dependency terms, which are always determinable from
+   * the SBOM. Present and `false` on a provenance term the runner could
+   * not read (spec 29 §3) — not the same fact as a term that scored
+   * zero, and the row says which.
+   */
+  available?: boolean;
+};
 
 type Ecosystems = {
   ecosystems?: {
@@ -46,6 +58,12 @@ const TERM_LABEL: Record<string, string> = {
   // copyleft ones.
   flagged_licenses: "Restrictive licenses",
   unknown_licenses: "License not stated",
+  // Spec 29 §3 — the first terms here that are about how the repository
+  // *builds* rather than about what it depends on, and the first that can
+  // give points back.
+  signed_commits: "Signed commits",
+  attestation_present: "Build attestation",
+  digest_pinned_deployment: "Digest-pinned deployment",
 };
 
 /** Higher is better here, unlike every other score in the platform. */
@@ -61,12 +79,13 @@ function trustTone(
 }
 
 export function SscsTab({
-  repoId,
   evidence,
   latest,
 }: {
-  repoId: string;
   evidence: SscsEvidence[];
+  // `repoId` used to be a prop here, for the SBOM download links. Those moved
+  // to `ReleaseEvidence` with the table they belong to, so this component now
+  // needs nothing but the numbers it renders.
   latest: SscsEvidence | null;
 }) {
   if (!latest) {
@@ -86,7 +105,6 @@ export function SscsTab({
 
   const detail = (latest.ecosystems_json ?? {}) as Ecosystems;
   const terms = detail.score_terms ?? [];
-  const releases = evidence.filter((row) => row.sbom_ref);
   // A scan ran; it just resolved nothing to score. That is a different state
   // from "no scan has run", which is the empty state above, and from a low
   // score, which is a finding about the dependencies.
@@ -128,7 +146,7 @@ export function SscsTab({
       {!assessed ? (
         <section className="border border-high bg-high-wash p-2.5">
           <Label>Not assessed</Label>
-          <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+          <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
             {terms[0]?.detail ??
               "The scan resolved no dependencies, so no supply-chain trust was assessed."}{" "}
             This is not a clean result. Until the manifests resolve to a pinned
@@ -140,7 +158,7 @@ export function SscsTab({
       ) : terms.length > 0 ? (
         <section>
           <Label>How the trust score was reached</Label>
-          <table className="mt-1.5 w-auto border-collapse font-mono text-[10px]">
+          <table className="mt-1.5 w-auto border-collapse font-mono text-[12px]">
             <tbody>
               <tr>
                 <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">100</td>
@@ -149,8 +167,25 @@ export function SscsTab({
               </tr>
               {terms.map((term) => (
                 <tr key={term.key}>
-                  <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">
-                    −{term.penalty.toFixed(1)}
+                  {/* Three states, not one. A provenance term can give points
+                      back (spec 29 §3), and one that could not be determined
+                      is not one that scored zero — a repository whose branch
+                      could not be read has not failed the signing check, and
+                      rendering it as `−0.0` would say it had. */}
+                  <td
+                    className={`tabular w-14 py-0.5 pr-3 text-right ${
+                      term.available === false
+                        ? "text-ink-3"
+                        : term.penalty < 0
+                          ? "text-pass"
+                          : "text-ink"
+                    }`}
+                  >
+                    {term.available === false
+                      ? "—"
+                      : `${term.penalty < 0 ? "+" : "\u2212"}${Math.abs(
+                          term.penalty,
+                        ).toFixed(1)}`}
                   </td>
                   <td className="py-0.5 pr-6 text-ink-2">
                     {TERM_LABEL[term.key] ?? term.key}
@@ -171,80 +206,12 @@ export function SscsTab({
               </tr>
             </tbody>
           </table>
-          <p className="mt-1.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+          <p className="mt-1.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
             Advisory counts are curved rather than summed, so more
             vulnerabilities always score worse without five criticals and five
             hundred both reaching zero. Ratio terms stay linear because a ratio
             cannot saturate.
           </p>
-        </section>
-      ) : null}
-
-      {releases.length > 0 ? (
-        <section>
-          <Label>Release evidence</Label>
-          <div className="scroll-x mt-1.5 border border-rule">
-            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[11px]">
-              <thead>
-                <tr className="border-b-2 border-ink-2 text-left">
-                  {["Release", "Commit", "Trust", "SBOM", "Builder", "When"].map(
-                    (heading) => (
-                      <th
-                        key={heading}
-                        className="whitespace-nowrap px-2 py-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-3"
-                      >
-                        {heading}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {releases.map((row) => {
-                  const provenance = (row.provenance_json ?? {}) as Record<
-                    string,
-                    string
-                  >;
-                  return (
-                    <tr
-                      key={row.evidence_id}
-                      className="border-b border-rule-soft last:border-b-0"
-                    >
-                      <td className="px-2 py-2 font-semibold">
-                        {row.tag_or_release}
-                      </td>
-                      <td className="px-2 py-2 text-ink-3">
-                        {row.commit_sha?.slice(0, 7)}
-                      </td>
-                      <td className="px-2 py-2">
-                        <Pill tone={trustTone(row.trust_score)}>
-                          {row.trust_score ?? "n/a"}
-                        </Pill>
-                      </td>
-                      <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
-                        {/* The archived file itself, not just its path
-                            (spec 18 §8.2) — admin-only, the same gate every
-                            other raw tool output already sits behind. */}
-                        <a
-                          href={`/api/repos/${repoId}/sscs/sbom?evidence_id=${row.evidence_id}`}
-                          className="text-accent underline-offset-2 hover:underline"
-                          title={row.sbom_ref ?? undefined}
-                        >
-                          download
-                        </a>
-                      </td>
-                      <td className="px-2 py-2 text-ink-3">
-                        {provenance.builder_id ?? "—"}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-2 text-ink-3">
-                        <RelativeTime value={row.evaluated_at} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
         </section>
       ) : null}
 
@@ -271,7 +238,7 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
 
   if (scored.length < 2) {
     return (
-      <p className="mt-1 text-[11px] text-ink-3">
+      <p className="mt-1 text-[13px] text-ink-3">
         {scored.length === 0
           ? `No scan has resolved dependencies yet${skipped > 0 ? ` (${skipped} assessed nothing)` : ""}.`
           : "One data point so far. A trend needs at least two scans."}
@@ -329,10 +296,112 @@ function TrustSparkline({ rows }: { rows: SscsEvidence[] }) {
         />
         <circle cx={lastX} cy={lastY} r="2.5" className="fill-current" />
       </svg>
-      <p className="mt-1 font-mono text-[9px] text-ink-3">
+      <p className="mt-1 font-mono text-[11px] text-ink-3">
         {scored.length} scans · dashed line is the default release floor of 50
         {skipped > 0 ? ` · ${skipped} not assessed, omitted` : ""}
       </p>
     </div>
+  );
+}
+
+
+/**
+ * Every release that carried an SBOM, collapsed by default (B-031).
+ *
+ * Moved out of `SscsTab` and to the bottom of the tab. It is a record rather
+ * than a question: somebody reads it when they need the SBOM for a specific
+ * release, which is rarely, and it was sitting above the thing people come to
+ * this tab for — which packages are vulnerable and what can be upgraded.
+ *
+ * Collapsed rather than removed, and the summary carries the count, so the
+ * evidence is one click away and its absence is never mistaken for a
+ * repository that has never released.
+ */
+export function ReleaseEvidence({
+  repoId,
+  evidence,
+}: {
+  /** Needed for the SBOM download links, which are admin-gated the same way
+   *  every other raw tool output is. */
+  repoId: string;
+  evidence: SscsEvidence[];
+}) {
+  const releases = evidence.filter((row) => row.sbom_ref);
+  if (releases.length === 0) return null;
+
+  return (
+    <details className="border-t border-rule pt-3">
+      <summary className="cursor-pointer list-none">
+        <Label>Release evidence</Label>
+        <span className="ml-2 font-mono text-[12px] text-ink-3">
+          {releases.length} release{releases.length === 1 ? "" : "s"} with an SBOM
+        </span>
+      </summary>
+      <div className="mt-2">
+          <Label>Release evidence</Label>
+          <div className="scroll-x mt-1.5 border border-rule">
+            <table className="w-full min-w-[560px] border-collapse bg-paper-2 font-mono text-[13px]">
+              <thead>
+                <tr className="border-b-2 border-ink-2 text-left">
+                  {["Release", "Commit", "Trust", "SBOM", "Builder", "When"].map(
+                    (heading) => (
+                      <th
+                        key={heading}
+                        className="whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3"
+                      >
+                        {heading}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {releases.map((row) => {
+                  const provenance = (row.provenance_json ?? {}) as Record<
+                    string,
+                    string
+                  >;
+                  return (
+                    <tr
+                      key={row.evidence_id}
+                      className="border-b border-rule-soft last:border-b-0"
+                    >
+                      <td className="px-2 py-2 font-semibold">
+                        {row.tag_or_release}
+                      </td>
+                      <td className="px-2 py-2 text-ink-3">
+                        {row.commit_sha?.slice(0, 7)}
+                      </td>
+                      <td className="px-2 py-2">
+                        <Pill tone={trustTone(row.trust_score)}>
+                          {row.trust_score ?? "n/a"}
+                        </Pill>
+                      </td>
+                      <td className="max-w-[28ch] truncate px-2 py-2 text-ink-2">
+                        {/* The archived file itself, not just its path
+                            (spec 18 §8.2) — admin-only, the same gate every
+                            other raw tool output already sits behind. */}
+                        <a
+                          href={`/api/repos/${repoId}/sscs/sbom?evidence_id=${row.evidence_id}`}
+                          className="text-accent underline-offset-2 hover:underline"
+                          title={row.sbom_ref ?? undefined}
+                        >
+                          download
+                        </a>
+                      </td>
+                      <td className="px-2 py-2 text-ink-3">
+                        {provenance.builder_id ?? "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-ink-3">
+                        <RelativeTime value={row.evaluated_at} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+      </div>
+    </details>
   );
 }

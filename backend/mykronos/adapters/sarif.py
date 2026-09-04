@@ -107,6 +107,53 @@ def _rule_index(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return rules
 
 
+#: `external/cwe/cwe-089`, `CWE-89`, `cwe-89`, `89` — four spellings of one
+#: identifier, and this platform has seen three of them. Normalised to
+#: `CWE-89` so a map keyed on one shape is not silently missed by another.
+_CWE = re.compile(r"(?:^|/)cwe[-_]?(\d{1,4})(?![0-9])", re.IGNORECASE)
+
+
+def _cwe_ids(rule: dict[str, Any] | None, result: dict[str, Any]) -> list[str]:
+    """Every CWE the tool declared, in `CWE-89` form (spec 28 §1).
+
+    Read from `properties.tags` — where CodeQL writes `external/cwe/cwe-089`
+    and Semgrep writes its own — and from `properties.cwe`, which some tools
+    populate directly. Both the rule and the result are checked: SARIF allows
+    either, and a tool that annotates results rather than rules would
+    otherwise report nothing.
+
+    **Nothing is inferred.** A CWE is not guessed from a rule name or a title.
+    A tool that declares one is taking responsibility for it; a regex over
+    `rule_id` would be this platform manufacturing a taxonomy claim, which is
+    exactly what spec 18 §6 declined to do.
+    """
+    found: list[str] = []
+    for holder in (rule or {}, result):
+        properties = holder.get("properties") if isinstance(holder, dict) else None
+        if not isinstance(properties, dict):
+            continue
+        candidates: list[Any] = []
+        tags = properties.get("tags")
+        if isinstance(tags, list):
+            candidates.extend(tags)
+        direct = properties.get("cwe")
+        if isinstance(direct, str):
+            candidates.append(direct)
+        elif isinstance(direct, list):
+            candidates.extend(direct)
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            match = _CWE.search(candidate)
+            if match:
+                # Leading zeros are cosmetic in CodeQL's spelling and would
+                # make CWE-089 and CWE-89 two different keys.
+                identifier = f"CWE-{int(match.group(1))}"
+                if identifier not in found:
+                    found.append(identifier)
+    return found[:20]
+
+
 def _severity_for(
     result: dict[str, Any], rule: dict[str, Any] | None
 ) -> tuple[Severity, float | None]:
@@ -327,6 +374,7 @@ def _convert_result(
             line_end=end_line if isinstance(end_line, int) else None,
             symbol=symbol,
             code_snippet=snippet,
+            cwe_ids=_cwe_ids(rule, raw),
             raw_finding_json=raw,
         ),
         source,

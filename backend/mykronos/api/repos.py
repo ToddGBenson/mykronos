@@ -8,6 +8,7 @@ endpoint writes an audit entry in the same transaction as the change
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import controls, worklist
 from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.auth import TokenRegistry
 from mykronos.capabilities import (
@@ -25,7 +27,7 @@ from mykronos.capabilities import (
     configurable_capabilities,
     validate_config,
 )
-from mykronos.ci import CAPABILITY_BY_JOB, ConcourseClient, pipeline_name_for
+from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db.models import (
     CapabilityConfig,
     CapabilityGrant,
@@ -55,33 +57,65 @@ router = APIRouter(prefix="/api/repos", tags=["onboarding"])
 #:
 #: `unit`/`functional`/`qa` (spec 18, Test Harness tab) dispatch through the
 #: exact same two paths as everything else here, and need no special case in
-#: either — but only one of them is reachable today. No workflow template
-#: exists for them (`workflow-templates/manifest.json` has none), and an
-#: Actions-scanned repo's install PR is generated *from* the templates of the
-#: capabilities being enabled — so the capabilities endpoint itself refuses
-#: to enable `unit`/`functional`/`qa` there with a 422, before `scan_now` is
-#: ever reached; the `TemplateError` handling below exists for every other
-#: template-less capability and simply never fires for these three via an
-#: Actions repo's normal path. A Concourse-scanned repo's attempt resolves
-#: through `_JOBS_BY_CAPABILITY`, which already maps the
+#: either. Both paths are now reachable: spec 31 §5 added the three workflow
+#: templates, so an Actions-scanned repository can enable a test lane and
+#: `scan_now` can dispatch it. This comment said the opposite until then, and
+#: the reason it was true is worth keeping: an Actions repo's install PR is
+#: generated *from* the templates of the capabilities being enabled, so with
+#: no template the capabilities endpoint refused the enable with a 422 long
+#: before a dispatch was attempted. A Concourse-scanned repo's attempt
+#: resolves instead through `_JOBS_BY_CAPABILITY`, which reuses the
 #: `unit`/`qa`/`qa-spec-links`/`functional` job names `ci.py`'s
-#: `CAPABILITY_BY_JOB` names for stage-coverage cross-checking — the same
-#: mapping, reused rather than a second one built for this — which is why
-#: on-demand test dispatch works only for Concourse-scanned repos today.
+#: `CAPABILITY_BY_JOB` already maps for stage-coverage cross-checking — the
+#: same mapping, rather than a second one built for this.
+#: Capabilities "scan now" can trigger. `network` is deliberately absent and
+#: not an oversight (B-007): spec 14 §0 has no scanner behind it — no workflow
+#: template, no pipeline job, no container — so there is nothing to dispatch.
+#: Adding it here before one exists would put a button on the page that
+#: reports success and starts nothing.
 DISPATCHABLE_CAPABILITIES = frozenset(
     {"sast", "dast", "secrets", "containers", "iac", "cloud", "atlas", "unit", "functional", "qa"}
 )
 
-#: The reverse of `ci.py`'s `CAPABILITY_BY_JOB` — which Concourse job
-#: name(s) plausibly produce a given capability. A heuristic in the same
-#: spirit and for the same reason as the mapping it's derived from: a
-#: pipeline that names its job differently is simply not reached, which is
-#: the safe direction to be wrong in (a 404 from Concourse, not a crash).
-_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
-for _job_name, _caps in CAPABILITY_BY_JOB.items():
-    for _cap in (_caps if isinstance(_caps, tuple) else (_caps,)):
-        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
 
+def _nothing_to_dispatch(
+    repo_full_name: str,
+    asked_for: Sequence[str] | None,
+    available: Sequence[str],
+) -> str:
+    """Say which of the three reasons this was, rather than one wrong sentence.
+
+    "No scanning capability is enabled for X" was returned for all of them,
+    and on the platform's own repository it was simply false: eleven
+    capabilities are enabled there. Asking it to run DAST — which is
+    dispatchable, and which reports findings against that repo every twenty
+    minutes — got back a claim that nothing at all was enabled, pointing at
+    the repository's configuration when the real answer was that `dast` runs
+    from a workflow this platform does not generate.
+
+    A scan button that refuses is fine. A scan button that refuses while
+    misdescribing why sends somebody to the wrong file.
+    """
+    if not asked_for:
+        return f"No scanning capability is enabled for {repo_full_name}."
+
+    asked = sorted(set(asked_for))
+    named = ", ".join(asked)
+    # Not in the dispatchable set at all: aegis, oracle, patchwork and the
+    # rest are reporting lanes, and no amount of enabling makes them buttons.
+    undispatchable = sorted(set(asked) - DISPATCHABLE_CAPABILITIES)
+    if undispatchable == asked:
+        return (
+            f"{named} cannot be dispatched on demand — it reports on its own schedule "
+            f"rather than being triggered. Dispatchable here: "
+            f"{', '.join(available) if available else 'nothing'}."
+        )
+    if available:
+        return (
+            f"{named} is not enabled for {repo_full_name}, so there is no workflow to "
+            f"trigger. Enabled and dispatchable here: {', '.join(available)}."
+        )
+    return f"No scanning capability is enabled for {repo_full_name}."
 
 # ---------------------------------------------------------------------------
 # Wire models
@@ -95,6 +129,18 @@ class OnboardRequest(BaseModel):
     github_installation_id: int
     default_branch: str = "main"
     org_login: str = ""
+    synthetic: bool = Field(
+        default=False,
+        description=(
+            "A deliberately-vulnerable benchmark corpus (spec 23 §1.2). "
+            "Scanned by the real pipelines — a benchmark run through a "
+            "different code path measures a different platform — and counted "
+            "in no portfolio aggregate, because seeded vulnerabilities are "
+            "not estate risk. Stated at onboarding and never inferred: "
+            "guessing from a repository name is how a real repository "
+            "silently stops being counted."
+        ),
+    )
     scanned_by: Literal["concourse", "github_actions", "none"] = Field(
         default="concourse",
         description=(
@@ -140,6 +186,10 @@ class RepoSummary(BaseModel):
     #: "enabled" means: the installer's ledger for Actions, the grants for
     #: everything else.
     scanned_by: str = "concourse"
+    #: A seeded benchmark corpus (spec 23 §1.2). Listed and opened like any
+    #: other repository, and counted in no portfolio aggregate: deliberately
+    #: vulnerable code is not estate risk.
+    synthetic: bool = False
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     pending_pr_number: int | None
@@ -151,7 +201,6 @@ class RepoSummary(BaseModel):
 class RepoDetail(RepoSummary):
     github_installation_id: int
     onboarded_by: str
-    auto_merge_workflow_prs: bool
     granted_capabilities: list[str]
     capability_config: dict[str, dict[str, Any]]
 
@@ -178,7 +227,8 @@ class RiskProfileOut(BaseModel):
     """What this application is, as an asset (spec 21 §1).
 
     Every field independently nullable: a partially-filled profile is still
-    useful. `exists` distinguishes the two states that matter to Oracle — a
+    useful. `exists` distinguishes the two states that matter to a risk
+    decision — a
     profile recorded but not yet filled in is an auditable fact, no profile
     at all is `available: false`.
     """
@@ -200,7 +250,8 @@ class ReachabilityOut(BaseModel):
     `analysed` is the field that carries the weight. False means the analysis
     has never run for this repository, which is not the same as it having run
     and found nothing — the second is a result, the first is a gap, and
-    Oracle reports them differently (`available: false` versus a real zero).
+    a risk decision reports them differently (`available: false` versus a real
+    zero).
     """
 
     analysed: bool
@@ -251,6 +302,47 @@ class ScanResult(BaseModel):
     detail: str
 
 
+class WorkflowState(BaseModel):
+    """One capability's workflow, as GitHub currently has it (spec 32 §6).
+
+    `state` is GitHub's own vocabulary, passed through rather than reduced to
+    a boolean, plus `not_installed` for a capability this repository has
+    enabled and has no workflow file for. The distinction that matters:
+    `disabled_manually` is somebody's decision, `disabled_inactivity` is
+    GitHub switching a scheduled workflow off after sixty days without a
+    push, and only the second is a coverage gap nobody chose.
+    """
+
+    capability: str
+    workflow_file: str
+    installed: bool
+    enabled: bool
+    state: str
+    url: str = ""
+
+
+class WorkflowsPage(BaseModel):
+    """spec 32 §6.2. Never an error for a repository that simply has no
+    workflows: a Concourse-scanned repo and an unreachable GitHub are
+    different facts, and both render as an empty list unless the reason is
+    carried alongside it."""
+
+    repo: str
+    scanned_by: str
+    workflows: list[WorkflowState]
+    #: Why there is nothing to show, when there is nothing to show. Rendered
+    #: verbatim, the same contract `PipelineStatus.unavailable` has.
+    unavailable: str | None = None
+
+
+class WorkflowStateResult(BaseModel):
+    repo: str
+    capability: str
+    workflow_file: str
+    enabled: bool
+    detail: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -262,6 +354,7 @@ def _summary(row: RepoOnboarding) -> RepoSummary:
         github_repo_full_name=row.github_repo_full_name,
         status=row.status,
         scanned_by=row.scanned_by,
+        synthetic=bool(row.synthetic),
         enabled_capabilities=list(row.enabled_capabilities or []),
         pending_capabilities=(list(row.pending_capabilities) if row.pending_capabilities else None),
         pending_pr_number=row.pending_pr_number,
@@ -330,6 +423,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
                 enabled_capabilities=[],
                 default_branch=body.default_branch,
                 scanned_by=body.scanned_by,
+                synthetic=body.synthetic,
                 onboarded_by=actor,
             )
             session.add(row)
@@ -337,6 +431,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
         else:
             row.github_installation_id = body.github_installation_id
             row.default_branch = body.default_branch
+            row.synthetic = body.synthetic
             if row.status == "removed":
                 row.status = "pending_install"
 
@@ -378,10 +473,62 @@ async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetai
             **_summary(row).model_dump(),
             github_installation_id=row.github_installation_id,
             onboarded_by=row.onboarded_by,
-            auto_merge_workflow_prs=row.auto_merge_workflow_prs,
             granted_capabilities=sorted(registry.granted_capabilities(row.github_repo_full_name)),
             capability_config=capability_configs(session, row),
         )
+
+
+class ScannerUpdate(BaseModel):
+    """Which system scans this repository (spec 03 §3a, spec 32 §9.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scanned_by: Literal["concourse", "github_actions", "none"]
+
+
+@router.patch("/{repo_id}", response_model=RepoSummary)
+async def set_scanner(
+    request: Request, repo_id: str, body: ScannerUpdate, actor: AdminDep
+) -> RepoSummary:
+    """Record which system scans this repository.
+
+    `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+    onboarding — a field describing which CI covers a repository, with no way
+    to say that it changed, in a platform whose whole current project is
+    changing exactly that. Migrating a repository meant editing the database
+    by hand.
+
+    **This records a fact; it does not perform a migration.** Nothing is
+    installed, uninstalled, granted or revoked here. What moves is which
+    source the dashboard reads for "enabled" (spec 03 §3a's ledger-versus-
+    grants split), which CI `scan_now` and fix verification dispatch to, which
+    reader answers for the CI panel, and whether the rotation job can deliver
+    a new token (D-086, spec 32 §8). Every one of those follows the field
+    rather than the other way round, which is why setting it wrongly is
+    visible immediately and costs one call to correct.
+    """
+    db = request.app.state.db
+    with db.session() as session:
+        row = _get(session, repo_id)
+        if row.status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{row.github_repo_full_name} is offboarded.",
+            )
+        previous = row.scanned_by
+        row.scanned_by = body.scanned_by
+        db.audit(
+            session,
+            actor=actor,
+            action="repo.scanned_by",
+            entity_type="repo_onboarding",
+            entity_id=row.id,
+            repo=row.github_repo_full_name,
+            previous=previous,
+            scanned_by=body.scanned_by,
+        )
+        session.commit()
+        return _summary(row)
 
 
 @router.patch("/{repo_id}/capabilities", response_model=CapabilityUpdateResult)
@@ -575,6 +722,14 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
     Stops all scheduled activity and revokes every ingestion token and grant,
     but **does not delete historical data lake rows** — those are the audit
     trail. Deleting them is a separate, explicitly-confirmed action.
+
+    Two operational tables *are* purged, and the distinction is the one the
+    lake/operational split rests on. A triage claim is a fact about who is
+    working on something this week (spec 27 §3); a declared control is a claim
+    about the present (spec 28 §3). Neither is evidence of anything once the
+    repository is offboarded, and both would otherwise sit in the queue and on
+    the tab of a repository nobody scans any more. The counts go in the audit
+    entry, so the deletion is recorded even though the rows are not.
     """
     db = request.app.state.db
     with db.session() as session:
@@ -582,6 +737,8 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
         registry = TokenRegistry(session)
         revoked = registry.revoke_repo(row.github_repo_full_name)
         row.status = "removed"
+        claims_purged = worklist.purge_for_repo(session, row.github_repo_full_name)
+        controls_purged = controls.purge_for_repo(session, row.github_repo_full_name)
 
         db.audit(
             session,
@@ -591,6 +748,8 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
             entity_id=row.id,
             repo=row.github_repo_full_name,
             tokens_revoked=revoked,
+            triage_rows_purged=claims_purged,
+            controls_purged=controls_purged,
             note="historical findings retained for audit (spec 02 §6)",
         )
         return _summary(row)
@@ -660,6 +819,7 @@ async def scan_now(
         scanned_by = row.scanned_by
         default_branch = row.default_branch
         installation_id = row.github_installation_id
+        available = sorted(enabled & DISPATCHABLE_CAPABILITIES)
 
     if not scanning:
         if pending:
@@ -673,7 +833,7 @@ async def scan_now(
         return ScanResult(
             dispatched=[],
             failed=[],
-            detail=f"No scanning capability is enabled for {repo_full_name}.",
+            detail=_nothing_to_dispatch(repo_full_name, capabilities, available),
         )
 
     dispatched: list[str] = []
@@ -718,7 +878,7 @@ async def scan_now(
             )
         pipeline = pipeline_name_for(repo_full_name)
         for capability in scanning:
-            candidates = sorted(_JOBS_BY_CAPABILITY.get(capability, {capability}))
+            candidates = sorted(jobs_for_capability(capability))
             if any(
                 client.trigger_job(pipeline, job, token=settings.concourse_api_token)
                 for job in candidates
@@ -738,6 +898,201 @@ async def scan_now(
         )
 
     return ScanResult(dispatched=dispatched, failed=failed, detail=detail)
+
+
+def _workflow_file_for(templates: Any, capability: str) -> str:
+    """`sast` -> `mykronos-sast.yml`, via the template registry.
+
+    The same lookup `scan_now` does, and deliberately the same source: the
+    installer chose the filename, so asking the registry is asking the thing
+    that decided. A second mapping here would be the "second place for the
+    truth to live" spec 32 §6 refuses.
+    """
+    return PurePosixPath(templates.target_path(capability)).name
+
+
+@router.get("/{repo_id}/workflows", response_model=WorkflowsPage)
+async def list_workflows(request: Request, repo_id: str, actor: AdminDep) -> WorkflowsPage:
+    """What runs in this repository, and whether it is switched on
+    (spec 32 §6.2).
+
+    **Derived, never stored.** GitHub is asked on every read, because a
+    `workflow_enabled` column would be wrong the moment somebody clicks
+    Disable in the GitHub UI, and nothing would ever correct it. This is the
+    same rule spec 15 §4a applied to Concourse pipeline names, for the same
+    reason.
+
+    **Fails soft.** A repository page is about findings; GitHub being
+    unreachable, rate-limited or 403 must not take it down. Every failure
+    resolves to a reason string beside an empty list.
+    """
+    db = request.app.state.db
+    templates = request.app.state.templates
+    with db.session() as session:
+        row = _get(session, repo_id)
+        repo_full_name = row.github_repo_full_name
+        scanned_by = row.scanned_by
+        installation_id = row.github_installation_id
+        enabled = sorted(set(row.enabled_capabilities or []))
+
+    if scanned_by != "github_actions":
+        return WorkflowsPage(
+            repo=repo_full_name,
+            scanned_by=scanned_by,
+            workflows=[],
+            unavailable=(
+                f"{repo_full_name} is scanned by {scanned_by!r}, so Mykronos installs "
+                "no workflows into it and has none to switch on or off (spec 03 §3a)."
+            ),
+        )
+
+    github = request.app.state.github_factory.for_installation(installation_id)
+    try:
+        live = {ref.file_name: ref for ref in await github.list_workflows(repo_full_name)}
+    except (GitHubError, OSError) as exc:
+        logger.warning("Workflow read for %s failed: %s", repo_full_name, exc)
+        return WorkflowsPage(
+            repo=repo_full_name,
+            scanned_by=scanned_by,
+            workflows=[],
+            unavailable=f"GitHub did not answer: {exc}",
+        )
+
+    out: list[WorkflowState] = []
+    for capability in enabled:
+        try:
+            workflow_file = _workflow_file_for(templates, capability)
+        except TemplateError:
+            # A capability with no template installs no workflow — `aegis`
+            # is webhook-fed, and a config-only capability has nothing to
+            # switch. Absent from this list rather than reported as missing.
+            continue
+        ref = live.get(workflow_file)
+        out.append(
+            WorkflowState(
+                capability=capability,
+                workflow_file=workflow_file,
+                installed=ref is not None,
+                enabled=ref is not None and ref.enabled,
+                # Enabled here and absent from GitHub means the install pull
+                # request was merged and reverted, or the file was deleted by
+                # hand. Distinct from `disabled_*`, which are files that exist
+                # and are switched off.
+                state=ref.state if ref is not None else "not_installed",
+                url=ref.url if ref is not None else "",
+            )
+        )
+
+    return WorkflowsPage(repo=repo_full_name, scanned_by=scanned_by, workflows=out)
+
+
+async def _set_workflow_state(
+    request: Request, repo_id: str, capability: str, actor: str, *, enabled: bool
+) -> WorkflowStateResult:
+    """Shared by the enable and disable routes, which differ in one boolean.
+
+    Deliberately does **not** touch `enabled_capabilities` (spec 32 §6.2). A
+    disabled workflow is an enabled capability whose lane is paused; folding
+    the two together would make the capability grants — what may write to the
+    lake — disagree with what the operator actually did, and the grants are
+    what the coverage cross-check trusts for any repository whose installer
+    ledger never moves (spec 03 §3a).
+    """
+    db = request.app.state.db
+    templates = request.app.state.templates
+    with db.session() as session:
+        row = _get(session, repo_id)
+        repo_full_name = row.github_repo_full_name
+        if row.scanned_by != "github_actions":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{repo_full_name} is scanned by {row.scanned_by!r}. Mykronos "
+                    "installs no workflows into it, so there is none to switch. "
+                    "Pause the Concourse lane instead (spec 15 §4a.1)."
+                ),
+            )
+        if row.status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{repo_full_name} is offboarded.",
+            )
+        installation_id = row.github_installation_id
+
+    try:
+        workflow_file = _workflow_file_for(templates, capability)
+    except TemplateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    github = request.app.state.github_factory.for_installation(installation_id)
+    try:
+        await github.set_workflow_state(repo_full_name, workflow_file, enabled=enabled)
+    except GitHubError as exc:
+        # 404 stays 404: "that workflow is not installed" is the caller's
+        # mistake and is worth saying precisely, because the fix is an install
+        # pull request rather than a retry.
+        if exc.status == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"{repo_full_name} has no {workflow_file}. Install "
+                    f"{capability!r} first — that is a pull request (spec 03 §3)."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub refused the change: {exc}",
+        ) from exc
+
+    verb = "enabled" if enabled else "disabled"
+    with db.session() as session:
+        row = _get(session, repo_id)
+        db.audit(
+            session,
+            actor=actor,
+            action=f"workflow.{verb}",
+            entity_type="repo_onboarding",
+            entity_id=row.id,
+            repo=repo_full_name,
+            capability=capability,
+            workflow_file=workflow_file,
+        )
+        session.commit()
+
+    return WorkflowStateResult(
+        repo=repo_full_name,
+        capability=capability,
+        workflow_file=workflow_file,
+        enabled=enabled,
+        detail=(
+            f"{workflow_file} is {verb}. The capability itself is unchanged — its "
+            "grant still permits writes, and no pull request was opened."
+        ),
+    )
+
+
+@router.put("/{repo_id}/workflows/{capability}/enable", response_model=WorkflowStateResult)
+async def enable_workflow(
+    request: Request, repo_id: str, capability: str, actor: AdminDep
+) -> WorkflowStateResult:
+    """Switch one installed workflow back on, with no pull request
+    (spec 32 §6)."""
+    return await _set_workflow_state(request, repo_id, capability, actor, enabled=True)
+
+
+@router.put("/{repo_id}/workflows/{capability}/disable", response_model=WorkflowStateResult)
+async def disable_workflow(
+    request: Request, repo_id: str, capability: str, actor: AdminDep
+) -> WorkflowStateResult:
+    """Stop one installed workflow now, with no pull request (spec 32 §6).
+
+    The `fly pause` equivalent spec 15 §4a.1 calls "state only an operator
+    remembers". The file stays, so it still says what the lane does when it
+    comes back.
+    """
+    return await _set_workflow_state(request, repo_id, capability, actor, enabled=False)
 
 
 def _profile_out(row: RiskProfile | None) -> RiskProfileOut:
@@ -830,7 +1185,8 @@ async def put_risk_profile(
 ) -> RiskProfileOut:
     """Record or replace this repository's risk profile (spec 21 §1.3).
 
-    Admin-only and audit-logged: this changes what Oracle will decide, so it
+    Admin-only and audit-logged: this changes what the risk-decision engine
+    will decide, so it
     is a write in the same sense a finding disposition is (spec 10 §2.2), not
     a preference. `updated_by` is stamped from the caller rather than accepted
     from the body — "who said this repository is internet-facing" is exactly

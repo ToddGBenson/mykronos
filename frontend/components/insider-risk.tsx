@@ -121,7 +121,7 @@ function GovernanceNote({
   return (
     <div className="border-l-2 border-accent bg-accent-wash px-3 py-2">
       <Label>What this is, and is not</Label>
-      <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+      <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
         {note}
       </p>
       {/* Repeated as its own line, not left inside the paragraph above.
@@ -129,16 +129,16 @@ function GovernanceNote({
           here a reviewer needs at a glance, and a sentence at the end of a
           governance note is a sentence people skim past. */}
       <p
-        className={`mt-1.5 font-mono text-[10px] ${
+        className={`mt-1.5 font-mono text-[12px] ${
           blocking ? "text-high" : "text-ink-3"
         }`}
       >
         {blocking
-          ? "Aegis is BLOCKING for this repository — a score at or above the threshold fails the pull request."
-          : "Aegis is advisory for this repository — it never fails a pull request."}
+          ? "Insider risk is BLOCKING for this repository — a score at or above the threshold fails the pull request."
+          : "Insider risk is advisory for this repository — it never fails a pull request."}
       </p>
       {!detailIncluded ? (
-        <p className="mt-1.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+        <p className="mt-1.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
           The author and the signal breakdown are withheld from your role. They
           are not sent to this page at all, rather than hidden in it.
         </p>
@@ -155,7 +155,7 @@ function SignalCard({ signal }: { signal: InsiderRiskSignal }) {
     <li className="border border-rule bg-paper-2">
       {/* The pull request leads. The author is a field below, not a heading. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-rule-soft px-3 py-2">
-        <span className="font-mono text-[11px] font-bold">
+        <span className="font-mono text-[13px] font-bold">
           Pull request #{signal.pr_number}
         </span>
         <Pill tone={RECOMMENDATION_TONE[signal.recommendation] ?? "muted"}>
@@ -166,15 +166,15 @@ function SignalCard({ signal }: { signal: InsiderRiskSignal }) {
           reviewAt={breakdown?.thresholds?.review ?? 40}
           noGoAt={breakdown?.thresholds?.block ?? 80}
         />
-        <span className="tabular font-mono text-[10px] text-ink-3">
+        <span className="tabular font-mono text-[12px] text-ink-3">
           {signal.insider_risk_score}/100
         </span>
         {signal.commit_sha ? (
-          <span className="font-mono text-[10px] text-ink-3">
+          <span className="font-mono text-[12px] text-ink-3">
             {signal.commit_sha.slice(0, 7)}
           </span>
         ) : null}
-        <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-ink-3">
+        <span className="ml-auto whitespace-nowrap font-mono text-[12px] text-ink-3">
           <RelativeTime value={signal.evaluated_at} />
         </span>
       </div>
@@ -184,12 +184,12 @@ function SignalCard({ signal }: { signal: InsiderRiskSignal }) {
           <Label>What was observed</Label>
           <ul className="mt-1.5 flex flex-col gap-1">
             {contributing.map((entry) => (
-              <li key={entry.key} className="flex gap-2 text-[11px] leading-relaxed">
+              <li key={entry.key} className="flex gap-2 text-[14px] leading-relaxed">
                 <span className="tabular w-9 shrink-0 text-right font-mono text-ink">
                   +{entry.score.toFixed(0)}
                 </span>
                 <span className="min-w-0">
-                  <span className="font-mono text-[10px] text-ink-3">
+                  <span className="font-mono text-[12px] text-ink-3">
                     {SIGNAL_LABEL[entry.key] ?? entry.key}
                   </span>
                   <br />
@@ -200,20 +200,20 @@ function SignalCard({ signal }: { signal: InsiderRiskSignal }) {
           </ul>
         </div>
       ) : breakdown ? (
-        <p className="px-3 py-2 text-[11px] text-ink-3">
+        <p className="px-3 py-2 text-[13px] text-ink-3">
           No signal scored above zero.
         </p>
       ) : null}
 
       {breakdown ? <AiAuthorship breakdown={breakdown} /> : null}
 
-      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-rule-soft px-3 py-1.5 font-mono text-[9px] text-ink-3">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
         <span>
           author{" "}
           {signal.author_login ? (
             <span className="text-ink-2">{signal.author_login}</span>
           ) : (
-            <span title="Withheld from your role (spec 06 §9)">withheld</span>
+            <span title="Withheld from your role. Insider-risk detail is visible only to the roles cleared for it.">withheld</span>
           )}
         </span>
         {breakdown?.signals_not_reported?.length ? (
@@ -236,8 +236,8 @@ function AiAuthorship({ breakdown }: { breakdown: SignalBreakdown }) {
 
   if (!ai.evaluated) {
     return (
-      <p className="border-t border-rule-soft px-3 py-2 text-[11px] leading-relaxed text-ink-3">
-        <span className="font-mono text-[10px] uppercase tracking-wider">
+      <p className="border-t border-rule-soft px-3 py-2 text-[14px] leading-relaxed text-ink-3">
+        <span className="font-mono text-[12px] uppercase tracking-wider">
           AI authorship — not evaluated.
         </span>{" "}
         {ai.reason}
@@ -246,8 +246,8 @@ function AiAuthorship({ breakdown }: { breakdown: SignalBreakdown }) {
   }
 
   return (
-    <p className="border-t border-rule-soft px-3 py-2 text-[11px] leading-relaxed text-ink-2">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-ink-3">
+    <p className="border-t border-rule-soft px-3 py-2 text-[14px] leading-relaxed text-ink-2">
+      <span className="font-mono text-[12px] uppercase tracking-wider text-ink-3">
         AI authorship —
       </span>{" "}
       {ai.likely_ai_and_undisclosed

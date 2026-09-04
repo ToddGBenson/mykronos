@@ -2,10 +2,11 @@
 
 Two feeds, both public, both unauthenticated, both about vulnerabilities in
 general rather than about any repository's own content — which is the
-distinction that matters here. `ai_classifier_url` and `fix_generator_url`
-(spec 06 §5, spec 08 §5, spec 12 §5.2) are opt-in because using them means a
-repository's source or diff leaves the platform; fetching a public catalog of
-CVEs sends nothing anywhere, and this module needs no equivalent gate.
+distinction that matters here. `ai_classifier_url` (spec 06 §5, spec 12 §5.2)
+is opt-in because using it means a repository's source or diff leaves the
+platform; fetching a public catalog of CVEs sends nothing anywhere, and this
+module needs no equivalent gate. (`fix_generator_url` was the other example
+until D-096 withdrew it — it never made a call to withhold.)
 
 - **CISA KEV** — the Known Exploited Vulnerabilities catalog: a boolean,
   "is this CVE known to be actively exploited."
@@ -28,9 +29,14 @@ import csv
 import gzip
 import logging
 import re
+
+# `time` is already bound to `datetime.time` in this module, so the standard
+# library clock comes in under its own name rather than shadowing it.
+import time as clock
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 import httpx2
@@ -40,6 +46,7 @@ from sqlalchemy.orm import Session
 from mykronos.db.models import ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
 from mykronos.schemas import utcnow
 
@@ -49,6 +56,18 @@ logger = logging.getLogger(__name__)
 #: default distribution point, not a mirror this project stood up.
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+#: CVEs to look up per sweep. NVD rate-limits unauthenticated callers to five
+#: requests per thirty seconds, so this is a deliberate trickle rather than a
+#: backfill: the lookup fills in over a few days and never holds the job open
+#: for half an hour. Every CVE this platform has an open finding for is a
+#: finite set that only grows when a scanner finds something new.
+NVD_BATCH = 20
+#: Between requests. Above NVD's published unauthenticated floor with margin,
+#: because being rate-limited by a public feed is a way to get an IP blocked
+#: rather than a way to go faster.
+NVD_DELAY_SECONDS = 6.5
 
 #: Short. A daily refresh job blocking on a slow feed for minutes is worse
 #: than the job trying again tomorrow (spec 17 §4.3's degrade-not-block rule).
@@ -158,13 +177,23 @@ def parse_epss_csv(text: str) -> list[EpssEntry]:
 
 
 def default_fetch_kev() -> object:
-    response = httpx2.get(KEV_URL, timeout=TIMEOUT)
+    # `follow_redirects` on both feeds — see `default_fetch_epss`. KEV serves
+    # 200 today and there is no reason to be the one that breaks when it stops.
+    response = httpx2.get(KEV_URL, timeout=TIMEOUT, follow_redirects=True)
     response.raise_for_status()
     return response.json()
 
 
 def default_fetch_epss() -> str:
-    response = httpx2.get(EPSS_URL, timeout=TIMEOUT)
+    # `follow_redirects=True`, and it is the whole reason EPSS ever worked.
+    # The feed answers `302 Found` with a relative `Location` naming the day's
+    # file — `epss_scores-2026-09-01.csv.gz` — and httpx does not follow
+    # redirects unless asked, so `raise_for_status()` raised on the redirect
+    # itself. Every refresh recorded a `fetched_at` and stored no score: 110
+    # CVEs matched to open findings, 0 with an EPSS score, for as long as this
+    # has been deployed. The old page rendered that as a dash at the bottom of
+    # a list sorted by score, which is exactly where nobody looks.
+    response = httpx2.get(EPSS_URL, timeout=TIMEOUT, follow_redirects=True)
     response.raise_for_status()
     # The feed is gzip-compressed; a plain `.text` would be the compressed
     # bytes decoded as if they were already the CSV.
@@ -277,6 +306,118 @@ def refresh(
     return RefreshResult(written=written, kev_error=kev_error, epss_error=epss_error)
 
 
+def parse_nvd_vector(payload: object) -> str | None:
+    """Pull the CVSS v3.x base vector out of one NVD CVE response.
+
+    v3.1 preferred over v3.0 where both are published, and v2 ignored entirely:
+    the environmental formula implemented here is v3's, and a v2 vector fed to
+    it would produce a number in the right range and the wrong units.
+
+    Returns `None` rather than raising for a CVE NVD has not scored. That is a
+    real and common state — reserved CVEs, and every Debian `TEMP-` identifier
+    this estate is full of — and it must be storable as "looked, found nothing"
+    rather than retried forever.
+    """
+    if not isinstance(payload, dict):
+        return None
+    vulnerabilities = payload.get("vulnerabilities")
+    if not isinstance(vulnerabilities, list) or not vulnerabilities:
+        return None
+    entry = vulnerabilities[0]
+    if not isinstance(entry, dict):
+        return None
+    metrics = (entry.get("cve") or {}).get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+
+    for key in ("cvssMetricV31", "cvssMetricV30"):
+        candidates = metrics.get(key)
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            data = candidate.get("cvssData")
+            if isinstance(data, dict):
+                vector = data.get("vectorString")
+                if isinstance(vector, str) and vector.startswith("CVSS:3."):
+                    return vector
+    return None
+
+
+def default_fetch_nvd(cve_id: str) -> object:
+    """One CVE from NVD. No API key: this is a public endpoint and a key is a
+    credential this repository must not hold (spec 12 §2). The cost is the
+    slower rate limit, which `NVD_BATCH` already accounts for."""
+    response = httpx2.get(
+        NVD_URL, params={"cveId": cve_id}, timeout=TIMEOUT, follow_redirects=True
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def refresh_vectors(
+    session: Session,
+    *,
+    fetch: Callable[[str], object] = default_fetch_nvd,
+    sleep: Callable[[float], None] = clock.sleep,
+    limit: int = NVD_BATCH,
+    now: Callable[[], datetime] = utcnow,
+) -> int:
+    """Look up base vectors for CVEs that do not have one yet.
+
+    **Why the vector and not the score.** A base score is one number for every
+    system in the world. The vector is what lets it be re-read for *this*
+    system — the difference between "7.5 everywhere" and "7.5 there, 5.9 here
+    because nothing outside can reach it". Storing the score would have been
+    simpler and would have made the environmental feature impossible.
+
+    **Only rows this platform already tracks**, which are already only CVEs an
+    open finding names. NVD is not asked about anything nobody here has.
+
+    **Once, not repeatedly.** `vector_checked_at` records that the lookup ran
+    whether or not it found anything, so a CVE NVD has never scored is asked
+    about once rather than on every sweep for ever. Roughly two thirds of this
+    estate's container findings carry Debian `TEMP-` identifiers that NVD has
+    no record of, and retrying those daily would be the whole budget.
+
+    Degrades rather than raises: a failed lookup leaves the row untouched and
+    the next sweep tries again.
+    """
+    pending = list(
+        session.execute(
+            select(ThreatIntelMatch)
+            .where(
+                ThreatIntelMatch.cvss_vector.is_(None),
+                ThreatIntelMatch.vector_checked_at.is_(None),
+            )
+            .order_by(ThreatIntelMatch.cve_id)
+            .limit(limit)
+        ).scalars()
+    )
+    if not pending:
+        return 0
+
+    found = 0
+    for index, row in enumerate(pending):
+        if index:
+            sleep(NVD_DELAY_SECONDS)
+        try:
+            vector = parse_nvd_vector(fetch(row.cve_id))
+        except Exception as exc:  # noqa: BLE001 - a feed failure degrades
+            logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
+            continue
+        # Stamped even when nothing was found: that is the record of having
+        # looked, and it is what stops this retrying for ever.
+        row.vector_checked_at = now()
+        if vector:
+            row.cvss_vector = vector
+            found += 1
+
+    session.flush()
+    return found
+
+
 def relevant_cves_for_open_findings(rows: list[dict[str, Any]]) -> set[str]:
     """Which CVEs to bother fetching — extracted from a portfolio's open
     findings (spec 17 §4.3). `rows` carries at least `rule_id` and `title`."""
@@ -302,4 +443,75 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
         [{"rule_id": r, "title": t} for r, t in rows]
     )
     with db.session() as session:
-        return refresh(session, relevant)
+        result = refresh(session, relevant)
+        apply_kev_due_dates(session, catalog)
+        # After the upsert, so a CVE that arrived on this run is eligible
+        # immediately rather than a day later.
+        try:
+            found = refresh_vectors(session)
+        except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
+            logger.warning("Vector lookup degraded: %s", scrub(str(exc)))
+        else:
+            if found:
+                logger.info("Fetched %s new CVSS vector(s) from NVD", found)
+    return result
+
+
+def apply_kev_due_dates(session: Session, catalog: Catalog) -> int:
+    """Stamp CISA's due date onto every open finding whose CVE is in KEV.
+
+    Spec 24 §2.2: KEV wins over the policy target. That date is authored
+    outside this organisation and is the only externally-committed deadline
+    this platform holds — a locally-computed one that disagreed with it would
+    be the platform quietly negotiating with CISA.
+
+    Runs here rather than at ingest because the CVE-to-KEV mapping is not
+    known when a finding arrives: `refresh` is what learns it, and it runs on
+    its own schedule. Ingest sets the policy date; this replaces it the first
+    time the intel says it should.
+
+    Returns the number of findings restamped, for the caller's log. A finding
+    already carrying the same KEV date is left alone — a no-op update would
+    rewrite a Parquet partition for nothing.
+    """
+    kev_due: dict[str, date] = {
+        row.cve_id: row.kev_due_date
+        for row in session.execute(
+            select(ThreatIntelMatch).where(
+                ThreatIntelMatch.in_kev.is_(True),
+                ThreatIntelMatch.kev_due_date.is_not(None),
+            )
+        ).scalars()
+        if row.kev_due_date is not None
+    }
+    if not kev_due:
+        return 0
+
+    rows = catalog.query(
+        "SELECT finding_id, rule_id, title, due_at, due_source "
+        "FROM findings WHERE status = 'open'"
+    )
+    wanted: dict[date, list[str]] = defaultdict(list)
+    for finding_id, rule_id, title, due_at, due_source in rows:
+        cve = extract_cve(rule_id, title)
+        if cve is None:
+            continue
+        due = kev_due.get(cve.upper())
+        if due is None:
+            continue
+        if due_source == "kev" and due_at is not None and due_at.date() == due:
+            continue
+        wanted[due].append(str(finding_id))
+
+    restamped = 0
+    for due, finding_ids in wanted.items():
+        outcome = update_findings(
+            catalog,
+            locate_findings(catalog, finding_ids),
+            "due_at = ?, due_source = ?",
+            [datetime.combine(due, time.min), "kev"],
+        )
+        restamped += outcome.count
+    if restamped:
+        logger.info("KEV due dates applied to %d finding(s).", restamped)
+    return restamped

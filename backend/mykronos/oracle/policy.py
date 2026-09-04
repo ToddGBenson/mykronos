@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,34 @@ class PolicyError(ValueError):
 class AgePolicy:
     over_30_days_critical: float
     over_90_days_high: float
+
+
+@dataclass(frozen=True)
+class AcceptedRiskPolicy:
+    """What an acceptance costs when it is not really a decision.
+
+    Accepted findings are excluded from the open counts, which is correct — a
+    risk somebody consciously took is not a risk nobody has looked at. But that
+    exclusion is only earned by acceptances that *are* decisions.
+
+    This platform's own definition is "a decision with a premise, and the
+    premise is the part that expires". An acceptance with no premise recorded
+    and no date to revisit it has neither. It is indistinguishable in effect
+    from ignoring the finding, and invisible to the score because of a status
+    somebody set once.
+
+    Two weights, and the expired one is heavier on purpose: an acceptance whose
+    review date has passed is worse than one that never had a date, because
+    somebody set a deadline and it went by.
+    """
+
+    #: Per finding accepted with no grounds recorded, or with no review date.
+    unqualified: float
+    #: Per finding whose review date has passed.
+    expired: float
+    #: Both are capped, so a large historic backlog cannot swamp the score the
+    #: way the composite gate D-083 retired did.
+    cap: float
 
 
 @dataclass(frozen=True)
@@ -83,6 +112,39 @@ class UnfixableDampening:
 
 
 @dataclass(frozen=True)
+class GovernancePolicy:
+    """Weak change governance as a risk-profile term (spec 30 §4).
+
+    **A penalty for weakness, and deliberately not a credit for strength.**
+    Spec 30 §4 expected strong governance to earn the reward side of spec 26
+    §2 "without a new term being invented for it". It cannot: turning on
+    branch protection is a *switch*, and spec 26 §2.3 refuses credit for
+    switch-flipping in as many words, because the fastest route to a good
+    score must never be a setting. So this only ever adds.
+
+    That asymmetry is the honest one. Weak controls do not make a SQL
+    injection worse — they make this repository a worse place for one to be,
+    which is precisely what the risk profile is for (spec 21 §1). A repository
+    where anybody can push to main and approve their own change is carrying
+    the same findings under materially worse conditions, and the profile is
+    where that belief already lives.
+    """
+
+    #: Points at a governance score of zero, scaled linearly down to nothing
+    #: at `good_enough`. Linear rather than curved: unlike finding counts,
+    #: there is no saturation problem here — the score is already bounded at
+    #: 0-100 and every point of it is a control somebody can turn on.
+    points_at_zero: float = 0.0
+    #: At or above this, nothing is added. A repository does not have to be
+    #: perfect to stop being penalised, and a term that could only be silenced
+    #: by a flawless configuration would be one teams learn to ignore.
+    good_enough: int = 80
+    #: Below this many controls read, the term reports unavailable. A score
+    #: over two controls is not a posture.
+    minimum_controls: int = 5
+
+
+@dataclass(frozen=True)
 class BlastRadiusPolicy:
     """Weights for portfolio-wide package concentration (spec 19 §2.4).
 
@@ -119,6 +181,134 @@ class ReachabilityPolicy:
 
 
 @dataclass(frozen=True)
+class PostureCredits:
+    """What a team earns for work that made the repository safer (spec 26 §2).
+
+    Every other modifier in this policy can only punish. The import
+    reachability discount is the sole negative and it is a fact about code
+    structure, not a reward for anything anybody did — so a team that spends a
+    quarter adding regression tests, verifying its fixes and clearing its
+    backlog inside target sees the number not move. A model that can only
+    punish is one people argue with rather than act on.
+
+    **Every credit requires something to have happened.** Not a switch, not a
+    configuration value — a test pinned to a fixed finding, a fix verified by a
+    re-scan, a finding closed inside its window. That is the rule
+    `maturity-model-v1.yaml` states for its own criteria, and for the same
+    reason: the fastest route to a good score must never be a setting.
+
+    **Capped, and floored.** `total_cap` bounds the sum, and `floor_with_open_critical`
+    is the harder rule: credits may not take a repository below the review
+    threshold while a critical is open. Without it the arithmetic allows a team
+    to test its way out of an exploited critical, which is the one outcome this
+    whole idea must not produce.
+    """
+
+    regression_per_covered: float
+    regression_cap: float
+    verified_at_full_rate: float
+    verified_minimum_sample: int
+    within_target_at_full: float
+    total_cap: float
+    floor_with_open_critical: bool
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self.regression_per_covered
+            or self.verified_at_full_rate
+            or self.within_target_at_full
+        )
+
+
+@dataclass(frozen=True)
+class TriageRankPolicy:
+    """What to look at first (spec 27 §1.1).
+
+    An ordering that decides what a team opens on Monday is policy, not a
+    constant in a module — it is reviewed in a pull request and versioned with
+    everything else here.
+
+    Deliberately a documented weighted sum a person can recompute on paper, for
+    the same reason the risk score is one. A rank nobody can argue with is a
+    rank people route around.
+
+    `fixable_bonus` is the interesting term and is not a claim about danger: a
+    fixable finding is *cheaper*, and a worklist's job is risk removed per unit
+    of work. That makes the ordering explicitly economic, which is what a
+    worklist is.
+
+    `orphaned_discount` is negative, and is the same discount the risk model
+    applies for the same reason (D-072) — never a promotion, only ever a
+    reduction, because the analysis behind it can be wrong about dead code and
+    must not be able to bury live work.
+    """
+
+    severity: dict[str, float]
+    in_kev: float
+    epss_at_1_0: float
+    overdue: float
+    due_soon: float
+    blast_radius_at_max: float
+    repo_is_no_go: float
+    orphaned_discount: float
+    fixable_bonus: float
+
+    @property
+    def configured(self) -> bool:
+        return any(self.severity.values()) or bool(self.in_kev or self.epss_at_1_0)
+
+
+@dataclass(frozen=True)
+class OverduePolicy:
+    """What a missed deadline costs (spec 24 §2.4).
+
+    Small and capped, like every additive term here. The point is not to
+    punish a backlog twice — `finding_age` already escalates on drift — but to
+    make a date the organisation committed to visible in the number the gate
+    reads. A repository inside its windows pays nothing.
+    """
+
+    per_finding: float
+    cap: float
+
+
+@dataclass(frozen=True)
+class RemediationTargets:
+    """How long a finding of each severity may stay open (spec 24 §2.2).
+
+    A target is not the age curve. Age escalates continuously and describes
+    drift; a target is a date this organisation set for itself, and a finding
+    inside its window is not late however old it is. Keeping them separate is
+    what lets a repository with a large but in-policy backlog score better
+    than one with three findings nobody looked at.
+
+    A null for a severity means "not work" rather than "due immediately" —
+    `info` is the expected case, and defaulting it to zero days would make
+    every repository permanently overdue on findings nobody intends to fix.
+    """
+
+    #: severity -> days from first_seen_at, or None for "no target".
+    days: dict[str, int | None]
+
+    @property
+    def configured(self) -> bool:
+        """Whether any target is set at all.
+
+        Drives `available` in Oracle's snapshot: a deployment that has not
+        adopted targets reports the category as unavailable rather than
+        reporting every finding on track, which would read as compliance.
+        """
+        return any(value is not None for value in self.days.values())
+
+    def due_at(self, severity: str, first_seen_at: datetime) -> datetime | None:
+        target = self.days.get(severity)
+        if target is None:
+            return None
+        return first_seen_at + timedelta(days=target)
+
+
+@dataclass(frozen=True)
 class Policy:
     version: str
     curve: str
@@ -128,11 +318,17 @@ class Policy:
     sscs_penalty_cap: float
     remediation_discount: float
     age: AgePolicy
+    accepted_risk: AcceptedRiskPolicy
     dampening: DampeningPolicy
     risk_profile: RiskProfilePolicy
+    governance: GovernancePolicy
     blast_radius: BlastRadiusPolicy
     reachability: ReachabilityPolicy
     unfixable: UnfixableDampening
+    remediation_targets: RemediationTargets
+    overdue: OverduePolicy
+    triage_rank: TriageRankPolicy
+    posture: PostureCredits
 
     no_go: float
     review_recommended: float
@@ -206,6 +402,9 @@ def parse_policy(document: dict[str, Any]) -> Policy:
 
     modifiers = _require(document, "modifiers", "the policy root")
     age_raw = _require(modifiers, "finding_age", "modifiers")
+    # Optional: a policy written before this term existed still loads, and
+    # scores exactly as it did — zero weights mean the term never appears.
+    accepted_raw = modifiers.get("accepted_risk") or {}
     dampening_raw = _require(modifiers, "false_positive_dampening", "modifiers")
     # Optional, unlike the modifiers above: a deployment running the policy
     # file from before spec 21 keeps working, with every risk-profile weight
@@ -214,6 +413,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # hard `_require` here would have made this spec's policy change
     # mandatory before the code could load at all.
     profile_raw = modifiers.get("risk_profile") or {}
+    # Optional, like every modifier added after 1.0: a policy file written
+    # before spec 30 loads unchanged, the category reports available with a
+    # zero weight, and no repository's score moves.
+    governance_raw = modifiers.get("governance") or {}
     # Optional for the same reason, one spec later: a policy file from
     # before spec 19 §2.4 loads, with the category available and worth
     # zero, rather than refusing to load at all.
@@ -222,6 +425,46 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # Optional like the two above: a policy file from before this loads,
     # with the factor at zero, and every score stays exactly as it was.
     unfixable_raw = modifiers.get("unfixable_dampening") or {}
+    # Optional like the rest: with no block the term is worth zero, and with
+    # no `remediation_targets` the category reports unavailable regardless.
+    overdue_raw = modifiers.get("overdue_findings") or {}
+    # Top-level, not a modifier: it changes what a person looks at first and
+    # contributes nothing to any score. Optional like the rest, so a policy
+    # file from before spec 27 loads and the queue keeps its severity order.
+    credits_raw = modifiers.get("posture_credits") or {}
+    rank_raw = document.get("triage_rank") or {}
+    rank_severity_raw = rank_raw.get("severity") or {}
+    unknown_rank = set(rank_severity_raw) - known
+    if unknown_rank:
+        raise PolicyError(
+            f"triage_rank.severity names unknown severities: "
+            f"{', '.join(sorted(unknown_rank))}. Known: {', '.join(sorted(known))}."
+        )
+
+    # Optional, on the same principle as the modifier blocks above: a policy
+    # file from before spec 24 loads, with no targets, and nothing is overdue
+    # until somebody sets one.
+    targets_raw = document.get("remediation_targets") or {}
+    unknown_targets = set(targets_raw) - known
+    if unknown_targets:
+        raise PolicyError(
+            f"remediation_targets names unknown severities: "
+            f"{', '.join(sorted(unknown_targets))}. Known: {', '.join(sorted(known))}."
+        )
+    target_days: dict[str, int | None] = {}
+    for name in known:
+        value = targets_raw.get(name)
+        if value is None:
+            target_days[name] = None
+            continue
+        number = _number(value, f"remediation_targets.{name}")
+        if number <= 0:
+            raise PolicyError(
+                f"remediation_targets.{name} must be a positive number of days, "
+                f"got {number:g}. Use null for 'no target' — zero would make "
+                "every finding of this severity overdue the moment it is found."
+            )
+        target_days[name] = int(number)
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -258,6 +501,13 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
             "modifiers.remediation_in_flight.discount",
         ),
+        accepted_risk=AcceptedRiskPolicy(
+            unqualified=_number(
+                accepted_raw.get("unqualified", 0), "accepted_risk.unqualified"
+            ),
+            expired=_number(accepted_raw.get("expired", 0), "accepted_risk.expired"),
+            cap=_number(accepted_raw.get("cap", 0), "accepted_risk.cap"),
+        ),
         age=AgePolicy(
             over_30_days_critical=_number(
                 age_raw.get("over_30_days_critical", 0), "finding_age.over_30_days_critical"
@@ -277,6 +527,11 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                     "dampening.min_observations",
                 )
             ),
+        ),
+        governance=GovernancePolicy(
+            points_at_zero=float(governance_raw.get("points_at_zero", 0.0)),
+            good_enough=int(governance_raw.get("good_enough", 80)),
+            minimum_controls=int(governance_raw.get("minimum_controls", 5)),
         ),
         risk_profile=RiskProfilePolicy(
             internet_facing_points=_number(
@@ -314,6 +569,69 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             discount_cap=_number(
                 reach_raw.get("discount_cap", 0), "reachability.discount_cap"
             ),
+        ),
+        remediation_targets=RemediationTargets(days=target_days),
+        posture=PostureCredits(
+            regression_per_covered=_number(
+                (credits_raw.get("regression_coverage") or {}).get(
+                    "points_per_covered_finding", 0
+                ),
+                "modifiers.posture_credits.regression_coverage.points_per_covered_finding",
+            ),
+            regression_cap=_number(
+                (credits_raw.get("regression_coverage") or {}).get("cap", 0),
+                "modifiers.posture_credits.regression_coverage.cap",
+            ),
+            verified_at_full_rate=_number(
+                (credits_raw.get("verified_fix_rate") or {}).get("points_at_full_rate", 0),
+                "modifiers.posture_credits.verified_fix_rate.points_at_full_rate",
+            ),
+            verified_minimum_sample=int(
+                _number(
+                    (credits_raw.get("verified_fix_rate") or {}).get("minimum_sample", 10),
+                    "modifiers.posture_credits.verified_fix_rate.minimum_sample",
+                )
+            ),
+            within_target_at_full=_number(
+                (credits_raw.get("within_target") or {}).get(
+                    "points_at_full_compliance", 0
+                ),
+                "modifiers.posture_credits.within_target.points_at_full_compliance",
+            ),
+            total_cap=_number(
+                credits_raw.get("total_cap", 0), "modifiers.posture_credits.total_cap"
+            ),
+            floor_with_open_critical=bool(
+                credits_raw.get("floor_with_open_critical", True)
+            ),
+        ),
+        triage_rank=TriageRankPolicy(
+            severity={
+                name: _number(value, f"triage_rank.severity.{name}")
+                for name, value in rank_severity_raw.items()
+            },
+            in_kev=_number(rank_raw.get("in_kev", 0), "triage_rank.in_kev"),
+            epss_at_1_0=_number(rank_raw.get("epss_at_1_0", 0), "triage_rank.epss_at_1_0"),
+            overdue=_number(rank_raw.get("overdue", 0), "triage_rank.overdue"),
+            due_soon=_number(rank_raw.get("due_soon", 0), "triage_rank.due_soon"),
+            blast_radius_at_max=_number(
+                rank_raw.get("blast_radius_at_max", 0), "triage_rank.blast_radius_at_max"
+            ),
+            repo_is_no_go=_number(
+                rank_raw.get("repo_is_no_go", 0), "triage_rank.repo_is_no_go"
+            ),
+            orphaned_discount=_number(
+                rank_raw.get("orphaned_discount", 0), "triage_rank.orphaned_discount"
+            ),
+            fixable_bonus=_number(
+                rank_raw.get("fixable_bonus", 0), "triage_rank.fixable_bonus"
+            ),
+        ),
+        overdue=OverduePolicy(
+            per_finding=_number(
+                overdue_raw.get("per_finding", 0), "modifiers.overdue_findings.per_finding"
+            ),
+            cap=_number(overdue_raw.get("cap", 0), "modifiers.overdue_findings.cap"),
         ),
         unfixable=UnfixableDampening(
             factor=_number(

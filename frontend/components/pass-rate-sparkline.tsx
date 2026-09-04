@@ -26,7 +26,7 @@ export function PassRateSparkline({
 
   if (scored.length < 2) {
     return (
-      <p className="font-mono text-[9px] text-ink-3">
+      <p className="font-mono text-[11px] text-ink-3">
         {scored.length === 0
           ? "No runs in this window."
           : "One run window so far. A trend needs at least two."}
@@ -83,7 +83,7 @@ export function PassRateSparkline({
         />
         <circle cx={width} cy={lastY} r="2.5" className={`fill-current ${tone}`} />
       </svg>
-      <p className="mt-1 font-mono text-[9px] text-ink-3">
+      <p className="mt-1 font-mono text-[11px] text-ink-3">
         {scored.length} window{scored.length === 1 ? "" : "s"} with runs · dashed line is 90%
         {empty > 0 ? ` · ${empty} window${empty === 1 ? "" : "s"} had no runs, omitted` : ""}
       </p>

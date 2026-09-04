@@ -8,7 +8,10 @@ policy — which is why it demands a reason.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
+import time
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
@@ -17,15 +20,67 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import (
+    briefing,
+    consult,
+    controls,
+    cvss,
+    finding_record,
+    governance,
+    guidance,
+    incident,
+    inventory,
+    platform_health,
+    regression,
+    reown,
+    risk_profile_builder,
+    ssdf,
+    supply_chain,
+    surfaces,
+    test_estate,
+    worklist,
+)
+from mykronos import threat_intel as threat_intel_feed
 from mykronos.adminauth import PrincipalDep
-from mykronos.ci import ConcourseClient, coverage, pipeline_name_for, reconcile
-from mykronos.dashboard import DashboardQueries, PortfolioSummary
-from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
-from mykronos.knowledge.capture import capture_dismissal, safe_capture
+from mykronos.api.ingest import (
+    installation_client_for_repo,
+    profile_owner_for_repo,
+)
+from mykronos.ci import (
+    ActionsClient,
+    ConcourseClient,
+    PipelineStatus,
+    StatusCache,
+    capability_by_workflow,
+    coverage,
+    pipeline_name_for,
+    reconcile,
+)
+from mykronos.dashboard import (
+    STRIDE_CATEGORIES,
+    DashboardQueries,
+    PortfolioSummary,
+    ranking_inputs,
+)
+from mykronos.db.models import (
+    CapabilityGrant,
+    JobRun,
+    RepoControl,
+    RepoOnboarding,
+    RiskProfile,
+    ThreatIntelMatch,
+    capability_config_for,
+)
+from mykronos.jobs import self_check as jobs_self_check
+from mykronos.knowledge.capture import (
+    capture_classification_rejected,
+    capture_dismissal,
+    safe_capture,
+)
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
-from mykronos.maturity import mean_time_to_fix, trend_series
+from mykronos.maturity import mean_time_to_fix, throughput, trend_series
 from mykronos.pull_requests import open_pull_requests
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
@@ -49,6 +104,17 @@ HUMAN_DISPOSITIONS = {
 class CapabilityStateOut(BaseModel):
     capability: str
     has_scanned: bool
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this repository asked for the capability. Every "
+            "capability the platform has gets a row, so a stage nobody "
+            "enabled is named rather than missing — `enabled: false` and "
+            "`has_scanned: false` is 'not configured here', while "
+            "`enabled: true` with `has_scanned: false` is enabled and silent, "
+            "which is somebody's problem. They used to be the same absence."
+        ),
+    )
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
@@ -64,6 +130,16 @@ class PortfolioRowOut(BaseModel):
     #: cost a navigation.
     github_url: str = ""
     pipeline_url: str | None = None
+    synthetic: bool = Field(
+        default=False,
+        description=(
+            "A seeded benchmark corpus (spec 23 §1.2). Scanned and browsable "
+            "like any other repository, and counted in none of the summary "
+            "totals beside it — which the row says, because a repository "
+            "excluded from every number with nothing on the page explaining "
+            "why is how somebody comes to distrust the numbers."
+        ),
+    )
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
     severity_counts: dict[str, int]
@@ -75,10 +151,10 @@ class PortfolioRowOut(BaseModel):
     risk_score: int | None = Field(
         default=None,
         description=(
-            "Oracle's standing score from the latest portfolio decision. Null "
+            "The standing risk score from the latest portfolio decision. Null "
             "means not judged — deliberately not 0, which would read as "
-            "'assessed, no risk'. Oracle is opt-in, so a repo that never "
-            "enabled it stays null."
+            "'assessed, no risk'. Risk decisions are opt-in, so a repo that "
+            "never enabled them stays null."
         ),
     )
     recommendation: str | None = None
@@ -97,6 +173,84 @@ class PortfolioOut(BaseModel):
     repos: list[PortfolioRowOut]
 
 
+class ClaimRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    by: str = Field(
+        min_length=1,
+        max_length=255,
+        description="A handle. An anonymous claim tells nobody anything.",
+    )
+
+
+class SnoozeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    until: date = Field(description="A date, not a timestamp — 'come back on Tuesday'.")
+    reason: str = Field(
+        min_length=1,
+        max_length=2000,
+        description=(
+            "Required. A row that reappears with no reason recorded is a "
+            "deferral nobody can review."
+        ),
+    )
+
+
+class BatchRequest(BaseModel):
+    """One action over a selection (spec 27 §3.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_ids: list[str] = Field(min_length=1, max_length=100)
+    action: Literal["claim", "release", "snooze", "wake"]
+    by: str | None = None
+    until: date | None = None
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Applied to every finding in the batch. Batching must not become "
+            "a way to skip the reason field — see the endpoint."
+        ),
+    )
+
+
+class BatchResult(BaseModel):
+    applied: list[str]
+    refused: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "finding_id -> why. A batch reports per-row outcomes rather than "
+            "failing whole: one claimed row must not stop the other ninety-nine."
+        ),
+    )
+
+
+class TriageStateOut(BaseModel):
+    """Who holds this row, and until when (spec 27 §3)."""
+
+    claimed_by: str | None = None
+    claim_expires_at: datetime | None = None
+    claim_lapsing: bool = False
+    snoozed_until: date | None = None
+    snooze_reason: str | None = None
+
+
+class RankTermOut(BaseModel):
+    """One contribution to a queue row's rank (spec 27 §1.1).
+
+    Modelled rather than a bare dict for the reason `FindingOut`'s docstring
+    gives: a `dict[str, Any]` types the whole frontend as `unknown` and pushes
+    the guessing into a cast — and this is the field whose entire purpose is
+    to be read.
+    """
+
+    key: str
+    points: float
+    detail: str
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -111,11 +265,27 @@ class TriageItem(BaseModel):
     line_start: int | None = None
     package_name: str | None = None
     package_version: str | None = None
+    triage: str = Field(
+        default="needs_human_judgment",
+        description=(
+            "What the classifier concluded about this row, and why. Carried "
+            "on every row rather than only when filtered, so a queue can show "
+            "it without a second request (B-019)."
+        ),
+    )
+    triage_rationale: str = Field(
+        default="",
+        description=(
+            "The sentence behind the classification. spec 01 §6 makes an "
+            "unexplained verdict a bug, and a row labelled 'needs human "
+            "judgment' with nothing saying why is one."
+        ),
+    )
     first_seen_at: datetime | None = None
     repo_recommendation: str | None = Field(
         default=None,
         description=(
-            "The repo's standing Oracle verdict, carried per row so the queue "
+            "The repo's standing risk verdict, carried per row so the queue "
             "reads without cross-referencing the portfolio. The same critical "
             "means something different in a repo already called no_go."
         ),
@@ -129,12 +299,65 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    owner: str | None = Field(
+        default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
+    )
+    due_state: str | None = Field(
+        default=None, description="overdue | due_soon | on_track | no_target (spec 24 §2.4)."
+    )
+    effort: str | None = Field(
+        default=None,
+        description=(
+            "one_click | small | investigation (spec 27 §2). Three bands, not "
+            "an hour estimate: an estimate this platform cannot verify is a "
+            "number nobody should plan against."
+        ),
+    )
+    blast_radius_repos: int | None = Field(
+        default=None, description="Repositories carrying a finding on this package."
+    )
+    rank: float | None = Field(
+        default=None, description="Only when ordering by rank (spec 27 §1)."
+    )
+    state: TriageStateOut = Field(
+        default_factory=TriageStateOut,
+        description="Claim and snooze, from the operational store (spec 27 §3.2).",
+    )
+    rank_terms: list[RankTermOut] = Field(
+        default_factory=list,
+        description=(
+            "Every term that produced `rank`, with its points and a sentence. "
+            "A rank a person cannot argue with is a rank they will ignore."
+        ),
+    )
+
+
+class NotConsulted(BaseModel):
+    """A ranking input this deployment could not use, and why."""
+
+    input: str
+    reason: str
+
+
+class RankingInputs(BaseModel):
+    """What the order is actually made of (B-033).
+
+    The rank already carries its working — every term it used, with points.
+    This is the other half: what it could not use. Without it a queue ordered
+    by severity and threat intel presents itself as ordered by risk, and those
+    are different claims about the same list.
+    """
+
+    consulted: list[str]
+    not_consulted: list[NotConsulted]
+    repos_without_a_risk_profile: list[str]
 
 
 class TriageQueue(BaseModel):
     items: list[TriageItem]
     open_by_severity: dict[str, int]
     total_open: int
+    ranking: RankingInputs
     truncated: bool = Field(
         description=(
             "Whether the limit cut the list short. A queue that silently stops "
@@ -171,6 +394,15 @@ class FindingOut(BaseModel):
     package_name: str | None = None
     package_version: str | None = None
     status: str
+    #: Who this is addressed to, and where that answer came from (spec 24 §1).
+    #: `owner_source` is codeowners | profile | manual | unresolved — the four
+    #: are behaviourally different, and a bare null owner could be any of them.
+    owner: str | None = None
+    owner_source: str | None = None
+    #: When this is due and who set that date (spec 24 §2). `due_source` is
+    #: kev | policy | manual; null means no target applies to this severity.
+    due_at: datetime | None = None
+    due_source: str | None = None
     fingerprint_version: str | None = None
     #: Set only when `status == "superseded"` (spec 05 §5a) — the finding_id
     #: that replaced this record. Previously not selected at all, so a
@@ -214,6 +446,10 @@ class FindingLocationOut(BaseModel):
 #: group-level `toxic_combination` `_group_findings` adds on top of it — the
 #: same four values `FindingGroupOut.triage` already renders, now also a
 #: filter (spec 18 §5.1).
+#: The `due` query filter (spec 24 §2.4). A Literal so a typo is a 422 with
+#: the allowed values in it, rather than a silently empty list.
+DueFilter = Literal["overdue", "due_soon", "on_track", "no_target"]
+
 TriageFilter = Literal[
     "true_positive", "likely_false_positive", "needs_human_judgment", "toxic_combination"
 ]
@@ -243,7 +479,7 @@ class FindingGroupOut(BaseModel):
     age_days: int | None = None
     triage: str = Field(
         description=(
-            "Patchwork's own classification (`patchwork/triage.py`), plus "
+            "The auto-remediation classification (`patchwork/triage.py`), plus "
             "`toxic_combination` for a group that cannot be judged alone."
         )
     )
@@ -265,12 +501,60 @@ class FindingGroupOut(BaseModel):
     fixable: bool | None = Field(
         default=None,
         description=(
-            "Whether Patchwork produced a fix for any occurrence in this "
+            "Whether auto-remediation produced a fix for any occurrence in this "
             "group (spec 19 §3.2). Read from what it actually did, not "
             "predicted — a fixer cannot say whether it applies without the "
             "file content, and a prediction would never self-correct. Null "
             "means nobody has looked yet, which is distinct from `false`: "
             "looked, and there is no mechanical fix."
+        ),
+    )
+    due_at: datetime | None = Field(
+        default=None,
+        description=(
+            "The soonest deadline among this group's occurrences (spec 24 §2). "
+            "Null means no target applies — `info` findings, or a deployment "
+            "with no remediation targets configured."
+        ),
+    )
+    due_source: str | None = Field(
+        default=None,
+        description="kev | policy | manual. A KEV date on any occurrence wins.",
+    )
+    owner: str | None = Field(
+        default=None,
+        description=(
+            "The owner, when every occurrence in this group has the same one "
+            "(spec 24 §1). Null when they disagree — see `owner_split` — or "
+            "when no CODEOWNERS rule matched."
+        ),
+    )
+    owner_split: bool = Field(
+        default=False,
+        description=(
+            "True when occurrences have different owners. One rule firing "
+            "across two teams' files is one decision with two people "
+            "answerable for it, and naming either would misroute half of it."
+        ),
+    )
+    cwe_ids: list[str] = Field(
+        default_factory=list,
+        description="What the reporting tool declared, normalised (spec 28 §1).",
+    )
+    mapping_resolution: str | None = Field(
+        default=None,
+        description=(
+            "How this row was placed in its STRIDE categories: `cwe` when the "
+            "tool named one this platform maps, `capability` otherwise. Per "
+            "row, because a repository is routinely mixed."
+        ),
+    )
+    due_state: str = Field(
+        default="no_target",
+        description=(
+            "overdue | due_soon | on_track | no_target. `no_target` is not "
+            "'on track': it is unmeasured, and showing it as on track would "
+            "report compliance nobody assessed."
         ),
     )
 
@@ -361,7 +645,7 @@ class InsiderRiskPage(BaseModel):
     blocking: bool = Field(
         default=False,
         description=(
-            "Whether this repository's Aegis Check Run can fail a pull "
+            "Whether this repository's insider-risk Check Run can fail a pull "
             "request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, "
             "and off by default. Stated here rather than left to the reader "
             "because the gap between what an admin configured and what a "
@@ -387,7 +671,7 @@ class SscsEvidenceOut(BaseModel):
         default=None,
         description=(
             "Pre-clamp. Ranking has to survive the floor at 0, the same way "
-            "Oracle's raw_score survives the ceiling at 100 (D-018)."
+            "the risk decision's raw_score survives the ceiling at 100 (D-018)."
         ),
     )
     provenance_json: Any = None
@@ -412,9 +696,66 @@ class ThreatModelSupplyChainOut(BaseModel):
     vulnerable_dependency_count: int = 0
 
 
+class ControlOut(BaseModel):
+    """A declared mitigation (spec 28 §3)."""
+
+    control_id: str
+    stride: str
+    kind: str
+    description: str = ""
+    evidence_ref: str = ""
+    evidence: str = Field(
+        description=(
+            "`referenced` when the control names a file, route, policy or "
+            "test; `asserted` when it does not. Both are allowed — refusing "
+            "the second would mean the register only ever holds the controls "
+            "somebody had time to document — and the tab renders the second "
+            "as the weaker claim it is."
+        )
+    )
+    verified_by_capability: str = ""
+    checkable: bool = Field(
+        description=(
+            "Whether any capability in this platform could contradict this "
+            "control. False is stated rather than left implied: a control "
+            "nothing can check is not a verified control."
+        )
+    )
+    last_verified_at: datetime | None = None
+    stale: bool = Field(
+        description=(
+            "Nobody has re-confirmed this in 90 days. A mitigation nobody has "
+            "checked since last quarter is a belief, and the tab says which "
+            "of the two it is showing."
+        )
+    )
+    declared_by: str = ""
+    declared_at: datetime
+
+
 class ThreatModelCategoryOut(BaseModel):
     stride: str = Field(description="One of STRIDE_CATEGORIES (dashboard.py).")
     findings: list[FindingGroupOut]
+    state: str = Field(
+        default="findings_open",
+        description=(
+            "`findings_open` | `unmitigated` | `mitigated` | `unscanned` "
+            "(spec 28 §4). `unscanned` is the one that matters: a category "
+            "nothing has ever reported into used to render identically to a "
+            "clean one, which made an absence of looking read as good news."
+        ),
+    )
+    controls: list[ControlOut] = Field(default_factory=list)
+    contradicted: bool = Field(
+        default=False,
+        description=(
+            "Findings open *and* a control declared here. Shown rather than "
+            "resolved: a control that exists while findings accumulate under "
+            "it is either wrong, bypassed, or narrower than its description, "
+            "and the platform has no basis to decide which."
+        ),
+    )
+    reason: str = Field(default="", description="Why this category is in this state.")
 
 
 class ThreatModelOut(BaseModel):
@@ -422,14 +763,80 @@ class ThreatModelOut(BaseModel):
 
     repo_full_name: str
     mapping_resolution: str = Field(
-        description="Always 'capability' today — no Finding carries a "
-        "structured CWE, so this is the finest resolution the data "
-        "honestly supports. A future CWE-aware pass would report 'cwe' "
-        "here instead, distinguishing the two rather than letting the "
-        "frontend assume one silently became the other."
+        description=(
+            "`cwe`, `capability`, or `mixed` (spec 28 §2). Until CWEs were "
+            "read out of SARIF this was always `capability` — the finest "
+            "resolution the data then supported. `mixed` is the common case "
+            "now and is why every row carries its own: CodeQL tags its rules, "
+            "Trivy does not, and a page-level label would be wrong for half "
+            "of a real repository."
+        )
+    )
+    unmapped_cwes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CWEs the tools declared and `stride-map-v1.yaml` does not know. "
+            "Those rows fall back to capability mapping and are named here so "
+            "the gap gets closed by somebody adding a row, rather than "
+            "resolving to whatever category looked closest."
+        ),
     )
     categories: list[ThreatModelCategoryOut]
+    nothing_scanned: bool = Field(
+        default=False,
+        description=(
+            "No capability that feeds any STRIDE category has ever reported "
+            "here. Said once at the top rather than six times (spec 28 §6): "
+            "it is one fact about the repository, not six about its "
+            "categories."
+        ),
+    )
     supply_chain: ThreatModelSupplyChainOut | None = None
+
+
+#: What an acceptance rests on (spec 24 §3.2).
+#:
+#: The free text stays and is still what a person reads. The code is what
+#: makes an acceptance machine-revisitable — and only one of these is a
+#: premise a scan can contradict, which is why the sweep re-opens
+#: `no_vendor_fix` and nothing else.
+AcceptanceReason = Literal[
+    "no_vendor_fix",
+    "not_exploitable_here",
+    "compensating_control",
+    "cost_exceeds_risk",
+    "other",
+]
+
+
+class ClassificationReview(BaseModel):
+    """A person's verdict on what the classifier concluded (B-020)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agrees: bool = Field(
+        description=(
+            "True confirms the classifier and dispositions the finding. False "
+            "records that it was wrong and leaves the finding open."
+        )
+    )
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Why. Required when agreeing, because a dismissal without one is "
+            "recorded as low-confidence and barred from promotion (spec 11 "
+            "§4) -- and dampening, which these dispositions feed, needs the "
+            "reason rather than the click."
+        ),
+    )
+
+
+class ClassificationReviewResult(BaseModel):
+    finding_id: str
+    agreed: bool
+    status: str
+    recorded: str
 
 
 class StatusChange(BaseModel):
@@ -445,6 +852,28 @@ class StatusChange(BaseModel):
             "are what make a learning actionable rather than a statistic."
         ),
     )
+    accepted_until: date | None = Field(
+        default=None,
+        description=(
+            "Review date for an accepted risk (spec 24 §3.2). Required unless "
+            "`indefinite` is set: an acceptance with no end is a decision "
+            "nobody revisits, and this platform is currently carrying 243 of "
+            "them that each said no vendor fix exists."
+        ),
+    )
+    indefinite: bool = Field(
+        default=False,
+        description=(
+            "Accept with no review date. Deliberately an explicit choice "
+            "rather than the default — it is rarer than people expect once a "
+            "date is the easy option."
+        ),
+    )
+    accepted_reason_code: AcceptanceReason | None = Field(
+        default=None,
+        description="Required when accepting a risk. See `AcceptanceReason`.",
+    )
+
 
 
 class StatusChangeResult(BaseModel):
@@ -452,6 +881,29 @@ class StatusChangeResult(BaseModel):
     status: str
     reason_supplied: bool
     retro_signal: str
+
+
+class OwnerChange(BaseModel):
+    """Reassign a finding by hand (spec 24 §1.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "A GitHub handle or team slug. Null hands the finding back to "
+            "CODEOWNERS — the next scan re-resolves it, rather than the "
+            "finding staying permanently unowned because somebody cleared "
+            "the field."
+        ),
+    )
+
+
+class OwnerChangeResult(BaseModel):
+    finding_id: str
+    owner: str | None
+    owner_source: str
 
 
 class ChecksOut(BaseModel):
@@ -524,6 +976,7 @@ async def portfolio(
             PortfolioRowOut(
                 repo_id=row.repo_id,
                 repo_full_name=row.repo_full_name,
+                synthetic=row.synthetic,
                 status=row.status,
                 github_url=f"https://github.com/{row.repo_full_name}",
                 pipeline_url=pipeline_url(row.repo_full_name),
@@ -553,7 +1006,7 @@ async def pull_requests(request: Request, principal: PrincipalDep) -> PullReques
 
     Read-only, and deliberately so. Each row links out to GitHub to review and
     merge; the platform offers no merge of its own. That is the same constraint
-    spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+    spec 08 §3 makes structural for auto-remediation, applied to the view: a page that
     could merge a change to your code is a page that has to be trusted
     differently from one that can only show it to you.
     """
@@ -599,6 +1052,28 @@ async def triage(
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     kev_only: Annotated[bool, Query()] = False,
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    owner: Annotated[str | None, Query(max_length=255)] = None,
+    order: Annotated[Literal["severity", "rank"], Query()] = "severity",
+    include_snoozed: Annotated[bool, Query()] = False,
+    claimed_by: Annotated[str | None, Query(max_length=255)] = None,
+    triage: Annotated[
+        Literal[
+            "true_positive",
+            "likely_false_positive",
+            "needs_human_judgment",
+            "toxic_combination",
+        ]
+        | None,
+        Query(
+            description=(
+                "What the classifier concluded. The per-repository findings "
+                "view has had this filter; the queue did not, so 'show me "
+                "everything the machine could not judge' meant one request "
+                "per repository (B-019). Every row carries `triage` whether "
+                "or not this is set."
+            )
+        ),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> TriageQueue:
     """What to work on next, across the whole portfolio (spec 10 §2.1).
@@ -606,6 +1081,12 @@ async def triage(
     The portfolio table answers "which repo is worst". This answers "what do I
     do next" — the question somebody actually has on a Monday morning, and one
     a per-repo view makes you visit forty pages to answer.
+
+    `order=rank` applies spec 27 §1's weighted sum: severity describes the
+    vulnerability class, and everything else on the row describes this
+    instance of it. Severity ordering is kept and is still the default —
+    "show me every critical" remains a legitimate question, and a queue that
+    refuses to answer it is a worse queue.
     """
     with request.app.state.db.session() as session:
         items, counts = _queries(request).triage_queue(
@@ -616,13 +1097,24 @@ async def triage(
             limit=limit,
             kev_only=kev_only,
             min_epss=min_epss,
+            owner=owner,
+            order=order,
+            policy=request.app.state.oracle_policy,
+            include_snoozed=include_snoozed,
+            claimed_by=claimed_by,
+            triage=triage,
+            store=request.app.state.knowledge,
         )
+
+    with request.app.state.db.session() as session:
+        ranking = ranking_inputs(request.app.state.catalog, session)
 
     return TriageQueue(
         items=[TriageItem(**item) for item in items],
         open_by_severity=counts,
         total_open=sum(counts.values()),
         truncated=len(items) >= limit,
+        ranking=RankingInputs(**ranking),
     )
 
 
@@ -644,11 +1136,38 @@ async def trends(
     repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
     catalog = request.app.state.catalog
 
-    series = trend_series(catalog, repo_full_name, days=days, points=points)
+    # The seeded benchmark corpus is excluded from every portfolio aggregate
+    # (spec 23 §1.2). Looked up here rather than inside `trend_series`:
+    # which repositories are synthetic is a fact in the operational store, and
+    # a lake query reaching into the database to find out would couple the two
+    # in the one direction this codebase has kept clear.
+    with request.app.state.db.session() as session:
+        synthetic = [
+            row.github_repo_full_name
+            for row in session.query(RepoOnboarding).filter(
+                RepoOnboarding.synthetic.is_(True)
+            )
+        ]
+
+    series = trend_series(
+        catalog, repo_full_name, days=days, points=points, exclude=synthetic
+    )
     return {
         "scope": repo_full_name or "portfolio",
         "days": days,
         "mean_time_to_fix_days": mean_time_to_fix(catalog, repo_full_name),
+        # Spec 31 §3's portfolio equivalent. Here rather than on a page of its
+        # own because every other number on this page counts what is open, and
+        # this is the one that counts what was learned — it is only legible
+        # beside them.
+        #
+        # Not windowed by `days`, and deliberately: the other series are rates
+        # over a period, while this is a standing property of everything ever
+        # fixed. Clipping it to 90 days would make a repository's regression
+        # tests expire from the number for having been written too long ago.
+        "regression_coverage": regression.as_dict(
+            regression.coverage(catalog, repo_full_name)
+        ),
         "points": [
             {
                 "at": point.at,
@@ -665,10 +1184,14 @@ async def trends(
             }
             for point in series
         ],
+        # Reader-facing copy, so no internal citation: a specification section
+        # number is a fact about this repository, not about the reader's data,
+        # and it lands in the interface as noise for anyone who cannot open the
+        # document it names.
         "note": (
             "Every point is a query over first_seen_at and resolved_at, not a "
-            "stored snapshot, so any of them can be re-derived from the "
-            "findings themselves (spec 10 §6)."
+            "stored snapshot, so any of them can be recalculated from the "
+            "findings themselves."
         ),
     }
 
@@ -683,7 +1206,7 @@ async def maturity(
 
     Criteria measure evidence rather than switch positions: nothing here can
     be satisfied by changing configuration alone, and in particular no tier
-    rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+    rewards turning the risk-decision gate on. Spec 09 §6 makes that conditional on
     shadow-mode data, so the model asks whether the data exists instead.
     """
     model = request.app.state.maturity_model
@@ -742,6 +1265,174 @@ async def maturity(
     }
 
 
+def _finding_repo(request: Request, finding_id: str) -> str:
+    record = DashboardQueries(request.app.state.catalog).finding(finding_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+    return str(record.get("repo_full_name") or "")
+
+
+def _require_writer(principal: Any, verb: str) -> None:
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"{verb} requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+
+
+@router.get("/triage/throughput")
+async def triage_throughput(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """What moved this week, against last (spec 27 §5).
+
+    A queue with no memory of itself cannot tell a team clearing its backlog
+    from one treading water: both look like a list of open findings. Every
+    number is a query over `first_seen_at`, `resolved_at` and the verification
+    outcomes — no rollup table, for the reason `trend_series` gives.
+
+    Ordered before `/triage/{finding_id}/...` so the literal path is not
+    shadowed by the parameterised one.
+    """
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    return throughput(request.app.state.catalog, repo_full_name)
+
+
+@router.post("/triage/{finding_id}/claim", response_model=TriageStateOut)
+async def claim_finding(
+    request: Request, finding_id: str, body: ClaimRequest, principal: PrincipalDep
+) -> TriageStateOut:
+    """Take a row (spec 27 §3.1).
+
+    Distinct from `owner` (spec 24 §1): ownership says who is *answerable*,
+    copied from CODEOWNERS; a claim says who is *doing it now*. Conflating
+    them would mean either nobody can pick up a neighbouring team's work
+    without rewriting ownership, or ownership drifts every time somebody
+    helps out.
+
+    First write wins. A silent overwrite here is two people fixing the same
+    finding.
+    """
+    _require_writer(principal, "Claiming a finding")
+    repo = _finding_repo(request, finding_id)
+    with request.app.state.db.session() as session:
+        try:
+            state = worklist.claim(session, finding_id, repo, by=body.by.strip())
+        except worklist.WorklistError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.delete("/triage/{finding_id}/claim", response_model=TriageStateOut)
+async def release_finding(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> TriageStateOut:
+    """Hand a row back. The snooze, if any, is a separate decision and stays."""
+    _require_writer(principal, "Releasing a finding")
+    with request.app.state.db.session() as session:
+        state = worklist.release(session, finding_id)
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.post("/triage/{finding_id}/snooze", response_model=TriageStateOut)
+async def snooze_finding(
+    request: Request, finding_id: str, body: SnoozeRequest, principal: PrincipalDep
+) -> TriageStateOut:
+    """Put a row down until a date, deciding nothing about it (spec 27 §3.1).
+
+    Deliberately not a `Finding.status`: a snoozed finding is still open,
+    still scores in the risk decision, and still goes overdue if it goes
+    overdue. That
+    separation is what stops "not now" becoming "not ever".
+    """
+    _require_writer(principal, "Snoozing a finding")
+    repo = _finding_repo(request, finding_id)
+    with request.app.state.db.session() as session:
+        try:
+            state = worklist.snooze(
+                session, finding_id, repo, until=body.until, reason=body.reason
+            )
+        except worklist.WorklistError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.delete("/triage/{finding_id}/snooze", response_model=TriageStateOut)
+async def wake_finding(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> TriageStateOut:
+    """Bring a snoozed row back early. The claim, if any, stays."""
+    _require_writer(principal, "Waking a finding")
+    with request.app.state.db.session() as session:
+        state = worklist.wake(session, finding_id)
+    return TriageStateOut(**worklist.as_dict(state))
+
+
+@router.post("/triage/batch", response_model=BatchResult)
+async def triage_batch(
+    request: Request, body: BatchRequest, principal: PrincipalDep
+) -> BatchResult:
+    """One action over a selection (spec 27 §3.1).
+
+    Reports per row rather than failing whole: one row somebody else claimed
+    must not stop the other ninety-nine.
+
+    Batching does not relax what a single action requires. A snooze still
+    needs a reason and a future date — spec 11 §4's reasons are what make the
+    Knowledge Store worth anything, and a bulk path that skipped them would be
+    the obvious way to stop having any.
+    """
+    _require_writer(principal, "Batch triage")
+
+    applied: list[str] = []
+    refused: dict[str, str] = {}
+    with request.app.state.db.session() as session:
+        for finding_id in body.finding_ids:
+            try:
+                if body.action == "claim":
+                    if not (body.by or "").strip():
+                        raise worklist.WorklistError("`by` is required to claim.")
+                    repo = _finding_repo(request, finding_id)
+                    worklist.claim(session, finding_id, repo, by=str(body.by).strip())
+                elif body.action == "release":
+                    worklist.release(session, finding_id)
+                elif body.action == "snooze":
+                    if body.until is None:
+                        raise worklist.WorklistError("`until` is required to snooze.")
+                    repo = _finding_repo(request, finding_id)
+                    worklist.snooze(
+                        session, finding_id, repo, until=body.until, reason=body.reason
+                    )
+                else:
+                    worklist.wake(session, finding_id)
+                applied.append(finding_id)
+            except worklist.WorklistError as exc:
+                refused[finding_id] = str(exc)
+            except HTTPException as exc:
+                refused[finding_id] = str(exc.detail)
+
+    logger.info(
+        "Batch %s over %d finding(s) by %s: %d applied, %d refused",
+        body.action,
+        len(body.finding_ids),
+        scrub(principal.actor),
+        len(applied),
+        len(refused),
+    )
+    return BatchResult(applied=applied, refused=refused)
+
+
 @router.get("/repos/{repo_id}/insider-risk", response_model=InsiderRiskPage)
 async def repo_insider_risk(
     request: Request,
@@ -778,11 +1469,11 @@ async def repo_insider_risk(
             "person. Nothing here aggregates or ranks contributors, and rows "
             "are deleted after this repository's retention period (spec 06 §9). "
             + (
-                "This repository's Aegis Check Run is BLOCKING: a score at or "
-                "above the threshold fails the pull request."
+                "This repository's insider-risk Check Run is BLOCKING: a score "
+                "at or above the threshold fails the pull request."
                 if blocking
-                else "This repository's Aegis Check Run is advisory — it never "
-                "fails a pull request."
+                else "This repository's insider-risk Check Run is advisory — it "
+                "never fails a pull request."
             )
         ),
     )
@@ -814,7 +1505,11 @@ class CiReportingOut(BaseModel):
             "capability's newest scan run is older than that build, so "
             "something ran and did not report. never_reported: the job has "
             "succeeded and the lake has no successful run for it at all. "
-            "not_run: no successful build to compare against."
+            "failed: the lane ran and its last build did not succeed, so "
+            "there is no successful build to measure the lake against - "
+            "distinct from not_run, which used to absorb it and reads as "
+            "'nobody has triggered this yet'. not_run: the job exists and "
+            "has never run."
         )
     )
 
@@ -827,8 +1522,8 @@ class StageCoverageOut(BaseModel):
             "not_enabled: nobody asked for this stage here. no_job: enabled, "
             "and nothing in the pipeline produces it - the gap hardest to see "
             "otherwise, because the repository believes it is covered and no "
-            "job disagrees. reporting / silent / never_reported / not_run "
-            "carry their meaning from the cross-check."
+            "job disagrees. reporting / silent / never_reported / failed / "
+            "not_run carry their meaning from the cross-check."
         )
     )
     problem: bool
@@ -895,6 +1590,64 @@ async def vulnerability_management(
     return _queries(request).vulnerability_management(repo_full_name)
 
 
+async def _ci_status(
+    request: Request,
+    repo_full_name: str,
+    scanned_by: str,
+    installation_id: int | None,
+) -> PipelineStatus:
+    """Where this repository is built, from whichever CI builds it.
+
+    Concourse is read synchronously off the same host and is not cached — it
+    was never expensive. Actions is a network round-trip against a shared
+    installation rate limit, so it goes through `StatusCache` (spec 32 §7.1),
+    which stores successes only.
+
+    Neither branch raises. A repository with `scanned_by="none"` gets a
+    `PipelineStatus` saying exactly that, rather than a Concourse lookup for
+    a pipeline nobody claimed exists.
+    """
+    settings = request.app.state.settings
+
+    if scanned_by == "github_actions":
+        if installation_id is None:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=f"https://github.com/{repo_full_name}/actions",
+                unavailable="This repository has no GitHub App installation to read.",
+            )
+        cache: StatusCache = request.app.state.ci_status_cache
+        now = time.monotonic()
+        cached = cache.get(repo_full_name, now=now)
+        if cached is not None:
+            return cached
+        client = ActionsClient(
+            request.app.state.github_factory.for_installation(installation_id),
+            capability_by_workflow=capability_by_workflow(request.app.state.templates),
+        )
+        status = await client.status_for(repo_full_name)
+        cache.put(repo_full_name, status, now=now)
+        return status
+
+    if scanned_by == "none":
+        return PipelineStatus(
+            repo_full_name=repo_full_name,
+            pipeline=None,
+            url=None,
+            unavailable=(
+                "This repository declares no scanner (scanned_by=none). Findings can "
+                "still be uploaded by hand, and nothing runs on its own."
+            ),
+        )
+
+    return ConcourseClient(
+        settings.concourse_url,
+        team=settings.concourse_team,
+        external_url=settings.concourse_external_url,
+    ).status_for(repo_full_name)
+
+
 @router.get("/repos/{repo_id}/ci", response_model=CiPage)
 async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> CiPage:
     """Links out to where this repository is built (spec 15 §4a).
@@ -905,20 +1658,14 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
     pipeline, from a page that is already about this repository.
     """
     repo_full_name = _resolve_repo(request, repo_id)
-    settings = request.app.state.settings
-    status = ConcourseClient(
-        settings.concourse_url,
-        team=settings.concourse_team,
-        external_url=settings.concourse_external_url,
-    ).status_for(repo_full_name)
-
-    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
 
     with request.app.state.db.session() as session:
         row = session.execute(
             select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == repo_full_name)
         ).scalar_one_or_none()
         enabled = set(row.enabled_capabilities or []) if row else set()
+        scanned_by = row.scanned_by if row else "concourse"
+        installation_id = row.github_installation_id if row else None
 
         if row and row.scanned_by != "github_actions":
             # `enabled_capabilities` is the installer's ledger: capabilities
@@ -935,6 +1682,14 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                     )
                 ).scalars()
             )
+
+    # Dispatch on `scanned_by`, the same split `scan_now` and fix
+    # verification already use (spec 32 §7). Everything below this line is
+    # unchanged and unaware of which CI answered: `reconcile` and `coverage`
+    # were always about job names, statuses and timestamps.
+    status = await _ci_status(request, repo_full_name, scanned_by, installation_id)
+
+    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
 
     return CiPage(
         repo_full_name=repo_full_name,
@@ -993,13 +1748,28 @@ async def repo_sbom(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
-    evidence_id: Annotated[str, Query()],
+    evidence_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Omit for the most recent build that captured one — the "
+                "'what is in production right now' question, which used to "
+                "require knowing an id nothing in the interface told you."
+            ),
+        ),
+    ] = None,
 ) -> FileResponse:
     """The archived SBOM itself, not just its trust-score summary (spec 18 §8.2).
 
     Admin-only — `may_see_raw_output`, the same gate every other archived
     tool output already sits behind (spec 12 §5): an SBOM is raw output too,
     just one atlas produced rather than a scanner.
+
+    **`evidence_id` is optional (B-037).** Pinning an SBOM to a build is
+    correct — one without a build is a guess about what shipped — but that
+    made the common question unanswerable without a lookup nobody knew to do.
+    Omitting it resolves the newest build that captured one, which is a lookup
+    of a real artifact rather than a floating document.
     """
     if not principal.may_see_raw_output:
         raise HTTPException(
@@ -1011,12 +1781,24 @@ async def repo_sbom(
         )
 
     repo_full_name = _resolve_repo(request, repo_id)
-    row = _queries(request).sscs_evidence_row(repo_full_name, evidence_id)
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No supply-chain evidence {evidence_id} for this repository.",
-        )
+    if evidence_id is None:
+        row = _queries(request).latest_sscs_evidence(repo_full_name)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "No build of this repository has captured an SBOM yet. "
+                    "An SBOM is recorded against a release, so there is "
+                    "nothing to serve until one has been built."
+                ),
+            )
+    else:
+        row = _queries(request).sscs_evidence_row(repo_full_name, evidence_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No supply-chain evidence {evidence_id} for this repository.",
+            )
     sbom_ref = row.get("sbom_ref")
     if not sbom_ref:
         raise HTTPException(
@@ -1048,6 +1830,633 @@ async def repo_sbom(
     return FileResponse(path, filename=path.name, media_type="application/json")
 
 
+class RegressionLinkRequest(BaseModel):
+    """Pin a test to a finding (spec 31 §2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    test_identifier: str = Field(
+        min_length=1,
+        max_length=500,
+        description="A JUnit `classname.name`, as the runner reports it.",
+    )
+    capability: Literal["unit", "functional", "qa"] = Field(
+        default="unit", description="Which lane runs it."
+    )
+
+
+class RegressionLinkResult(BaseModel):
+    link_id: str
+    finding_id: str
+    test_identifier: str
+    evidence: str
+
+
+@router.post(
+    "/findings/{finding_id}/regression-test", response_model=RegressionLinkResult
+)
+async def link_regression_test(
+    request: Request,
+    finding_id: str,
+    body: RegressionLinkRequest,
+    principal: PrincipalDep,
+) -> RegressionLinkResult:
+    """Record the test that would fail if this came back (spec 31 §2).
+
+    Its own endpoint rather than a field on the disposition form, and the
+    reason is a rule this platform already holds: `fixed` is not a disposition
+    a person may set -- it is an observation the scanners and the reconciler
+    own (`HUMAN_DISPOSITIONS`). Spec 31 §2 assumed somebody marks a finding
+    fixed by hand and is offered the field there; nobody can, so the moment
+    the spec described does not exist. What does exist is a person who has
+    just written the test, and this is where they say so.
+
+    Recorded as `asserted`. `demonstrated` is earned by watching the test fail
+    against the vulnerable code and pass against the fixed code, never claimed
+    through this route: the whole point of the distinction is that one is
+    somebody's word and the other is evidence.
+    """
+    _require_writer(principal, "Linking a regression test")
+    found = DashboardQueries(request.app.state.catalog).finding(finding_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    try:
+        identifier = regression.record(
+            request.app.state.buffer,
+            repo_full_name=str(found.get("repo_full_name") or ""),
+            finding_id=finding_id,
+            test_identifier=body.test_identifier,
+            capability=body.capability,
+            linked_by=principal.actor,
+        )
+    except regression.RegressionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+    return RegressionLinkResult(
+        link_id=identifier,
+        finding_id=finding_id,
+        test_identifier=body.test_identifier.strip(),
+        evidence=regression.ASSERTED,
+    )
+
+
+@router.get("/repos/{repo_id}/regression-coverage")
+async def regression_coverage(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    """Which fixed vulnerabilities would we notice coming back? (spec 31 §3)
+
+    The first number in this platform that measures a repository getting
+    structurally safer rather than temporarily cleaner. Everything else counts
+    what is open; this counts what was learned.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return {
+        "repo_full_name": repo_full_name,
+        **regression.as_dict(
+            regression.coverage(request.app.state.catalog, repo_full_name)
+        ),
+    }
+
+
+class AffectedRepoOut(BaseModel):
+    """One repository's exposure to one package (spec 29 §2)."""
+
+    repo_full_name: str
+    repo_id: str = Field(
+        default="",
+        description=(
+            "The onboarding id, for linking to the repository page — which "
+            "accepts only this, never `owner/repo`. Empty where the exposure "
+            "outlived the onboarding, in which case there is nothing to link "
+            "to and the caller should render the name as plain text."
+        ),
+    )
+    versions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every version present, not one. 'We have three copies and one is "
+            "patched' is the actual state, and a single version would hide the "
+            "two that are not."
+        ),
+    )
+    ecosystem: str = ""
+    matched_by: str = Field(
+        default="name",
+        description=(
+            "`purl` is exact; `name` is a guess that is usually right. A "
+            "package renamed upstream matches by name and not by purl, and a "
+            "view that did not say which would present a guess as an identity."
+        ),
+    )
+    commit_sha: str = ""
+    observed_at: datetime | None = None
+    open_findings: int = Field(
+        default=0,
+        description=(
+            "Exposure and a finding are different facts: a repository can "
+            "contain a vulnerable package with no finding, because its last "
+            "scan predates the advisory."
+        ),
+    )
+    highest_severity: str = ""
+    fixed_version: str = ""
+    recommendation: str = ""
+    risk_score: int | None = None
+
+
+class IncidentOut(BaseModel):
+    """Are we affected by this? (spec 29 §2)"""
+
+    query: str
+    kind: str = Field(description="`cve`, `purl`, or `package`.")
+    in_kev: bool | None = Field(
+        default=None,
+        description=(
+            "Null means the CVE has not been checked against KEV, which is "
+            "not the same as not being listed."
+        ),
+    )
+    epss_score: float | None = None
+    affected: list[AffectedRepoOut] = Field(default_factory=list)
+    clear: list[str] = Field(
+        default_factory=list,
+        description="Repositories with an SBOM and no match — genuinely checked.",
+    )
+    not_checked: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repositories with no SBOM in the lake. **Never a clean result.** "
+            "Folding these in with `clear` would convert an absence of data "
+            "into a statement of safety, which is the worst thing this view "
+            "could do and the thing it would do by default."
+        ),
+    )
+    note: str = ""
+
+
+class ControlStateOut(BaseModel):
+    """One change-governance control (spec 30 §2)."""
+
+    key: str
+    state: str = Field(
+        description=(
+            "`on`, `partial`, `off`, or `unknown`. Four rather than two: a "
+            "single required approval is genuinely better than none and "
+            "genuinely is not two, and `unknown` is a control the platform "
+            "could not read — a permissions gap, never a red cross."
+        )
+    )
+    detail: str = ""
+    value: float | None = None
+    prevents: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The insider-risk signals this control would have prevented. The link is "
+            "the point of the panel: it turns a log of oddities into a "
+            "diagnosis with a remedy the team can action themselves."
+        ),
+    )
+
+
+class ControlDriftOut(BaseModel):
+    """One control changing state, recorded when it happened."""
+
+    control_key: str
+    from_state: str
+    to_state: str
+    observed_at: datetime
+    #: True when a control that was on came off. The one transition worth
+    #: waking somebody for, and the reason this is a field rather than left to
+    #: the reader to work out from two state strings.
+    regression: bool
+
+
+class GovernanceOut(BaseModel):
+    """A repository's change-governance posture (spec 30)."""
+
+    repo_full_name: str
+    read_at: datetime | None = None
+    readable: bool = True
+    unreadable_reason: str = ""
+    source: str = Field(
+        default="none",
+        description=(
+            "`branch_protection`, `ruleset`, `both`, or `none`. A repository "
+            "governed entirely by rulesets would read as unprotected if only "
+            "the older model were consulted."
+        ),
+    )
+    governance_score: int | None = Field(
+        default=None,
+        description=(
+            "Null where too little could be read to say. Scored over the "
+            "controls that *were* read, so an unreadable repository has no "
+            "score rather than a bad one."
+        ),
+    )
+    controls: list[ControlStateOut] = Field(default_factory=list)
+    drift: list[ControlDriftOut] = Field(
+        default_factory=list,
+        description=(
+            "Controls that changed state since the platform last looked, newest "
+            "first. A transition *to* `unknown` is a read that failed rather "
+            "than a control that was removed — a revoked permission and a "
+            "security regression must never look the same."
+        ),
+    )
+    merges: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Counts by repository over the window, never by author "
+            "(spec 06 §9). Each is a statement about a control whose remedy "
+            "is a settings change."
+        ),
+    )
+    note: str = ""
+
+
+@router.get("/repos/{repo_id}/governance", response_model=GovernanceOut)
+async def repo_governance(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> GovernanceOut:
+    """The controls that would catch a bad change (spec 30 §1, §2, §3).
+
+    Read live rather than from a stored snapshot. Branch protection is
+    configuration a person can change in the GitHub UI in ten seconds, and a
+    panel that told somebody their repository still required two reviews after
+    they had turned that off would be worse than no panel. The cost is one API
+    call per view, which is the right trade for a read this small.
+
+    Never raises on GitHub. An App without `administration: read` reports every
+    control as unknown and names the permission — a permissions gap is not a
+    security failure and is not scored as one.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    with request.app.state.db.session() as session:
+        row = (
+            session.query(RepoOnboarding)
+            .filter(RepoOnboarding.github_repo_full_name == repo_full_name)
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{repo_full_name} is not onboarded.",
+            )
+        installation_id = row.github_installation_id
+        default_branch = row.default_branch
+
+    github = request.app.state.github_factory.for_installation(installation_id)
+    posture = await governance.read(
+        github,
+        repo_full_name,
+        default_branch,
+        source_paths=_source_paths(request, repo_full_name),
+    )
+    # Stored on the way past, so Oracle can score it without an HTTP call of
+    # its own (spec 30 §4). Only when the read succeeded: overwriting a good
+    # reading with an unreadable one would let a permissions blip erase a
+    # posture the platform had correctly established.
+    drift: list[ControlDriftOut] = []
+    if posture.readable:
+        with request.app.state.db.session() as session:
+            governance.remember(session, posture)
+            session.commit()
+            # Read after the write so a change this render just noticed is in
+            # the list. The sweep is what makes detection continuous; this only
+            # keeps the panel from being a render behind its own history.
+            drift = [
+                ControlDriftOut(
+                    control_key=row.control_key,
+                    from_state=row.from_state,
+                    to_state=row.to_state,
+                    observed_at=row.observed_at,
+                    regression=row.from_state == "on" and row.to_state != "unknown",
+                )
+                for row in governance.recent_drift(session, repo_full_name, limit=20)
+            ]
+
+    body = governance.as_dict(posture)
+    body["drift"] = drift
+    body["merges"] = governance.merge_counts(request.app.state.catalog, repo_full_name)
+    return GovernanceOut.model_validate(body)
+
+
+def _source_paths(request: Request, repo_full_name: str) -> list[str]:
+    """Distinct file paths this repository has findings on.
+
+    A proxy for "source paths", and the honest one available: the platform does
+    not hold a file listing, and fetching a git tree per panel render would be
+    a second API call to answer a question this already answers approximately.
+    Stated wherever the coverage number is shown, because a coverage figure
+    computed over the files scanners happen to have touched is not the same as
+    one computed over the repository.
+    """
+    catalog = request.app.state.catalog
+    if not catalog.all_files("findings"):
+        return []
+    rows = catalog.query(
+        """
+        SELECT DISTINCT file_path FROM findings
+        WHERE asset_id = ? AND file_path IS NOT NULL AND trim(file_path) <> ''
+        LIMIT 2000
+        """,
+        [repo_full_name],
+    )
+    return [str(r[0]) for r in rows]
+
+
+@router.get("/incident", response_model=IncidentOut)
+async def incident_lookup(
+    request: Request,
+    principal: PrincipalDep,
+    q: Annotated[str, Query(min_length=1, max_length=300)],
+) -> IncidentOut:
+    """Are we affected by this? (spec 29 §2)
+
+    A CVE, a package name, or a purl, answered across every onboarded
+    repository. Nothing here is new information — the inventory, the findings,
+    the risk verdicts and the KEV/EPSS matches are all already held. The only
+    new thing is that they arrive together, joined by package name and ordered
+    worst-first, which is the difference between answering this in ten seconds
+    and answering it in twenty minutes across five tabs.
+
+    A read, deliberately. The batch actions spec 29 §2.1 describes go through
+    the existing story and auto-remediation paths and are triggered per repository by
+    a person: the platform does not open forty pull requests because KEV
+    published overnight.
+    """
+    with request.app.state.db.session() as session:
+        view = incident.look_up(request.app.state.catalog, session, q)
+    return IncidentOut.model_validate(incident.as_dict(view))
+
+
+class BriefingActionOut(BaseModel):
+    label: str
+    method: str
+    path: str
+    effect: str
+
+
+class StalledLaneOut(BaseModel):
+    repo_full_name: str
+    capability: str
+    #: "failing" or "silent". Both freeze findings and they need different
+    #: fixes, so the UI must not render them the same.
+    reason: str
+    consecutive_failures: int
+    streak_capped: bool
+    last_success: datetime | None
+    detail: str
+    open_findings: int
+    days_since_run: float
+    usual_gap_days: float
+    action: BriefingActionOut
+
+
+class AwaitingClosureOut(BaseModel):
+    repo_full_name: str
+    capability: str
+    findings: int
+    #: 0 means the next `reconcile_absences` sweep closes them.
+    scans_needed: int
+
+
+class RuleGuidanceOut(BaseModel):
+    capability: str
+    rule_id: str
+    title: str
+    count: int
+    fix: str
+    #: "scanner" when the tool said it, "standing" when this repository did.
+    #: Shown, because they do not deserve equal trust.
+    source: str
+    #: config | upgrade | judgement | rotate | no_fix
+    effort: str
+
+
+class CapabilityGuidanceOut(BaseModel):
+    capability: str
+    count: int
+    actionable: int
+    unactionable: int
+    rules: list[RuleGuidanceOut]
+
+
+class FixGroupOut(BaseModel):
+    fix_id: str
+    action: str
+    capability: str
+    findings: int
+    #: More than one means this change closes several distinct scanner rules,
+    #: which is the whole reason the type exists.
+    rules: list[str]
+    repos: list[str]
+    effort: str
+    #: Ordered. The last is always closure — a change nobody scans again
+    #: closes nothing (D-098).
+    steps: list[str]
+
+
+class BriefingClassOut(BaseModel):
+    capability: str
+    open_findings: int
+    route: str
+    concentrated_in: list[tuple[str, int]]
+    #: Null where no single request acts on the group. Render the absence
+    #: rather than a disabled button (D-098).
+    action: BriefingActionOut | None
+
+
+class BriefingOut(BaseModel):
+    generated_at: datetime
+    total_open: int
+    #: Open findings that cannot close until a lane is repaired. This is the
+    #: number the page exists for: on 2026-09-01 it was 431 of 475.
+    blocked_findings: int
+    #: Already fixed and absent from the newest successful scan. Needs no work
+    #: — closure is arithmetic from here. Separating this from the open count
+    #: is what stops a backlog looking larger than the work in it.
+    closing_soon: int
+    auto_fixable: int
+    stalled: list[StalledLaneOut]
+    classes: list[BriefingClassOut]
+    awaiting: list[AwaitingClosureOut]
+    #: What each scanner said to do, grouped by rule (B-026).
+    guidance: list[CapabilityGuidanceOut]
+    #: The same work grouped by the *change* rather than the rule (B-028).
+    fixes: list[FixGroupOut]
+
+
+@router.get("/briefing", response_model=BriefingOut)
+async def post_deployment_briefing(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Narrow every section to one repository. Omit for the estate. "
+                "The reasoning is identical either way — lanes that cannot "
+                "close first, then cheapest work — applied to a different "
+                "denominator."
+            ),
+        ),
+    ] = None,
+) -> BriefingOut:
+    """What to do next about the open backlog (D-098).
+
+    The same view `mykronos briefing` prints after every deploy, for the
+    surfaces that want it rendered rather than in a terminal.
+
+    Its first section is the one that earns it. A finding closes only after
+    two consecutive *successful* scans observe its absence (spec 05 §5), so a
+    lane that is failing — or that quietly stopped running — freezes its
+    findings open however thoroughly the defect was fixed. Nothing else in the
+    platform joins "this lane is broken" to "so these findings cannot close":
+    the portfolio ranks repositories, the worklist ranks findings, the CI view
+    shows job status, and all three were correct while 91% of the backlog sat
+    unable to move.
+
+    A read. The actions it names are existing routes, and a person triggers
+    them.
+    """
+    asset_id = _resolve_repo(request, repo_id) if repo_id else None
+    report = briefing.build(request.app.state.catalog, asset_id=asset_id)
+    return BriefingOut(
+        generated_at=report.generated_at,
+        total_open=report.total_open,
+        blocked_findings=report.blocked_findings,
+        closing_soon=report.closing_soon,
+        auto_fixable=report.auto_fixable,
+        stalled=[
+            StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled
+        ],
+        classes=[
+            BriefingClassOut.model_validate(dataclasses.asdict(entry))
+            for entry in report.classes
+        ],
+        awaiting=[
+            AwaitingClosureOut.model_validate(dataclasses.asdict(a)) for a in report.awaiting
+        ],
+        guidance=[
+            CapabilityGuidanceOut(
+                capability=g.capability,
+                count=g.count,
+                # Properties, so `asdict` would drop them silently — the same
+                # trap `StalledLane.action` fell into.
+                actionable=g.actionable,
+                unactionable=g.unactionable,
+                rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
+            )
+            for g in guidance.by_rule(request.app.state.catalog)
+        ],
+        fixes=[
+            FixGroupOut(
+                fix_id=f.fix_id,
+                action=f.action,
+                capability=f.capability,
+                findings=f.findings,
+                rules=f.rules,
+                repos=f.repos,
+                effort=f.effort,
+                steps=f.steps,
+            )
+            for f in guidance.fix_groups(request.app.state.catalog)
+        ],
+    )
+
+
+class VulnerablePackageOut(BaseModel):
+    package_name: str
+    ecosystem: str
+    installed_version: str
+    advisories: int
+    worst_severity: str
+    #: Empty when no patched version has been published.
+    fixed_version: str
+    fixable: bool
+    #: Null where the SBOM did not distinguish direct from transitive. Not
+    #: false — those are different facts and the second is a claim this
+    #: platform cannot make.
+    direct: bool | None
+    kev_count: int
+    cves: list[str]
+
+
+class SupplyChainPackagesOut(BaseModel):
+    total: int
+    advisories: int
+    fixable: int
+    kev_packages: int
+    #: Advisories with nothing to upgrade to. The number that decides whether
+    #: this is an afternoon of version bumps or a dispositioning pass, and the
+    #: one the old severity counts hid entirely.
+    unfixable_advisories: int
+    packages: list[VulnerablePackageOut]
+
+
+@router.get("/repos/{repo_id}/sscs/packages", response_model=SupplyChainPackagesOut)
+async def repo_vulnerable_packages(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> SupplyChainPackagesOut:
+    """Which packages are vulnerable, and which you can act on (B-027).
+
+    The Supply chain tab reported a trust score and advisory counts and never
+    named a package. "You have 234 container advisories" is a fact nobody can
+    act on; "setuptools has 2 and both are fixed in 78.1.1, libc6 has 18 and
+    none of them have a published fix" is two different decisions.
+
+    KEV is read from the operational store and passed in, so the lake query
+    itself stays a pure read.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    with request.app.state.db.session() as session:
+        rows = catalog.query(
+            """
+            SELECT rule_id, title FROM findings
+            WHERE status = 'open' AND asset_id = ?
+              AND capability IN ('atlas', 'containers')
+            """,
+            [repo_full_name],
+        ) if catalog.all_files("findings") else []
+        kev = DashboardQueries._kev_cve_ids(
+            session, [{"rule_id": r[0], "title": r[1]} for r in rows]
+        )
+
+    analysis = supply_chain.vulnerable_packages(catalog, repo_full_name, kev_cves=kev)
+    return SupplyChainPackagesOut(
+        total=analysis.total,
+        advisories=analysis.advisories,
+        fixable=analysis.fixable,
+        kev_packages=analysis.kev_packages,
+        unfixable_advisories=analysis.unfixable_advisories,
+        packages=[
+            VulnerablePackageOut(
+                package_name=p.package_name,
+                ecosystem=p.ecosystem,
+                installed_version=p.installed_version,
+                advisories=p.advisories,
+                worst_severity=p.worst_severity,
+                fixed_version=p.fixed_version,
+                fixable=p.fixable,
+                direct=p.direct,
+                kev_count=p.kev_count,
+                cves=p.cves,
+            )
+            for p in analysis.packages
+        ],
+    )
+
+
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)
 async def repo_threat_model(
     request: Request, repo_id: str, principal: PrincipalDep
@@ -1057,9 +2466,383 @@ async def repo_threat_model(
     Composed from `open_findings`' own building blocks — `_finding_rows` and
     `_group_findings` — not a second grouping implementation reading the same
     table differently.
+
+    Now also carries what *stops* the things it lists (spec 28 §3, §4). A
+    threat model is made of four things and this had one; the declared
+    controls are read here rather than fetched separately because a category's
+    state is a fact about its findings and its controls together, and two
+    calls could disagree about it.
     """
     repo_full_name = _resolve_repo(request, repo_id)
-    return ThreatModelOut.model_validate(_queries(request).threat_model(repo_full_name))
+    with request.app.state.db.session() as session:
+        declared = controls.for_repo(session, repo_full_name)
+        page = _queries(request).threat_model(repo_full_name, controls=declared)
+    return ThreatModelOut.model_validate(page)
+
+
+class SurfaceOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    description: str
+    exposure: str
+    sensitivity: str
+    evidence_ref: str
+    declared_by: str
+    declared_at: datetime
+
+
+class SurfacesOut(BaseModel):
+    assets: list[SurfaceOut]
+    entry_points: list[SurfaceOut]
+    trust_boundaries: list[SurfaceOut]
+    total: int
+    internet_facing: int
+    #: Declared rows still carrying an unanswered question. The number that
+    #: says how much of this is a model rather than an inventory.
+    unknowns: int
+    #: All three parts present. Entry points without assets describe how
+    #: somebody gets in and never what they reach.
+    complete: bool
+
+
+class SurfaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(max_length=32, description="asset | entry_point | trust_boundary")
+    name: str = Field(max_length=255)
+    description: str = Field(default="", max_length=2_000)
+    exposure: str = Field(
+        default="unknown",
+        max_length=32,
+        description=(
+            "internet | internal | local | unknown. `unknown` is the default "
+            "and a real answer — guessing `internal` would understate risk by "
+            "default, which is the wrong direction to be wrong in."
+        ),
+    )
+    sensitivity: str = Field(
+        default="unknown",
+        max_length=32,
+        description=(
+            "pii | financial | credentials | source | public | unknown. Only "
+            "meaningful for an asset; ignored for the other kinds rather than "
+            "stored as a guess."
+        ),
+    )
+    evidence_ref: str = Field(default="", max_length=512)
+
+
+def _surface_out(surface: Any) -> SurfaceOut:
+    return SurfaceOut(
+        id=surface.id,
+        kind=surface.kind,
+        name=surface.name,
+        description=surface.description,
+        exposure=surface.exposure,
+        sensitivity=surface.sensitivity,
+        evidence_ref=surface.evidence_ref,
+        declared_by=surface.declared_by,
+        declared_at=surface.declared_at,
+    )
+
+
+class RepoGuidanceOut(BaseModel):
+    """What the scanners recommend for one repository, two ways.
+
+    `fixes` is the actionable half — grouped by the change, so one entry can
+    close several rules — and `by_rule` is the detail behind it.
+    """
+
+    fixes: list[FixGroupOut]
+    by_rule: list[CapabilityGuidanceOut]
+    #: Findings covered by a fix group whose effort is `config` or `upgrade` —
+    #: the ones a person can act on today without a judgement call.
+    actionable_findings: int
+
+
+@router.get("/repos/{repo_id}/guidance", response_model=RepoGuidanceOut)
+async def repo_guidance(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> RepoGuidanceOut:
+    """The scanners' own remediation for this repository (B-030).
+
+    The Remediation tab said what Patchwork did and did not do, which is
+    honest and incomplete: across the estate Patchwork declines almost
+    everything, because four deterministic fixers cover four narrow classes.
+    That left a tab whose truthful answer was "nothing", beside reports full
+    of remediation advice nobody was reading.
+
+    This is the other half. Same source as `/remediate` — ZAP's `solution`,
+    Trivy's `Fixed Version` — scoped to one repository.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    groups = guidance.fix_groups(catalog, asset_id=repo_full_name)
+    return RepoGuidanceOut(
+        fixes=[
+            FixGroupOut(
+                fix_id=f.fix_id,
+                action=f.action,
+                capability=f.capability,
+                findings=f.findings,
+                rules=f.rules,
+                repos=f.repos,
+                effort=f.effort,
+                steps=f.steps,
+            )
+            for f in groups
+        ],
+        by_rule=[
+            CapabilityGuidanceOut(
+                capability=g.capability,
+                count=g.count,
+                actionable=g.actionable,
+                unactionable=g.unactionable,
+                rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
+            )
+            for g in guidance.by_rule(catalog, asset_id=repo_full_name)
+        ],
+        actionable_findings=sum(
+            f.findings for f in groups if f.effort in ("config", "upgrade")
+        ),
+    )
+
+
+@router.get("/repos/{repo_id}/surfaces", response_model=SurfacesOut)
+async def repo_surfaces(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> SurfacesOut:
+    """Assets, entry points and trust boundaries (B-029).
+
+    The three quarters of a threat model the platform did not hold. Findings
+    say what was found; these say what is at stake, and without them "twelve
+    mediums in the payments service" and "twelve mediums in the internal
+    changelog renderer" are the same row.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    with request.app.state.db.session() as session:
+        summary = surfaces.for_repo(session, repo_full_name)
+        return SurfacesOut(
+            assets=[_surface_out(s) for s in summary.assets],
+            entry_points=[_surface_out(s) for s in summary.entry_points],
+            trust_boundaries=[_surface_out(s) for s in summary.trust_boundaries],
+            total=summary.total,
+            internet_facing=summary.internet_facing,
+            unknowns=summary.unknowns,
+            complete=summary.complete,
+        )
+
+
+@router.post("/repos/{repo_id}/surfaces", response_model=SurfaceOut)
+async def declare_surface(
+    request: Request, repo_id: str, body: SurfaceRequest, principal: PrincipalDep
+) -> SurfaceOut:
+    """Declare one asset, entry point or trust boundary.
+
+    Admin-authored, and the response never dresses that up as more. Nothing in
+    this platform can confirm that a database holds customer records — a row
+    here is a person asserting it, which is weaker and clearer than a machine
+    implying it, and useful the day somebody types it.
+    """
+    _require_writer(principal, "Declaring a surface")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            surface = surfaces.declare(
+                session,
+                repo_full_name,
+                kind=body.kind,
+                name=body.name,
+                description=body.description,
+                exposure=body.exposure,
+                sensitivity=body.sensitivity,
+                evidence_ref=body.evidence_ref,
+                declared_by=principal.actor,
+            )
+        except surfaces.SurfaceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="surface.declare",
+            entity_type="repo_surface",
+            entity_id=surface.id,
+            repo_full_name=repo_full_name,
+            kind=surface.kind,
+            exposure=surface.exposure,
+        )
+        return _surface_out(surface)
+
+
+@router.delete("/repos/{repo_id}/surfaces/{surface_id}", status_code=204)
+async def remove_surface(
+    request: Request, repo_id: str, surface_id: str, principal: PrincipalDep
+) -> None:
+    """Withdraw a declaration that turned out to be wrong.
+
+    A correction, not a deletion of evidence: this register is a statement
+    about the present, which is exactly why it is operational rather than in
+    the append-only lake.
+    """
+    _require_writer(principal, "Removing a surface")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        if not surfaces.remove(session, repo_full_name, surface_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No such surface on this repository.",
+            )
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="surface.remove",
+            entity_type="repo_surface",
+            entity_id=surface_id,
+            repo_full_name=repo_full_name,
+        )
+
+
+class ControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stride: str = Field(max_length=32)
+    kind: str = Field(max_length=32)
+    description: str = Field(default="", max_length=2_000)
+    evidence_ref: str = Field(
+        default="",
+        max_length=512,
+        description=(
+            "A file path, a route, a policy document, a test id. Optional: a "
+            "control without one is the weaker claim and is still worth "
+            "having, because requiring it would mean the register only ever "
+            "holds the controls somebody had time to document."
+        ),
+    )
+
+
+@router.post("/repos/{repo_id}/controls", response_model=ControlOut)
+async def declare_control(
+    request: Request, repo_id: str, body: ControlRequest, principal: PrincipalDep
+) -> ControlOut:
+    """Declare a mitigation (spec 28 §3).
+
+    Admin-authored, and the response never dresses that up as more. A declared
+    control says *a person asserted this*, which is a weaker and clearer claim
+    than a machine implying it — and it is useful the day it ships, where a
+    register waiting on spec 23 §2's entry-point inventory stays unbuilt for a
+    year.
+
+    `verified_by_capability` is derived from the kind rather than accepted
+    here: it says which capability could *contradict* this control, which is a
+    property of what the control is, not something a declarer may choose. A
+    control naming a capability that cannot see it would look checked and be
+    nothing of the kind.
+    """
+    _require_writer(principal, "Declaring a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            control = controls.declare(
+                session,
+                repo_full_name=repo_full_name,
+                stride=body.stride,
+                kind=body.kind,
+                description=body.description,
+                evidence_ref=body.evidence_ref,
+                declared_by=principal.actor,
+                known_categories=STRIDE_CATEGORIES,
+            )
+        except controls.ControlError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.declare",
+            entity_type="repo_control",
+            entity_id=control.id,
+            repo_full_name=repo_full_name,
+            stride=control.stride,
+            kind=control.kind,
+        )
+        return ControlOut.model_validate(controls.as_dict(control))
+
+
+@router.post("/repos/{repo_id}/controls/{control_id}/confirm", response_model=ControlOut)
+async def confirm_control(
+    request: Request, repo_id: str, control_id: str, principal: PrincipalDep
+) -> ControlOut:
+    """Somebody re-read it and it is still true.
+
+    Its own action rather than an edit, because the thing being recorded is
+    that a person looked — a mitigation nobody has checked since last quarter
+    is a belief, and the tab has to be able to say which of the two it is
+    showing.
+    """
+    _require_writer(principal, "Confirming a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        try:
+            control = controls.confirm(session, control_id)
+        except controls.ControlError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+            ) from exc
+        if control.repo_full_name != repo_full_name:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That control belongs to another repository.",
+            )
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.confirm",
+            entity_type="repo_control",
+            entity_id=control.id,
+            repo_full_name=repo_full_name,
+        )
+        return ControlOut.model_validate(controls.as_dict(control))
+
+
+@router.delete("/repos/{repo_id}/controls/{control_id}", status_code=204)
+async def withdraw_control(
+    request: Request, repo_id: str, control_id: str, principal: PrincipalDep
+) -> None:
+    """Remove a control that is no longer true.
+
+    Deleted rather than flagged withdrawn, unlike almost everything else here.
+    A control is a claim about the present; a withdrawn one is not evidence of
+    anything, and nobody needs to know that somebody once believed
+    authentication was enforced. The audit entry records who removed it, which
+    is the part that matters.
+    """
+    _require_writer(principal, "Withdrawing a control")
+    repo_full_name = _resolve_repo(request, repo_id)
+    database = request.app.state.db
+    with database.session() as session:
+        existing = session.get(RepoControl, control_id)
+        if existing is None or existing.repo_full_name != repo_full_name:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No such control."
+            )
+        controls.withdraw(session, control_id)
+        database.audit(
+            session,
+            actor=principal.actor,
+            action="control.withdraw",
+            entity_type="repo_control",
+            entity_id=control_id,
+            repo_full_name=repo_full_name,
+        )
 
 
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)
@@ -1073,6 +2856,25 @@ async def repo_findings(
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     first_seen_after: Annotated[datetime | None, Query()] = None,
     first_seen_before: Annotated[datetime | None, Query()] = None,
+    pr_number: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description=(
+                "Findings this pull request introduced — matched on the scan run "
+                "that first saw them, not the most recent one. Answers 'what did "
+                "my change add?' rather than 'what does my branch also reproduce?'"
+            ),
+        ),
+    ] = None,
+    commit_sha: Annotated[
+        str | None,
+        Query(
+            min_length=7,
+            max_length=64,
+            description="Findings first seen by a scan of this commit.",
+        ),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FindingsPage:
@@ -1087,6 +2889,8 @@ async def repo_findings(
         rule_id=rule_id,
         first_seen_after=first_seen_after,
         first_seen_before=first_seen_before,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
         limit=limit,
         offset=offset,
         include_raw=principal.may_see_raw_output,
@@ -1113,6 +2917,8 @@ async def repo_open_findings(
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     triage: Annotated[TriageFilter | None, Query()] = None,
     fixable: Annotated[bool | None, Query()] = None,
+    due: Annotated[DueFilter | None, Query()] = None,
+    owner: Annotated[str | None, Query(max_length=255)] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -1143,6 +2949,8 @@ async def repo_open_findings(
             min_epss=min_epss,
             triage=triage,
             fixable=fixable,
+            due=due,
+            owner=owner,
         )
     return OpenFindingsPage.model_validate(page)
 
@@ -1209,14 +3017,138 @@ async def finding_detail(
     return FindingOut.model_validate(record)
 
 
+@router.post(
+    "/findings/{finding_id}/classification-review",
+    response_model=ClassificationReviewResult,
+)
+async def review_classification(
+    request: Request,
+    finding_id: str,
+    body: ClassificationReview,
+    principal: PrincipalDep,
+) -> ClassificationReviewResult:
+    """Confirm or reject what the classifier concluded (B-020).
+
+    The classifier labels findings `likely_false_positive` and
+    `needs_human_judgment` and deliberately cannot act on either: a machine
+    that could set `false_positive` would eventually dismiss a real finding,
+    silently. So the label waits for a person — and until this existed, the
+    only way to answer it was to open the right repository, find the row and
+    disposition it by hand, which is why 43 false positives have ever been
+    recorded and all of them are sast or secrets.
+
+    **Both answers are recorded, and that is the point.** Agreeing already
+    left a trace: the finding changes status and the rule earns a dismissal
+    observation that feeds dampening. Disagreeing left none, so a classifier
+    calling real findings false positives was indistinguishable from one
+    nobody had reviewed yet. A verdict nothing ever contradicts is a verdict
+    nobody is checking.
+
+    Rejection does not dampen anything and does not change the finding: it is
+    a fact about the classifier, not about the rule. Quietening a rule because
+    somebody said its finding was real would invert the loop.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Reviewing a classification requires the 'admin' role; you "
+                f"have '{principal.role.value}'."
+            ),
+        )
+
+    record = _queries(request).finding(finding_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No finding {finding_id!r}.",
+        )
+
+    repo_full_name = str(record.get("repo_full_name") or "")
+    rule_id = str(record.get("rule_id") or "")
+    from mykronos.patchwork.triage import classify
+
+    classification, _ = classify(
+        {
+            "rule_id": rule_id,
+            "severity": record.get("severity"),
+            "capability": record.get("capability"),
+        },
+        repo_full_name,
+        store=request.app.state.knowledge,
+    )
+
+    if not body.agrees:
+        safe_capture(
+            capture_classification_rejected,
+            request.app.state.knowledge,
+            repo_full_name=repo_full_name,
+            rule_id=rule_id,
+            finding_id=finding_id,
+            classification=classification,
+            reason=body.reason,
+            actor=principal.actor,
+        )
+        return ClassificationReviewResult(
+            finding_id=finding_id,
+            agreed=False,
+            # Untouched, deliberately. The person said it is real.
+            status=str(record.get("status") or "open"),
+            recorded="classifier rejection",
+        )
+
+    if classification != "likely_false_positive":
+        # Agreeing with `needs_human_judgment` would mean dismissing a finding
+        # the machine explicitly declined to judge, which is the one thing
+        # this endpoint must not become a shortcut for.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This finding is classified {classification!r}, not "
+                "'likely_false_positive'. Agreeing here would dismiss a "
+                "finding the classifier did not call a false positive; use "
+                "the disposition endpoint and say why."
+            ),
+        )
+
+    if not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Confirming a false positive needs a reason. A bare click is "
+                "recorded as low-confidence and barred from promotion (spec 11 "
+                "§4), and dampening reads the reason rather than the count."
+            ),
+        )
+
+    # Delegated rather than reimplemented. The disposition path already does
+    # the update, the audit entry, the knowledge capture and the retro signal,
+    # and a second copy here is a second thing to keep in step -- this
+    # endpoint's whole purpose is to be a shorter route to the same decision,
+    # not a different one.
+    await set_finding_status(
+        request,
+        finding_id,
+        StatusChange(status=FindingStatus.FALSE_POSITIVE, reason=body.reason),
+        principal,
+    )
+    return ClassificationReviewResult(
+        finding_id=finding_id,
+        agreed=True,
+        status=FindingStatus.FALSE_POSITIVE.value,
+        recorded="disposition and dismissal learning",
+    )
+
+
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)
 async def set_finding_status(
     request: Request, finding_id: str, body: StatusChange, principal: PrincipalDep
 ) -> StatusChangeResult:
     """Record a human disposition (spec 10 §2.2).
 
-    Admin-only: this changes what Oracle will decide, so it is a write, not a
-    view. Viewers can read every finding and change none of them.
+    Admin-only: this changes what the risk-decision engine will decide, so it
+    is a write, not a view. Viewers can read every finding and change none of
+    them.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -1246,11 +3178,55 @@ async def set_finding_status(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
 
+    accepting = body.status is FindingStatus.ACCEPTED_RISK
+    if accepting:
+        if body.accepted_reason_code is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Accepting a risk requires `accepted_reason_code`. The free "
+                    "text is what a person reads; the code is what lets a later "
+                    "scan contradict the premise — 'no vendor fix' stops being "
+                    "true the day a vendor ships one."
+                ),
+            )
+        if body.accepted_until is None and not body.indefinite:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Accepting a risk requires either `accepted_until` or an "
+                    "explicit `indefinite: true`. An acceptance with no end is "
+                    "a decision nobody revisits."
+                ),
+            )
+        if body.accepted_until is not None and body.accepted_until <= utcnow().date():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"`accepted_until` is {body.accepted_until.isoformat()}, which "
+                    "is not in the future. The next sweep would expire this "
+                    "acceptance immediately."
+                ),
+            )
+    elif body.accepted_until is not None or body.accepted_reason_code is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "`accepted_until` and `accepted_reason_code` only apply to "
+                f"`accepted_risk`, not to '{body.status.value}'."
+            ),
+        )
+
     outcome = update_findings(
         catalog,
         locate_findings(catalog, [finding_id]),
-        "status = ?, resolved_at = ?",
-        [body.status.value, utcnow()],
+        "status = ?, resolved_at = ?, accepted_until = ?, accepted_reason_code = ?",
+        [
+            body.status.value,
+            utcnow(),
+            body.accepted_until if accepting else None,
+            body.accepted_reason_code if accepting else None,
+        ],
     )
     if not outcome.count:
         raise HTTPException(
@@ -1325,6 +3301,75 @@ async def set_finding_status(
     )
 
 
+@router.patch("/findings/{finding_id}/owner", response_model=OwnerChangeResult)
+async def set_finding_owner(
+    request: Request, finding_id: str, body: OwnerChange, principal: PrincipalDep
+) -> OwnerChangeResult:
+    """Reassign a finding (spec 24 §1.2).
+
+    Admin-only, like the disposition endpoint next to it and for the same
+    reason: it changes who is answerable for a piece of work, which is a write.
+
+    A manual assignment survives re-scans — the compaction upsert refuses to
+    overwrite `owner_source = 'manual'`. Clearing the owner is therefore not
+    "nobody owns this" but "go back to asking CODEOWNERS", which is why the
+    null case restores `unresolved` rather than writing a manual null that
+    would freeze the finding out of resolution for ever.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Reassigning a finding requires the 'admin' role; you have "
+                f"'{principal.role.value}'."
+            ),
+        )
+
+    catalog = request.app.state.catalog
+    existing = DashboardQueries(catalog).finding(finding_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    owner = (body.owner or "").strip() or None
+    source = "manual" if owner else "unresolved"
+
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, [finding_id]),
+        "owner = ?, owner_source = ?",
+        [owner, source],
+    )
+    if not outcome.count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The finding could not be updated; it may have just been compacted.",
+        )
+
+    with request.app.state.db.session() as session:
+        request.app.state.db.audit(
+            session,
+            actor=principal.actor,
+            action="finding.owner",
+            entity_type="finding",
+            entity_id=finding_id,
+            repo=existing.get("repo_full_name"),
+            capability=existing.get("capability"),
+            new_status=owner or "unassigned",
+            reason="",
+        )
+
+    logger.info(
+        "Finding %s owner -> %s by %s",
+        scrub(finding_id),
+        scrub(owner or "unassigned"),
+        scrub(principal.actor),
+    )
+
+    return OwnerChangeResult(finding_id=finding_id, owner=owner, owner_source=source)
+
+
 class ThreatIntelEntryOut(BaseModel):
     """One CVE, matched against every open finding that names it (spec 17 §4.4)."""
 
@@ -1377,3 +3422,1216 @@ def _resolve_repo(request: Request, repo_id: str) -> str:
                 ),
             )
         return str(row.github_repo_full_name)
+
+
+class ReownOut(BaseModel):
+    """What a re-derive changed, or would change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scanned: int
+    changed: int
+    protected: int
+    by_source: dict[str, int]
+    dry_run: bool
+
+
+@router.post("/repos/{repo_id}/reown", response_model=ReownOut)
+async def reown_findings(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    dry_run: Annotated[
+        bool,
+        Query(description="Report what would change and write nothing."),
+    ] = True,
+) -> ReownOut:
+    """Re-derive ownership for a repository's open findings (B-034).
+
+    Ownership resolves at ingest, so a finding written before that code existed
+    — or before a repository grew a CODEOWNERS file — keeps whatever was true
+    the day it was first seen. On this deployment that left 1001 findings with
+    a null `owner_source`: not `unresolved`, which at least records that
+    somebody asked, but nothing at all.
+
+    Re-derived rather than migrated, because the answer is not a constant: it
+    depends on the repository's CODEOWNERS file *now*, its risk profile *now*,
+    and the finding's own path. So this asks the same function ingest asks and
+    writes what it says. A SQL update would freeze today's answer as though it
+    had always been the answer.
+
+    **Defaults to a dry run.** It rewrites a column people route work by, and
+    the safe default for that is to show somebody what would happen.
+
+    A finding assigned by hand is never touched — compaction already treats
+    `owner_source = 'manual'` as authoritative, and a backfill that ignored it
+    would undo the one kind of ownership a person actually decided.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Writing requires admin."
+        )
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    rules, readable = await request.app.state.ownership.lookup_for(
+        installation_client_for_repo(request, repo_full_name), repo_full_name
+    )
+    changes, report = reown.plan(
+        catalog,
+        rules_by_repo={repo_full_name: (rules, readable)},
+        profile_owner_by_repo={
+            repo_full_name: profile_owner_for_repo(request, repo_full_name)
+        },
+        repo_full_name=repo_full_name,
+    )
+
+    if not dry_run and changes:
+        # Grouped, because `update_findings` sets one expression for a batch and
+        # a per-finding write would be one lake mutation per row.
+        grouped: dict[tuple[str | None, str], list[str]] = {}
+        for change in changes:
+            key = (change["owner"], change["owner_source"])
+            grouped.setdefault(key, []).append(change["finding_id"])
+        for (owner, source), finding_ids in grouped.items():
+            update_findings(
+                catalog,
+                locate_findings(catalog, finding_ids),
+                "owner = ?, owner_source = ?",
+                [owner, source],
+            )
+
+    return ReownOut(
+        scanned=report.scanned,
+        changed=report.changed,
+        protected=report.protected,
+        by_source=report.by_source,
+        dry_run=dry_run,
+    )
+
+
+class RecordGap(BaseModel):
+    input: str
+    reason: str
+
+
+class ClosureOut(BaseModel):
+    """Whether this finding can close, and what is stopping it.
+
+    Typed rather than a loose dict: this block is the reason the record page
+    exists, and a `dict[str, Any]` generates `unknown` in the API types, which
+    pushes casts into every consumer and loses the field names at the boundary.
+    """
+
+    can_close: bool
+    lane: str
+    reason: str
+    required_absences: int
+    #: `datetime` because scan health returns one; serialised as ISO-8601.
+    last_run_at: datetime | None = None
+    runs: int | None = None
+    failure_rate: float | None = None
+
+
+class FixOut(BaseModel):
+    """The change that would close this finding, and what else it closes."""
+
+    fix_id: str
+    action: str
+    effort: str
+    steps: list[str]
+    closes: int
+    rules: list[str]
+
+
+class PackageOut(BaseModel):
+    """Supply-chain facts, joined rather than duplicated."""
+
+    package_name: str
+    ecosystem: str | None = None
+    installed_version: str | None = None
+    fixed_version: str | None = None
+    fixable: bool
+    direct: bool | None = None
+    advisories: int | None = None
+
+
+class SeverityHereOut(BaseModel):
+    """This vulnerability's CVSS score, re-read for this system.
+
+    `environmental` equals `base` whenever nothing is known, by construction:
+    every undefined modifier takes the base metric's value, so a repository
+    with no confirmed risk profile is never quietly discounted. `stated` says
+    which of those two situations produced an equal pair.
+    """
+
+    vector: str
+    base: float
+    environmental: float
+    moved: bool
+    #: Whether anything about this system was actually stated. False with an
+    #: equal pair means "nobody has said", not "we checked and it matches".
+    stated: bool
+    because: list[str]
+
+
+class FindingRecordOut(BaseModel):
+    """One finding, with everything the platform knows about it (B-032).
+
+    An assembly over services that already exist. The order of the blocks is
+    the order somebody asks in: what is it, does it matter *here*, what do I
+    do, what happened and can it end.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding: FindingOut
+    repo_full_name: str
+    closure: ClosureOut
+    fix: FixOut | None
+    package: PackageOut | None
+    #: Absent where NVD has no v3 vector for this CVE, or where the finding
+    #: names no CVE at all — a Semgrep pattern and a ZAP alert never will.
+    #: Absent is the honest answer; a fabricated vector would produce a number
+    #: that looks like a standard and is not one.
+    severity_here: SeverityHereOut | None = None
+    missing_context: list[RecordGap]
+
+
+def _severity_here(
+    request: Request, row: dict[str, Any], profile: Any
+) -> SeverityHereOut | None:
+    """This finding's CVSS score re-read for this repository, where possible.
+
+    Three ways this is `None`, all of them honest: the finding names no CVE
+    (a Semgrep pattern or a ZAP alert never will), NVD has published no v3
+    vector for it, or the lookup has not reached it yet. Inventing a vector
+    from the severity word would produce a figure that looks like a published
+    standard and is not one — which is the single worst thing this could do,
+    because the number would be quoted.
+    """
+    cve_id = threat_intel_feed.extract_cve(row.get("rule_id"), row.get("title"))
+    if not cve_id:
+        return None
+
+    with request.app.state.db.session() as session:
+        match = session.get(ThreatIntelMatch, cve_id)
+    vector = match.cvss_vector if match else None
+    if not vector:
+        return None
+
+    environment = (
+        cvss.environment_for(
+            internet_facing=profile.internet_facing,
+            data_classification=profile.data_classification,
+            business_criticality=profile.business_criticality,
+            compliance_scope=profile.compliance_scope,
+        )
+        if profile is not None
+        else cvss.Environment()
+    )
+
+    try:
+        scored = cvss.score(vector, environment)
+    except cvss.VectorError:
+        logger.warning("Stored vector for %s is unscoreable", scrub(cve_id))
+        return None
+
+    return SeverityHereOut(
+        vector=vector,
+        base=scored.base,
+        environmental=scored.environmental,
+        moved=scored.moved,
+        stated=environment.stated,
+        because=list(scored.because),
+    )
+
+
+@router.get("/findings/{finding_id}/record", response_model=FindingRecordOut)
+async def whole_finding_record(
+    request: Request, finding_id: str, principal: PrincipalDep
+) -> FindingRecordOut:
+    """Everything about one finding, in one call (B-032).
+
+    Eleven surfaces held pieces of this: the triage queue had the verdict, the
+    findings tab the occurrences, supply chain the fixed version, remediate
+    today the fix, scan health whether the lane could close it. Deciding what
+    to do about a single finding meant visiting five pages, and three of the
+    facts that would change the decision were not on the page where it got
+    made.
+
+    Assembled, never recomputed. Two implementations of "which findings does
+    this fix close" would eventually disagree and both would look right.
+    """
+    catalog = request.app.state.catalog
+    queries = DashboardQueries(catalog)
+    row = queries.finding(finding_id, include_raw=principal.may_see_raw_output)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    repo_full_name = str(row.get("repo_full_name") or "")
+    capability = str(row.get("capability") or "")
+
+    lanes = {lane["capability"]: lane for lane in queries.scan_health(repo_full_name)}
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        profile = (
+            session.execute(
+                select(RiskProfile).where(
+                    RiskProfile.repo_onboarding_id == (onboarding.id if onboarding else None)
+                )
+            )
+            .scalars()
+            .first()
+            if onboarding is not None
+            else None
+        )
+        summary = surfaces.for_repo(session, repo_full_name) if onboarding else None
+        declared = (
+            len(summary.assets) + len(summary.entry_points) + len(summary.trust_boundaries)
+            if summary is not None
+            else 0
+        )
+
+    # Reachability lives on its own router; absent is the common case and is a
+    # fact worth reporting rather than an error worth raising.
+    reach_rows = catalog.query(
+        "SELECT analysed FROM reachability WHERE repo_full_name = ? LIMIT 1",
+        [repo_full_name],
+    ) if catalog.all_files("reachability") else []
+    analysed = bool(reach_rows and reach_rows[0][0])
+
+    return FindingRecordOut(
+        finding=FindingOut.model_validate(row),
+        repo_full_name=repo_full_name,
+        severity_here=_severity_here(request, row, profile),
+        closure=ClosureOut(
+            **finding_record.closure(capability=capability, lane=lanes.get(capability))
+        ),
+        fix=(
+            FixOut(**found)
+            if (
+                found := finding_record.fix_for(
+                    catalog,
+                    repo_full_name=repo_full_name,
+                    rule_id=str(row.get("rule_id") or ""),
+                )
+            )
+            else None
+        ),
+        package=(
+            PackageOut(**pkg)
+            if (
+                pkg := finding_record.package_for(
+                    catalog,
+                    repo_full_name=repo_full_name,
+                    package_name=row.get("package_name"),
+                )
+            )
+            else None
+        ),
+        missing_context=[
+            RecordGap(**gap)
+            for gap in finding_record.missing_context(
+                reachability_analysed=analysed,
+                surfaces_declared=declared,
+                has_risk_profile=profile is not None,
+            )
+        ],
+    )
+
+
+class ReindexOut(BaseModel):
+    """What rebuilding the component inventory found."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sboms_found: int
+    sboms_read: int
+    already_indexed: int
+    unreadable: int
+    components: int
+    repos: list[str]
+    dry_run: bool
+
+
+@router.post("/inventory/reindex", response_model=ReindexOut)
+async def reindex_inventory(
+    request: Request,
+    principal: PrincipalDep,
+    repo_id: Annotated[str | None, Query()] = None,
+    dry_run: Annotated[bool, Query()] = True,
+) -> ReindexOut:
+    """Rebuild the component inventory from SBOMs already in the archive.
+
+    The extractor runs on Atlas evidence submission, so the index only ever
+    learns about a repository the next time it scans. That leaves three cases
+    with an archived document and no rows: a repository whose newest SBOM
+    predates the extractor, one whose extraction failed (every failure there
+    is swallowed deliberately so a truncated SBOM cannot fail an ingest), and
+    a lake restored from archive.
+
+    A third read of a file the runner produced. No new scan, no new tool, no
+    workflow change: the documents are on disk and this walks them.
+
+    Reads the **newest** SBOM per repository, not every archived one. This
+    estate has 177 of them going back months, and a table whose purpose is
+    answering "what do we run now" is not improved by every version a library
+    has ever been at — "which repositories contain lodash 4.17.20" would start
+    returning builds that shipped and moved on.
+
+    Skips anything already indexed, so it is safe to run repeatedly, and
+    defaults to a dry run because it writes to a table other views read.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Writing requires admin."
+        )
+
+    catalog = request.app.state.catalog
+    settings = request.app.state.settings
+    scope = _resolve_repo(request, repo_id) if repo_id else None
+
+    archived = inventory.archived_sboms(catalog, repo_full_name=scope)
+    indexed = inventory.already_indexed(catalog)
+
+    read = skipped = unreadable = components = 0
+    touched: set[str] = set()
+
+    for entry in archived:
+        if entry["sbom_ref"] in indexed:
+            skipped += 1
+            continue
+        # Same containment check the ingest path applies: the ref is this
+        # platform's own write, and is still resolved and re-checked against
+        # the lake root before being opened.
+        try:
+            source = (settings.datalake_dir / entry["sbom_ref"]).resolve()
+            source.relative_to(settings.datalake_dir.resolve())
+            document = json.loads(source.read_bytes())
+        except (ValueError, OSError, json.JSONDecodeError):
+            # Retention prunes archived bytes while the evidence row survives,
+            # so a missing file is expected rather than exceptional.
+            unreadable += 1
+            continue
+
+        rows = inventory.rows_from_sbom(
+            document,
+            repo_full_name=entry["repo_full_name"],
+            commit_sha=entry["commit_sha"],
+            scan_run_id=entry["sbom_ref"],
+        )
+        if not rows:
+            unreadable += 1
+            continue
+
+        read += 1
+        components += len(rows)
+        touched.add(entry["repo_full_name"])
+        if not dry_run:
+            request.app.state.buffer.append("sbom_components", rows)
+        indexed.add(entry["sbom_ref"])
+
+    return ReindexOut(
+        sboms_found=len(archived),
+        sboms_read=read,
+        already_indexed=skipped,
+        unreadable=unreadable,
+        components=components,
+        repos=sorted(touched),
+        dry_run=dry_run,
+    )
+
+
+class LibraryOut(BaseModel):
+    """One library across the estate."""
+
+    package_name: str
+    ecosystem: str
+    repos: list[str]
+    versions: list[str]
+    divergent: bool
+    direct_anywhere: bool
+
+
+class LibrariesOut(BaseModel):
+    """The estate's dependency surface, for reducing it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_libraries: int
+    total_components: int
+    repos_covered: int
+    shared: int
+    divergent: int
+    single_use: int
+    libraries: list[LibraryOut]
+    note: str
+
+
+@router.get("/libraries", response_model=LibrariesOut)
+async def estate_libraries(
+    request: Request,
+    principal: PrincipalDep,
+    ecosystem: Annotated[str | None, Query(max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+) -> LibrariesOut:
+    """Every library the estate carries, and where — the consolidation view.
+
+    The per-repository views answer "what does this service depend on". This
+    answers the question one level up, which no existing view could: *how many
+    distinct libraries are we maintaining across everything, and which of them
+    are we carrying at more than one version?*
+
+    Two reasons to act, and the ordering reflects them. A library in every
+    repository is a blast radius — one advisory against it is an estate-wide
+    event rather than a ticket. A library at three versions is a
+    standardisation target, and the oldest of those is where a CVE lands first
+    while the newest gives everybody false comfort.
+
+    Deliberately not filtered to vulnerable packages. The point is to reduce
+    the number of distinct dependencies *before* one becomes a finding; a view
+    that showed only the ones already causing pain would be the vulnerability
+    list again under another name.
+    """
+    catalog = request.app.state.catalog
+    libraries = inventory.estate_libraries(catalog, ecosystem=ecosystem, limit=limit)
+
+    totals = catalog.query(
+        "SELECT count(*), count(DISTINCT package_name), count(DISTINCT repo_full_name) "
+        "FROM sbom_components"
+    ) if catalog.all_files("sbom_components") else [(0, 0, 0)]
+    components, distinct, repos = (int(totals[0][0]), int(totals[0][1]), int(totals[0][2]))
+
+    return LibrariesOut(
+        total_libraries=distinct,
+        total_components=components,
+        repos_covered=repos,
+        shared=sum(1 for lib in libraries if len(lib.repos) > 1),
+        divergent=sum(1 for lib in libraries if lib.divergent),
+        single_use=sum(1 for lib in libraries if len(lib.repos) == 1),
+        libraries=[LibraryOut(**vars(lib)) for lib in libraries],
+        # Said on the response rather than in documentation, because the
+        # honest limit of this view changes what somebody should conclude from
+        # it: a library missing from an SBOM is missing from here too.
+        note=(
+            "Built from each repository's most recent SBOM. A repository that "
+            "has never produced one is absent rather than clean, and a "
+            "dependency the SBOM did not resolve — vendored code, or a library "
+            "inside a base image — is outside this view. Container findings "
+            "are where the second of those shows up."
+        ),
+    )
+
+
+class ProposalOut(BaseModel):
+    field: str
+    value: Any | None
+    confidence: str
+    evidence: str
+    what_would_settle_it: str | None = None
+
+
+class ProfileProposalOut(BaseModel):
+    """What the platform can and cannot say about a repository (B-041)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    already_confirmed: bool
+    proposals: list[ProposalOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/risk-profile/proposal", response_model=ProfileProposalOut)
+async def risk_profile_proposal(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ProfileProposalOut:
+    """Propose a risk profile from evidence, for a person to confirm.
+
+    0 of 4 repositories here have one, so `internet_facing`,
+    `data_classification` and `business_criticality` are unset everywhere — and
+    the triage queue now says out loud that it ranks by severity and threat
+    intelligence rather than by risk, because the context it would weigh does
+    not exist.
+
+    Asking humans to fill in a form has failed everywhere it has been tried, so
+    this proposes and a person confirms. The rule that keeps it honest is that
+    an absent field stays absent: a builder that guessed "internal, low
+    criticality" whenever it could not tell would be worse than the empty
+    profile, because an empty profile is visibly empty and a guessed one looks
+    like an answer.
+
+    The most useful thing here is not the proposals. It is
+    `what_would_settle_it` on the ones it refuses to guess — the empty form
+    becomes a short list of evidence to go and get.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    catalog = request.app.state.catalog
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        profile = (
+            session.execute(
+                select(RiskProfile).where(
+                    RiskProfile.repo_onboarding_id == onboarding.id
+                )
+            )
+            .scalars()
+            .first()
+            if onboarding is not None
+            else None
+        )
+        summary = surfaces.for_repo(session, repo_full_name) if onboarding else None
+
+    declared = (
+        len(summary.assets) + len(summary.entry_points) + len(summary.trust_boundaries)
+        if summary is not None
+        else 0
+    )
+
+    # The ownership ladder's own answer, rather than a second implementation of
+    # it — the two disagreeing about who owns a repository would be worse than
+    # either being wrong.
+    owner_rows = (
+        catalog.query(
+            "SELECT owner, owner_source FROM findings WHERE asset_id = ? "
+            "AND owner IS NOT NULL AND owner <> '' LIMIT 1",
+            [repo_full_name],
+        )
+        if catalog.all_files("findings")
+        else []
+    )
+    owner = str(owner_rows[0][0]) if owner_rows else None
+    owner_source = str(owner_rows[0][1]) if owner_rows else None
+
+    proposal = risk_profile_builder.propose(
+        catalog,
+        repo_full_name,
+        declared_surfaces=declared,
+        owner=owner,
+        owner_source=owner_source,
+        already_confirmed=profile is not None,
+    )
+
+    return ProfileProposalOut(
+        repo_full_name=proposal.repo_full_name,
+        already_confirmed=proposal.already_confirmed,
+        proposals=[ProposalOut(**vars(item)) for item in proposal.proposals],
+        note=(
+            "Proposed, not applied. A field this cannot evidence stays unknown "
+            "and the score assumes the worst, which is what CVSS's "
+            "environmental metrics already do with an undefined modifier — a "
+            "comfortable default here would look like an answer."
+        ),
+    )
+
+
+class PracticeOut(BaseModel):
+    practice_id: str
+    group: str
+    title: str
+    status: str
+    evidence: list[str]
+    missing: list[str]
+    how_to_evidence: str
+    nist_800_53: list[str]
+
+
+class SsdfOut(BaseModel):
+    """SSDF adherence for one repository, evidenced rather than asserted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    counts: dict[str, int]
+    practices: list[PracticeOut]
+    note: str
+
+
+async def _ssdf_assess(
+    request: Request, repo_full_name: str, installation_id: Any, default_branch: str,
+    *, reporting: set[str], enabled: set[str],
+) -> list[ssdf.PracticeResult]:
+    """The SSDF assessment, in one place because two surfaces report it.
+
+    The Consult tab answers "what can we evidence to an assessor" and links to
+    the Adherence tab. Those two numbers disagreeing would be worse than the
+    Consult tab not answering at all — it is the whole basis of that surface
+    that every sentence is checkable on the tab it cites. So there is one code
+    path and not two similar ones, which is the same reasoning the briefing
+    uses for its scoped and estate views.
+
+    The governance read is the part that would have diverged: the first cut of
+    Consult passed empty control sets, which agreed with the Adherence tab only
+    for as long as the App lacked `administration: read` on every repository.
+    """
+    confirmed: set[str] = set()
+    known: set[str] = set()
+    try:
+        posture = await governance.read(
+            request.app.state.github_factory.for_installation(installation_id),
+            repo_full_name,
+            default_branch,
+            source_paths=_source_paths(request, repo_full_name),
+        )
+        if posture.readable:
+            for control in posture.controls:
+                known.add(control.key)
+                if control.state == "pass":
+                    confirmed.add(control.key)
+    except Exception:  # noqa: BLE001 — capability evidence still stands
+        logger.warning(
+            "Could not read governance for %s; SSDF practices that depend on "
+            "repository controls will report them as unread rather than absent.",
+            scrub(repo_full_name),
+        )
+
+    return ssdf.assess(
+        reporting_capabilities=reporting,
+        enabled_capabilities=enabled,
+        confirmed_controls=confirmed,
+        known_controls=known,
+        functions=_ssdf_functions(request, repo_full_name),
+    )
+
+
+def _ssdf_functions(request: Request, repo_full_name: str) -> dict[str, ssdf.FunctionState]:
+    """What the platform's own functions have on record for this repository.
+
+    These are not scan lanes and produce no scan runs, so asking scan health
+    about them returns "never reported" however much work they have done — the
+    oracle had written 1,382 decisions for this repository while the first cut
+    of this endpoint reported PO.4 as unevidenced. On a compliance view an
+    understatement is not the safe direction to be wrong in: it gets a team
+    told to build something it already has.
+
+    A read that fails reports the function as unread rather than as having
+    produced nothing, for the same reason an unreadable control is unknown
+    rather than absent.
+    """
+    catalog = request.app.state.catalog
+
+    def count(table: str, extra: str = "") -> int | None:
+        try:
+            rows = catalog.query(
+                f"SELECT count(*) FROM {table} WHERE repo_full_name = ?{extra}",
+                [repo_full_name],
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not count %s for SSDF: %s", table, scrub(repo_full_name))
+            return None
+        return int(rows[0][0]) if rows else 0
+
+    states: dict[str, ssdf.FunctionState] = {}
+
+    decisions = count("risk_decisions")
+    if decisions is not None:
+        states["oracle"] = ssdf.FunctionState(
+            evidenced=decisions > 0,
+            detail=(
+                f"the risk engine has recorded {decisions:,} decisions against a "
+                "published policy"
+                if decisions
+                else "the risk engine has recorded no decisions for this repository"
+            ),
+        )
+
+    events = count("remediation_events")
+    if events is not None:
+        states["patchwork"] = ssdf.FunctionState(
+            evidenced=events > 0,
+            detail=(
+                f"auto-remediation has recorded {events:,} events"
+                if events
+                else "auto-remediation has recorded no events for this repository"
+            ),
+        )
+
+    # Denominator from the lake, numerator from the Knowledge Store — the same
+    # split `maturity._reasoned_ratio` uses, and for the same reason: counting
+    # reasoned dismissals out of the store alone asks a population already
+    # filtered on the property being measured.
+    dismissed = count("findings", " AND status = 'false_positive'")
+    reasoned = 0
+    store = getattr(request.app.state, "knowledge", None)
+    if store is not None:
+        try:
+            reasoned = sum(
+                entry.observations
+                for entry in store.list_entries()
+                if entry.source_type == "finding_dismissal"
+                and entry.repo_full_name == repo_full_name
+                and entry.has_reason
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not read the Knowledge Store for SSDF: %s", scrub(repo_full_name))
+    if dismissed is not None:
+        states["reasoned_dismissals"] = ssdf.FunctionState(
+            evidenced=reasoned > 0,
+            detail=(
+                f"{reasoned:,} of {dismissed:,} dismissals carry a written reason"
+                if reasoned
+                else (
+                    f"none of {dismissed:,} dismissals carry a written reason"
+                    if dismissed
+                    else "nothing has been dismissed here, so no root cause has accumulated"
+                )
+            ),
+        )
+
+    return states
+
+
+@router.get("/repos/{repo_id}/ssdf", response_model=SsdfOut)
+async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> SsdfOut:
+    """Which SSDF practices this repository can evidence (SP 800-218).
+
+    **Evidence, never intent.** A practice is met only when the platform
+    observed something that meets it — a lane that *reported*, a control GitHub
+    confirmed. An enabled-but-silent capability evidences nothing, because
+    otherwise a repository could claim coverage by flipping a toggle, which is
+    the move the maturity model was written to refuse.
+
+    **No percentage, deliberately.** "68% SSDF compliant" is the number
+    everybody wants and it is not a real quantity: the practices are not
+    equally weighted, not equally applicable, and a single number invites
+    exactly the rounding this endpoint exists to prevent. Counts by status, and
+    the reader does their own arithmetic knowing what it is made of.
+
+    Practices this platform cannot assess are absent rather than reported unmet.
+    PO.1 and PO.2 are organisational and no scanner observes them; listing them
+    as failures would teach people to ignore the ones that mean something.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+
+    # Reporting, not enabled: a lane with successful runs behind it.
+    reporting = {
+        str(lane["capability"])
+        for lane in queries.scan_health(repo_full_name)
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{repo_full_name} is not onboarded.",
+            )
+        enabled = set(row.enabled_capabilities or [])
+        installation_id = row.github_installation_id
+        default_branch = row.default_branch
+
+    # Read live, the same way the governance panel does. A stored reading
+    # carries only a count of controls, and this needs their individual
+    # states — and a stale posture is worse than none here, because a
+    # compliance view built on a setting somebody changed last week is a
+    # claim about a repository that no longer exists.
+    results = await _ssdf_assess(
+        request, repo_full_name, installation_id, default_branch,
+        reporting=reporting, enabled=enabled,
+    )
+
+    return SsdfOut(
+        repo_full_name=repo_full_name,
+        counts=ssdf.summarise(results),
+        practices=[PracticeOut(**vars(result)) for result in results],
+        note=(
+            "Evidenced, not asserted. A capability that is enabled and has never "
+            "reported evidences nothing, and a control this platform could not "
+            "read is unknown rather than absent. The 800-53 families named against "
+            "each practice are cross-references, not claims — whether an SSDF "
+            "practice satisfies a given control is an assessor's judgement."
+        ),
+    )
+
+
+class TestKindOut(BaseModel):
+    key: str
+    name: str
+    why: str
+    presence: str
+    evidence: list[str]
+    how_to_evidence: str
+
+
+class TestLaneOut(BaseModel):
+    capability: str
+    enabled: bool
+    runs: int
+    succeeded: int
+    failed: int
+    last_run_at: str | None
+    coverage_state: str
+    line_coverage: float | None
+
+
+class TestEstateOut(BaseModel):
+    """What testing this repository has evidence of, and what kinds it lacks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    counts: dict[str, int]
+    kinds: list[TestKindOut]
+    lanes: list[TestLaneOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/tests", response_model=TestEstateOut)
+async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) -> TestEstateOut:
+    """What testing exists here, and what kinds of it do not.
+
+    The Harness tab answers "did the suite pass". This answers the question
+    behind it — which *kinds* of testing this repository has evidence of — and
+    names the kinds nothing here produces, with what would evidence each.
+
+    **Absent is the answer, not a blank.** A view that shows only the testing
+    that exists can never tell anybody what is missing, and what is missing is
+    the entire question. Contract, end-to-end, performance, accessibility,
+    resilience and post-deploy testing are listed by name whether or not this
+    repository does any of them.
+
+    **Coverage is a state, never a bare number.** `never_reported` is not 0%:
+    on 2026-09-03 every test run in this estate was in that state — the adapter
+    parses Cobertura and JaCoCo, the lake has the columns, and no pipeline was
+    writing a coverage document — and rendering it as zero would have been a
+    fabricated measurement of 227 real runs.
+
+    No score. The kinds are not equally applicable — a library needs no
+    post-deploy smoke test — so a single figure could only ever penalise a
+    repository for correctly not doing something.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+    health = queries.scan_health(repo_full_name)
+
+    reporting = {
+        str(lane["capability"])
+        for lane in health
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        enabled = set(row.enabled_capabilities or []) if row else set()
+
+    # Demonstrated only. An asserted link is somebody's claim that a test
+    # covers a finding; this view is about what the platform watched happen.
+    demonstrated = regression.coverage(request.app.state.catalog, repo_full_name).demonstrated
+
+    kinds = test_estate.assess(
+        reporting_capabilities=reporting,
+        demonstrated_regressions=demonstrated,
+    )
+    lanes = test_estate.lane_health(health, enabled)
+
+    return TestEstateOut(
+        repo_full_name=repo_full_name,
+        counts=test_estate.summarise(kinds),
+        kinds=[TestKindOut(**vars(kind)) for kind in kinds],
+        lanes=[TestLaneOut(**vars(lane)) for lane in lanes],
+        note=(
+            "Evidenced, not asserted. A lane that is enabled and has never reported "
+            "evidences no testing, and a lane with runs but no coverage document is "
+            "reported as never having measured coverage rather than as zero percent."
+        ),
+    )
+
+
+class ConsultAnswerOut(BaseModel):
+    key: str
+    question: str
+    answer: str
+    tab: str | None
+    evidence: list[str]
+
+
+class ConsultUnanswerableOut(BaseModel):
+    question: str
+    why: str
+
+
+class ConsultOut(BaseModel):
+    """What this platform knows about one repository, and what it does not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    answers: list[ConsultAnswerOut]
+    cannot_answer: list[ConsultUnanswerableOut]
+    note: str
+
+
+@router.get("/repos/{repo_id}/consult", response_model=ConsultOut)
+async def repo_consult(request: Request, repo_id: str, principal: PrincipalDep) -> ConsultOut:
+    """Consult the Champion — ask this platform what it knows about a repository.
+
+    Nine tabs is a filing system, not an answer. This is the answer: the
+    questions somebody actually arrives with, each answered from records, each
+    naming the tab where the reader can go and disagree with it.
+
+    **Not a chatbot, deliberately.** No model, no free-text box. It answers a
+    fixed set of questions and — the part that matters — names the questions it
+    *cannot* answer, with the reason. The failure mode of an assistant is not
+    saying "I do not know"; it is answering anyway.
+
+    Two reasons for that shape. This repository holds no model API key and must
+    not (spec 12 §2), so a chat window would be blocked on the operator exactly
+    as the notifier is. And grounding is the hard half regardless: a model
+    answering "what should I fix first" is only as good as the facts handed to
+    it, and those facts are what this endpoint is. B-043 adds the phrasing
+    layer over the same facts once a credential exists.
+
+    **It cannot act.** Every answer is a read. No dispositions, no acceptances,
+    no scans started, no pull requests opened.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    queries = _queries(request)
+    catalog = request.app.state.catalog
+
+    facts = consult.Facts(repo_full_name=repo_full_name)
+
+    # The briefing already reasons about lanes that cannot close findings, and
+    # re-deriving it here would be a second answer to a question that has one.
+    try:
+        scoped = briefing.build(catalog, asset_id=repo_full_name)
+        facts.open_findings = scoped.total_open
+        facts.blocked_by_lane = scoped.blocked_findings
+        facts.stalled_lanes = tuple(lane.capability for lane in scoped.stalled)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not brief %s for consult", scrub(repo_full_name))
+
+    def scalar(sql: str, params: list[Any]) -> int:
+        try:
+            rows = catalog.query(sql, params)
+        except Exception:  # noqa: BLE001
+            logger.warning("Consult query failed for %s", scrub(repo_full_name))
+            return 0
+        return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+
+    facts.critical = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND severity = 'critical'",
+        [repo_full_name],
+    )
+    facts.high = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND severity = 'high'",
+        [repo_full_name],
+    )
+    facts.unowned = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'open' "
+        "AND (owner IS NULL OR owner = '')",
+        [repo_full_name],
+    )
+    facts.accepted = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'accepted_risk'",
+        [repo_full_name],
+    )
+    # Unqualified means neither a review date nor a reason. Either alone still
+    # leaves a decision somebody can revisit; neither leaves a shrug.
+    facts.accepted_unqualified = scalar(
+        "SELECT count(*) FROM findings WHERE asset_id = ? AND status = 'accepted_risk' "
+        "AND accepted_until IS NULL "
+        "AND (accepted_reason_code IS NULL OR accepted_reason_code = '')",
+        [repo_full_name],
+    )
+
+    health = queries.scan_health(repo_full_name)
+    reporting = {
+        str(lane["capability"])
+        for lane in health
+        if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
+    }
+    kinds = test_estate.assess(
+        reporting_capabilities=reporting,
+        demonstrated_regressions=regression.coverage(catalog, repo_full_name).demonstrated,
+    )
+    facts.test_kinds_total = len(kinds)
+    facts.test_kinds_observed = sum(1 for kind in kinds if kind.presence == "observed")
+    facts.coverage_measured = any(
+        lane.coverage_state == "reported"
+        for lane in test_estate.lane_health(health, set())
+    )
+
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        enabled = set(row.enabled_capabilities or []) if row else set()
+        installation_id = row.github_installation_id if row else None
+        default_branch = row.default_branch if row else ""
+        # A separate table, and row-exists is the fact that matters: a profile
+        # saying "we do not know yet" is an auditable answer, and no profile at
+        # all is why every environmental input defaults to the worst case.
+        facts.risk_profile_confirmed = bool(
+            row
+            and session.execute(
+                select(RiskProfile.id).where(RiskProfile.repo_onboarding_id == row.id)
+            )
+            .scalars()
+            .first()
+        )
+
+    # Only regressions. A control turned *on* is good news and does not
+    # belong in an answer about weakening, and a control that could not be
+    # read is a permissions problem wearing a security event's clothes.
+    with request.app.state.db.session() as session:
+        facts.controls_regressed = tuple(
+            dict.fromkeys(
+                row.control_key
+                for row in governance.recent_drift(session, repo_full_name, limit=50)
+                if row.from_state == "on" and row.to_state != "unknown"
+            )
+        )
+
+    # The same call the Adherence tab makes, not a similar one. This answer
+    # links to that tab, and two numbers that disagree would undo the only
+    # thing that makes this surface trustworthy.
+    ssdf_results = await _ssdf_assess(
+        request, repo_full_name, installation_id, default_branch,
+        reporting=reporting, enabled=enabled,
+    )
+    facts.ssdf_total = len(ssdf_results)
+    facts.ssdf_met = sum(1 for r in ssdf_results if r.status == "met")
+
+    return ConsultOut(
+        repo_full_name=repo_full_name,
+        answers=[ConsultAnswerOut(**vars(a)) for a in consult.build(facts)],
+        cannot_answer=[ConsultUnanswerableOut(**vars(u)) for u in consult.UNANSWERABLE],
+        note=(
+            "Answered from this platform's own records. Every answer names the tab "
+            "it came from, so you can check it. It cannot act, and the questions it "
+            "cannot answer are listed rather than guessed at."
+        ),
+    )
+
+
+class JobHealthOut(BaseModel):
+    name: str
+    status: str
+    detail: str
+    last_succeeded_at: datetime | None
+    consecutive_failures: int
+
+
+class DependencyHealthOut(BaseModel):
+    name: str
+    reachable: bool
+    detail: str
+
+
+class PlatformHealthOut(BaseModel):
+    """Whether this platform is itself working."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    degraded: bool
+    jobs: list[JobHealthOut]
+    dependencies: list[DependencyHealthOut]
+    note: str
+
+
+@router.get("/platform-health", response_model=PlatformHealthOut)
+async def platform_health_page(request: Request, principal: PrincipalDep) -> PlatformHealthOut:
+    """Is the platform itself working?
+
+    It tells four repositories what is wrong with them and had no surface
+    saying whether it was running. Everything needed already existed —
+    `self_check` probes ingestion, Vault and Concourse, and every scheduled job
+    passes through one runner — and all of it went to a log file nobody tails.
+
+    **A caught failure is the quiet kind.** The job runner catches every
+    exception, logs it, and retries on the next tick. That is correct, and it
+    means a job which has thrown on every run for a fortnight is
+    indistinguishable from outside from one that has never had a problem.
+
+    The jobs whose silence matters most are the ones nothing else notices. If
+    `absences` stops, findings never close and every count on every page drifts
+    wrong in the reassuring direction — the CI failure this codebase keeps
+    writing about, happening inside the platform instead.
+
+    **Three states kept apart** because they need three different things done:
+    a failing job has an error to read, a late job has a scheduler to check,
+    and one that has never run is a deployment that came up without it.
+
+    Dependencies are probed live. A cached answer to "is Vault sealed" is worth
+    nothing — that is the question somebody asks precisely when they suspect
+    the cache.
+    """
+    now = utcnow()
+    started_at = getattr(request.app.state, "started_at", None)
+
+    with request.app.state.db.session() as session:
+        rows = list(session.execute(select(JobRun).order_by(JobRun.name)).scalars())
+    jobs = [platform_health.assess_job(row, now=now, started_at=started_at) for row in rows]
+
+    settings = request.app.state.settings
+    dependencies: list[platform_health.DependencyHealth] = []
+    try:
+        for name, result in await jobs_self_check(settings):
+            dependencies.append(
+                platform_health.DependencyHealth(
+                    name=name, reachable=result.reachable, detail=scrub(result.detail)
+                )
+            )
+    except Exception:  # noqa: BLE001 — job health still stands
+        logger.warning("Self-check failed while rendering platform health")
+
+    health = platform_health.PlatformHealth(jobs=jobs, dependencies=dependencies)
+
+    return PlatformHealthOut(
+        degraded=health.degraded,
+        jobs=[JobHealthOut(**vars(job)) for job in jobs],
+        dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
+        note=(
+            "A job that fails is caught, logged and retried, which is right and is "
+            "also what makes it invisible. These rows are the record that log line "
+            "never was. A job with no successful run since this process started is "
+            "reported as fine until twice its interval has passed."
+        ),
+    )

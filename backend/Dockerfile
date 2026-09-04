@@ -85,7 +85,13 @@ RUN mkdir -p /data && chown mykronos:mykronos /data
 VOLUME ["/data"]
 
 COPY --chown=mykronos:mykronos workflow-templates /app/workflow-templates
-COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml /app/
+# All four reviewed policy files, not two. `governance-policy-v1.yaml` and
+# `stride-map-v1.yaml` were absent from the image entirely, and their
+# loaders fell back to a path relative to the module - the repo root from
+# a checkout, the site-packages parent from a wheel. Production logged
+# 'no score computed' and carried on with an empty weight table.
+COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml \
+     governance-policy-v1.yaml stride-map-v1.yaml /app/
 
 USER mykronos
 WORKDIR /app
@@ -95,6 +101,8 @@ ENV MYKRONOS_DATALAKE_DIR=/data/datalake \
     MYKRONOS_WORKFLOW_TEMPLATES_DIR=/app/workflow-templates \
     MYKRONOS_ORACLE_POLICY_PATH=/app/oracle-policy-v1.yaml \
     MYKRONOS_MATURITY_MODEL_PATH=/app/maturity-model-v1.yaml \
+    MYKRONOS_GOVERNANCE_POLICY_PATH=/app/governance-policy-v1.yaml \
+    MYKRONOS_STRIDE_MAP_PATH=/app/stride-map-v1.yaml \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8100
@@ -102,5 +110,12 @@ EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/healthz', timeout=3).status == 200 else 1)"]
 
+# `--no-server-header` because the application cannot win this one from
+# middleware. Uvicorn appends `server: uvicorn` *after* the app returns, so an
+# app-level header does not replace it — it sits alongside, and the response
+# carries two `Server` headers, one of which still names the server. Seen on a
+# live container, which is the only place it is visible: Starlette's TestClient
+# never adds uvicorn's copy, so the test passed while production did not (B-025).
 CMD ["python", "-m", "uvicorn", "mykronos.main:app", \
-     "--host", "0.0.0.0", "--port", "8100", "--log-level", "info"]
+     "--host", "0.0.0.0", "--port", "8100", "--log-level", "info", \
+     "--no-server-header"]

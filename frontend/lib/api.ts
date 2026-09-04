@@ -36,6 +36,27 @@ export type Portfolio =
   paths["/api/dashboard/portfolio"]["get"]["responses"]["200"]["content"]["application/json"];
 export type PortfolioRow = Portfolio["repos"][number];
 export type PortfolioSummary = Portfolio["summary"];
+/**
+ * The post-deployment briefing (D-098). Derived from the schema rather than
+ * hand-declared, because this endpoint has a `response_model` — the
+ * hand-written types further down exist only for the endpoints that return a
+ * plain dict, and adding to that list when it is avoidable is how they drift.
+ */
+export type Briefing =
+  paths["/api/dashboard/briefing"]["get"]["responses"]["200"]["content"]["application/json"];
+export type StalledLane = Briefing["stalled"][number];
+/** Vulnerable packages for one repository, with what can be upgraded (B-027). */
+export type SupplyChainPackages =
+  paths["/api/dashboard/repos/{repo_id}/sscs/packages"]["get"]["responses"]["200"]["content"]["application/json"];
+export type VulnerablePackage = SupplyChainPackages["packages"][number];
+/** Assets, entry points and trust boundaries for one repository (B-029). */
+export type RepoSurfaces =
+  paths["/api/dashboard/repos/{repo_id}/surfaces"]["get"]["responses"]["200"]["content"]["application/json"];
+export type Surface = RepoSurfaces["assets"][number];
+/** What the scanners recommend for one repository (B-030). */
+export type RepoGuidance =
+  paths["/api/dashboard/repos/{repo_id}/guidance"]["get"]["responses"]["200"]["content"]["application/json"];
+export type BriefingClass = Briefing["classes"][number];
 export type FindingsPage =
   paths["/api/dashboard/repos/{repo_id}/findings"]["get"]["responses"]["200"]["content"]["application/json"];
 /**
@@ -67,12 +88,24 @@ export type CiPage =
 export type CiJob = NonNullable<CiPage["jobs"]>[number];
 export type CiReporting = NonNullable<CiPage["reporting"]>[number];
 export type CiStage = NonNullable<CiPage["stages"]>[number];
+export type WorkflowsPage =
+  paths["/api/repos/{repo_id}/workflows"]["get"]["responses"]["200"]["content"]["application/json"];
+export type WorkflowState = WorkflowsPage["workflows"][number];
 export type ThreatIntelEntry =
   paths["/api/dashboard/threat-intel"]["get"]["responses"]["200"]["content"]["application/json"][number];
 /** A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6). */
+/** A repository's change-governance posture (spec 30 §2). */
+export type GovernancePosture =
+  paths["/api/dashboard/repos/{repo_id}/governance"]["get"]["responses"]["200"]["content"]["application/json"];
+
 export type ThreatModelPage =
   paths["/api/dashboard/repos/{repo_id}/threat-model"]["get"]["responses"]["200"]["content"]["application/json"];
 export type ThreatModelCategory = ThreatModelPage["categories"][number];
+/** A declared mitigation (spec 28 §3). Declared, never verified — the
+ *  distinction is the whole point of the register. */
+export type ThreatModelControl = NonNullable<
+  ThreatModelCategory["controls"]
+>[number];
 
 /** The shape `signal_breakdown` carries when an admin is allowed to see it. */
 export type SignalBreakdown = {
@@ -159,10 +192,28 @@ export type RemediationEvent = RemediationPage["events"][number];
  * Hand-typed: both endpoints assemble their rows at request time, so the
  * generated schema is an open object.
  */
+export type RegressionCoverage = {
+  /** False when nothing has ever been fixed here — an empty denominator, not
+   *  a failing grade. */
+  available: boolean;
+  fixed_findings: number;
+  covered: number;
+  demonstrated: number;
+  asserted: number;
+  /** Links whose lane has not run green in 30 days. Reported beside the
+   *  headline rather than folded into it (spec 31 §3). */
+  stale: number;
+  ratio: number | null;
+  note: string;
+};
+
 export type TrendSeries = {
   scope: string;
   days: number;
   mean_time_to_fix_days: number | null;
+  /** Not windowed by `days`: every other number here is a rate over a period,
+   *  while this is a standing property of everything ever fixed. */
+  regression_coverage: RegressionCoverage;
   points: {
     at: string;
     open_critical: number;
@@ -199,6 +250,46 @@ export type MaturityReport = {
   model_version: string;
   tiers: { id: string; name: string; summary: string }[];
   repos: MaturityRepo[];
+};
+
+/**
+ * The management half of vulnerability management (spec 27, B-010).
+ *
+ * Hand-declared, like `MaturityReport` above: the endpoint returns a plain
+ * dict so the generated schema types it as `unknown`, and a page cannot be
+ * written against that.
+ */
+export type VulnerabilityManagement = {
+  scope: string;
+  aging: {
+    severity: string;
+    capability: string;
+    age_band: string;
+    count: number;
+  }[];
+  accepted_risk: { capability: string; severity: string; count: number }[];
+  accepted_risk_detail: {
+    finding_id: string;
+    capability: string;
+    severity: string;
+    title: string;
+    package_name: string;
+    accepted_reason_code: string;
+    /** Null is an indefinite acceptance, which is a decision, not an omission. */
+    accepted_until: string | null;
+    first_seen_at: string | null;
+    fixed_version: string;
+    /** Accepted for want of a fix, and a fix now exists. */
+    now_fixable: boolean;
+  }[];
+  oldest_open: {
+    finding_id: string;
+    severity: string;
+    capability: string;
+    title: string;
+    first_seen_at: string | null;
+  }[];
+  toxic_combinations: number;
 };
 
 export type TriageQueue =
@@ -314,6 +405,18 @@ export type ScanHealth = {
     detail: string | null;
     /** Same commit, disagreeing status, on the last two runs (spec 19 §1.3). */
     flaky: boolean;
+    /**
+     * Coverage from the most recent run that reported it (spec 31 §4). Null
+     * means no run has reported any — a different fact from 0, which means a
+     * runner measured and found none.
+     *
+     * Explicitly **not a security metric**, and labelled that way wherever it
+     * is shown: it is context that stops a green pass rate being read as more
+     * than it is.
+     */
+    line_coverage: number | null;
+    branch_coverage: number | null;
+    coverage_at: string | null;
   }[];
 };
 

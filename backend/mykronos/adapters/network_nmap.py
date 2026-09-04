@@ -23,6 +23,9 @@ import json
 from typing import Any
 from xml.etree import ElementTree
 
+from defusedxml import ElementTree as SafeElementTree
+from defusedxml.common import DefusedXmlException
+
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
@@ -74,9 +77,16 @@ def _port_severity(port: int) -> tuple[Severity, str]:
 
 
 def _from_nmap(text: str, result: AdapterResult) -> None:
+    # defusedxml, not ElementTree: this text is archived scan output, and
+    # `mykronos reprocess` re-parses the archive server-side long after the
+    # runner that uploaded it is gone. The stdlib parser expands internal
+    # entities, so ~320 bytes of declarations reach a million characters and
+    # a few more lines reach the host's memory. DefusedXmlException is caught
+    # alongside ParseError so a hostile archive is a partial failure with a
+    # reason, not an unhandled crash in an operator's terminal.
     try:
-        root = ElementTree.fromstring(text)  # noqa: S314 - local scanner output
-    except ElementTree.ParseError as exc:
+        root = SafeElementTree.fromstring(text)
+    except (ElementTree.ParseError, DefusedXmlException) as exc:
         result.warn(f"Not parseable nmap XML: {exc}")
         result.scan_status = ScanStatus.PARTIAL_FAILURE
         return

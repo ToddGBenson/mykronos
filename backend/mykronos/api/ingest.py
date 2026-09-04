@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from datetime import datetime, time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -38,6 +39,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
+from mykronos import inventory, netassess
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
 from mykronos.atlas import evidence_id as atlas_evidence_id
@@ -45,14 +47,17 @@ from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
 from mykronos.db.models import (
+    NetassessRun,
     ReachabilityReport,
     RepoOnboarding,
+    RiskProfile,
     capability_config_for,
 )
 from mykronos.fingerprint import compute_finding_id
 from mykronos.github.client import GitHubError
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
+from mykronos.ownership import owner_for_finding
 from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
@@ -62,6 +67,10 @@ from mykronos.schemas import (
     HealthResponse,
     IngestAccepted,
     InsiderRiskSubmission,
+    LaneFailure,
+    LaneFailureAccepted,
+    NetassessAccepted,
+    NetassessSubmission,
     RawAccepted,
     ReachabilityAccepted,
     ReachabilitySubmission,
@@ -209,6 +218,164 @@ async def health(request: Request, token: TokenDep) -> HealthResponse:
     )
 
 
+@router.post("/netassess", response_model=NetassessAccepted)
+async def ingest_netassess(
+    request: Request,
+    background: BackgroundTasks,
+    submission: NetassessSubmission,
+    token: TokenDep,
+) -> NetassessAccepted:
+    """Judge a network-assessment run the host has just produced (spec 32 §4.4).
+
+    The half Concourse was good at — deciding whether the run that arrived is
+    worth believing, and saying what changed — with the half it was bad at
+    left where it works. The scan itself stays on Windows: an nmap sweep from
+    a container reported all 256 addresses of a /24 as up while the host's ARP
+    table had 38, because MAC-keyed inventory needs L2 adjacency a container
+    does not have.
+
+    **The failure this exists to catch is the Scheduled Task degrading rather
+    than dying**: still writing `network-status.md` every week with the checks
+    inside it no longer running. So an `unknown` line fails the run rather than
+    warning about it — a NAS that is switched off must not read the same as one
+    confirmed closed.
+
+    **A run that fails verification is still recorded.** "The last scan was bad"
+    is precisely what the freshness check needs to know, and discarding it
+    would make a degraded scanner indistinguishable from a silent one.
+
+    Requires the `network` capability, unlike `/lane-failure`: this *is* a
+    capability, it is the one spec 14 defines, and what may write it is what
+    the grant says.
+    """
+    _require_capability(token, Capability.NETWORK.value)
+
+    previous_inventory: str | None = None
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is not None:
+            previous_inventory = row.inventory_csv or None
+
+    verdict = netassess.verify(
+        inventory_csv=submission.inventory_csv or None,
+        network_status_md=submission.network_status_md or None,
+        previous_inventory_csv=previous_inventory,
+    )
+
+    when = netassess.run_date(submission.run_key)
+    with request.app.state.db.session() as session:
+        row = session.get(NetassessRun, token.repo_full_name)
+        if row is None:
+            row = NetassessRun(repo_full_name=token.repo_full_name)
+            session.add(row)
+        row.run_key = submission.run_key
+        row.run_date = datetime.combine(when, time.min) if when else None
+        row.inventory_csv = submission.inventory_csv
+        row.believable = verdict.believable
+        session.commit()
+
+    if not verdict.believable:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network scan is not believable",
+                detail="\n".join(
+                    [f"`{submission.run_key}` reported {verdict.host_count} host(s)."]
+                    + [f"- {problem}" for problem in verdict.problems[:6]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="critical",
+            ),
+        )
+    elif verdict.diff.changed:
+        background.add_task(
+            request.app.state.notifier.send,
+            Notification(
+                title="Network inventory changed",
+                detail="\n".join(
+                    [f"`{submission.run_key}`"]
+                    + [f"+ new  {host}" for host in verdict.diff.appeared[:10]]
+                    + [f"- gone {host}" for host in verdict.diff.disappeared[:10]]
+                ),
+                repo_full_name=token.repo_full_name,
+                level="warning",
+            ),
+        )
+
+    return NetassessAccepted(
+        believable=verdict.believable,
+        problems=verdict.problems,
+        host_count=verdict.host_count,
+        hosts_appeared=[str(h) for h in verdict.diff.appeared],
+        hosts_disappeared=[str(h) for h in verdict.diff.disappeared],
+        detail=netassess.summarise(
+            verdict,
+            netassess.Freshness(
+                newest_key=submission.run_key,
+                newest_date=when,
+                age_days=(netassess.utc_today() - when).days if when else None,
+                max_age_days=0,
+            ),
+        ),
+    )
+
+
+@router.post("/lane-failure", response_model=LaneFailureAccepted)
+async def ingest_lane_failure(
+    request: Request,
+    background: BackgroundTasks,
+    submission: LaneFailure,
+    token: TokenDep,
+) -> LaneFailureAccepted:
+    """A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+
+    Concourse put `on_failure: *slack_alert` on every job. On Actions most
+    lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+    interprets anything and finalises in a `finally`, so a failed scan already
+    reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+    lane with nothing to upload (`delivery.yml` builds and publishes and
+    produces no findings by design), and a lane that died before its upload
+    step ever ran.
+
+    **Nothing is written to the lake.** A build failure is not a finding, has
+    no severity, and must not reach a risk score — D-046's rule about test
+    lanes, one step further out. This endpoint sends a message and returns.
+
+    **The repository comes from the token, never from the body.** A token
+    scoped to one repository cannot raise an alert that appears to be about
+    another.
+
+    **No capability grant is required**, because a lane failure is not a
+    capability. Requiring one would mean a repository could not report that
+    its build broke until somebody granted it something unrelated.
+    """
+    notifier = request.app.state.notifier
+    background.add_task(
+        notifier.send,
+        Notification(
+            title=f"{submission.lane} failed",
+            detail="\n".join(
+                part
+                for part in (
+                    submission.detail or "The lane failed and reported no detail.",
+                    f"Commit `{submission.commit_sha}`." if submission.commit_sha else "",
+                    submission.run_url,
+                )
+                if part
+            ),
+            repo_full_name=token.repo_full_name,
+            level="warning",
+        ),
+    )
+    return LaneFailureAccepted(
+        notified=bool(getattr(notifier, "enabled", False)),
+        detail=(
+            f"Recorded a failure of {submission.lane!r} for "
+            f"{token.repo_full_name}. Nothing was written to the lake."
+        ),
+    )
+
+
 @router.post("/scan-run", response_model=IngestAccepted)
 async def ingest_scan_run(
     request: Request,
@@ -291,6 +458,16 @@ async def ingest_findings(
     now = utcnow()
     rows: list[dict[str, Any]] = []
 
+    # One CODEOWNERS read per batch, cached for fifteen minutes across batches
+    # (spec 24 §1.2). Never per finding: a four-hundred-finding upload would
+    # otherwise be four hundred GitHub requests for one answer.
+    ownership = request.app.state.ownership
+    rules, codeowners_readable = await ownership.lookup_for(
+        installation_client_for_repo(request, token.repo_full_name), token.repo_full_name
+    )
+    profile_owner = profile_owner_for_repo(request, token.repo_full_name)
+    targets = request.app.state.oracle_policy.remediation_targets
+
     for finding in batch.findings:
         finding_id, fingerprint_version = compute_finding_id(
             repo_full_name=token.repo_full_name,
@@ -305,6 +482,21 @@ async def ingest_findings(
             port=finding.port,
             title=finding.title,
         )
+        owner, owner_source = owner_for_finding(
+            file_path=finding.file_path,
+            rules=rules,
+            profile_owner=profile_owner,
+            # The account the repository belongs to — the last rung, and the
+            # one that stops a repository with neither CODEOWNERS nor a risk
+            # profile routing nothing at all.
+            repo_owner=token.repo_full_name.split("/")[0] or None,
+            codeowners_readable=codeowners_readable,
+        )
+        # From `now` because this is first sight; compaction keeps the stored
+        # value for a finding that already exists, which is what makes the
+        # date stable across re-scans (spec 24 §2.2). A KEV due date, when one
+        # exists, replaces this on the next threat-intel refresh.
+        due_at = targets.due_at(finding.severity.value, now)
         rows.append(
             {
                 "finding_id": finding_id,
@@ -340,6 +532,16 @@ async def ingest_findings(
                 "first_seen_at": now,
                 "last_seen_at": now,
                 "resolved_at": None,
+                # What the tool said this weakness is (spec 28 §1). JSON text
+                # like the other list-shaped columns: read whole and mapped,
+                # never filtered on in SQL. Null rather than "[]" when the
+                # tool said nothing — absent is not "no CWE applies", and the
+                # STRIDE mapping depends on the distinction.
+                "cwe_ids_json": json.dumps(finding.cwe_ids) if finding.cwe_ids else None,
+                "owner": owner,
+                "owner_source": owner_source,
+                "due_at": due_at,
+                "due_source": "policy" if due_at else None,
                 "raw_finding_json": json.dumps(finding.raw_finding_json, ensure_ascii=False),
             }
         )
@@ -441,7 +643,7 @@ def _safe_segment(value: str) -> str:
     return cleaned.strip(".-") or "unknown"
 
 
-@router.post("/aegis", response_model=AegisAccepted)
+@router.post("/aegis", response_model=AegisAccepted, summary="Ingest insider risk")
 async def ingest_aegis(
     request: Request, body: InsiderRiskSubmission, token: TokenDep
 ) -> AegisAccepted:
@@ -471,7 +673,7 @@ async def ingest_aegis(
     check_run_id: str | None = None
     check_run_error: str | None = None
     blocking = bool(config.get("blocking", False))
-    github = _installation_client(request, token.repo_full_name)
+    github = installation_client_for_repo(request, token.repo_full_name)
     if github is not None:
         try:
             # Bounded, because this is the only thing between a caller and its
@@ -542,7 +744,9 @@ async def ingest_aegis(
     )
 
 
-@router.post("/atlas", response_model=AtlasAccepted)
+@router.post(
+    "/atlas", response_model=AtlasAccepted, summary="Ingest dependencies (SCA)"
+)
 async def ingest_atlas(
     request: Request, body: SscsEvidenceSubmission, token: TokenDep
 ) -> AtlasAccepted:
@@ -560,7 +764,7 @@ async def ingest_atlas(
     """
     _require_capability(token, Capability.ATLAS.value)
 
-    assessment = trust_score(body.ecosystems)
+    assessment = trust_score(body.ecosystems, body.provenance_signals)
 
     with request.app.state.db.session() as session:
         config = capability_config_for(session, token.repo_full_name, "atlas")
@@ -572,8 +776,16 @@ async def ingest_atlas(
         "sscs_evidence", [atlas_row(body, assessment, token.repo_full_name)]
     )
 
+    # The component inventory, from the SBOM this submission already points at
+    # (spec 29 §1). A third read of a file the runner produced and this
+    # platform already archived — no new upload, no template change, and a
+    # repository whose SBOM was archived last month gets an inventory on its
+    # next report rather than on its next workflow resync.
+    components = _record_components(request, body, token.repo_full_name)
+
     return AtlasAccepted(
         accepted=1,
+        components_recorded=components,
         evidence_id=atlas_evidence_id(token.repo_full_name, body.commit_sha),
         trust_score=assessment.trust_score,
         raw_trust_score=assessment.raw_trust_score,
@@ -585,6 +797,60 @@ async def ingest_atlas(
         # compare, and reporting it as below would block a release for a
         # measurement that never happened (spec 07 §5a).
         below_minimum=(assessment.trust_score is not None and assessment.trust_score < minimum),
+    )
+
+
+def _record_components(
+    request: Request, body: SscsEvidenceSubmission, repo_full_name: str
+) -> int:
+    """Extract and store the resolved components. Never fails the submission.
+
+    Every failure here is swallowed deliberately. The evidence row is the
+    thing this endpoint exists to write and is already in the buffer; losing
+    a trust score because an SBOM was truncated in transit would trade the
+    number a release gate reads for a convenience index. The inventory is
+    rebuilt on the next scan, and a warning says what went wrong.
+    """
+    if not body.sbom_ref:
+        return 0
+
+    settings = request.app.state.settings
+    # The ref is produced by `/api/ingest/raw` as a path relative to the lake
+    # directory. Resolved and then checked to be inside it: the value arrives
+    # from a workflow, and a caller who can post evidence must not be able to
+    # name a file outside the archive by sending `../../etc/passwd`.
+    try:
+        source = (settings.datalake_dir / body.sbom_ref).resolve()
+        source.relative_to(settings.datalake_dir.resolve())
+    except (ValueError, OSError):
+        logger.warning(
+            "SBOM ref %r for %s does not resolve inside the archive; no "
+            "component inventory recorded.",
+            body.sbom_ref,
+            repo_full_name,
+        )
+        return 0
+
+    try:
+        document = json.loads(source.read_bytes())
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "Could not read the archived SBOM for %s (%s); the supply-chain "
+            "evidence was still recorded.",
+            repo_full_name,
+            exc,
+        )
+        return 0
+
+    if not isinstance(document, dict):
+        return 0
+
+    return inventory.record(
+        request.app.state.buffer,
+        document,
+        repo_full_name=repo_full_name,
+        commit_sha=body.commit_sha,
+        scan_run_id=body.sbom_ref,
     )
 
 
@@ -652,8 +918,9 @@ async def ingest_capability_payload(
 ) -> IngestAccepted:
     """Capability-specific tables that do not have an endpoint yet.
 
-    Declared here because spec 05 §4 defines the route. Aegis and Atlas have
-    their own handlers above — registered first, so this catch-all cannot
+    Declared here because spec 05 §4 defines the route. Insider risk and
+    dependencies (SCA) have their own handlers above — registered first, so
+    this catch-all cannot
     shadow them. Returning 501 rather than 404 keeps the contract visible
     instead of looking like a routing bug.
     """
@@ -662,12 +929,32 @@ async def ingest_capability_payload(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=(
             f"Ingestion for '{capability.value}' is not implemented yet. "
-            "Patchwork arrives in Phase 6 (specs/13-build-roadmap.md §3)."
+            "Auto-remediation arrives in Phase 6 (specs/13-build-roadmap.md §3)."
         ),
     )
 
 
-def _installation_client(request: Request, repo_full_name: str) -> Any:
+def profile_owner_for_repo(request: Request, repo_full_name: str) -> str | None:
+    """The repository owner recorded on the risk profile (spec 21 §1).
+
+    Used only for findings with no path — a dependency CVE names a package,
+    not the file that declares it. Weaker than a CODEOWNERS answer and stored
+    under its own `owner_source` so nobody mistakes it for one.
+    """
+    with request.app.state.db.session() as session:
+        profile = (
+            session.execute(
+                select(RiskProfile)
+                .join(RepoOnboarding, RepoOnboarding.id == RiskProfile.repo_onboarding_id)
+                .where(RepoOnboarding.github_repo_full_name == repo_full_name)
+            )
+            .scalars()
+            .first()
+        )
+    return profile.owner if profile is not None else None
+
+
+def installation_client_for_repo(request: Request, repo_full_name: str) -> Any:
     with request.app.state.db.session() as session:
         onboarding = (
             session.execute(

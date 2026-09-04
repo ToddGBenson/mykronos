@@ -76,12 +76,75 @@ def decision_to_row(decision: Decision, *, gate_outcome: str | None = None) -> d
     }
 
 
-def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
+def _introduced_section(introduced: list[dict[str, Any]]) -> list[str]:
+    """What this change brought in, worst first."""
+    if not introduced:
+        return [
+            "### This change introduced nothing",
+            "",
+            "No new open finding is attributable to this commit. The score "
+            "below describes the backlog that was already here.",
+            "",
+        ]
+
+    by_severity: dict[str, int] = {}
+    for row in introduced:
+        by_severity[row["severity"]] = by_severity.get(row["severity"], 0) + 1
+    tally = ", ".join(
+        f"{by_severity[sev]} {sev}"
+        for sev in ("critical", "high", "medium", "low", "info")
+        if by_severity.get(sev)
+    )
+
+    lines = [
+        f"### This change introduced {len(introduced)} finding"
+        f"{'' if len(introduced) == 1 else 's'} — {tally}",
+        "",
+        "| Severity | Lane | Rule | Where |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in introduced:
+        where = row.get("file_path") or "—"
+        if row.get("line_start"):
+            where = f"{where}:{row['line_start']}"
+        lines.append(
+            f"| {row['severity']} | {row['capability']} | "
+            f"`{row['rule_id']}` | {where} |"
+        )
+    lines += [
+        "",
+        "<sub>Attributed by the scan run that first saw each finding, so a "
+        "finding your branch merely reproduces is not counted against it.</sub>",
+        "",
+    ]
+    return lines
+
+
+def render_check_run_summary(
+    decision: Decision,
+    *,
+    blocking: bool,
+    introduced: list[dict[str, Any]] | None = None,
+) -> str:
     """The Markdown a developer reads on their pull request.
 
     For most people this is the entire product, so it shows the arithmetic
     rather than just the verdict: a score you cannot check is a score you
     eventually stop believing.
+
+    **`introduced` leads, and the score follows it.** The score describes the
+    repository's whole open backlog — the right answer to "how much risk does
+    this carry" and the wrong one to "should this ship". On a repository with
+    330 open findings the number barely moves between commits, so an author
+    reading only the score sees the same check whether their change added a
+    critical or removed one. What they can act on is the short list of things
+    the change itself brought in, which is why it goes above the arithmetic
+    rather than below it.
+
+    Passing `None` renders the summary without the section, which is not the
+    same as passing `[]` — an empty list is the good news that this change
+    introduced nothing, and saying so is the most reassuring thing this check
+    can report.
     """
     snapshot = decision.inputs_snapshot
     totals = snapshot["totals"]
@@ -92,7 +155,15 @@ def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
         "",
         decision.reasoning,
         "",
+    ]
+
+    if introduced is not None:
+        lines += _introduced_section(introduced)
+
+    lines += [
         "### How this score was reached",
+        "",
+        "_The repository's whole open backlog, not this change._",
         "",
         "| Contribution | Input | Arithmetic |",
         "| ---: | --- | --- |",
@@ -144,6 +215,18 @@ def render_check_run_summary(decision: Decision, *, blocking: bool) -> str:
     return "\n".join(lines)
 
 
+def _dashboard_queries(catalog: Any) -> Any:
+    """Imported at call time, not at module load.
+
+    `dashboard` imports Oracle's policy for its portfolio rendering; importing
+    it back at module level here would make that a cycle. One call per merged
+    commit in a 30-day window is not a hot path.
+    """
+    from mykronos.dashboard import DashboardQueries
+
+    return DashboardQueries(catalog)
+
+
 class OracleService:
     def __init__(
         self,
@@ -183,6 +266,27 @@ class OracleService:
         published = PublishedDecision(decision=decision, blocking=blocking)
 
         if github is not None and commit_sha and decision_type != "portfolio":
+            # Read once, here, rather than inside the renderer: the renderer is
+            # pure and tested on its own, and a check run that fails to publish
+            # should not be a query the catalog ran for nothing.
+            try:
+                introduced = _dashboard_queries(self.catalog).introduced_rows(
+                    repo_full_name, commit_sha
+                )
+            except Exception:  # noqa: BLE001 - the score is still worth posting
+                # `scrub`, because both values reach here from a request and a
+                # newline in either would end this record early and start one a
+                # reader has no reason to doubt (spec 12 §8). The root filter
+                # would catch it too; the explicit call is what makes the trust
+                # boundary visible at the call site, and what static analysis
+                # can follow.
+                logger.warning(
+                    "Could not read introduced findings for %s@%s; posting the "
+                    "check run without that section.",
+                    scrub(repo_full_name),
+                    scrub(commit_sha),
+                )
+                introduced = None
             try:
                 published.check_run_id = await github.create_check_run(
                     repo_full_name,
@@ -197,7 +301,9 @@ class OracleService:
                         f"{decision.recommendation.replace('_', ' ')} — "
                         f"{decision.overall_risk_score}/100"
                     ),
-                    summary=render_check_run_summary(decision, blocking=blocking),
+                    summary=render_check_run_summary(
+                        decision, blocking=blocking, introduced=introduced
+                    ),
                 )
                 row["github_check_run_id"] = published.check_run_id
             except GitHubError as exc:
@@ -286,19 +392,40 @@ class OracleService:
 
     # -- reads ----------------------------------------------------------
 
-    def shadow_mode_report(self, *, since: datetime | None = None) -> dict[str, Any]:
+    def shadow_mode_report(
+        self, *, since: datetime | None = None, repo_full_name: str | None = None
+    ) -> dict[str, Any]:
         """What blocking mode would have done, had it been on (spec 09 §6).
 
         Deliberately reports the counter-evidence in the same shape as the
         supporting evidence: `would_have_blocked` next to `overridden`, so the
         cost of turning blocking on is as visible as the benefit. A report that
         only counted caught issues would be an argument, not a measurement.
+
+        **Two gates, and only one of them still exists.** `would_have_blocked`
+        counts `no_go` decisions that merged — the composite-score gate, which
+        D-048 and D-083 retired after it refused every commit in both
+        pipelines. `would_have_blocked_on_introduced` counts what the *current*
+        gate would refuse: a commit that introduced a critical or a high. The
+        retired number is kept and labelled rather than deleted, so evidence
+        gathered under the old model is still readable and is not mistaken for
+        evidence about the new one.
+
+        **The introduced count is judged now, not then.** It re-asks
+        `introduced_by` for each decision's commit, and that reads current
+        status — so a finding introduced then and dispositioned since does not
+        count. That is the honest direction for a "should we switch this on"
+        question: it reports what the gate would refuse *today*, given what is
+        known today.
         """
         where = ["decision_type = 'pr_gate'", "gate_outcome IS NOT NULL"]
         params: list[Any] = []
         if since is not None:
             where.append("evaluated_at >= ?")
             params.append(since)
+        if repo_full_name is not None:
+            where.append("repo_full_name = ?")
+            params.append(repo_full_name)
         clause = " AND ".join(where)
 
         rows = self.catalog.query(
@@ -320,6 +447,7 @@ class OracleService:
                 # mode would have stopped.
                 "would_have_blocked",
                 "would_have_blocked_and_overridden",
+                "would_have_blocked_on_introduced",
             ),
             0,
         )
@@ -339,9 +467,45 @@ class OracleService:
                 if overridden:
                     totals["would_have_blocked_and_overridden"] += count
 
+        # The gate that actually runs (D-083). One `introduced_by` per merged
+        # commit, not per decision: the same commit re-judged on three pushes
+        # is one commit a gate would refuse once.
+        merged_commits = {
+            str(commit)
+            for (commit,) in self.catalog.query(
+                f"""
+                SELECT DISTINCT commit_sha FROM risk_decisions
+                WHERE {clause} AND gate_outcome = 'merged'
+                  AND commit_sha IS NOT NULL AND commit_sha <> ''
+                """,
+                params,
+            )
+        }
+        refused: list[dict[str, Any]] = []
+        for commit in sorted(merged_commits):
+            for repo in self._repos_for_commit(commit, repo_full_name):
+                introduced = _dashboard_queries(self.catalog).introduced_by(repo, commit)
+                if introduced.get("critical", 0) or introduced.get("high", 0):
+                    refused.append(
+                        {
+                            "repo_full_name": repo,
+                            "commit_sha": commit,
+                            "introduced": introduced,
+                        }
+                    )
+        totals["would_have_blocked_on_introduced"] = len(refused)
+
         return {
             **totals,
+            "merged_commits_judged": len(merged_commits),
+            "refused_on_introduced": refused,
             "by_recommendation": by_recommendation,
+            "retired_model_note": (
+                "`would_have_blocked` describes the composite-score gate that "
+                "D-048 and D-083 retired — it refused every commit once a "
+                "backlog existed. `would_have_blocked_on_introduced` is the "
+                "gate that runs now: no new critical, no new high."
+            ),
             "interpretation": (
                 "Every 'would_have_blocked' is a merge that blocking mode "
                 "would have stopped. Whether that was the right call is not "
@@ -351,6 +515,19 @@ class OracleService:
             ),
         }
 
+
+    def _repos_for_commit(
+        self, commit_sha: str, repo_full_name: str | None
+    ) -> list[str]:
+        if repo_full_name is not None:
+            return [repo_full_name]
+        return [
+            str(repo)
+            for (repo,) in self.catalog.query(
+                "SELECT DISTINCT repo_full_name FROM risk_decisions WHERE commit_sha = ?",
+                [commit_sha],
+            )
+        ]
 
     def recent_decisions(
         self,

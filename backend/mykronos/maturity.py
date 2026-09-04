@@ -450,7 +450,11 @@ class TrendPoint:
 
 
 def _risk_at(
-    catalog: Catalog, at: datetime, repo_full_name: str | None
+    catalog: Catalog,
+    at: datetime,
+    repo_full_name: str | None,
+    *,
+    exclude: list[str] | None = None,
 ) -> tuple[int | None, int | None, int | None]:
     """Risk at one instant: `(mean, median, repos)` (spec 21 §2).
 
@@ -491,8 +495,14 @@ def _risk_at(
     # One row per repository: its latest decision as of this instant. A
     # window function rather than a correlated subquery so the whole fleet is
     # one scan, which matters at twelve buckets per request.
+    # The seeded corpus is dropped here as well as from the finding counts
+    # (spec 23 §1.2): a repository built to be vulnerable would otherwise drag
+    # the fleet mean down permanently and be counted in `repos_scored`, which
+    # is the number that says how much of the estate the mean speaks for.
+    dropped = [name for name in (exclude or []) if name]
+    holes = f" AND repo_full_name NOT IN ({', '.join('?' for _ in dropped)})" if dropped else ""
     rows = catalog.query(
-        """
+        f"""
         SELECT overall_risk_score, inputs_snapshot FROM (
             SELECT
                 overall_risk_score,
@@ -501,11 +511,11 @@ def _risk_at(
                     PARTITION BY repo_full_name ORDER BY evaluated_at DESC
                 ) AS recency
             FROM risk_decisions
-            WHERE decision_type = 'portfolio' AND evaluated_at <= ?
+            WHERE decision_type = 'portfolio' AND evaluated_at <= ?{holes}
         )
         WHERE recency = 1
         """,
-        [at],
+        [at, *dropped],
     )
 
     scores = []
@@ -547,6 +557,7 @@ def trend_series(
     days: int = 90,
     points: int = 12,
     as_of: datetime | None = None,
+    exclude: list[str] | None = None,
 ) -> list[TrendPoint]:
     """Open findings, risk and supply-chain trust over time (spec 10 §2.3).
 
@@ -556,6 +567,14 @@ def trend_series(
     able to disagree with them.
 
     `repo_full_name` of None means the whole portfolio.
+
+    `exclude` drops named repositories from a portfolio series — the seeded
+    benchmark corpus, in practice (spec 23 §1.2). Passed in by the caller
+    rather than looked up here: which repositories are synthetic is a fact in
+    the operational store, and a lake query that reached into the database to
+    find out would couple the two in the one direction this codebase has kept
+    clear. Ignored for a single-repository series, where the caller has
+    already named its subject.
     """
     now = as_of or utcnow()
     step = timedelta(days=days / points)
@@ -567,6 +586,13 @@ def trend_series(
     asset_scope = "AND asset_id = ?" if repo_full_name else ""
     scope = "AND repo_full_name = ?" if repo_full_name else ""
     repo_param: list[Any] = [repo_full_name] if repo_full_name else []
+
+    dropped = [name for name in (exclude or []) if name] if not repo_full_name else []
+    if dropped:
+        holes = ", ".join("?" for _ in dropped)
+        asset_scope += f" AND asset_id NOT IN ({holes})"
+        scope += f" AND repo_full_name NOT IN ({holes})"
+        repo_param = [*repo_param, *dropped]
 
     series: list[TrendPoint] = []
     for index in range(points, 0, -1):
@@ -589,7 +615,9 @@ def trend_series(
 
         # The most recent decision and evidence *as of that instant* — not the
         # latest overall, which would draw a flat line at today's value.
-        risk_mean, risk_median, repos_scored = _risk_at(catalog, at, repo_full_name)
+        risk_mean, risk_median, repos_scored = _risk_at(
+            catalog, at, repo_full_name, exclude=dropped
+        )
         # Not filtered to assessed rows. If the most recent evidence at this
         # instant resolved nothing, the point is a gap (spec 07 §5a) rather
         # than the last real score carried forward — the line should break
@@ -620,6 +648,96 @@ def trend_series(
             )
         )
     return series
+
+
+@dataclass(frozen=True)
+class ThroughputWindow:
+    """What moved in one week (spec 27 §5)."""
+
+    opened: int = 0
+    closed: int = 0
+    verified: int = 0
+    median_days_to_close: float | None = None
+
+
+def throughput(
+    catalog: Catalog,
+    repo_full_name: str | None = None,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
+    """This week against last week, and what verified (spec 27 §5).
+
+    Reconstructed from `first_seen_at`, `resolved_at` and the verification
+    outcomes, exactly as `trend_series` reconstructs its series: a rollup
+    table would be a second copy of the truth, able to disagree with the
+    first.
+
+    `closed` counts findings that reached `fixed`. A dismissal is not a
+    closure and is deliberately excluded, for the reason `mean_time_to_fix`
+    gives about the same temptation: letting dismissals count would make the
+    fastest way to improve this number a click.
+
+    `verified` is narrower still — a fix whose merge commit was re-scanned and
+    the finding was gone (spec 25 §2). It is the only number here that says
+    risk was removed rather than that a row changed.
+    """
+    now = as_of or utcnow()
+    scope = "AND asset_id = ?" if repo_full_name else ""
+    windows: dict[str, ThroughputWindow] = {}
+
+    for label, start_days, end_days in (("this_week", 7, 0), ("last_week", 14, 7)):
+        start = now - timedelta(days=start_days)
+        end = now - timedelta(days=end_days)
+        params: list[Any] = [start, end]
+        if repo_full_name:
+            params.append(repo_full_name)
+
+        opened = catalog.query(
+            f"SELECT count(*) FROM findings WHERE first_seen_at >= ? "
+            f"AND first_seen_at < ? {scope}",
+            list(params),
+        )
+        closed = catalog.query(
+            f"SELECT count(*), median(date_diff('day', first_seen_at, resolved_at)) "
+            f"FROM findings WHERE status = 'fixed' AND resolved_at >= ? "
+            f"AND resolved_at < ? {scope}",
+            list(params),
+        )
+        verified = 0
+        if catalog.all_files("remediation_events"):
+            repo_scope = "AND repo_full_name = ?" if repo_full_name else ""
+            verified_rows = catalog.query(
+                f"SELECT count(*) FROM remediation_events "
+                f"WHERE verification_outcome = 'verified_fixed' "
+                f"AND verified_at >= ? AND verified_at < ? {repo_scope}",
+                list(params),
+            )
+            verified = int(verified_rows[0][0]) if verified_rows else 0
+
+        median = closed[0][1] if closed and closed[0][1] is not None else None
+        windows[label] = ThroughputWindow(
+            opened=int(opened[0][0]) if opened else 0,
+            closed=int(closed[0][0]) if closed else 0,
+            verified=verified,
+            median_days_to_close=round(float(median), 1) if median is not None else None,
+        )
+
+    this, last = windows["this_week"], windows["last_week"]
+    return {
+        "this_week": this.__dict__,
+        "last_week": last.__dict__,
+        # Net is stated rather than left to the reader: a week that closed
+        # forty and opened forty-five did not have a good week, and two
+        # numbers side by side invite reading only the flattering one.
+        "net": this.opened - this.closed,
+        "note": (
+            "`closed` counts findings that reached `fixed`; a dismissal is not "
+            "a closure. `verified` is narrower — a fix whose merge commit was "
+            "re-scanned and the finding was gone — and is the only number here "
+            "that says risk was removed rather than that a row changed."
+        ),
+    }
 
 
 def mean_time_to_fix(

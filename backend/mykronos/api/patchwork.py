@@ -19,9 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import PrincipalDep
-from mykronos.api.ingest import TokenDep, _installation_client, _require_capability
+from mykronos.api.ingest import (
+    TokenDep,
+    _require_capability,
+    installation_client_for_repo,
+)
 from mykronos.db.models import RepoOnboarding, capability_config_for
-from mykronos.patchwork import PatchworkPipeline
+from mykronos.patchwork import PatchworkPipeline, fixers
 from mykronos.patchwork.pipeline import DEFAULT_SOURCE_CAPABILITIES
 from mykronos.schemas import Capability
 
@@ -53,9 +57,9 @@ class RunResult(BaseModel):
         ),
     )
     note: str = (
-        "Every pull request Patchwork opens is a draft, and it has no ability "
-        "to merge one — the GitHub client it uses exposes no merge operation "
-        "(spec 08 §3)."
+        "Every pull request auto-remediation opens is a draft, and it has no "
+        "ability to merge one — the GitHub client it uses exposes no merge "
+        "operation (spec 08 §3)."
     )
 
 
@@ -79,8 +83,8 @@ class RemediationPage(BaseModel):
     events: list[RemediationEventOut]
     open_draft_prs: int
     note: str = (
-        "Patchwork never merges. A draft pull request here is waiting for a "
-        "person, and will wait indefinitely."
+        "Auto-remediation never merges. A draft pull request here is waiting "
+        "for a person, and will wait indefinitely."
     )
 
 
@@ -124,6 +128,69 @@ class DigestPage(BaseModel):
     )
 
 
+class EfficacyRowOut(BaseModel):
+    """One fixer's — or one rule's — record (spec 25 §3.1)."""
+
+    key: str = Field(description="The fixer name, or the rule_id, depending on the list.")
+    attempts: int = Field(description="Fixes generated.")
+    prs_opened: int = Field(description="Reached a draft pull request.")
+    merged: int = Field(description="A person merged it.")
+    rejected: int = Field(description="Closed unmerged.")
+    verified: int = Field(
+        description=(
+            "The finding was gone from the verifying scan of the merge commit "
+            "(spec 25 §2). This is the only column that says risk was removed."
+        )
+    )
+    still_open: int = Field(
+        description="Merged, re-scanned, and the finding was reported again."
+    )
+    unverified: int = Field(
+        description=(
+            "Merged but never established either way — inconclusive, not "
+            "scanned, or still waiting. Deliberately not counted as a failure: "
+            "the scan did not answer, which is not the same as the fix not "
+            "working."
+        )
+    )
+    median_seconds_to_verified: int | None = Field(
+        default=None, description="Merge to verification. Null with nothing verified."
+    )
+
+
+class EfficacyPage(BaseModel):
+    """Whether auto-remediation removes risk, or only opens pull requests.
+
+    Two breakdowns because they answer different questions: `by_fixer` says
+    which fixers work, `by_rule` says which rules are fixable here. A fixer
+    that works everywhere except one rule is a different problem from a fixer
+    nobody trusts, and one axis cannot tell them apart.
+    """
+
+    by_fixer: list[EfficacyRowOut]
+    by_rule: list[EfficacyRowOut]
+    note: str
+    coverage: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Which finding classes have a deterministic fixer and which do "
+            "not, with the reason (B-021). Carried beside the numbers because "
+            "an empty efficacy table means one of two opposite things -- "
+            "nothing was fixable, or fixes were attempted and did not work -- "
+            "and the table alone cannot say which."
+        ),
+    )
+    measured: bool = Field(
+        default=False,
+        description=(
+            "Whether there is anything to measure yet. False means no fix has "
+            "reached a pull request, so the rates below are absent rather than "
+            "zero -- the same not-measured versus measured-zero distinction "
+            "`stale_dependencies` draws (B-004)."
+        ),
+    )
+
+
 class RemediationPreviewOut(BaseModel):
     """"Auto remediation identified" (spec 18 §7.2) — nothing written yet."""
 
@@ -157,8 +224,9 @@ class RemediationFixOut(BaseModel):
     fix_pr_url: str | None = None
     pr_status: str | None = None
     note: str = (
-        "Draft, and it stays that way. Patchwork has no ability to merge — "
-        "the client it uses exposes no merge operation at all (spec 08 §3)."
+        "Draft, and it stays that way. Auto-remediation has no ability to "
+        "merge — the client it uses exposes no merge operation at all "
+        "(spec 08 §3)."
     )
 
 
@@ -197,14 +265,13 @@ def _pipeline(request: Request, repo_full_name: str) -> tuple[PatchworkPipeline,
         min_confidence=float(config.get("min_confidence_to_generate_fix", 0.7)),
         max_open_draft_prs=int(config.get("max_open_draft_prs_per_repo", 10)),
         source_capabilities=tuple(sources),
-        fix_generator_url=config.get("fix_generator_url"),
         auto_fix_min_severity=str(config.get("auto_fix_min_severity", "high")),
     )
     return pipeline, default_branch
 
 
 def _open_draft_count(request: Request, repo_full_name: str) -> int:
-    """How many Patchwork pull requests are still waiting for a person.
+    """How many auto-remediation pull requests are still waiting for a person.
 
     Counted from the event table rather than from GitHub, deliberately: this
     runs on every pipeline invocation, and a list-pull-requests call per run
@@ -226,7 +293,7 @@ async def run(request: Request, body: RunRequest, token: TokenDep) -> RunResult:
     pipeline, default_branch = _pipeline(request, token.repo_full_name)
     result = await pipeline.run(
         token.repo_full_name,
-        github=_installation_client(request, token.repo_full_name),
+        github=installation_client_for_repo(request, token.repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, token.repo_full_name),
     )
@@ -244,7 +311,7 @@ async def run(request: Request, body: RunRequest, token: TokenDep) -> RunResult:
 async def preview_finding_fix(
     request: Request, finding_id: str, principal: PrincipalDep
 ) -> RemediationPreviewOut:
-    """What Patchwork would do for one finding, without doing it (spec 18 §7.2).
+    """What auto-remediation would do for one finding, without doing it (spec 18 §7.2).
 
     Principal-authenticated, not a workflow token: this is a person looking
     at one finding, not CI asking about a repository. Every guardrail the
@@ -255,7 +322,7 @@ async def preview_finding_fix(
     outcome = await pipeline.run_one(
         repo_full_name,
         finding_id,
-        github=_installation_client(request, repo_full_name),
+        github=installation_client_for_repo(request, repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, repo_full_name),
         preview_only=True,
@@ -306,7 +373,7 @@ async def fix_finding(
     outcome = await pipeline.run_one(
         repo_full_name,
         finding_id,
-        github=_installation_client(request, repo_full_name),
+        github=installation_client_for_repo(request, repo_full_name),
         default_branch=default_branch,
         open_prs=_open_draft_count(request, repo_full_name),
         preview_only=False,
@@ -342,12 +409,11 @@ async def cross_repo_digest(
     change. This groups them for the reviewer.
 
     Grouped by `rule_id`, which is not on `remediation_events` — it is on the
-    finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
-    column exists on the events table, and `fixer_name` is not recorded
-    anywhere, so the grouping is by rule alone. That is the coarser key, and
-    coarser is the safe direction: two fixers for one rule would land in one
-    card, which a reviewer can see, rather than one fixer's work being split
-    across two cards, which they cannot.
+    finding, so this joins. The spec expected `(rule_id, fixer_name)`, and
+    `fixer_name` is now recorded (spec 25 §3.1) — but the grouping stays by
+    rule alone, for the reason D-071 gave: coarser is the safe direction here,
+    because two fixers for one rule land in one card a reviewer can see,
+    rather than one fixer's work being split across two cards they cannot.
 
     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
     by the parameterised one.
@@ -403,6 +469,154 @@ async def cross_repo_digest(
     )
 
 
+_EFFICACY_SELECT = """
+    SELECT
+        {key} AS key,
+        count(*) AS attempts,
+        count(*) FILTER (WHERE e.fix_pr_number IS NOT NULL) AS prs_opened,
+        count(*) FILTER (WHERE e.pr_status = 'merged') AS merged,
+        count(*) FILTER (WHERE e.pr_status = 'closed_unmerged') AS rejected,
+        count(*) FILTER (WHERE e.verification_outcome = 'verified_fixed') AS verified,
+        count(*) FILTER (WHERE e.verification_outcome = 'still_open') AS still_open,
+        count(*) FILTER (
+            WHERE e.pr_status = 'merged'
+              AND coalesce(e.verification_outcome, 'pending') NOT IN
+                  ('verified_fixed', 'still_open')
+        ) AS unverified,
+        median(e.time_to_verified_seconds) FILTER (
+            WHERE e.verification_outcome = 'verified_fixed'
+        ) AS median_seconds
+    FROM remediation_events e
+    {join}
+    WHERE {filter}
+    GROUP BY {key}
+    ORDER BY verified DESC, attempts DESC
+"""
+
+
+def _unfixed_by_rule(catalog: Any, limit: int = 10) -> list[dict[str, Any]]:
+    """Which rules keep reaching `no_fix_available`, worst first.
+
+    `coverage` says which classes have a fixer in the abstract. This says what
+    is actually piling up without one, which is the number that tells somebody
+    whether writing a fixer would repay the effort -- 26 findings of one rule
+    is an argument, one finding of twenty-six rules is not.
+
+    Only `true_positive`: a `likely_false_positive` with no fixer does not
+    need one, it needs dispositioning (B-020).
+    """
+    if not catalog.all_files("remediation_events"):
+        return []
+    rows = catalog.query(
+        """
+        SELECT f.capability, f.rule_id, count(DISTINCT e.finding_id)
+        FROM remediation_events e
+        JOIN findings f ON f.finding_id = e.finding_id
+        WHERE e.pipeline_stage_reached = 'no_fix_available'
+          AND e.triage_classification = 'true_positive'
+          AND f.status = 'open'
+        GROUP BY 1, 2
+        ORDER BY 3 DESC
+        LIMIT ?
+        """,
+        [limit],
+    )
+    return [
+        {"capability": str(capability), "rule_id": str(rule_id), "findings": int(count)}
+        for capability, rule_id, count in rows
+    ]
+
+
+def _efficacy_rows(catalog: Any, *, key: str, join: str, filter_: str) -> list[EfficacyRowOut]:
+    rows = catalog.query(_EFFICACY_SELECT.format(key=key, join=join, filter=filter_))
+    return [
+        EfficacyRowOut(
+            key=str(row[0]),
+            attempts=int(row[1]),
+            prs_opened=int(row[2]),
+            merged=int(row[3]),
+            rejected=int(row[4]),
+            verified=int(row[5]),
+            still_open=int(row[6]),
+            unverified=int(row[7]),
+            median_seconds_to_verified=int(row[8]) if row[8] is not None else None,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/efficacy", response_model=EfficacyPage)
+async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
+    """Does auto-remediation actually remove risk? (spec 25 §3)
+
+    Until the verification loop shipped, a fixer that opened pull requests
+    nobody merged was indistinguishable from one that silently removed real
+    risk every week: both showed as `pr_opened` rows. The first is a machine
+    generating review load, and that load is paid by exactly the people this
+    platform exists to help.
+
+    Ordered before `/repos/{repo_id}` — a literal path must not be shadowed by
+    the parameterised one.
+    """
+    catalog = request.app.state.catalog
+    if not catalog.all_files("remediation_events"):
+        return EfficacyPage(
+            by_fixer=[],
+            by_rule=[],
+            note=(
+                "Auto-remediation has not run yet, so there is nothing to "
+                "measure — which is not the same as fixes that did not work. "
+                "`coverage` says which finding classes have a deterministic "
+                "fixer and which do not."
+            ),
+            coverage={
+                **fixers.coverage_summary(),
+                "unfixed_by_rule": _unfixed_by_rule(catalog),
+            },
+            measured=False,
+        )
+
+    by_fixer = _efficacy_rows(
+        catalog,
+        key="e.fixer_name",
+        join="",
+        filter_="e.fixer_name IS NOT NULL",
+    )
+    by_rule = _efficacy_rows(
+        catalog,
+        key="f.rule_id",
+        join="JOIN findings f ON f.finding_id = e.finding_id",
+        filter_="e.fixer_name IS NOT NULL",
+    )
+    # No rows is not a rate of zero. Nothing has reached a pull request, so
+    # there is no efficacy to report -- distinct from fixes that were made and
+    # did not remove risk, which is what an all-zero table would otherwise be
+    # read as (B-021).
+    measured = bool(by_fixer or by_rule)
+    return EfficacyPage(
+        by_fixer=by_fixer,
+        by_rule=by_rule,
+        measured=measured,
+        coverage={
+            **fixers.coverage_summary(),
+            "unfixed_by_rule": _unfixed_by_rule(catalog),
+        },
+        note=(
+            "`verified` means the finding was gone from a scan of the merge "
+            "commit — the only column here that says risk was removed. "
+            "`unverified` is merged-but-not-established, which is not a "
+            "failure: the scan did not answer."
+            if measured
+            else "No fix has reached a pull request, so there is nothing to "
+            "measure yet — which is not the same as fixes that did not work. "
+            "`coverage` says which finding classes have a deterministic fixer "
+            "and which do not; on an estate whose open findings are mostly "
+            "outside those classes, an empty table here is the pipeline "
+            "declining to guess rather than failing."
+        ),
+    )
+
+
 @router.get("/repos/{repo_id}", response_model=RemediationPage)
 async def repo_events(
     request: Request,
@@ -410,7 +624,7 @@ async def repo_events(
     principal: PrincipalDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> RemediationPage:
-    """What Patchwork did, and did not do, for one repository (spec 08 §7)."""
+    """What auto-remediation did, and did not do, for one repository (spec 08 §7)."""
     from mykronos.api.dashboard import _resolve_repo
 
     repo_full_name = _resolve_repo(request, repo_id)

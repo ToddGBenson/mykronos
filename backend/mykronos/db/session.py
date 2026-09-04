@@ -18,6 +18,21 @@ from mykronos.db.models import AuditLogEntry, Base
 
 logger = logging.getLogger(__name__)
 
+#: Columns deliberately retired, as `(table, column)`. Dropped on start by
+#: `Database.drop_retired_columns` once the model no longer declares them.
+#:
+#: Append only when the removal has been decided somewhere a reader can find:
+#: an entry here is a schema change, and the reason it happened does not live
+#: in this list.
+#:
+#: - `repo_onboardings.auto_merge_workflow_prs` (D-095): a setting nothing
+#:   could ever consume. Spec 08 §3 gives `GitHubClient` no merge method, so
+#:   the option could not act even when set — and a toggle implying otherwise
+#:   quietly contradicts a refusal the platform holds on purpose.
+RETIRED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("repo_onboardings", "auto_merge_workflow_prs"),
+)
+
 
 class Database:
     """Owns the engine and hands out sessions."""
@@ -42,6 +57,7 @@ class Database:
     def create_all(self) -> None:
         Base.metadata.create_all(self.engine)
         self.add_missing_columns()
+        self.drop_retired_columns()
 
     def add_missing_columns(self) -> list[str]:
         """Add columns the models declare and the database does not.
@@ -109,6 +125,52 @@ class Database:
         if applied:
             logger.warning("Schema upgrade: added %s", ", ".join(applied))
         return applied
+
+    def drop_retired_columns(self) -> list[str]:
+        """Drop the columns in `RETIRED_COLUMNS`, once they exist nowhere else.
+
+        Deliberately an explicit list rather than the obvious inverse of
+        `add_missing_columns` — "drop every column the models do not declare"
+        would be a data-loss bug waiting for its first rollback. A deploy that
+        briefly runs the previous image, or a container that starts against a
+        database a newer version already touched, would drop live columns and
+        then repopulate nothing. Naming each retirement means a column can only
+        go when somebody decided it should.
+
+        Idempotent: a column already gone is skipped, so this is safe to run on
+        every start, which is what makes it a migration rather than a one-off
+        script somebody has to remember to execute.
+
+        Returns what it changed, for the same reason `add_missing_columns`
+        does.
+        """
+        inspector = inspect(self.engine)
+        existing_tables = set(inspector.get_table_names())
+        dropped: list[str] = []
+
+        with self.engine.begin() as connection:
+            for table_name, column_name in RETIRED_COLUMNS:
+                if table_name not in existing_tables:
+                    continue
+
+                present = {c["name"] for c in inspector.get_columns(table_name)}
+                if column_name not in present:
+                    continue  # Already retired, or never existed here.
+
+                # Same interpolation rule as `add_missing_columns`: both names
+                # are literals in this module, never request data, and
+                # `_identifier` makes that a checked property.
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {_identifier(table_name)} "
+                        f"DROP COLUMN {_identifier(column_name)}"
+                    )
+                )
+                dropped.append(f"{table_name}.{column_name}")
+
+        if dropped:
+            logger.warning("Schema upgrade: dropped %s", ", ".join(dropped))
+        return dropped
 
     def _add_column_sql(self, table_name: str, column: Column[Any]) -> str:
         """DDL for one added column, with the value existing rows should carry.

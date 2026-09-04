@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -23,8 +24,11 @@ from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
+from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
+from mykronos.db.models import JobRun
+from mykronos.digest import send_all as send_digests
 from mykronos.gate import PerimeterGate
 from mykronos.github.auth import AppCredentials
 from mykronos.github.factory import (
@@ -32,6 +36,7 @@ from mykronos.github.factory import (
     GitHubClientFactory,
     RestGitHubClientFactory,
 )
+from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     close_superseded_fixes,
@@ -41,21 +46,54 @@ from mykronos.jobs import (
     rotate_ingestion_tokens,
     route_open_findings,
     score_portfolio,
+    sweep_acceptances,
+    sweep_governance,
+    verify_merged_fixes,
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
+from mykronos.ownership import OwnershipResolver
 from mykronos.ratelimit import SlidingWindowLimiter
+from mykronos.schemas import utcnow
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
 logger = logging.getLogger(__name__)
 
 
+def _record_run(db: Any, name: str, interval: int, error: str | None) -> None:
+    """Write down that a job ran, and whether it worked.
+
+    Best-effort and never raised out of: a health record that could take down
+    the job it is recording would be worse than no health record. A failure to
+    write it is logged and the job carries on.
+    """
+    try:
+        with db.session() as session:
+            row = session.get(JobRun, name)
+            if row is None:
+                row = JobRun(name=name)
+                session.add(row)
+            row.last_run_at = utcnow()
+            row.interval_seconds = interval
+            if error is None:
+                row.last_succeeded_at = row.last_run_at
+                row.consecutive_failures = 0
+                row.last_error = ""
+            else:
+                row.consecutive_failures = int(row.consecutive_failures or 0) + 1
+                row.last_error = error[:2000]
+            session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not record the outcome of job %r", name)
+
+
 async def _every(
-    name: str, interval: int, run: Callable[[], Awaitable[None]]
+    name: str, interval: int, run: Callable[[], Awaitable[None]], db: Any = None
 ) -> None:
     """Run `run` forever on an interval, surviving its failures.
 
@@ -63,6 +101,12 @@ async def _every(
     worse failure than the one that killed it — silent, and usually noticed
     weeks later. Everything except cancellation is logged and retried on the
     next tick.
+
+    **Retrying is right, and it is also what makes the failure invisible.** A
+    job that has thrown on every run for a fortnight looks, from outside,
+    exactly like one that has never had a problem: the only evidence is a line
+    in a log nobody tails. So each outcome is written down as well as logged,
+    which is what the platform health surface reads.
     """
     while True:
         await asyncio.sleep(interval)
@@ -70,8 +114,13 @@ async def _every(
             await run()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Scheduled job %r failed; will retry in %ss", name, interval)
+            if db is not None:
+                _record_run(db, name, interval, scrub(str(exc)) or exc.__class__.__name__)
+        else:
+            if db is not None:
+                _record_run(db, name, interval, None)
 
 
 async def _compaction_loop(app: FastAPI, interval: int) -> None:
@@ -157,6 +206,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
+    # Held on the app rather than built per request, which is the whole point
+    # of it (spec 32 §7.1): reading GitHub Actions state spends an
+    # installation rate limit shared with token rotation, the installer and
+    # Patchwork, and a repository page refreshed in a loop must not be what
+    # stops a token rotating. Per-process, and successes only.
+    app.state.ci_status_cache = StatusCache(settings.ci_status_cache_seconds)
     # Loaded once at startup and held: spec 09 §10 requires an evaluation
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.
@@ -168,6 +223,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # spec 11 §8: colocated with the lake, logically separate. Personal tier
     # is where every captured learning starts; promotion to team or org is a
     # human decision (spec 11 §2), never a side effect of writing one.
+    # When this process came up. The health surface needs it to tell a job
+    # whose interval has not elapsed since start-up from one that has stopped —
+    # without it every long-interval job reads as late for a day after a deploy.
+    app.state.started_at = utcnow()
     app.state.knowledge = KnowledgeStore(
         default_store_dir(settings.datalake_dir),
         tier="personal",
@@ -180,6 +239,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.notifier = SlackNotifier(settings.slack_webhook_url)
     if app.state.notifier.enabled:
         logger.info("Slack notification is enabled.")
+
+    # Always constructed, for the reason the notifier above is: an ingest
+    # handler that has to guard `hasattr(state, "ownership")` is one that will
+    # forget. With no GitHub client reachable it resolves everything to
+    # `unresolved`, which is a correct answer rather than a failure.
+    app.state.ownership = OwnershipResolver()
 
     tasks: list[asyncio.Task[None]] = []
 
@@ -198,6 +263,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db,
                 app.state.github_factory,
                 overlap_hours=settings.token_overlap_hours,
+                # Without this the job cannot tell whether a repository has a
+                # second reader it is unable to deliver to (D-097).
+                concourse=ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
             )
 
         async def _installations() -> None:
@@ -231,6 +303,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.to_thread(
                 purge_orphaned_learnings, app.state.db, app.state.knowledge
             )
+
+        async def _verify_fixes() -> None:
+            await verify_merged_fixes(
+                app.state.db,
+                app.state.catalog,
+                app.state.buffer,
+                app.state.github_factory,
+                app.state.templates,
+                settings,
+            )
+
+        async def _digest() -> None:
+            # In a thread: it queries the lake and posts to Slack, and the
+            # notifier's HTTP call would otherwise stall the event loop.
+            await asyncio.to_thread(
+                send_digests, app.state.catalog, app.state.notifier
+            )
+
+        async def _acceptances() -> None:
+            # In a thread: it rewrites partitions, same as the other sweeps.
+            await asyncio.to_thread(sweep_acceptances, app.state.catalog)
+
+        async def _governance() -> None:
+            # Not in a thread: it is HTTP-bound, one call per repository, and
+            # awaiting it lets the rest of the app serve while GitHub answers.
+            result = await sweep_governance(app.state.db, app.state.github_factory)
+            # Logged at warning only when something moved. A control coming off
+            # is the one governance event worth waking somebody for; "nothing
+            # changed" every six hours is how a log stops being read.
+            if result.drifted:
+                logger.warning("Governance sweep: %s", result.summary())
+            else:
+                logger.info("Governance sweep: %s", result.summary())
 
         async def _stale_drafts() -> None:
             await close_superseded_fixes(
@@ -270,6 +375,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
+            ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
+            ("governance", settings.governance_sweep_interval_seconds, _governance),
+            ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
+            # Off unless opted in: this job messages people.
+            *(
+                [("digest", settings.weekly_digest_interval_seconds, _digest)]
+                if settings.digest_enabled
+                else []
+            ),
             # Off unless a deployment opts in (`routing_enabled`): this
             # one opens issues in somebody's tracker, and doing that the
             # moment the platform is upgraded is not its decision to make.
@@ -281,7 +395,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ):
             tasks.append(
                 asyncio.create_task(
-                    _every(name, interval, run), name=f"mykronos-{name}"
+                    _every(name, interval, run, app.state.db),
+                    name=f"mykronos-{name}",
                 )
             )
 
@@ -327,9 +442,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(triage_router)
     app.include_router(webhooks_router)
 
-    # Outermost, so it runs before routing: a request that cannot present the
-    # perimeter token should not reach a handler at all, and should not be
-    # able to learn which paths exist by the shape of the error.
+    # Runs before routing: a request that cannot present the perimeter token
+    # should not reach a handler at all, and should not be able to learn which
+    # paths exist by the shape of the error.
     if resolved.gate_token:
         app.add_middleware(PerimeterGate, token=resolved.gate_token)
         logger.info("Perimeter gate enabled (X-Hub-Token)")
@@ -338,6 +453,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "Perimeter gate disabled — no MYKRONOS_GATE_TOKEN set. Fine "
             "locally; set it before exposing this host."
         )
+
+    # Added last and therefore outermost — `add_middleware` inserts at the
+    # front of the stack, so this wraps the gate rather than sitting behind
+    # it. That is the whole point: the gate's own 401 is a response a browser
+    # renders, and the scan that found this counted 404s and 405s among the
+    # offending paths (B-025).
+    app.add_middleware(SecurityHeaders)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
     async def healthz() -> dict[str, str]:

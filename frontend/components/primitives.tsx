@@ -34,12 +34,28 @@ export function Mono({ children, className = "" }: { children: ReactNode; classN
   return <span className={`font-mono ${className}`}>{children}</span>;
 }
 
-export function Label({ children }: { children: ReactNode }) {
-  return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
-      {children}
-    </span>
-  );
+/**
+ * A small uppercase label.
+ *
+ * `as="h2"` exists because most of these *are* section titles, and an audit
+ * found the portfolio page shipping exactly one heading for the whole page —
+ * every section styled like a heading and marked up as a span. That leaves a
+ * screen-reader user with no outline to navigate by, and it removes the one
+ * check that forces a decision about which of these labels is genuinely a
+ * section and which is only a caption. A stat tile's label is a caption; "open
+ * findings by age" is a section.
+ */
+export function Label({
+  children,
+  as,
+}: {
+  children: ReactNode;
+  as?: "h2" | "h3";
+}) {
+  const className = "font-mono text-[12px] uppercase tracking-[0.12em] text-ink-3";
+  if (as === "h2") return <h2 className={className}>{children}</h2>;
+  if (as === "h3") return <h3 className={className}>{children}</h3>;
+  return <span className={className}>{children}</span>;
 }
 
 /**
@@ -83,7 +99,7 @@ export function SeverityBar({ counts }: { counts: Record<string, number> }) {
 export function SeverityText({ severity }: { severity: Severity }) {
   return (
     <span
-      className={`font-mono text-[10px] font-bold uppercase tracking-[0.08em] ${SEVERITY_CLASS[severity]}`}
+      className={`font-mono text-[12px] font-bold uppercase tracking-[0.08em] ${SEVERITY_CLASS[severity]}`}
     >
       {severity}
     </span>
@@ -100,10 +116,21 @@ const PILL: Record<PillTone, string> = {
   accent: "text-accent border-accent bg-accent-wash",
 };
 
-export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }) {
+export function Pill({
+  tone,
+  children,
+  title,
+}: {
+  tone: PillTone;
+  children: ReactNode;
+  /** Hover text. A tone-coded pill carries meaning in its colour, and a
+   *  reader who cannot see colour needs somewhere to read it. */
+  title?: string;
+}) {
   return (
     <span
-      className={`inline-block whitespace-nowrap border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.08em] ${PILL[tone]}`}
+      title={title}
+      className={`inline-block whitespace-nowrap border px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] ${PILL[tone]}`}
     >
       {children}
     </span>
@@ -118,28 +145,78 @@ export function Pill({ tone, children }: { tone: PillTone; children: ReactNode }
  * between pages is worse than no icon.
  */
 export const CAPABILITY_META = {
-  unit: { icon: "🧪", label: "Unit tests" },
-  qa: { icon: "📋", label: "QA / docs quality" },
-  sast: { icon: "🔍", label: "Static analysis (SAST)" },
-  secrets: { icon: "🔑", label: "Secret scanning" },
-  atlas: { icon: "📦", label: "Dependencies (SCA)" },
-  containers: { icon: "🐳", label: "Container scanning" },
-  iac: { icon: "🏗️", label: "Infrastructure as code" },
-  functional: { icon: "🧭", label: "Functional tests" },
-  dast: { icon: "🕷️", label: "Dynamic analysis (DAST)" },
-  cloud: { icon: "☁️", label: "Cloud posture" },
-  network: { icon: "🌐", label: "Network scanning" },
-  ai: { icon: "✨", label: "AI checks" },
-  aegis: { icon: "🛡️", label: "Insider risk (Aegis)" },
-  oracle: { icon: "⚖️", label: "Risk decisions (Oracle)" },
-  patchwork: { icon: "🩹", label: "Auto-remediation (Patchwork)" },
+  unit: { icon: "🧪", abbr: "UNIT", label: "Unit tests" },
+  qa: { icon: "📋", abbr: "QA", label: "QA / docs quality" },
+  sast: { icon: "🔍", abbr: "SAST", label: "Static analysis (SAST)" },
+  secrets: { icon: "🔑", abbr: "SEC", label: "Secret scanning" },
+  atlas: { icon: "📦", abbr: "SCA", label: "Dependencies (SCA)" },
+  containers: { icon: "🐳", abbr: "IMG", label: "Container scanning" },
+  iac: { icon: "🏗️", abbr: "IAC", label: "Infrastructure as code" },
+  functional: { icon: "🧭", abbr: "FN", label: "Functional tests" },
+  dast: { icon: "🕷️", abbr: "DAST", label: "Dynamic analysis (DAST)" },
+  cloud: { icon: "☁️", abbr: "CLD", label: "Cloud posture" },
+  // No scanner exists behind this one (spec 14 §0, B-007). Enabling it is
+  // still meaningful — nmap/nuclei output produced elsewhere ingests normally
+  // — but the platform will not run the scan, and a bare "Network scanning"
+  // label says the opposite.
+  network: {
+    icon: "🌐",
+    abbr: "NET",
+    label: "Network scanning",
+    note: "Ingest only — Mykronos does not run network scans yet.",
+  },
+  ai: { icon: "✨", abbr: "AI", label: "AI checks" },
+  aegis: { icon: "🛡️", abbr: "INS", label: "Insider risk" },
+  oracle: { icon: "⚖️", abbr: "ORC", label: "Risk decisions" },
+  patchwork: { icon: "🩹", abbr: "FIX", label: "Auto-remediation" },
 } as const;
 
 export const ALL_CAPABILITIES = Object.keys(
   CAPABILITY_META,
 ) as (keyof typeof CAPABILITY_META)[];
 
-export function CapabilityDots({
+/**
+ * Fleet coverage, as a labelled grid rather than a row of emoji.
+ *
+ * **What this replaces and why.** The same fifteen slots used to render as
+ * fifteen unlabelled emoji at 11px, with state carried by `opacity` and the
+ * meaning of each glyph available only by hovering it one at a time. Reading
+ * the coverage of four repositories took sixty hover actions and required
+ * holding fifteen emoji-to-capability mappings in your head to compare two
+ * rows. Screen readers got the Unicode names — "test tube, clipboard,
+ * magnifying glass tilted left" — because `title` on a span is not reliably
+ * announced and there was no `aria-label`. The 130-word "reading this table"
+ * paragraph underneath existed almost entirely to decode this column, which is
+ * the tell: a display that needs a paragraph is not finished.
+ *
+ * Three things changed. The header carries the names, so they are read once
+ * rather than hovered sixty times. State is carried by fill *and* border
+ * style, so it survives greyscale, low vision, and both themes — opacity alone
+ * failed all three, and worst in the light theme. And every cell names itself
+ * to assistive technology.
+ *
+ * The columns are fixed-width and the header uses the same width and gap, so
+ * the two line up without a table or a measurement.
+ */
+const CAP_CELL = "w-[30px] shrink-0";
+
+export function CapabilityGridHeader() {
+  return (
+    <span className="inline-flex items-end gap-[2px]" aria-hidden>
+      {ALL_CAPABILITIES.map((capability) => (
+        <span
+          key={capability}
+          title={CAPABILITY_META[capability].label}
+          className={`${CAP_CELL} text-center font-mono text-[10px] leading-none tracking-[0.04em] text-ink-3`}
+        >
+          {CAPABILITY_META[capability].abbr}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+export function CapabilityGrid({
   enabled,
   pending = [],
   live = [],
@@ -148,51 +225,70 @@ export function CapabilityDots({
   pending?: string[];
   /**
    * Capabilities that have actually reported a scan. Implemented-but-silent
-   * and implemented-and-reporting are different facts: the first is dimmed,
-   * the second is full-strength. Without the distinction, "enabled" quietly
-   * claims coverage that may not exist — the unit lane was enabled and had
-   * never reported once.
+   * and implemented-and-reporting are different facts: the first is drawn as
+   * an outline, the second as a solid. Without the distinction, "enabled"
+   * quietly claims coverage that may not exist — the unit lane was enabled and
+   * had never reported once.
    */
   live?: string[];
 }) {
   return (
-    <span
-      className="inline-flex items-center gap-[3px]"
-      role="img"
-      aria-label={
-        enabled.length ? `Enabled: ${enabled.join(", ")}` : "No capabilities enabled"
-      }
-    >
+    <span className="inline-flex items-center gap-[2px]">
       {ALL_CAPABILITIES.map((capability) => {
         const meta = CAPABILITY_META[capability];
         const isOn = enabled.includes(capability);
         const isLive = isOn && live.includes(capability);
         const isPending = !isOn && pending.includes(capability);
+
+        const state = isLive
+          ? "reporting"
+          : isOn
+            ? "enabled, not yet reporting"
+            : isPending
+              ? "pending install PR"
+              : "not enabled";
+
+        // Fill for evidence, outline for a claim, near-nothing for absence.
+        // Deliberately not three opacities of the same mark.
+        const skin = isLive
+          ? "border-pass bg-pass"
+          : isOn
+            ? "border-dashed border-accent bg-transparent"
+            : isPending
+              ? "border-dotted border-accent bg-accent-wash"
+              : "border-rule bg-paper";
+
         return (
           <span
             key={capability}
-            title={`${meta.label}${
-              isLive
-                ? " — live"
-                : isOn
-                  ? " — enabled, not yet reporting"
-                  : isPending
-                    ? " — pending install PR"
-                    : " — not enabled"
-            }`}
-            className={`text-[11px] leading-none ${
-              isLive
-                ? ""
-                : isOn || isPending
-                  ? "opacity-45 saturate-50"
-                  : "opacity-15 grayscale"
-            }`}
-          >
-            {meta.icon}
-          </span>
+            role="img"
+            aria-label={`${meta.label}: ${state}`}
+            title={`${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}`}
+            className={`${CAP_CELL} h-[15px] border ${skin}`}
+          />
         );
       })}
     </span>
+  );
+}
+
+/** What the three cell states mean, once, next to the grid that uses them. */
+export function CapabilityLegend() {
+  const entries = [
+    { skin: "border-pass bg-pass", meaning: "reporting scans" },
+    { skin: "border-dashed border-accent", meaning: "enabled, not yet reporting" },
+    { skin: "border-dotted border-accent bg-accent-wash", meaning: "pending install PR" },
+    { skin: "border-rule bg-paper", meaning: "not enabled" },
+  ];
+  return (
+    <ul className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      {entries.map((entry) => (
+        <li key={entry.meaning} className="flex items-center gap-1.5">
+          <span aria-hidden className={`inline-block h-[11px] w-[18px] border ${entry.skin}`} />
+          <span className="font-mono text-[11px] text-ink-3">{entry.meaning}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -240,9 +336,9 @@ export function IndicatorLight({
         aria-hidden
         className={`relative top-px inline-block h-2.5 w-2.5 shrink-0 border ${INDICATOR[tone].lamp}`}
       />
-      <span className="font-mono text-[10px] text-ink-2">{label}</span>
+      <span className="font-mono text-[12px] text-ink-2">{label}</span>
       <span
-        className={`font-mono text-[9px] uppercase tracking-[0.08em] ${INDICATOR[tone].word}`}
+        className={`font-mono text-[11px] uppercase tracking-[0.08em] ${INDICATOR[tone].word}`}
       >
         {state}
       </span>
@@ -285,7 +381,7 @@ export function IndicatorLegend({
             aria-hidden
             className={`relative top-px inline-block h-2 w-2 shrink-0 border ${INDICATOR[entry.tone].lamp}`}
           />
-          <span className="font-mono text-[9px] text-ink-3">{entry.meaning}</span>
+          <span className="font-mono text-[11px] text-ink-3">{entry.meaning}</span>
         </li>
       ))}
     </ul>
@@ -305,13 +401,13 @@ export function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="border border-rule bg-paper-2">
+    <section className="ticks border border-rule bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
-        <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink">
+        <h2 className="font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-ink">
           {title}
         </h2>
         {detail ? (
-          <span className="font-mono text-[10px] text-ink-3">{detail}</span>
+          <span className="font-mono text-[12px] text-ink-3">{detail}</span>
         ) : null}
         {aside ? <span className="ml-auto">{aside}</span> : null}
       </div>
@@ -333,7 +429,10 @@ export function StatTile({
 }) {
   return (
     <div
-      className={`flex flex-col gap-0.5 border p-2.5 ${
+      // `ticks` here and not on every box: a stat tile is a measurement
+      // somebody can go and check, which is exactly what the corner marks are
+      // for. A mark on everything marks nothing.
+      className={`ticks flex flex-col gap-0.5 border p-2.5 ${
         alert ? "border-critical bg-critical-wash" : "border-rule bg-paper-2"
       }`}
     >
@@ -345,7 +444,7 @@ export function StatTile({
       >
         {value}
       </span>
-      {sub ? <span className="font-mono text-[9px] text-ink-3">{sub}</span> : null}
+      {sub ? <span className="font-mono text-[11px] text-ink-3">{sub}</span> : null}
     </div>
   );
 }
@@ -395,8 +494,8 @@ export function Verdict({
   if (!recommendation) {
     return (
       <span
-        className="font-mono text-[10px] text-ink-3"
-        title="Oracle is opt-in and has not judged this repository"
+        className="font-mono text-[12px] text-ink-3"
+        title="Risk decisions are opt-in - this repository has not been judged"
       >
         not assessed
       </span>
@@ -408,7 +507,7 @@ export function Verdict({
         {recommendation.replace(/_/g, " ")}
       </Pill>
       {typeof score === "number" ? (
-        <span className="tabular font-mono text-[10px] text-ink-3">{score}</span>
+        <span className="tabular font-mono text-[12px] text-ink-3">{score}</span>
       ) : null}
     </span>
   );

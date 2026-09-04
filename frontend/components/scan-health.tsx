@@ -46,7 +46,7 @@ export function ScanHealthBoxes({
 
   if (capabilities.length === 0) {
     return (
-      <p className="px-3 py-3 text-[11px] text-ink-3">
+      <p className="px-3 py-3 text-[13px] text-ink-3">
         No checks are enabled for this repository yet, so there is nothing to
         report on. Enable one above and its box appears here.
       </p>
@@ -71,7 +71,7 @@ export function ScanHealthBoxes({
               <Label>{capability}</Label>
               {row?.flaky ? (
                 <span
-                  className="border border-high bg-high-wash px-1 font-mono text-[8px] uppercase tracking-[0.08em] text-high"
+                  className="border border-high bg-high-wash px-1 font-mono text-[10px] uppercase tracking-[0.08em] text-high"
                   title="Same commit, disagreeing status on the last two runs — a flake, not a regression."
                 >
                   flaky
@@ -85,7 +85,7 @@ export function ScanHealthBoxes({
               {success === null ? "—" : `${Math.round(success * 100)}%`}
             </span>
 
-            <span className="font-mono text-[9px] leading-relaxed text-ink-3">
+            <span className="font-mono text-[11px] leading-relaxed text-ink-3">
               {row && row.runs > 0 ? (
                 <>
                   {row.succeeded} of {row.runs} runs succeeded

@@ -1,9 +1,46 @@
 # Spec 14 — Network Scanning
 
-**Status:** Approved for build
+**Status:** Approved for build — **not started.** See §0 before reading on.
 **Depends on:** [04 — Scanner Workflows](04-scanner-workflows.md), [05 — Data Lake](05-datalake.md), [12 — Security](12-security-and-secrets-management.md)
 
 ---
+
+## 0. Current state (2026-08-31)
+
+Everything below §1 is design. Almost none of it runs. This section exists
+because the README described this capability as "Built; awaiting an authorized
+CIDR to scan", which was wrong in a way that mattered: it said the only missing
+input was permission, when in fact authorizing a range would still have scanned
+nothing.
+
+**What exists:**
+
+| Piece | Where |
+|---|---|
+| The authorization model — `cidr_ranges`, `authorization_reference`, `external_scan_acknowledged`, `max_rate_pps` | `capabilities.py::NetworkConfig` (§3) |
+| `NetworkAsset`, `resolve`, `audit_record` | `network.py` — **dormant**, imported only by its own test |
+| Ingest of results produced elsewhere: nmap and nuclei output normalises and lands in the lake | `adapters/network_nmap.py`, registered in the adapter registry |
+| The `network` capability key and its dashboard label | `schemas.py::Capability.NETWORK`, frontend `CAPABILITY_META` |
+
+**What does not exist:**
+
+- No `NetworkHost` table (§5). The inventory model is unimplemented.
+- No scanner. No scheduled scan, no container, no workflow template in
+  `workflow-templates/`, no Concourse pipeline job, no sslyze.
+- No dispatch. `network` is deliberately absent from
+  `DISPATCHABLE_CAPABILITIES`, so "scan now" does not offer it — correctly,
+  since there is nothing to dispatch.
+
+**What this means in practice.** The capability can be enabled and a token
+granted, and that is not useless: an operator who runs nmap or nuclei
+themselves can POST the output and it will be ingested, scored and displayed
+like any other finding. What the platform will not do is *run the scan*.
+
+`netassess.py` and `personal-soc.yml` are not this. They judge a Windows
+Scheduled Task artifact and belong to spec 32's design, not to this spec.
+
+**Not scheduled.** Building the scanner is expansion and needs its own
+decision — see `docs/BACKLOG.md` B-007, which explicitly excludes it.
 
 ## 1. Purpose
 

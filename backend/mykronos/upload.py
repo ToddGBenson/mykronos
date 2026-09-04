@@ -66,6 +66,12 @@ class UploadOutcome:
     scan_status: ScanStatus = ScanStatus.SUCCESS
     blocking_findings: int = 0
     warnings: list[str] = field(default_factory=list)
+    #: Coverage the runner reported, 0..1 (spec 31 §4). Carried here rather
+    #: than read from the adapter result in the `finally` block, because a
+    #: crash inside `run_adapter` leaves that result empty and the finalising
+    #: post still has to happen.
+    line_coverage: float | None = None
+    branch_coverage: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +119,18 @@ class IngestionClient:
             )
             return
 
-        remaining = deadline - datetime.now(deadline.tzinfo or UTC)
+        # The server sends a naive UTC timestamp — every lake and operational
+        # timestamp in this platform is naive UTC (spec 01 §6) — so
+        # `deadline.tzinfo` is None and `datetime.now(None or UTC)` produced an
+        # *aware* now to subtract from a *naive* deadline. That is a TypeError,
+        # raised inside the warning that exists to prevent a token outage, on
+        # exactly the uploads that are inside the overlap window it warns
+        # about: the failure mode was that rotation broke every upload rather
+        # than warning about them. Normalised here rather than at the header,
+        # because an older server may legitimately send an aware one.
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        remaining = deadline - datetime.now(UTC)
         hours = remaining.total_seconds() / 3600
         if hours <= 6:
             print(
@@ -347,6 +364,36 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         workspace=workspace,
     )
 
+    def _finding_payload(finding: FindingSubmission) -> dict[str, Any]:
+        """One finding, with fields an older backend has never heard of dropped.
+
+        The uploader and the platform are versioned independently: CI installs
+        this module from a pinned tag while the backend it posts to is
+        whatever was last deployed, so a *new* uploader routinely talks to an
+        *older* backend — and `FindingSubmission` forbids extra keys
+        (spec 05 §4).
+
+        `scan_run_payload` below already learned this for `detail`,
+        `line_coverage` and `branch_coverage`, and it cost a lost ScanRun to
+        learn. This is the same trap one field later, and it cost more:
+        pinning the runner to a tag carrying spec 28 §1 made every finding
+        arrive with `cwe_ids`, the deployed backend 422'd the whole batch, and
+        SAST and secrets uploaded *nothing* for as long as the skew lasted. A
+        rejected batch is worse than a rejected field — the findings do not
+        degrade, they disappear.
+
+        Omitted only when empty, which is the common case and the safe one: an
+        empty list carries no information a backend could act on, so dropping
+        it loses nothing. A finding that really does declare CWEs still sends
+        them and would still 422 against a backend too old to accept them —
+        that skew is real and is fixed by deploying, not by silently
+        discarding what a tool found.
+        """
+        payload = finding.model_dump(mode="json")
+        if not payload.get("cwe_ids"):
+            payload.pop("cwe_ids", None)
+        return payload
+
     def scan_run_payload(**overrides: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "scan_run_id": scan_run_id,
@@ -375,6 +422,8 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         result = run_adapter(args.capability, args.tool, results_path, context)
         outcome.scan_status = result.scan_status
         outcome.warnings = list(result.warnings)
+        outcome.line_coverage = result.line_coverage
+        outcome.branch_coverage = result.branch_coverage
 
         for start in range(0, max(len(result.findings), 1), MAX_BATCH):
             chunk = result.findings[start : start + MAX_BATCH]
@@ -385,7 +434,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
                 json_body={
                     "scan_run_id": scan_run_id,
                     "capability": args.capability,
-                    "findings": [f.model_dump(mode="json") for f in chunk],
+                    "findings": [_finding_payload(f) for f in chunk],
                 },
             )
             outcome.findings_accepted += int(response.get("accepted", 0))
@@ -422,6 +471,13 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         # in both directions, permanently.
         if outcome.warnings:
             final["detail"] = outcome.warnings[0][:200]
+        # Same omit-when-absent rule, for the same reason (spec 31 §4): a
+        # backend that has never heard of these keys forbids them, and a 422
+        # here loses the ScanRun rather than losing a metric.
+        if outcome.line_coverage is not None:
+            final["line_coverage"] = round(outcome.line_coverage, 4)
+        if outcome.branch_coverage is not None:
+            final["branch_coverage"] = round(outcome.branch_coverage, 4)
 
         client.post("/api/ingest/scan-run", json_body=final)
 

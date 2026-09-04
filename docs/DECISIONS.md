@@ -3157,3 +3157,1371 @@ deployment working tree, so the repository claimed the gate blocked while the
 applied pipeline let everything through. That reasoning is untouched by this
 change: a control switched off invisibly is worse than one switched off
 loudly. What changed is that it now guards a floor worth guarding.
+
+## D-084 — The benchmark ships before the reviewer, and the corpus is its own repository
+
+**Status:** Decided — spec 23 drafted, nothing built
+**Spec:** [23](../specs/23-agentic-source-code-review.md)
+
+Mandiant published its Agentic Vulnerability Discovery Harness — a six-phase
+agentic code-review pipeline — and the question was what of it to build here.
+Most of the answer is an ordering decision rather than an architecture one,
+which is why it is a decision record and not only a spec.
+
+**The order is benchmark, surface, threat model, finder — and the finder is
+last.** The obvious reading of that article is "build the bug-finding agents";
+they are its centrepiece and its headline number. Building them first here
+would produce findings nobody can size. This platform runs fifteen checks and
+has never measured recall for any of them, so a sixteenth detector's output
+would arrive into a triage queue with no baseline to compare against and no way
+to tell an improvement from a model change upstream. Spec 04 §7 has asked for a
+seeded corpus since the beginning and the bar it set — "at least one `Finding`"
+— cannot tell nine-of-ten from one-of-ten. The benchmark is worth building even
+if nothing agentic is ever built, and nothing agentic is worth trusting until it
+exists.
+
+D-053 is the other half of the argument. DAST is paused platform-wide for want
+of a resource budget. Agentic review over a whole tree costs more than DAST,
+recurs weekly rather than once, and would be paused the same way — after the
+money was spent rather than before.
+
+**The corpus is a separate repository, and repositories get a `synthetic`
+flag.** The tempting shortcut is a `bench/` directory in this repo. It cannot
+be one: the corpus has to be scanned by the real pipelines to measure anything,
+and scanning deliberately vulnerable code under this repo's `repo_full_name`
+puts real findings in this repo's lake, raises its risk score, and reaches its
+own Oracle gate. A separate repository fixes that and creates the second
+problem — spec 21's portfolio aggregation would count it, permanently, as the
+fleet's worst repo. Hence a flag on `Repository` rather than a hardcoded name
+somewhere: the platform needs a concept for "real code, not real risk", and
+one exclusion list per aggregate would drift apart.
+
+**The entry-point inventory is an inventory, and reachability stays
+`available: False`.** The surface is the one agentic phase worth building
+early, because an entry point is verifiable — it exists at that `file:line` or
+it does not — and a wrong one dies at approval instead of in triage. What it
+must not do is answer the Oracle category it looks like it answers. An
+inventory establishes that a file *is* on an entry path; it establishes nothing
+about a file that failed to appear in it, and the only use Oracle has for a
+partial answer is discounting the findings that did not appear. That is the
+exact direction `reachability.py` was written to refuse — *"a false 'this is
+orphaned' tells somebody a live request handler is dead code"* — and an agent's
+recall is a much weaker guarantee than an import graph's. The category earns
+`available: True` when a number from §1's corpus says it can, in a later spec.
+
+**Two smaller things worth writing down before they are rediscovered.** The
+article's "low temperature to generate, high temperature to validate" does not
+port: `temperature` is removed on Opus 5, Sonnet 5 and Opus 4.7/4.8 and returns
+a 400. Validator diversity has to come from distinct prompts instead, which is
+the better mechanism anyway — identical validators agree on identical mistakes.
+And AVDH's grading agent solves a problem this platform will not have: its
+findings land on client code with no ground truth, while a seeded corpus has a
+manifest, so grading is a diff and not a judgement. Skipping it removes an LLM
+from the one component whose whole job is to be trusted.
+
+**What this does not decide.** Whether §5 gets built at all. The gate in spec
+23 §5.1 is four conditions, and if the reviewer's measured recall on the corpus
+does not beat the scanners already running, the honest outcome is a spec status
+row saying so and no fifth workstream.
+
+## D-085 — One platform review became eight specs, and the ordering is the argument
+
+**Status:** Decided — specs 24–31 drafted, nothing built
+**Specs:** [24](../specs/24-ownership-deadlines-and-acceptance-review.md),
+[25](../specs/25-fix-efficacy-and-verification.md), [26](../specs/26-oracle-as-adviser.md),
+[27](../specs/27-the-worklist.md), [28](../specs/28-threat-model-resolution.md),
+[29](../specs/29-component-inventory-and-incident-mode.md),
+[30](../specs/30-change-governance-posture.md), [31](../specs/31-regression-coverage.md)
+
+A full read of the eight repo-page subsystems — Findings, Harness, Threat
+Model, Supply chain, Insider Threat, Risk Decision, Triage, Remediation —
+turned up twenty-two gaps. Three choices about what to do with them are worth
+recording, because each was a fork where the obvious option was worse.
+
+**Eight specs, not one and not twenty-two.** One spec would have been a
+three-thousand-line document nobody reviews in a sitting; one per gap would
+have produced twenty-two specs whose dependencies could not be read off their
+numbers. Eight follows the shape specs 18–22 already set — a spec is a depth
+pass over a subsystem — and it makes the sequencing legible: 24 before
+everything because ownership is what the rest attaches to, 26 after 24, 25 and
+31 because its scoring credits are worthless until something produces the
+evidence, 27 after 26 because the worklist consumes `path_to_green` rather
+than recomputing it.
+
+**Six of the twenty-two gaps are one gap.** A finding with no owner never
+closes; a fix with no verification never proves it worked; a test with no link
+to a finding never protects it; an acceptance with no expiry never gets
+re-decided; a gate with no shadow report never gets switched on; a detector
+with no benchmark never gets trusted (spec 23). The platform is built for the
+forward pass and missing the return path. Naming that as one problem is what
+made the ordering obvious — and it is why the first three specs are all
+plumbing rather than features.
+
+**Two claims in these specs contradict things this repository has written
+down, and both were checked against the code rather than the prose.**
+
+Spec 18 §6 and `dashboard.threat_model()` both explain the capability-level
+STRIDE mapping by saying no `Finding` carries a structured CWE. That is true of
+the schema and not of the data: SARIF carries `properties.tags`, CodeQL and
+Semgrep both populate it with CWE identifiers, and `adapters/sarif.py` reads
+exactly one property — `security-severity` — and discards the rest. The
+reasoning was right when it was written about what the lake stores, and it has
+been quietly wrong about what arrives ever since. Spec 28 §1 corrects it.
+
+D-069 chose to compute blast radius from findings because
+`sscs_evidence.ecosystems_json` holds counts rather than package names. Also
+correct, and it recorded the alternative — add a package list to the
+submission — as the option not taken. Spec 29 §1 takes it, because the same
+missing table is what makes "who uses this package" unanswerable on an incident
+day, and that is a much larger cost than one approximated signal.
+
+**What none of these specs do.** Nothing here lets an agent guess reachability,
+aggregates an insider signal per person, gives Patchwork a merge operation, or
+introduces a number that cannot be traced to a lake row. Those four refusals
+are the most valuable thing this codebase has and every spec in this set was
+written to inherit them rather than to spend them. Spec 30 §3 is the sharpest
+case: the useful aggregate of Aegis's signals is a fact about a repository's
+controls, and the same data grouped by author is a fact about colleagues that
+spec 06 §9 already refused — so the repository framing is not a compromise, it
+is the more actionable of the two.
+
+## D-086 — Rotation wrote the new token where nothing reads it, and reported green
+
+**Status:** Decided and shipped
+
+`rotate_ingestion_tokens` rotates any token past its 90-day mark and then
+writes the new value as a **GitHub Actions secret** — unconditionally, whatever
+`scanned_by` says. For a Concourse-scanned repository that write *succeeds*:
+GitHub accepts a secret for a repository whose Actions lanes were retired
+(D-080). The job then called `mark_secret_synced` and reported a successful
+rotation.
+
+Meanwhile the pipeline goes on reading `((mykronos-ingestion-token))` from
+Vault, which still holds the old value. So every scheduled rotation quietly
+desynchronised every Concourse repo, and the repository broke when the
+24-hour overlap expired — a failure whose only warning was the uploader's
+`X-Mykronos-Token-Rotated` header, which is exactly the warning that was
+crashing (#87).
+
+This is D-051 and D-083's shape a third time: a lesson applied to one lane and
+not the other. Spec 15 and 16 moved this estate to Concourse; the rotation job
+never followed.
+
+**Deferred, not performed.** For anything not scanned by Actions the job now
+logs what an operator has to do and moves on, counting the repo as `deferred`.
+The alternative — rotate and hope somebody notices — is strictly worse: an
+un-rotated token keeps working, while a rotated-and-undelivered one breaks the
+repository as soon as the overlap ends. Doing nothing loudly beats doing the
+wrong thing quietly.
+
+**What this costs, stated plainly.** Concourse-scanned repositories no longer
+rotate automatically. That is a real regression against the intent of a 90-day
+rotation, and it is honest about a capability this platform does not have: it
+cannot write to Vault. The delivery path — giving the backend a Vault client
+and the credentials to use it — is the actual fix and is deliberately not
+smuggled in here, because it means the platform reaching into the
+infrastructure that runs it, which spec 15 §7 treats as a boundary worth
+arguing about rather than crossing quietly.
+
+**What the tests were doing.** All four rotation tests asserted the Actions
+write succeeded — against repositories whose `scanned_by` was `concourse`, the
+model default, because the test helper never set it. They tested a
+configuration this estate does not run and passed. The helper now defaults to
+`github_actions` and says why, so the assumption is stated rather than
+inherited.
+
+Found while repairing the live token by hand on 2026-08-23, after a manual
+rotation expired the value Vault was serving. The manual repair is now: rotate,
+write to `backend/.env`, write to Vault, verify against `:8100`.
+
+## D-087 — The score can now go down for work done, and the first attempt rewarded the clock
+
+**2026-08-24. Spec 26 §2. Policy 1.8.**
+
+Oracle had nine modifiers and one negative — the import-reachability discount,
+which is a fact about code structure rather than a reward for anything anybody
+did. So the number could only ever go up. A team that spent a quarter adding
+regression tests, verifying its fixes and clearing its backlog inside target
+watched the score not move, which is how a model stops being acted on and
+starts being argued with.
+
+`posture_credits` adds three additive negative terms, each gated on evidence a
+*different* spec produces: a test pinned to a fixed finding (spec 31), a fix
+verified gone by a re-scan of its merge commit (spec 25 §2), a finding closed
+inside its remediation window (spec 24 §2). None can be earned by changing a
+setting — the rule `maturity-model-v1.yaml` states for its own criteria, for
+the same reason.
+
+**The floor is the part that matters.** Credits may not take a repository
+below the review threshold while a critical is open. Without that rule the
+arithmetic lets a team test its way out of an exploited critical, which is the
+single outcome this idea must not produce. It is applied in `evaluate` rather
+than inside the snapshot because it needs the score the rest of the model
+produced, and the terms are rescaled when it bites so the published breakdown
+still sums to what was applied — a breakdown whose parts do not add up is one
+nobody can check.
+
+**The first `within_target` was wrong, and the golden tests caught it.** It
+credited findings that were open and merely *not late yet*. A repository full
+of brand-new criticals is inside every remediation window by construction, so
+it would have earned the full six points for having done nothing at all. That
+is the evidence-not-switches rule failing in its subtlest form: not a flag
+somebody flips, but a credit that rewards the passage of time. The shipped
+term counts findings *closed* inside their window over the last 90 days,
+windowed for `mean_time_to_fix`'s reason — an all-time rate is dominated by
+whatever happened when the platform was switched on.
+
+Worth stating that the pinned golden scores are what surfaced it. The credit
+looked right in isolation and looked right in its own unit test; what failed
+was a fixed-input score moving in a direction nobody could justify. That is
+the whole argument for pinning them.
+
+**Two record-keeping repairs alongside.** The policy file's version log stopped
+at 1.4 while the file said 1.7 — 1.5, 1.6 and 1.7 were bumped correctly and
+never written down, which made the log the one place a reader could not see
+what had changed. Reconstructed from the commits. And its header pointed at
+`tests/test_oracle_golden.py`, a file that has never existed; the golden values
+are in `tests/test_oracle.py`. A pointer to nothing is worse than no pointer,
+because somebody following it concludes there is no such guard.
+
+## D-088 — One test-lane template serves every language, because it declines to know any of them
+
+**2026-08-24. Spec 31 §4, §5. Closes a gap spec 18 §0a named and left.**
+
+Spec 18 §4 reasoned that no single generic workflow template could serve every
+repository honestly, because D-046 says a repository's test runner is decided
+by its language and its own conventions. It concluded that a real answer needed
+a per-language template set or a convention the platform did not have, and left
+the Harness tab dark for every Actions-scanned repository.
+
+The reasoning was right and the conclusion did not follow. The template's job
+is to *not decide*. `command` is required config with no default; an Actions
+install without one is refused with a 422 naming the field; and the rendered
+workflow fails loudly rather than silently if it ever renders without one — a
+lane that runs nothing and reports success is exactly what the refusal exists
+to prevent. One template serves every language precisely because it knows
+nothing about any of them.
+
+What it does supply is the part that genuinely is universal, and none of it is
+about a test runner: the fail-fast probe, the results contract, an upload that
+happens even when the suite fails, and a build failure that comes *after* the
+run is recorded. That ordering is the whole point — failing earlier would make
+the pipeline's verdict and the platform's record disagree exactly when somebody
+needs them to agree.
+
+**A test lane is arbitrary code execution on the runner, by definition.** There
+is no version of "run this repository's test suite" that is not "run what this
+config says". The boundary is therefore who may set it — capability config is
+admin-only — and that a command cannot escape its own step into the rest of the
+workflow. Newlines are refused in `command` and in every `setup` line; shell
+metacharacters are allowed, because refusing those would refuse most real test
+commands. The guard is about YAML structure, not about shell syntax, and
+conflating the two would have produced security theatre that broke the feature.
+
+**Found while building: a coverage report was making the record worse.** The
+JUnit adapter globs `*.xml`. A repository writing `coverage.xml` beside
+`unit.xml` — the default layout of pytest-cov, of jest, and of every Maven
+build — was handing a Cobertura document to a JUnit parser, which found no
+`testsuite`, warned "the report contains no test suites", and downgraded a
+green run to `no_applicable_targets`. The file carrying the most useful context
+about a suite had been actively degrading the record of that suite since D-046.
+Cobertura and JaCoCo are now recognised by root element.
+
+**Coverage is not a security metric and the page says so beside the number.**
+The label is not a disclaimer bolted on; it is the reason showing this is safe
+at all. Ninety percent coverage with zero regression links (spec 31 §3) means
+the tests are thorough about something other than what has actually gone wrong
+here, and a number displayed without that sentence next to it will be read as a
+security score by the third person who sees it.
+
+Two smaller calls, both instances of rules already in the file. Null coverage
+is not zero coverage — a lane whose runner never wrote a report and a lane
+measured at zero are different facts (spec 05 §7a). And sharded suites take the
+highest report rather than the sum or the mean: summing exceeds 1.0, averaging
+understates a repository whose shards are deliberately narrow, and the largest
+is at least a number somebody observed.
+
+## D-089 — A declared control lives in the operational store, and the spec that said otherwise was wrong
+
+**2026-08-24. Spec 28 §3, §4.**
+
+Spec 28 §3.2 specified `repo_controls` as a lake table. That contradicted the
+rule this platform had already applied three times, and applying it here makes
+the rule explicit rather than incidental.
+
+**Everything in the lake is append-only because its history is evidence.** You
+have to be able to say what a finding looked like in March. A declared control
+is not an observation: it is an editable statement about the present, corrected
+in place when it turns out to be wrong, and the lake's compaction and
+partitioning model is built for scan results (spec 05 §2). `RiskProfile`,
+`ReachabilityReport` and `TriageState` each made this call and each wrote down
+why; the register is the fourth.
+
+**The register exists because a threat model is made of four things and this
+platform had one.** Assets, entry points, trust boundaries, mitigations — the
+Threat Model tab had findings, grouped six ways. It could say what was found
+and not what stops it, and both halves of that get worse as the platform
+improves: the tab can only grow more red as scanning gets better, and a team
+that spends a quarter adding controls sees no change at all.
+
+**Declared is not verified, and no wording anywhere upgrades it.** A row says a
+person asserted this, which is a weaker and clearer claim than a machine
+implying it, and it is useful the day it ships where a register waiting on
+spec 23 §2's entry-point inventory stays unbuilt for a year. What stops it
+being a wiki is that the platform can *contradict* it. `verified_by_capability`
+is therefore derived from the control's kind and never accepted from the
+caller: it names the capability that could disprove the control, which is a
+property of what the control is, not a choice a declarer gets to make. A
+control naming a capability that cannot see it would look checked and be
+nothing of the kind, and a kind nothing can check — `logging`, `rate_limiting`
+— reports `checkable: false` rather than staying quiet about it.
+
+**A control over open findings is shown, not resolved.** The platform has no
+basis to decide whether such a control is wrong, bypassed, or narrower than its
+description. All three are worth somebody's attention, so both facts are put on
+the page together.
+
+**§4's real subject was never the controls.** An empty STRIDE category read as
+safe: one with no findings because DAST has never run in this repository
+rendered identically to one with no findings because the code is clean, and the
+scan-health data that separates them was already being fetched on the same
+page. Four states now, and `unscanned` is checked before any other, because
+whatever else is true of a category nothing has ever looked at, `clean` is not
+it. `scanned` counts capabilities that have actually reported rather than
+capabilities that are enabled — a lane switched on last week and never run is
+precisely the case this is for.
+
+`unmitigated` renders muted rather than green. Scanned, clean and nothing
+declared is a fine place to be and is not an achievement; colouring it like
+`mitigated` would put it level with a category somebody built a control for.
+
+**Withdrawing deletes the row**, unlike almost everything else here. A control
+is a claim about the present, a withdrawn one is not evidence of anything, and
+the audit entry records who removed it. Offboarding does the same to the whole
+register — and wiring that up turned up `worklist.purge_for_repo` (spec 27 §3),
+written and never called, so triage claims had been surviving offboarding
+since. Both are wired to the offboard route now, with their counts in the audit
+entry so a deletion is recorded even though the rows are not.
+
+## D-090 — The SBOM was already on disk, and provenance can only ever be a credit
+
+**2026-08-25. Spec 29 §1, §1.4, §2, §3.**
+
+Since spec 07 the platform has generated an SBOM on every Atlas run and only
+ever archived it: downloadable per repository, queryable across none of them.
+So the one question that matters at two in the morning — *which of our
+repositories contain this package* — could not be answered about data the
+platform had already collected and was storing as an opaque blob.
+
+**Nothing new is uploaded.** Spec 29 §1.2 says to write the table from the Syft
+output the runner already produces; the implementation goes one step further
+and adds no upload at all. The archived SBOM's ref already arrives on the Atlas
+evidence submission, so the components are extracted server-side from a file
+already on disk. That means no workflow resync across every onboarded
+repository, and it means a repository whose SBOM was archived last month gets
+an inventory on its *next report* rather than on its next resync.
+
+Reading a caller-supplied ref means resolving a path, so it is resolved and
+then checked to be inside the archive directory. Somebody who can post
+supply-chain evidence must not be able to name `../../etc/passwd`.
+
+**Extraction failures are swallowed, deliberately.** The evidence row is what a
+release gate reads and is already in the buffer. Losing a trust score because
+an SBOM was truncated in transit would trade the number that matters for a
+convenience index.
+
+**Blast radius merges the two populations rather than choosing one.** D-069
+counted findings because package names were unavailable; they are available
+now. But a portfolio part-way through adopting Atlas has both kinds of
+repository in it at once, and picking a single source outright would either
+drop the SBOM-less repositories from every count or throw the graph away
+because one repository lacks it. The larger of the two wins per package, which
+is safe in the one direction that matters: the finding-derived count only ever
+*misses* repositories, never invents them. Which population produced a number
+is published, for the reason spec 28 publishes `mapping_resolution`.
+
+**Incident mode has three states, and the third is the entire design.**
+`affected`, `clear`, and `not_checked`. A repository with no SBOM cannot be
+reported as unaffected — converting an absence of data into a statement of
+safety is the worst thing this view could do and precisely what it would do by
+default. The same rule twice more: a CVE with no threat-intelligence record
+reads as *not checked against KEV*, never *not exploited*; and a CVE nothing
+has ever reported on resolves to no packages and reports nothing affected,
+rather than reporting the whole estate clean of an advisory the platform cannot
+recognise.
+
+The batch actions of §2.1 are **not built and are named as not built.** Both
+existing paths are per-subject — `triage_story.py` grooms a finding, Patchwork
+fixes a finding — while this view's subject is a package across repositories.
+Half-building the fan-out would produce exactly what §2.3 refuses: a button
+that opens pull requests nobody quite asked for.
+
+**Provenance terms are credits, and that is forced rather than chosen.** Spec
+29 §3.2 reads as though they are penalties like every other trust-score term.
+They cannot be: the score starts at 100 and subtracts, its ceiling means
+*nothing wrong found*, and a term deducting for a missing attestation would
+change every repository's score on the day it shipped — which §4 explicitly
+forbids. So they add and are clamped at the ceiling. A clean repository gains
+nothing and is unchanged; a penalised one recovers ground for building
+carefully. That is the only shape a hygiene bonus can take inside a subtractive
+score, and it meets the acceptance criterion by arithmetic rather than by a
+special case.
+
+Null is not zero on all three. A branch the token could not read has not failed
+the signing check, and scoring the two alike turns a permissions problem into a
+supply-chain verdict. A signed-commits ratio below ten commits reports
+unavailable — one person signing one merge is a coincidence, not a policy.
+`attestation_present` is asked only on a release, because a commit with no
+published artefact has nothing to attest and `false` would penalise every push.
+
+**Two guards earned their keep here.** The observations run in a step of their
+own with `continue-on-error` rather than `|| true` inside the evidence step,
+because `test_adapters_phase2` fails the build on a scanner step that
+blanket-ignores an exit code — that is how a failed scan comes to look like a
+clean one. And the same file caught a release tag being interpolated into a
+shell body; a tag is chosen by whoever cut the release, `${{ }}` is substituted
+before bash parses it, and the tag is bound to `env:` now.
+
+## D-091 — Governance is read but never rewarded, and the permission to read it stays optional
+
+**2026-08-25. Spec 30. Policy 1.9, shipped dark.**
+
+Aegis has nine signals and every one describes a pull request after the fact.
+`self_approval` fires when somebody approved their own change — a symptom.
+*"Self-approval is permitted on the default branch"* is the cause, and it was
+invisible from anywhere in this platform. The GitHub App has been installed the
+whole time and the client had no operation that read a single control.
+
+**`administration: read` is optional, not required.** Spec 30 §1.2 anticipated
+"a documented, additive permission bump". Making it required would fail the
+spec 02 §8 permission smoke test for every installation that already exists —
+turning an additive panel into a breaking change across the estate, to read
+settings that are useful and are necessary for nothing else. It lives in a
+separate `OPTIONAL_PERMISSIONS` set. An App without it reports every control as
+`unknown`, with the reason and the permission named, which is §2's own rule
+applied to itself: a permissions gap is not a security failure.
+
+That distinction is enforced twice over. GitHub returns 404 for *"this branch
+is not protected"*, which is an answer and a bad one; a 403 raises instead. So
+"we were not allowed to look" can never render as "there is no protection" —
+the two are opposite claims and confusing them is the worst thing this panel
+could do.
+
+**Only a penalty, never a credit, and spec 30 §4 was wrong about that.** §4
+expected strong governance to earn the reward side of spec 26 §2 "without a new
+term being invented for it". It cannot. Branch protection is a *switch*, and
+spec 26 §2.3 refuses credit for switch-flipping in as many words, because the
+fastest route to a good score must never be a setting. What survives is the
+asymmetry §4's own framing supports: weak controls do not make a SQL injection
+worse, they make this repository a worse place for one to be, which is exactly
+what the risk profile carries.
+
+**Shipped dark at zero points.** Every repository's score is unchanged until an
+operator has seen the panel, agreed the weights in `governance-policy-v1.yaml`
+describe their estate, and set a number. A term that began scoring on deploy
+day would move every score in the portfolio for a reading nobody had reviewed —
+which is the shape of D-048 and D-083's mistake, made once with a gate and not
+worth making again with a term.
+
+**Stale is unavailable, not old.** The reading lives in `repo_governance`
+because Oracle cannot make an HTTP call, and a reading more than fourteen days
+old returns nothing rather than an old number: it describes a repository that
+may have been reconfigured twice since. Fewer than five controls read is also
+unavailable — a score over two controls is not a weaker posture, it is not a
+posture.
+
+It is not a `RiskProfile` column, though §4 puts governance "into the profile".
+Every field of a profile is somebody's stated belief about what the application
+is; a machine-read setting in the same row would be indistinguishable from one,
+which is the distinction spec 21 §1 built that table around.
+
+**Two smaller calls.** Rulesets merge as *the strongest wins*: a repository can
+use branch protection, rulesets, both or neither, and reading only the older
+model would report a modern well-governed repository as wide open. Only
+`active` rulesets count — an `evaluate`-mode ruleset is a dry run that blocks
+nothing. And a single required approval is `partial` rather than `on`, because
+that is precisely the configuration `self_approval` and `sole_approver` fire
+under, and calling it "on" would put a repository one rubber stamp from a bad
+merge level with one that requires two people.
+
+`list_admin_bypasses` from §1.2 does **not** ship: the endpoints behind it are
+plan-gated and it would be a permanently empty column for most installations.
+`enforced_for_admins` answers the question that actually matters — whether the
+rules bind administrators at all — and is weighted alongside the two entry
+controls for that reason.
+
+## D-092 — The detectors get a ground truth, and the corpus is counted in nothing
+
+**2026-08-25. Spec 23 §1.**
+
+Spec 04 §7's acceptance criterion has never been implementable. Its bar — "at
+least one `Finding`" — cannot distinguish a scanner catching nine of ten seeded
+injections from one catching one, and there was no seeded corpus to try it
+against. A search for precision, recall, false negatives or ground truth across
+this repository returns prose about the concepts and no measurement of any of
+them.
+
+So the platform runs fifteen checks and cannot say how well any of them works
+on code like its own. That is worth fixing before anything agentic is built and
+independently of whether anything agentic is ever built, which is why spec 23
+gates its other four workstreams behind this one.
+
+**`synthetic` exists so the corpus is counted in nothing.** Seeded
+vulnerabilities are real findings in the lake — they have to be, or grading
+them would exercise a different code path from the one that runs — so without
+the flag the corpus becomes, permanently, the fleet's worst repository, and
+deliberately vulnerable code is counted as estate risk. The portfolio summary,
+the trend series and the fleet risk mean all skip it.
+
+Only the *aggregates* skip it. The bench repository is listed, opened and
+scanned like any other, because a benchmark whose results nobody can inspect is
+a benchmark nobody trusts.
+
+**Stated at onboarding, never inferred.** Guessing from a repository name is how
+a *real* repository silently stops being counted, which is a worse failure than
+a corpus that is counted until somebody notices.
+
+**Which repositories are synthetic is passed into the lake queries, never
+looked up by them.** That fact lives in the operational store, and a lake query
+reaching into the database to find it out would couple the two in the one
+direction this codebase has kept clear.
+
+**Matching is by file and line window, never by rule id.** A rule identifier is
+a free-form string the reporting tool chose (spec 18 §6), so pinning a grade to
+one would grade the tool's *naming* rather than its detection, and every
+scanner rename would need a manifest rewrite. Five lines of drift are allowed,
+because the finding fingerprint already assumes that much (spec 05 §5) — a
+grader stricter than the platform's own identity model would report regressions
+the platform does not believe in.
+
+**The grade reads the lake, not the scanner's output file.** What is graded is
+what the platform *ingested*, so an adapter dropping a finding on the way in is
+a detection failure this notices. Grading raw tool output would measure the
+tools and quietly exempt the platform.
+
+**No precision figure, and `unmatched` fails nothing.** The corpus is seeded,
+not *clean*: an unmatched finding may be a genuine flaw somebody wrote by
+accident while writing a fixture. Calling it a false positive would manufacture
+a quality number out of an assumption. It is a property on the report for a
+human to investigate, and a lane whose green depended on nobody having written
+an extra bug into a fixture would be green for the wrong reason.
+
+A capability with nothing seeded has **no** recall rather than zero — spec 31
+§3's empty-denominator rule applied to a second number, for the identical
+reason. And `--fail-under` is off by default: the first runs of a new corpus
+establish a baseline, and a threshold picked before there is one is a number
+somebody invented.
+
+**What is not built, and cannot be from here.** Creating `mykronos-bench`,
+writing deliberately vulnerable fixtures into it, and installing the App on it
+is an operator action — and one that should be taken deliberately rather than
+automated by a security platform. The platform side is ready; the corpus is a
+person's decision.
+
+---
+
+## D-093 — Three repositories leave Concourse by dissolving the LAN, not by moving the runner
+
+**2026-08-28. Spec 32.**
+
+`mykronos`, `keel` and `personal-soc` move from Concourse to GitHub Actions.
+TheHub does not. Concourse, Vault, `ConcourseClient` and `scanned_by=concourse`
+all stay, because the pipeline that deploys to production is the one that is
+not moving.
+
+Spec 15 §2 gave three reasons a second CI system existed, and two of them have
+expired. Going public settles the Actions-minutes reason outright. The first
+reason — a second execution environment inside the LAN, for network scanning —
+**was already false and nothing said so.** `personal-soc.yml`'s
+`netassess-ingest` records that the scan runs under a Windows Scheduled Task
+and publishes to MinIO, because an nmap sweep from a Concourse task reported
+all 256 addresses up while the host's ARP table had 38: Docker Desktop's NAT
+answers every probe, and MAC-keyed inventory needs L2 adjacency a container
+does not have. The capability that justified a LAN worker had already left it.
+Spec 14 §4 and spec 15 §8 still say otherwise and need amending.
+
+**The LAN dependencies dissolve; they are not relocated.** This is the whole
+decision, and the alternative is what makes it one. A self-hosted Actions
+runner would have kept every endpoint where it is and cost almost nothing to
+migrate — and a public repository with a self-hosted runner means a fork's pull
+request executes at `192.168.0.14`, beside the registry, MinIO, TheHub's
+Postgres and the Vault. That is precisely what spec 14 §4 and spec 15 §7
+refused when the question was Concourse's worker, and the answer does not
+change because the runner has a different logo. A third option — a private ops
+repository owning the LAN runner, driven by `repository_dispatch` — is secure
+and was rejected for keeping two CI systems and adding a hop that makes "which
+build produced this finding" harder to answer.
+
+So each endpoint moves to something that is reachable from anywhere, and each
+move is worth making on its own terms rather than only as migration cost. The
+registry becomes GHCR, gaining authentication it does not have today and
+immutable digests a tag race cannot defeat. Build artifacts and SBOMs become
+Actions artifacts and release assets, at the same retentions spec 15 §5 already
+specified. The netassess ingest becomes a backend scheduled job, which is what
+it always was — it consumes no source and is triggered by an artifact
+appearing, and it lived in Concourse because Concourse was the only scheduler.
+
+**The demo environment is the one that pays for itself immediately.**
+`demo-and-dast` carries `serial: true`, a "rebuild it on the host" preflight
+and a seeded-repository count check, and all three exist because one
+long-lived, hand-maintained stack is shared between builds — builds 8 and 9
+wiped build 7's ZAP site tree. An ephemeral stack stood up inside the job
+cannot be shared, cannot be stale, and cannot be missing. It is also the
+largest piece of work in the migration and the one most likely to need a second
+attempt, because `Invoke-DemoRebuild.ps1` is PowerShell and the seeding is what
+the count check guards.
+
+**Install stays a pull request; enable and disable become API calls.** Adding
+or removing code that runs in a repository is a change a human reviews, which
+is spec 03 §3 and is not weakened. But spec 03's `--soft-disable` — set the job
+to `if: false` — makes "stop this lane now" a commit, a pull request and a
+review round-trip, when what an operator needs at 2am is the `fly pause` that
+spec 15 §4a.1 calls "state only an operator remembers". GitHub has a
+first-class API for exactly this, so the off switch is one call and the file on
+disk still says what the lane does when it comes back.
+
+**Workflow state is derived, never stored**, for the same reason §4a derives
+the pipeline name: a `workflow_enabled` column is a second place for the truth
+to live, and it is wrong the moment somebody clicks Disable in the GitHub UI.
+`disabled_inactivity` is rendered distinctly from `disabled_manually`, because
+a scheduled lane GitHub switched off after 60 days of no pushes is a real
+coverage gap that otherwise looks identical to a deliberate pause.
+
+**Enable and disable do not touch `enabled_capabilities`.** A disabled workflow
+is an enabled capability whose lane is paused. Conflating them would make the
+grant registry lie about what may write, and the grants are what the coverage
+cross-check trusts for any repository the installer's ledger never moves for
+(spec 03 §3a).
+
+**`ci.py` is split behind a protocol rather than rewritten.**
+`Reporting`, `StageCoverage`, `coverage()` and `reconcile()` already take job
+names, statuses and timestamps and know nothing about Concourse; only
+`ConcourseClient` does. Those two functions are also the ones §4a.1 records
+getting wrong twice. An `ActionsClient` beside the existing client keeps them
+untouched, and dispatches on `scanned_by` exactly as `scan_now` and fix
+verification already do.
+
+Two properties change and are worth naming rather than discovering. The
+job-to-capability mapping stops being a heuristic — the installer chose the
+filename, so `mykronos-<capability>.yml` is exact for every installed lane.
+And the read **stops being anonymous**: Concourse was read with no credential
+because the pipelines are `public: true` on a loopback-bound server, while
+GitHub needs an installation token, from inside a dashboard request, against a
+5000/hour limit shared with token rotation, the installer and Patchwork. The
+status panel is the least important consumer of that budget and must be the
+first to give up, which makes a cache and a ceiling part of the design rather
+than an optimisation.
+
+**The parity check decides when Concourse is destroyed, not a green badge.**
+Every capability that reads `reporting` under Concourse must read `reporting`
+under Actions first. The lanes run in both systems for a period, and the
+duplicate findings that D-039 removed are accepted deliberately and briefly —
+the ingestion upsert makes the two indistinguishable, which is the only reason
+a parity check is possible at all. Spec 15 §4a.1's first day of existence found
+a lane green on every build that had never reported once; this migration is the
+largest opportunity to recreate that failure since it was written.
+
+**No App re-registration is needed, contrary to the first draft of spec 32.**
+That draft made granting `actions: write` and re-consenting every installation
+the blocking first step. `actions: write` has been in `REQUIRED_PERMISSIONS`
+since the scan-now button needed it for `dispatch_workflow` (spec 17 §2.5), and
+it is the same permission GitHub documents for enabling, disabling and reading
+workflows. So §6 and §7 are buildable today with no 403 window and nothing to
+schedule around. Recorded rather than deleted, because "the App needs a new
+permission" is a prerequisite that gets planned around for weeks.
+
+**What is not built, and cannot be from here.** Making the three repositories
+public is an operator action, and it is gated on a full-history secret scan
+rather than on the working-tree scans the `secrets` lanes already run.
+
+## D-094 — Both halves of D-051, and a parity check that could not see an empty repository
+
+**Date:** 2026-08-29 · **Supersedes nothing; completes D-051**
+
+Two pins install the `mykronos` package into the same job:
+`mykronos_package_spec`, which the aegis, atlas, ai and sast templates
+pip-install for their collectors, and `upload_action_ref`, which the shared
+upload action is resolved at. The templates install first. `pip install` of an
+already-satisfied requirement is a no-op — no version comparison, no warning —
+so whichever runs first decides the uploader, and the second silently does
+nothing.
+
+`upload_action_ref` had been moved forward repeatedly. `mykronos_package_spec`
+had never moved at all: it was still `@v1` while the tag series reached `v7`.
+So the package spec won every time, and the action's pin was decorative. The
+lanes failed as
+
+    argument --capability: invalid choice: 'ai'
+
+which is v1's `Capability` enum, in a job whose action was pinned to a commit
+that knew both `ai` and `atlas`. `sast` and `aegis` were unaffected only
+because v1 already knew those names — which is why this survived so long. It
+presented as two broken capabilities rather than as a stale pin.
+
+**Both now pin the same 40-character commit, and a test asserts they are
+equal.** Commit rather than tag on both, so the invariant is checkable without
+a network call. The tag is `v8`, cut deliberately at current main rather than
+reusing `v7` — which is 16 commits behind and lacks the containers root-context
+fix, the named qa checks, the fail-fast retry, and the action provenance line
+that is D-051's own remedy.
+
+**The parity check was passing the migration it exists to block.** Retiring a
+pipeline is authorised by "no capability got worse", and "worse" needed an
+ordering, so `_STATE_RANK` put seven states on a line. Four of those positions
+are real; three were invented, and the invention was `not_run` above `silent`.
+It sounds right — a lane that has not fired yet is more innocent than one
+visibly failing to report. Innocent is not the question. Covered is, and
+neither state is covered.
+
+So `mykronos parity ToddGBenson/keel` reported three capabilities `improved`,
+printed "No capability is worse under Actions", and exited 0 — the
+authorisation to delete keel's pipeline — while every Actions lane on keel had
+never executed once.
+
+The states are now two tiers. `reporting` and `event_driven` are coverage;
+`no_job`, `not_run`, `never_reported`, `silent` and `not_enabled` are not, and
+within that group there is no order, because they differ in what a human should
+go look at and not in how covered the repository is. Moving between them is
+`no better` — a verdict that did not exist, which is why `improved` was
+returned instead.
+
+`not_enabled` leaves the covered tier, which is a change. It ranked alongside
+`reporting` because a capability nobody asked for is not a gap — true when both
+sides agree, and that case still compares as `same`. But it also meant a
+capability reporting under Concourse that merely never got enabled in the
+Actions ledger passed in silence, and forgetting to enable something is the
+most likely migration mistake there is.
+
+**A gate that detects loss cannot detect absence.** "Nothing got worse" is
+satisfied by two systems that both do nothing, so the verdict now states
+coverage on both sides before stating change, and refuses outright when the new
+system covers nothing: that is not parity, it is two systems agreeing about
+silence.
+
+**What that check now says about keel: covered 0 under Actions, 0 under
+Concourse.** Which is the real finding, and it changes the migration. keel's
+Concourse lanes were already `silent`, so there is no coverage to migrate and
+nothing that retiring the pipeline would lose — but neither is there a green
+Actions run to retire it *on*. keel needs its lanes made to report before
+anything is deleted, not a pipeline retirement. Recorded as L0005.
+
+---
+
+## D-095 — A setting that contradicts a refusal is removed, not documented
+
+**Status:** Decided, spec updated
+**Spec:** [03 §5.1](../specs/03-workflow-installer.md), [08 §3](../specs/08-patchwork-integration.md)
+
+`repo_onboardings.auto_merge_workflow_prs` is removed from the model, the
+`RepoDetail` schema and the API response, and the column is retired from
+existing databases on start.
+
+**Why:** it could never act. Spec 08 §3 deliberately gives `GitHubClient` no
+merge method, and two tests assert that no method whose name contains "merge"
+exists on the interface or on either implementation. So the setting was stored,
+returned to any consumer of the contract, rendered by nothing, and consumed by
+nothing — the only thing it could change was what an operator believed the
+platform would do.
+
+Two specs each correct on their own produced a dead option between them. The
+alternative — documenting it as "not implemented yet" — keeps a toggle that
+quietly contradicts a refusal D-085 counts among the most valuable properties
+in the codebase. A refusal that ships with an off switch reads as a default,
+not a guarantee.
+
+Spec 03 §5.1 now states the refusal positively, so the next reader finds an
+answer rather than a gap.
+
+**Retirement mechanism.** There is no migration framework here; `create_all`
+plus `add_missing_columns` (D-052) only ever *adds*. A removed column would
+therefore persist in every deployed database and be absent from every freshly
+built test database — the same disagreement D-052 was written to end, pointing
+the other way.
+
+`Database.drop_retired_columns` closes it against an explicit
+`RETIRED_COLUMNS` list. Deliberately **not** the obvious inverse of
+`add_missing_columns`: "drop every column the models do not declare" is a
+data-loss bug waiting for its first rollback, because a deploy that briefly
+runs the previous image would drop live columns and repopulate nothing. Naming
+each retirement means a column only goes when somebody decided it should. A
+test asserts no name is in `RETIRED_COLUMNS` and on a model at once — that
+combination would drop the column on every start and fail on the next write.
+
+Regression tests: `tests/test_patchwork.py::TestTheHardConstraint::test_no_setting_anywhere_claims_the_platform_can_merge`,
+`tests/test_schema_upgrade.py::TestARetiredColumn`.
+
+---
+
+## D-096 — The LLM fix generator is withdrawn, not implemented
+
+**Status:** Decided, spec updated
+**Spec:** [08 §2 stage 4, §5](../specs/08-patchwork-integration.md)
+
+`PatchworkConfig.fix_generator_url` is removed from the schema, the API and the
+pipeline. Spec 08 §2 now specifies deterministic fixers as the only generator.
+
+**Why:** it never made a call. The value was validated as an `http(s)` URL,
+persisted, exposed through the API and threaded through `PatchworkPipeline` to
+exactly one place — a conditional choosing between two rationale sentences. No
+HTTP request was ever issued to it.
+
+The failure mode was worse than an inert setting. **Unset**, a finding with no
+deterministic fixer got "no fix generator endpoint is configured for this
+deployment, so nothing was attempted" — which invited an operator to configure
+one. **Set**, the same finding got "No deterministic fixer matches this
+finding" — which reads as though the generator had been consulted and declined.
+Configuring the endpoint changed the sentence and nothing else, and the new
+sentence was less true than the old one.
+
+**Why withdrawn rather than built.** Spec 08 §2 described the feature but never
+specified it: no request or response contract, no timeout or failure
+behaviour, no statement of whether a failed generation blocks the pull request,
+no cost or rate ceiling, and nothing about what stops a generated fix reaching
+a reviewer as though a deterministic fixer had produced it. Building it would
+have meant inventing all of that against no endpoint to test with. The
+deterministic fixer is the half that works.
+
+Adding an LLM generator later is a design change that reverses this decision
+and answers those questions first.
+
+**Migration.** The setting lives in the `capability_configs` JSON blob, not a
+column, so there is nothing for `RETIRED_COLUMNS` (D-095) to drop. But the
+config models are `extra="forbid"` while the read path deliberately returns
+stored config unvalidated (`capability_config_for`), so a repository configured
+before this change keeps the dead key in its stored JSON — and the next save,
+the UI echoing back what it loaded, would fail on a field the operator can
+neither see nor remove.
+
+`RETIRED_CONFIG_KEYS` strips withdrawn keys on the way into `validate_config`
+and logs that it did. Deliberately narrow: an unknown key is still refused, so
+this is a named exception rather than a hole in `extra="forbid"`.
+
+Regression tests: `tests/test_patchwork.py::TestTheHardConstraint::test_no_fix_generator_setting_exists_anywhere`,
+`::test_a_config_still_carrying_the_withdrawn_key_can_be_saved`,
+`::test_an_unknown_key_is_still_refused`.
+
+---
+
+## D-097 — Rotate only when the job can reach every reader, not when one field says so
+
+**Status:** Decided and shipped
+**Spec:** [15 §7](../specs/15-concourse-pipeline.md), supersedes nothing — extends [D-086](#d-086--rotation-wrote-the-new-token-where-nothing-reads-it-and-reported-green)
+**Trigger:** four lanes down on 2026-08-31
+
+`rotate_ingestion_tokens` now also asks Concourse whether a pipeline exists for
+the repository, and defers when one does — or when the answer cannot be
+established.
+
+**Why D-086 was not enough.** Its guard is `scanned_by != "github_actions"`.
+`scanned_by` holds one value and, by its own docstring, "records intent, not
+coverage". A repository migrating from Concourse to Actions under spec 32 is
+scanned by *both*: `ToddGBenson/mykronos` declares `github_actions`, has 14
+active Actions workflows, and has a Concourse pipeline reading the same
+ingestion token from Vault.
+
+So it passed D-086's check. A rotation on 2026-08-30 issued a new token, wrote
+it to the Actions secret, marked the repo synced and reported green — while
+Vault kept the old value. When the 24-hour overlap expired, `unit`,
+`lint-and-types`, `qa-spec-links` and `frontend` all began failing on the
+ingest preflight with a 401, each inside two minutes. This is D-086's own
+failure mode in the one shape D-086 did not cover, which is the third time a
+lesson has been applied to one lane and not the other (D-051, D-083, D-086).
+
+**The question is who reads the token, not what the repository declares.** The
+job's only delivery path is a GitHub Actions secret, so it may rotate only when
+that reaches everybody. A Concourse pipeline is a second reader it cannot write
+to. `ConcourseClient.has_pipeline_for` answers from the server rather than from
+a declaration, so a repository cannot be wrong about itself.
+
+**Three answers, and the third is the point.** `True`, `False`, or `None` for
+"could not be established" — Concourse unreachable, or not configured. `None`
+defers. Failing open would tell the job "nobody else reads this" on any day
+Concourse happened to be down, which is exactly how the credential
+desynchronised; and D-086's reasoning applies unchanged — an un-rotated token
+keeps working, a rotated-and-undelivered one breaks the repository when the
+overlap ends.
+
+**What this does not do.** It still cannot deliver to Vault. Concourse-scanned
+repositories still do not rotate automatically, and D-086's note that this is a
+real regression against a 90-day rotation stands. This decision makes the
+deferral *correct*, not unnecessary. The actual fix remains a Vault client in
+the backend, which spec 15 §7 treats as a boundary worth arguing about rather
+than crossing quietly.
+
+**A second trigger, faster than the 90-day clock.** An active token with
+`secret_synced = 0` is picked up by the unsynced sweep and rotated *again* as a
+resync, on the job's ordinary interval. A manual repair that delivers to Vault
+and `.env` but not to Actions leaves precisely that state, so the repair arms
+the recurrence unless the flag is set. The new guard covers that path too.
+
+**What the tests were doing, again.** D-086 recorded that all four rotation
+tests asserted against a configuration this estate does not run. The equivalent
+gap here was that none of them described a repository scanned by both systems —
+the only configuration in which the bug appears. There is now a test for it,
+and one asserting an Actions-only repository still rotates, so the guard cannot
+quietly end rotation altogether.
+
+**A third reader, found 2026-09-01.** After the `mykronos` and `.env` copies
+were repaired, keel's Concourse pipeline was still failing all three of its
+`mykronos-*` jobs on the same 401. It holds its own copy at
+`concourse/main/keel/mykronos_ingestion_token`, and keel is
+`scanned_by=github_actions` — so the rotation job wrote its new token to the
+GitHub Actions secret and left Vault behind, exactly as it did for mykronos.
+Same bug, third instance, found only because B-012's inventory went looking at
+keel for an unrelated reason. Repaired by rotating and delivering to *both*
+readers in one operation, which is the practice this decision exists to make
+the job follow.
+
+**A fourth instance, found 2026-09-01 — and the guard was a day too late.**
+`ToddGBenson/TheHub` rotated on 2026-08-31. The GitHub Actions secret was
+updated and the Vault copy Concourse resolves `((thehub-ingestion-token))` from
+was not. TheHub is `scanned_by=concourse`, so the only reader that mattered was
+the broken one: every Concourse job failed its preflight on a bare 401, nothing
+scanned after 2026-08-27, and **316 findings froze open** because closure needs
+two consecutive successful scans. The guard above was written on 2026-09-01,
+one day after the rotation it would have stopped.
+
+It also cost a wrong diagnosis worth recording. TheHub is private and had a
+GitHub Actions run queued for **336 hours**, which is the exact signature of an
+exhausted Actions-minutes quota — so that is what this was reported as, and the
+operator was asked to check a billing page. The evidence was real and the
+conclusion did not follow: Actions was never TheHub's scanning path. *Which
+system reads the token* was the question in the first instance and it was still
+the question in the fourth.
+
+So the reader map is now written down rather than inferred.
+`deploy/concourse/repair-ingestion-token.ps1` carries a `$READERS` table naming
+every reader of every repository's token — Actions secret, Vault path, `.env`
+key — and refuses to rotate a repository that is not in it. Being implicit is
+what broke four lanes; a script that rotates blind would make a fifth.
+
+Regression tests: `tests/test_jobs.py::TestRotation::test_a_repo_scanned_by_both_systems_is_deferred`,
+`::test_an_actions_only_repo_still_rotates`,
+`::test_an_unreachable_concourse_defers_rather_than_assumes`,
+`::test_the_unsynced_sweep_cannot_rotate_a_both_systems_repo`,
+`tests/test_ci.py::TestWhoReadsTheToken`.
+
+## D-098 — A briefing after every deploy, led by the lanes that cannot close
+
+**2026-09-01.** The dashboard reported 115 open DAST findings against
+`ToddGBenson/mykronos` and was correct. The findings were also fixed: the
+security headers they name are set in `frontend/next.config.ts` and served on
+the wire. The number had been meaningless for two days and nothing said so.
+
+The mechanism is `reconcile_absences` requiring `REQUIRED_ABSENCES = 2`
+consecutive **successful** scans before a finding becomes `fixed` (spec 05 §5).
+That rule is right — it is flap protection for `resolved_at` and every metric
+built on it — and it has a consequence nobody had stated: **a capability whose
+lane is failing cannot close anything.** The DAST lane had failed seventeen
+times running. However thoroughly the defect was fixed, no scan would ever
+observe its absence.
+
+So the decision: **every deploy ends with a briefing, and its first section is
+lanes that cannot close findings.** Not severity, not the worst repository —
+those surfaces already exist and neither would have caught this. `deploy.ps1`
+runs `mykronos briefing` after health passes, and never fatally: a deploy that
+worked did work, and a briefing that cannot read the lake must not retract it.
+
+Three constraints the implementation holds to.
+
+**A group gets a button only where a route already exists.** A stalled lane
+gets `POST /api/repos/{repo}/scan?capabilities={cap}`, which is real. Sast gets
+the classifier queue. Containers, secrets and iac get nothing, because a
+base-image rebuild is a Dockerfile change and a committed secret needs rotating
+before anything else. This is B-021's lesson applied before the fact rather
+than after: an affordance that looks like capability and is not is worse than
+an absence, and the Remediation tab already taught us that once.
+
+**A stalled lane's button says "repair the job first".** Re-running a broken
+workflow fails again and closes nothing, and a one-button remediation that
+quietly does nothing is the failure mode this whole entry is about.
+
+**The numbers must not overstate what was read.** The failure streak is counted
+over a ten-run window, so it reads "at least 10" when it fills that window —
+printing a bare count said ten failures where the truth was seventeen, which
+reads as a bad afternoon rather than a two-day outage. Last-success is queried
+over all history instead, or a lane that failed more times than the window is
+wide would report as having never worked.
+
+**A lane can stall in two ways, and the second was nearly missed.** The first
+version only looked at `scan_status`, so it caught mykronos DAST failing
+seventeen times and reported the estate otherwise fine. It was not fine.
+`ToddGBenson/TheHub` had not scanned since 2026-08-27 — every lane *succeeded*
+and then simply never ran again. A check that reads `scan_status` sees nothing
+wrong with that: there is no error to notice.
+
+Silence is the worse of the two, and by some distance. 316 TheHub findings were
+frozen behind it against 115 behind the lane that was visibly broken. Together
+that is 431 of 475 open findings across the estate — **91% of the backlog could
+not close**, and the platform reported a healthy dashboard.
+
+So silence is detected too, measured against **each lane's own cadence** rather
+than a fixed threshold. This estate mixes daily and weekly schedules and runs
+some lanes on every push; any single number either misses a stopped daily lane
+or cries wolf at every weekly one. The median gap between a lane's own runs,
+times three, floored at two days. Median rather than mean, because a
+push-triggered lane has a few enormous gaps around holidays and a mean would
+let it go dark for a fortnight before anybody was told.
+
+The two reasons get different wording on the button, and flattening them would
+make it a lie half the time: a silent lane was working when it stopped, so
+dispatching it *is* the fix, while a failing lane will just fail again. Telling
+somebody to repair a job that has nothing wrong with it is how a briefing gets
+ignored.
+
+Filed as B-024. Tests: `tests/test_briefing.py`.
+
+**A page for the question people actually ask, added 2026-09-01.**
+`/remediate` answers *how do I remediate the open findings today*, and it is
+ordered by **what it costs you** rather than by severity. That inversion is the
+whole design: a critical nobody can close today belongs below a hundred
+findings that close for free.
+
+The section that makes it work is the one added last — **findings already gone,
+waiting only on a sweep.** Separating those from the open count is what stops a
+backlog looking larger than the work in it. Measured on the day: 593 open, of
+which 109 needed nothing at all, 316 could not be touched because their lanes
+were not producing scans, and 0 were auto-fixable. That leaves 168 that were
+actually work, and no surface in the platform had ever said so.
+
+`awaiting_closure` deliberately mirrors `reconcile_absences` — the same
+`CONFIRMING_STATUSES`, the same "not among the most recent runs" test, the same
+`asset_id`/`repo_full_name` join — and a test asserts the two agree on the same
+estate. A page that promised something would close on a different rule from the
+one that closes it would be worse than saying nothing.
+
+## D-099 — The Cloudflare beacon stays blocked
+
+**2026-09-02.** The browser console on `mykronos.toddbenson.net` reports two
+things that look like defects and are not:
+
+```
+Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/...'
+violates the following Content Security Policy directive: "script-src 'self'"
+
+Error with Permissions-Policy header: Unrecognized feature: 'attribution-reporting'
+```
+
+Neither comes from this application. The tunnel that fronts the public
+hostname injects both — an analytics beacon and a `Permissions-Policy` naming a
+feature this browser does not implement. The CSP blocks the first, the browser
+warns about the second, and both are working exactly as intended.
+
+**The beacon stays blocked.** Allowing it means adding a third-party origin to
+`script-src`, and `script-src 'self'` is the directive doing the actual work in
+that header: everything else in the policy is narrowing an attack surface that
+`self` already bounds. Widening it buys page-view analytics nobody asked for
+and gives up the one guarantee worth having — that a script executing on this
+page came from this origin or carried a nonce we minted.
+
+It is recorded because the failure mode is somebody meeting the console error
+in six months, reading it as broken, and adding the origin to make it go away.
+That change would look like tidying and would be the only thing in the header
+that materially weakened it.
+
+The `attribution-reporting` warning needs nothing. A browser warning about a
+feature name it does not recognise in a header set by a proxy is not a state
+this repository can or should alter.
+
+**Not to be confused with the CSP bug fixed the same day.** That one was real
+and was ours: `script-src 'self'` with no nonce blocked Next.js's own inline
+scripts, hydration failed, and every client component on the site was inert.
+The fix was a per-request nonce in `proxy.ts`, not a wider policy — which is
+the same distinction this decision is about. A header that ships is not a
+header that works, and the check for the second one is opening the console.
+
+## D-100 — Suspicious-comments keeps three words, and that is a tuning not a suppression
+
+**2026-09-02.** ZAP rule 10027 ("Information Disclosure — Suspicious Comments")
+held 24 open findings against the platform's own frontend, growing with every
+page added. All 24 were false, all in the same way, and the way matters more
+than the count.
+
+The rule looks for developer notes left in shipped code. Its default word list
+is TODO, FIXME, BUG, BUGS, XXX, QUERY, DB, ADMIN, ADMINISTRATOR, USER,
+USERNAME, SELECT, WHERE, FROM, LATER, DEBUG. Thirteen of those sixteen are
+ordinary vocabulary for a security console. This application's own interface
+text says "from", "user", "admin" and "bug" constantly, and the CVE
+descriptions it renders say them again.
+
+**Why they matched at all.** ZAP tokenises JavaScript with a lexer and reports
+only comment tokens, which should have made page *text* unreachable. A Next.js
+RSC payload defeats it: a JSON document, full of `\"` escapes, embedded in a JS
+string literal. The lexer loses its place, and the `//` in an ordinary
+`https://github.com/...` link then reads as the start of a line comment. The
+"comment" extends to the end of a minified line, so every word on that line
+becomes a candidate. The evidence on all 24 was the English word "from",
+matched case-insensitively, sitting in a sentence.
+
+So the alerts were not about comments, and nothing in the comments could fix
+them. The three available responses were to accept 24 findings that regenerate
+with every new route, to disable rule 10027, or to fix the word list.
+
+**The word list, measured against the running application.** The default list
+alerted on essentially every page. TODO, FIXME and XXX alone alerted zero times
+across ten pages, and still caught a real
+`// TODO: remove the hardcoded admin credential` on a page whose prose also
+said from, user, admin, bug and query. The rule keeps working; it stops firing
+on the dictionary.
+
+**Why this is not suppression.** The distinction is whether the rule can still
+produce a true positive, and it demonstrably can — that was tested, not
+assumed. Disabling 10027 would have removed the capability; dropping thirteen
+words that this application legitimately displays removes the noise and leaves
+three words that do not appear in ordinary writing. A leftover developer note
+in shipped JavaScript is still caught tomorrow.
+
+**What would make this wrong.** If the frontend ever ships unminified
+JavaScript with real comments, the kept list is thin and worth revisiting.
+And if ZAP fixes the lexer's handling of RSC payloads, the whole tuning becomes
+unnecessary rather than merely narrower — worth checking at the next major
+version bump, currently 2.16.1.
+
+Configured in `.github/workflows/demo-and-dast.yml`, before the functional
+suite rather than beside the spider exclusions: 10027 is a passive rule and
+scans traffic as it crosses the proxy, so a list applied after the suite has
+run is applied to nothing.
+
+## D-101 — The loop starts at push, and that is the position rather than a gap
+
+**2026-09-03.** Mykronos ships no pre-commit hook, no local scan command and no
+editor integration. A DevSecOps assessment on 2026-09-03 filed that as B-038,
+noting that the fastest feedback a developer can get today is a CI run after a
+push — and that four of the open findings on this estate are committed
+credentials, which is exactly the class a pre-commit hook exists to stop.
+
+**The position stands: this is a control plane, not a scanner.** Asked directly,
+the operator confirmed it. The scanners live in CI, the platform reads what they
+report, and the value it adds is in the layer above them — knowing which of 491
+findings can close this afternoon, which are frozen behind a dead lane, and
+which one change closes seven of them. Adding a thin local scanner would put
+this project in the business of maintaining scanner integrations on developer
+machines, which is a different product with a different maintenance burden.
+
+**What that costs, stated rather than left implicit.** The cheapest finding is
+the one that never reaches a branch, and this platform will never catch that
+one. A committed credential is found after it is committed, which means the
+credential is already compromised and rotation — not removal — is the first
+step. The remediation guidance already says exactly that, and it says it
+because of this decision.
+
+**What would reopen it.** A local path becomes worth building if the CI loop
+stops being fast enough to be the first feedback, or if the estate starts
+accumulating secrets faster than they are rotated. Neither is true today: the
+lanes report within minutes of a push, and the four committed credentials here
+are known, owned and dated.
+
+Recorded so B-038 stops reading as an omission somebody forgot to close. It is
+closed, and this is the answer.
+
+## D-102 — The risk gate stays advisory, with the evidence kept current
+
+**2026-09-03.** Oracle runs in shadow mode: it scores every commit, posts a
+check run, and blocks nothing. The shadow-mode table shows what the current
+gate would have done over ninety days — **0 of 30 merges refused** by the
+delta-based gate that runs now, against 30 of 30 by the composite-score gate
+D-048 and D-083 retired.
+
+That contrast is the argument for turning it on, and it was put to the operator
+on 2026-09-03. **The answer was no.** The gate stays advisory.
+
+**Why that is a defensible answer rather than a deferral.** A gate that has
+never fired in ninety days is cheap to enable and cheap to leave off; the
+difference between the two is entirely in what happens on the day it *does*
+fire. Whoever owns the consequence of a blocked release owns that call, and
+this repository does not. "It would not have blocked anything" is a fact about
+the past, not a promise about the release that finally trips it.
+
+**What this decision requires in exchange.** The evidence has to stay current,
+because its whole value is that it is measured rather than asserted. The
+shadow-mode table is a standing read over the last ninety days, so it stays
+true on its own — but a change to the gate's terms resets what it is evidence
+*for*, and D-048 and D-083 are the record of that happening twice already.
+
+**What would reopen it.** A merge that shipped a critical the gate would have
+caught. That is the incident record the shadow-mode view says it cannot supply
+— it is the denominator for the question, not the answer to it — and one real
+entry in it changes the arithmetic completely.
+
+## D-103 — No single number on a compliance, testing or maturity view
+
+**2026-09-03.** Three views shipped in two days that each had an obvious
+headline figure available, and none of them shows one: SSDF adherence has no
+"68% compliant", the test estate has no test-maturity score, and neither
+reports a percentage anywhere.
+
+**The argument for a number is real.** People want one, it fits in a status
+report, and it makes two repositories comparable at a glance. That is exactly
+the problem.
+
+**The practices and test kinds are not equally weighted or equally
+applicable.** A library needs no post-deploy smoke test; SSDF PS.3 means
+something different for a service than for a package. A denominator that
+includes items a repository is correct not to do produces a score that punishes
+being right, and one that excludes them is a denominator nobody can reproduce.
+
+**And the rounding is the failure this platform exists to prevent.** A view
+that says "9 of 13 practices are evidenced, and here is what would evidence the
+other four" cannot be misread. "69% SSDF compliant" can be, will be, and gets
+shown to an auditor.
+
+Counts by status, and the reader does the arithmetic knowing what it is made
+of. Where a number would mislead on its own — an open finding count with a
+frozen lane behind it, coverage that was never measured — it is qualified in
+the same sentence rather than in a footnote, because the footnote is the thing
+nobody reads.
+
+## D-104 — Consult is not a chatbot, and grounding ships before phrasing
+
+**2026-09-03.** The brief asked for a "Consult the Champion" chat window. What
+shipped answers a fixed set of questions from the platform's own records, links
+each answer to the tab that produced it, and names six questions it cannot
+answer with the reason for each. There is no free-text box and no model.
+
+**The credential is the blocker and not the reason.** This repository holds no
+model API key and must not (spec 12 §2), so a chat window would have been
+blocked on the operator exactly as the notifier is (B-035). That alone would
+argue for waiting, not for building something else.
+
+**The reason is the order of the work.** A model answering "what should I fix
+first here" is only as good as the facts handed to it, and those facts are the
+whole of `consult.Facts` — which is now built, tested, and already what the
+fixed answers are made of. Adding a model later is a phrasing layer over the
+same struct (B-043). Building the phrasing first and the grounding afterwards
+is how assistants end up confidently wrong, and this is a platform whose only
+product is being believed about security.
+
+**The refusals are the load-bearing half.** The failure mode of an assistant is
+not saying "I do not know" — it is answering anyway. `consult.UNANSWERABLE`
+names the questions people will ask that this platform cannot answer:
+exploitability without a confirmed risk profile, which assertion failed inside
+a lane that records only totals (D-046), what a fix will cost, whether
+something is a false positive, what the code does, whether to ship. Those stay
+when a model arrives. A model that answers them anyway is worse than the list,
+because the list is what makes everything above it trustworthy.
+
+**It cannot act, by construction.** Every answer is a read. No dispositions, no
+acceptances, no scans started, no pull requests opened.
+
+## D-105 — A transition is not a time series
+
+**2026-09-03.** `RepoGovernance` stores one row per repository, replaced on
+every read, and its docstring gives the reason: *"this is configuration, and a
+time series of a setting is not evidence the way a scan result is."* That is
+right and stays.
+
+Control drift is recorded anyway, and the two are not in tension. **A time
+series is every reading; a transition is the readings that differ.** Storing
+"pull requests were required at 06:00, 12:00, 18:00 and 00:00" is noise —
+1,460 rows a year per repository per control, none of them an event. Storing
+"signed commits stopped being required on 2026-09-03" is one row, and somebody
+did that.
+
+**What was actually missing.** Governance has always been read live, so the
+console has never shown a stale control. Nothing compared one reading to the
+next. A repository could drop its review requirement and the only trace would
+be a score nobody was watching — the platform read both states and told
+nobody.
+
+**Detection that waits for a page view is not monitoring.** The read happened
+on render, so a repository nobody opened was a repository nobody was watching.
+The sweep runs six-hourly against every onboarded repository whether or not
+anyone is looking, which is the difference between a dashboard and a control.
+It also keeps the stored posture inside the fourteen-day staleness window
+Oracle scores against, which until now depended on a person opening a panel.
+
+**Three things it refuses to conflate.** A control becoming `unknown` is a read
+that failed, not a control that was removed — one is a revoked App permission
+and the other is a security regression, and sending somebody to the wrong one
+wastes the alert. A control appearing in the reading for the first time is a
+change in what the App can see, not in how the repository is governed. And a
+repository's first reading produces no drift at all: with nothing to compare
+against, treating every control as having moved from `unknown` would file nine
+regressions for a repository that has done nothing.
+
+**Only regressions reach the Consult answer.** A control being turned on is
+good news and does not belong in an answer about weakening.
+
+## D-106 — Our own CVSS is the standard's environmental score, not a new number
+
+**2026-09-03.** The brief asked for "our own CVSS score based on what is known
+about this system and vulnerability — otherwise assume the worst". That is
+CVSS's own environmental score, so this implements the published formula rather
+than inventing a competitor.
+
+**Why not a bespoke number.** The platform already has one: Oracle's risk score,
+with exploitation-in-the-wild, ownership, remediation in flight and supply-chain
+trust as named terms. A second in-house figure would compete with it and be
+weaker. What CVSS gives that Oracle cannot is a figure other people already know
+how to read — a vendor, an auditor and a customer all understand 9.8 dropping to
+7.2, and none of them can check a score this platform defined.
+
+**"Assume the worst" is the standard's own default, and it is why this is safe.**
+Every environmental modifier defaults to `X`, and `X` takes the base metric's
+value. A repository that has told the platform nothing scores *exactly* its base
+score. The number can only move once somebody states a fact, every statement is
+attributable to whoever confirmed the risk profile, and there is no path by
+which a score falls because a form went unfilled. Tests pin that in both
+directions.
+
+**The vector, not the score.** The lake stored `cvss_score` and no vector, which
+made this impossible: a score is one number for every system in the world and
+cannot be re-read, where a vector can. Vectors now come from NVD through the
+existing threat-intel refresh, twenty per sweep at NVD's unauthenticated rate,
+and a lookup that finds nothing is *recorded as having looked* — roughly two
+thirds of this estate's container findings carry Debian `TEMP-` identifiers NVD
+has never heard of, and retrying those daily would spend the whole budget.
+
+**Absent rather than approximated.** A finding with no CVE — every Semgrep
+pattern, every ZAP alert — gets no environmental score at all. Deriving a vector
+from the severity word would produce a figure that looks like a published
+standard, is not one, and would be quoted as one. That is the worst thing this
+feature could do, so it does not do it.
+
+**Two mapping calls worth disagreeing with, stated in one place.** `public` data
+maps to `CR:M` rather than `CR:L` — a team that honestly declares its data
+public must not find every confidentiality finding quietly demoted for saying
+so. And `internet_facing=True` sets no modifier at all: the base vector already
+says `AV:N` where the flaw is network-exploitable, and re-asserting it would be
+a control that cannot change anything while looking like it might.
+
+## D-107 — The platform reports on itself, because a caught failure is silent
+
+**2026-09-03.** Mykronos tells four repositories what is wrong with them and had
+no surface saying whether it was itself running.
+
+Everything needed already existed. `self_check` probes ingestion, Vault and
+Concourse; every scheduled job passes through one runner. All of it went to a
+log file nobody tails, and `self_check` ran only when somebody typed a command
+— the same "detection that waits for a person is not monitoring" that D-105
+fixed for control drift, one layer further in.
+
+**The runner catches every failure, and that is what hides it.** `_every` logs
+and retries on the next tick, which is right: a job that dies on its first bad
+day and never runs again is worse than the exception that killed it. The cost
+is that a job which has thrown on every run for a fortnight is
+indistinguishable from outside from one that has never had a problem. So each
+outcome is now written down as well as logged.
+
+**`last_succeeded_at` is separate from `last_run_at` for exactly that reason.**
+A job whose failures are caught has a fresh `last_run_at` for ever. Reading
+only that would report a dead job as healthy, which is how this stayed
+invisible.
+
+**Three states, not two.** Failing, late, and never-ran need three different
+things done about them — an error to read, a scheduler to check, and a
+deployment that came up without the job. Collapsing them into "not ok" would
+send somebody to the wrong place.
+
+**And it must not cry wolf.** Lateness is two whole intervals, not one, because
+a timer inside a process that also serves requests drifts. A job whose interval
+has not elapsed since start-up reads as fine rather than late, or every
+long-interval job would be red for a day after each deploy — wrong precisely
+when somebody is most likely to look. `never_ran` alone is not degraded for the
+same reason.
+
+**Each row says what its silence costs.** A page listing nine job names and a
+colour asks the reader to already know which ones matter. `absences` stopping
+means findings never close and every count on every page drifts wrong in the
+reassuring direction — the CI failure this codebase keeps writing about,
+happening inside the platform instead.

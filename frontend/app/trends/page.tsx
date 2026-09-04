@@ -24,7 +24,7 @@ export default async function TrendsPage() {
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight">Trends &amp; maturity</h1>
         {maturity.ok ? (
-          <span className="font-mono text-[11px] text-ink-3">
+          <span className="font-mono text-[13px] text-ink-3">
             model v{maturity.data.model_version}
           </span>
         ) : null}
@@ -49,14 +49,36 @@ export default async function TrendsPage() {
 function Trends({ series }: { series: TrendSeries }) {
   const points = series.points;
   const latest = points[points.length - 1];
-  const first = points[0];
+
+  /**
+   * The baseline is the first point that has data, not the first point.
+   *
+   * The window is a fixed 90 days, but this platform has not been ingesting
+   * for 90 days: the series opens with a run of genuine zeroes from before
+   * anything was recorded. Comparing against `points[0]` therefore produced
+   * "415 more than at the start", "40 more than at the start" and "4 more than
+   * at the start" — every delta equal to its own total, which asserts the
+   * estate held nothing three months ago. It did not; the platform was simply
+   * not looking yet.
+   *
+   * A number that is confidently wrong costs more than a number that is
+   * missing, and this one was wrong on the page that exists to show whether
+   * things are getting better.
+   */
+  const firstWithData = points.find(
+    (point) => (point.open_total ?? 0) > 0 || (point.open_critical ?? 0) > 0,
+  );
+  const first = firstWithData;
+  // One data point cannot describe a direction, and drawing a line through it
+  // implies one.
+  const hasHistory = Boolean(first && latest && first !== latest);
   const mttf = series.mean_time_to_fix_days;
 
   return (
     <section className="flex flex-col gap-3">
       <div>
         <h2 className="text-sm font-bold">Last {series.days} days</h2>
-        <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+        <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
           {series.note}
         </p>
       </div>
@@ -65,18 +87,18 @@ function Trends({ series }: { series: TrendSeries }) {
         <StatTile
           label="Open critical"
           value={latest?.open_critical ?? 0}
-          sub={delta(first?.open_critical, latest?.open_critical)}
+          sub={hasHistory ? delta(first?.open_critical, latest?.open_critical, first?.at) : NO_HISTORY}
           alert={(latest?.open_critical ?? 0) > 0}
         />
         <StatTile
           label="Open high"
           value={latest?.open_high ?? 0}
-          sub={delta(first?.open_high, latest?.open_high)}
+          sub={hasHistory ? delta(first?.open_high, latest?.open_high, first?.at) : NO_HISTORY}
         />
         <StatTile
           label="Open total"
           value={latest?.open_total ?? 0}
-          sub={delta(first?.open_total, latest?.open_total)}
+          sub={hasHistory ? delta(first?.open_total, latest?.open_total, first?.at) : NO_HISTORY}
         />
         <StatTile
           label="Mean time to fix"
@@ -86,17 +108,91 @@ function Trends({ series }: { series: TrendSeries }) {
       </div>
 
       <Sparklines points={points} />
+
+      <RegressionCoverageBanner coverage={series.regression_coverage} />
     </section>
   );
 }
 
-/** "3 fewer than 90 days ago" reads better than an arrow nobody can decode. */
-function delta(from: number | undefined, to: number | undefined): string {
-  if (from === undefined || to === undefined) return "";
+/**
+ * Which of the vulnerabilities we have already fixed would we notice coming
+ * back? (spec 31 §3)
+ *
+ * The only number on this page that measures the estate getting
+ * *structurally* safer rather than temporarily cleaner. Everything above it
+ * counts what is open; this counts what was learned, which is why it sits
+ * beside them rather than on a page of its own.
+ */
+function RegressionCoverageBanner({
+  coverage,
+}: {
+  coverage: TrendSeries["regression_coverage"];
+}) {
+  // An empty denominator, not a failing grade. `0%` on an estate that has
+  // never fixed anything would be a verdict on work nobody has had the chance
+  // to do yet.
+  if (!coverage.available || coverage.ratio === null) {
+    return (
+      <div className="border border-rule bg-paper-2 px-3 py-2">
+        <Label as="h2">Regression coverage</Label>
+        <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-3">
+          Nothing has been fixed across the portfolio yet, so there is no
+          coverage to report.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-rule bg-paper-2 px-3 py-2">
+      <Label>Regression coverage</Label>
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-[13px] text-ink-2">
+        <span className="tabular font-mono text-xl font-bold leading-none text-ink">
+          {Math.round(coverage.ratio * 100)}%
+        </span>
+        <span>
+          — {coverage.covered} of {coverage.fixed_findings} fixed findings have
+          a test pinned.
+        </span>
+        <span className="font-mono text-[12px] text-ink-3">
+          {coverage.demonstrated} demonstrated · {coverage.asserted} asserted
+        </span>
+        {/* Beside the headline, never folded into it: a pinned test whose lane
+            stopped running is a protection that quietly expired, and hiding
+            that would make this a number that only ever goes up. */}
+        {coverage.stale > 0 ? (
+          <span className="border border-high bg-high-wash px-1 font-mono text-[11px] uppercase tracking-[0.08em] text-high">
+            {coverage.stale} stale
+          </span>
+        ) : null}
+      </p>
+      <p className="mt-1 max-w-prose text-[12px] leading-relaxed text-ink-3">
+        {coverage.note}
+      </p>
+    </div>
+  );
+}
+
+/** Shown instead of a delta when the window has no earlier point to compare
+ *  against — which is the honest answer, and shorter than a wrong one. */
+const NO_HISTORY = "no earlier reading to compare";
+
+/** "3 fewer than 12 Aug" reads better than an arrow nobody can decode, and
+ *  naming the date stops "the start" from meaning a day the platform was not
+ *  yet recording. */
+function delta(
+  from: number | undefined,
+  to: number | undefined,
+  since: string | undefined,
+): string {
+  if (from === undefined || to === undefined) return NO_HISTORY;
+  const when = since
+    ? new Date(since).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+    : "the first reading";
   const change = to - from;
-  if (change === 0) return "unchanged over the window";
+  if (change === 0) return `unchanged since ${when}`;
   const direction = change > 0 ? "more" : "fewer";
-  return `${Math.abs(change)} ${direction} than at the start`;
+  return `${Math.abs(change)} ${direction} than ${when}`;
 }
 
 function Sparklines({ points }: { points: TrendSeries["points"] }) {
@@ -147,7 +243,7 @@ function Sparklines({ points }: { points: TrendSeries["points"] }) {
         <div key={line.key} className="border border-rule bg-paper-2 p-3">
           <div className="flex items-baseline justify-between">
             <Label>{line.label}</Label>
-            <span className="tabular font-mono text-[10px] text-ink-3">
+            <span className="tabular font-mono text-[12px] text-ink-3">
               {describeLatest(line.values)}
               {line.higherIsBetter ? " · higher is better" : ""}
             </span>
@@ -180,7 +276,7 @@ function Spark({
 
   if (known.length < 2) {
     return (
-      <p className="mt-2 text-[11px] text-ink-3">
+      <p className="mt-2 text-[13px] text-ink-3">
         {known.length === 0
           ? "Nothing recorded in this window."
           : "One data point. A line needs two."}
@@ -236,12 +332,12 @@ function Maturity({
     <section className="flex flex-col gap-3">
       <div>
         <h2 className="text-sm font-bold">Maturity</h2>
-        <p className="mt-0.5 max-w-prose text-[11px] leading-relaxed text-ink-3">
+        <p className="mt-0.5 max-w-prose text-[14px] leading-relaxed text-ink-3">
           Every criterion measures <em>evidence</em>, never configuration.
           Nothing here can be satisfied by changing a setting, and no tier
-          rewards turning Oracle&rsquo;s gate on — spec 09 §6 makes that
-          conditional on shadow-mode data, so the model asks whether the data
-          exists instead of whether the switch is flipped.
+          rewards turning Oracle&rsquo;s gate on: that tier is conditional on
+          shadow-mode data, so the model asks whether the data exists instead
+          of whether the switch is flipped.
         </p>
       </div>
 
@@ -250,7 +346,7 @@ function Maturity({
           <li
             key={tier.id}
             title={tier.summary}
-            className="border border-rule px-2 py-1 font-mono text-[9px] text-ink-3"
+            className="border border-rule px-2 py-1 font-mono text-[11px] text-ink-3"
           >
             {index}. {tier.name}
           </li>
@@ -258,7 +354,7 @@ function Maturity({
       </ol>
 
       {repos.length === 0 ? (
-        <p className="text-[11px] text-ink-3">No active repositories yet.</p>
+        <p className="text-[13px] text-ink-3">No active repositories yet.</p>
       ) : (
         <ul className="flex flex-col gap-2">
           {repos.map((repo) => (
@@ -274,16 +370,16 @@ function RepoMaturity({ repo }: { repo: MaturityRepo }) {
   return (
     <li className="border border-rule bg-paper-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-rule-soft px-3 py-2">
-        <span className="font-mono text-[11px] font-bold">
+        <span className="font-mono text-[13px] font-bold">
           {repo.repo_full_name}
         </span>
         <Pill tone={repo.next_tier_name ? "warn" : "pass"}>{repo.tier_name}</Pill>
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {repo.tier_index + 1} of {repo.total_tiers}
         </span>
       </div>
 
-      <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
         {repo.tier_summary}
       </p>
 
@@ -292,13 +388,13 @@ function RepoMaturity({ repo }: { repo: MaturityRepo }) {
           <Label>To reach {repo.next_tier_name}</Label>
           <ul className="mt-1.5 flex flex-col gap-1.5">
             {repo.blocking.map((criterion) => (
-              <li key={criterion.key} className="text-[11px] leading-relaxed">
+              <li key={criterion.key} className="text-[14px] leading-relaxed">
                 <span className="text-ink-2">{criterion.label}</span>{" "}
-                <span className="font-mono text-[10px] text-ink-3">
+                <span className="font-mono text-[12px] text-ink-3">
                   — {criterion.measured}, needs {criterion.threshold}
                 </span>
                 {criterion.why ? (
-                  <p className="max-w-prose text-[11px] text-ink-3">
+                  <p className="max-w-prose text-[14px] text-ink-3">
                     {criterion.why}
                   </p>
                 ) : null}
@@ -307,7 +403,7 @@ function RepoMaturity({ repo }: { repo: MaturityRepo }) {
           </ul>
         </div>
       ) : (
-        <p className="border-t border-rule-soft px-3 py-2 text-[11px] text-ink-3">
+        <p className="border-t border-rule-soft px-3 py-2 text-[13px] text-ink-3">
           Top tier. The model has nothing further to ask for — which is a
           statement about the model, not a claim that the work is finished.
         </p>
@@ -316,10 +412,10 @@ function RepoMaturity({ repo }: { repo: MaturityRepo }) {
       {/* Every criterion, not only the blocking ones: spec 10 §6 forbids a
           derived label whose working cannot be inspected. */}
       <details className="border-t border-rule-soft px-3 py-2">
-        <summary className="cursor-pointer font-mono text-[10px] text-ink-3">
+        <summary className="cursor-pointer font-mono text-[12px] text-ink-3">
           All {repo.criteria.length} criteria
         </summary>
-        <table className="mt-2 w-auto border-collapse font-mono text-[10px]">
+        <table className="mt-2 w-auto border-collapse font-mono text-[12px]">
           <tbody>
             {repo.criteria.map((criterion) => (
               <tr key={criterion.key}>

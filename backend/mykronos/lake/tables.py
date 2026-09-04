@@ -60,6 +60,35 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     ("first_seen_at", "TIMESTAMP"),
     ("last_seen_at", "TIMESTAMP"),
     ("resolved_at", "TIMESTAMP"),
+    # Who this is addressed to (spec 24 §1). Two columns rather than one
+    # nullable string: "nobody owns this" and "we never worked out who owns
+    # this" are different problems with different fixes, and a reader of a
+    # single blank column cannot tell which they are looking at.
+    # `owner_source` is codeowners | profile | manual | unresolved.
+    # What the reporting tool said this is, taxonomically (spec 28 §1). JSON
+    # array of `CWE-89`-shaped strings. Spec 18 §6 explained the Threat Model
+    # tab's capability-level mapping by saying no finding carries a structured
+    # CWE — true of this schema until now, and never true of the SARIF at the
+    # door, which `adapters/sarif.py` was reading one property from and
+    # discarding the rest of.
+    ("cwe_ids_json", "VARCHAR"),
+    ("owner", "VARCHAR"),
+    ("owner_source", "VARCHAR"),
+    # When this is due, and who set that date (spec 24 §2). Absent from the
+    # compaction update set on purpose: like first_seen_at, a due date is
+    # fixed at first sight, so re-running a scanner does not hand a
+    # sixty-day-old finding a fresh thirty days. `due_source` is
+    # kev | policy | manual.
+    ("due_at", "TIMESTAMP"),
+    ("due_source", "VARCHAR"),
+    # An acceptance with a review date, and the premise it rests on
+    # (spec 24 §3). Written only by the disposition endpoint, never by
+    # ingest, and absent from the compaction update set so a re-scan cannot
+    # clear them. `accepted_reason_code` is what makes an acceptance
+    # revisitable by a machine: "no vendor fix" as prose is a sentence, and
+    # as a code it is a claim a later scan can contradict.
+    ("accepted_until", "DATE"),
+    ("accepted_reason_code", "VARCHAR"),
     ("raw_finding_json", "VARCHAR"),
 ]
 
@@ -84,6 +113,12 @@ SCAN_RUNS_COLUMNS: Final[list[Column]] = [
     # no GRANDFATHERED entry in the schema-drift guard (D-052): a column
     # that's fine to be absent on an old row needs neither.
     ("detail", "VARCHAR"),
+    # Coverage where the runner reported it, 0..1 (spec 31 §4). NULL means the
+    # report did not carry it, which is not the same fact as 0.0 — the runner
+    # measured and found none. Explicitly not a security metric: it is context
+    # that stops a green pass rate being read as more than it is.
+    ("line_coverage", "DOUBLE"),
+    ("branch_coverage", "DOUBLE"),
 ]
 
 RISK_DECISIONS_COLUMNS: Final[list[Column]] = [
@@ -185,8 +220,106 @@ REMEDIATION_EVENTS_COLUMNS: Final[list[Column]] = [
     # verdicts a human ever gives this platform.
     ("pr_status", "VARCHAR"),
     ("rationale", "VARCHAR"),
+    # Which fixer produced this (spec 25 §3.1). Held in memory since spec 08
+    # and never stored, so "does this fixer work" could not be asked. It is
+    # the name only — the generated file content stays out of the lake, which
+    # is what `StageOutcome.fix_files`'s comment is actually about.
+    ("fixer_name", "VARCHAR"),
+    # Why somebody closed this fix without merging it (spec 25 §3.3).
+    # `fix_was_wrong` stops this fixer offering the same change for the same
+    # rule here; `fix_was_unwanted` dampens nothing at all, because a correct
+    # fix nobody wanted is a scheduling disagreement rather than a defect.
+    # `unstated` is recorded as itself rather than guessed at.
+    ("rejection_reason_code", "VARCHAR"),
+    ("rejection_reason", "VARCHAR"),
+    # Did the fix work? (spec 25 §1, §2). Written across three moments by
+    # three different writers — the webhook records the merge commit, the
+    # verification job records the dispatch, and the resolver records the
+    # verdict — so every one of them coalesces rather than overwrites.
+    #
+    # `verification_outcome` is pending | verified_fixed | still_open |
+    # not_scanned | inconclusive. `inconclusive` is a real answer and is
+    # reported as one: folding a failed verifying scan into `still_open`
+    # would slander a fix that may well have worked, and folding it into
+    # `verified_fixed` would flatter one that may not have.
+    ("verification_commit_sha", "VARCHAR"),
+    ("verification_dispatched_at", "TIMESTAMP"),
+    ("verification_scan_run_id", "VARCHAR"),
+    ("verification_outcome", "VARCHAR"),
+    ("verified_at", "TIMESTAMP"),
+    ("time_to_verified_seconds", "INTEGER"),
     ("created_at", "TIMESTAMP"),
     ("updated_at", "TIMESTAMP"),
+]
+
+#: A test that exists because of a finding (spec 31 §1).
+#:
+#: The one link in this platform that points from a vulnerability to the thing
+#: that would notice it coming back. Everything else records what was found;
+#: this records what was learned.
+FINDING_TESTS_COLUMNS: Final[list[Column]] = [
+    ("link_id", "VARCHAR"),
+    ("finding_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    #: The JUnit `classname.name`, as the runner reports it.
+    ("test_identifier", "VARCHAR"),
+    #: unit | functional | qa — which lane runs it.
+    ("capability", "VARCHAR"),
+    #: `asserted` = somebody said this test covers that finding.
+    #: `demonstrated` = the platform watched it fail against the vulnerable
+    #: code and pass against the fixed code. Both are useful; they are not the
+    #: same claim and are never displayed as one.
+    ("evidence", "VARCHAR"),
+    ("linked_by", "VARCHAR"),
+    ("linked_at", "TIMESTAMP"),
+    #: When the lane that runs this test last completed successfully. Not
+    #: per-test: the JUnit adapter records suite totals, not case names
+    #: (D-046), so this catches "the suite stopped running" and cannot catch
+    #: "this one test was deleted". Said here because a coverage number that
+    #: only ever goes up is the failure mode this column exists to limit.
+    ("lane_last_green_at", "TIMESTAMP"),
+    ("updated_at", "TIMESTAMP"),
+]
+
+#: What a repository actually resolved to (spec 29 §1).
+#:
+#: The SBOM has been generated on every Atlas run since spec 07 and only ever
+#: archived: downloadable per repository, queryable across none of them. So the
+#: platform could not answer the one question that matters at 2am — *which of
+#: our repositories contain this package* — about data it had already
+#: collected and was storing as an opaque blob.
+#:
+#: A third read of a file the runner has already produced, not a new scan.
+#:
+#: **Rewritten per scan, keyed on content.** `component_id` hashes repo,
+#: ecosystem, name and version, so a dependency that has not changed keeps its
+#: row and its `first_seen_at`, and one that has gone stops being refreshed.
+#: That makes "when did this repository first take this version" answerable
+#: without a second table.
+SBOM_COMPONENTS_COLUMNS: Final[list[Column]] = [
+    ("component_id", "VARCHAR"),
+    ("repo_full_name", "VARCHAR"),
+    #: Provenance of the row itself: which scan of which commit saw it. An
+    #: inventory that cannot say when it was taken is one nobody can trust
+    #: under time pressure, which is the only time it gets read.
+    ("commit_sha", "VARCHAR"),
+    ("scan_run_id", "VARCHAR"),
+    ("ecosystem", "VARCHAR"),
+    ("package_name", "VARCHAR"),
+    ("package_version", "VARCHAR"),
+    #: NULL where the SBOM does not distinguish, which is most of them. Not
+    #: `false`: "Syft did not say" and "this is transitive" are different
+    #: facts and the second is a claim this platform cannot make.
+    ("direct", "BOOLEAN"),
+    #: `pkg:npm/lodash@4.17.21`. The join key that survives naming
+    #: differences between ecosystems, and empty where Syft emitted none.
+    ("purl", "VARCHAR"),
+    #: Already computed by spec 22 §1 and aggregated away into counts. Kept
+    #: per component here, because "which repository has the GPL one" is a
+    #: question the aggregate cannot answer.
+    ("license_ids_json", "VARCHAR"),
+    ("first_seen_at", "TIMESTAMP"),
+    ("observed_at", "TIMESTAMP"),
 ]
 
 TABLES: Final[dict[str, list[Column]]] = {
@@ -196,6 +329,8 @@ TABLES: Final[dict[str, list[Column]]] = {
     "insider_risk_signals": INSIDER_RISK_SIGNALS_COLUMNS,
     "sscs_evidence": SSCS_EVIDENCE_COLUMNS,
     "remediation_events": REMEDIATION_EVENTS_COLUMNS,
+    "finding_tests": FINDING_TESTS_COLUMNS,
+    "sbom_components": SBOM_COMPONENTS_COLUMNS,
 }
 
 #: Primary key per table — the column compaction upserts on.
@@ -206,6 +341,8 @@ PRIMARY_KEY: Final[dict[str, str]] = {
     "insider_risk_signals": "signal_id",
     "sscs_evidence": "evidence_id",
     "remediation_events": "event_id",
+    "finding_tests": "link_id",
+    "sbom_components": "component_id",
 }
 
 #: Timestamp whose date determines a row's Hive partition. A row stays in the
@@ -218,6 +355,11 @@ PARTITION_SOURCE: Final[dict[str, str]] = {
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
     "remediation_events": "created_at",
+    "finding_tests": "linked_at",
+    # `first_seen_at`, so a component that has been present for a year stays
+    # in the partition it arrived in and a rescan rewrites one known
+    # partition rather than migrating thousands of rows every week.
+    "sbom_components": "first_seen_at",
 }
 
 #: Timestamp that orders two writes of the same key within one compaction
@@ -230,6 +372,8 @@ MUTATION_TS: Final[dict[str, str]] = {
     "insider_risk_signals": "evaluated_at",
     "sscs_evidence": "evaluated_at",
     "remediation_events": "updated_at",
+    "finding_tests": "updated_at",
+    "sbom_components": "observed_at",
 }
 
 
@@ -257,7 +401,27 @@ PATCH_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
     "sscs_evidence": ("tag_or_release", "sbom_ref"),
     # The webhook sets pr_status long after the pipeline set everything else,
     # and a later pipeline run must not blank the PR it already opened.
-    "remediation_events": ("pr_status", "fix_pr_number", "fix_pr_url"),
+    "finding_tests": ("lane_last_green_at", "evidence"),
+    # Nothing. Every component row is written whole by one SBOM read, so
+    # there is no partial writer to coalesce against.
+    "sbom_components": (),
+    "remediation_events": (
+        "pr_status",
+        "fix_pr_number",
+        "fix_pr_url",
+        # Spec 25 §2 — see the compaction update set for why each of these
+        # coalesces. Declared here too so a dispatch and a verdict landing in
+        # one five-minute compaction window do not cost the earlier one.
+        "fixer_name",
+        "rejection_reason_code",
+        "rejection_reason",
+        "verification_commit_sha",
+        "verification_dispatched_at",
+        "verification_scan_run_id",
+        "verification_outcome",
+        "verified_at",
+        "time_to_verified_seconds",
+    ),
 }
 
 

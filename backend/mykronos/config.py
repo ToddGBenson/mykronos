@@ -117,6 +117,63 @@ class Settings(BaseSettings):
         ),
     )
 
+    weekly_digest_interval_seconds: int = Field(
+        default=604_800,
+        ge=1,
+        description=(
+            "The per-owner worklist digest (spec 27 §4). Weekly, matching what "
+            "it is: a digest that arrived daily would be a notification, and a "
+            "notification people receive daily about work that moves weekly is "
+            "one they filter."
+        ),
+    )
+
+    digest_enabled: bool = Field(
+        default=False,
+        description=(
+            "Off unless a deployment opts in, on the same principle as "
+            "`routing_enabled`: this one messages people, and doing that the "
+            "moment the platform is upgraded is not its decision to make."
+        ),
+    )
+
+    fix_verification_interval_seconds: int = Field(
+        default=1_800,
+        ge=1,
+        description=(
+            "Dispatches a scan of each landed fix's merge commit and reads "
+            "the verdict (spec 25 §1). Half-hourly: the dispatch should follow "
+            "the merge closely enough to be about that change, and the "
+            "resolver needs to run often enough to catch a scan that lands "
+            "minutes later."
+        ),
+    )
+
+    acceptance_sweep_interval_seconds: int = Field(
+        default=86_400,
+        ge=1,
+        description=(
+            "Expires acceptances past their review date and re-opens any "
+            "accepted as 'no vendor fix' once a scan reports one (spec 24 §3). "
+            "Daily, because `accepted_until` is a date — a shorter interval "
+            "would re-read the same day repeatedly."
+        ),
+    )
+
+    governance_sweep_interval_seconds: int = Field(
+        default=21_600,
+        ge=1,
+        description=(
+            "Re-reads every onboarded repository's change controls and records "
+            "any that moved (spec 30). Six-hourly: a control coming off is a "
+            "security regression somebody made deliberately, and detection "
+            "that waits a day is detection somebody else finds first. Also "
+            "what keeps the stored posture inside the 14-day staleness window "
+            "Oracle scores against, which until now depended on a person "
+            "opening the panel."
+        ),
+    )
+
     insider_risk_default_retention_days: int = Field(
         default=90,
         ge=1,
@@ -279,13 +336,27 @@ class Settings(BaseSettings):
     mykronos_package_spec: str = Field(
         default=(
             "mykronos @ git+https://github.com/ToddGBenson/mykronos"
-            "@v1#subdirectory=backend"
+            "@cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
+            "#subdirectory=backend"
         ),
         description=(
-            "pip requirement the Aegis and Atlas workflows install to get the "
-            "signal collectors and adapters (spec 04 §4). Pinned to a tag for "
-            "the same reason the upload action is: every onboarded repo "
-            "depends on it, so it must never resolve to a moving branch."
+            "pip requirement the Aegis, Atlas, AI and SAST workflows install "
+            "to get the signal collectors and adapters (spec 04 §4). Pinned "
+            "to a tag for the same reason the upload action is: every "
+            "onboarded repo depends on it, so it must never resolve to a "
+            "moving branch. "
+            "This sat at `v1` while the pipelines had moved to `v7` and the "
+            "tag series had reached `v7` - the second half of D-051, in a "
+            "setting nobody thought to look at. The cost was specific: the "
+            "four templates that install this do so BEFORE the upload action "
+            "runs, and `pip install` of an already-present package is a "
+            "no-op, so a `v1` install here silently downgraded the uploader "
+            "the action had been pinned to. `ai` and `atlas` then died on "
+            "`--capability: invalid choice` - two capabilities that did not "
+            "exist in v1 - while `sast` and `aegis` survived because v1 "
+            "happened to know them. "
+            "Keep this and `upload_action_ref` on the same tag. They install "
+            "the same package into the same job, and the first one wins."
         ),
     )
 
@@ -312,6 +383,36 @@ class Settings(BaseSettings):
         ),
     )
 
+    governance_policy_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "governance-policy-v1.yaml",
+        description=(
+            "Per-control governance weights (spec 26 §4). A setting rather "
+            "than a bare module-relative path, and the distinction is not "
+            "cosmetic: `Path(__file__).parents[2]` is the repository root "
+            "from a checkout and `/usr/local/lib/python3.13` from an "
+            "installed wheel. The deployed backend therefore looked for this "
+            "beside the standard library, did not find it, logged "
+            "'no score computed' at WARNING, and returned an empty weight "
+            "table - so every governance score in production was computed "
+            "from nothing while every test computed one correctly. Same "
+            "shape as D-052: right in every checkout, wrong in every "
+            "deployment, and quiet in both."
+        ),
+    )
+
+    stride_map_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "stride-map-v1.yaml",
+        description=(
+            "CWE-to-STRIDE taxonomy (spec 27 §3). Same packaging trap as "
+            "`governance_policy_path`, and softer consequences by design - "
+            "its loader treats absence as a real state rather than an error - "
+            "but it was absent for the same wrong reason rather than the "
+            "intended one."
+        ),
+    )
+
     ingestion_api_url: str = Field(
         default="http://localhost:8100",
         description=(
@@ -320,6 +421,32 @@ class Settings(BaseSettings):
             "host this runs on. Must be publicly resolvable in any real "
             "deployment: GitHub-hosted runners POST findings to it, and "
             "unlike the webhook there is no fallback path if they cannot."
+        ),
+    )
+
+    ci_status_cache_seconds: float = Field(
+        default=60.0,
+        description=(
+            "How long a GitHub Actions status read is reused before asking "
+            "again (spec 32 §7.1). Reading Actions spends the installation's "
+            "rate limit, which token rotation, the installer and Patchwork "
+            "all share and all need more than a status panel does. Successes "
+            "only are cached, so an outage is retried rather than pinned. "
+            "Zero disables reuse, which is honest for a test and wasteful in "
+            "a deployment."
+        ),
+    )
+
+    vault_url: str = Field(
+        default="",
+        description=(
+            "Where this process reaches Vault, for `mykronos self-check` "
+            "(spec 32 §8.1). Read-only and unauthenticated: `/v1/sys/health` "
+            "needs no token and reports whether Vault is sealed, which is the "
+            "state that matters — it comes back sealed after every restart, "
+            "and until somebody unseals it Concourse cannot resolve any "
+            "`((var))`. Empty disables the check, which is right for a "
+            "deployment with no Vault."
         ),
     )
 
@@ -366,7 +493,7 @@ class Settings(BaseSettings):
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"
-            "8b329fc5c1f739eab8ad40b8a7628da7cd1ee935"  # v1
+            "cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
         ),
         description=(
             "Commit-pinned reference to the shared upload composite action "
@@ -378,6 +505,14 @@ class Settings(BaseSettings):
             "The `mykronos-ref` input is derived from the part after `@`, so "
             "pinning here also pins the package the action installs; the two "
             "cannot drift.\n\n"
+            "This pin was stale, and stale in exactly the way D-051 "
+            "describes. It named a commit whose `Capability` enum predates "
+            "the quality stages, so `qa`, `unit`, `functional` and `ai` "
+            "uploads died on `--capability: invalid choice` after the scan "
+            "had already run — four capabilities the platform believed were "
+            "enabled and which could never report. Worse, the commit it named "
+            "carried a `# v1` comment and is not v1: it is untagged, so the "
+            "comment described a pin nobody could verify by looking.\n\n"
             "WHEN UPDATING: v1 is an ANNOTATED tag, so the tag-object SHA "
             "(926d214…) is NOT the commit. Dereference it — "
             "`gh api repos/ToddGBenson/mykronos/commits/v1 --jq .sha` — or you "

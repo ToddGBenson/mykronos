@@ -41,7 +41,7 @@ export function DecisionsTab({
   if (decisions.length === 0) {
     return (
       <EmptyState
-        title="Oracle has not judged this repository"
+        title="No risk decision for this repository yet"
         detail={
           <>
             Enable the <span className="font-mono">oracle</span> capability to
@@ -62,7 +62,7 @@ export function DecisionsTab({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-baseline gap-3 text-[11px]">
+      <div className="flex flex-wrap items-baseline gap-3 text-[13px]">
         <Label>
           {decisions.length} decision{decisions.length === 1 ? "" : "s"} for{" "}
           {repoFullName}
@@ -99,7 +99,7 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
         />
         <ScoreMeter score={decision.overall_risk_score} />
 
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {DECISION_TYPE_LABEL[decision.decision_type] ?? decision.decision_type}
           {decision.pr_number ? ` #${decision.pr_number}` : ""}
           {decision.release_tag ? ` ${decision.release_tag}` : ""}
@@ -114,26 +114,34 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
 
         {override ? <Pill tone="accent">overridden</Pill> : null}
 
-        <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-ink-3">
+        <span className="ml-auto whitespace-nowrap font-mono text-[12px] text-ink-3">
           <RelativeTime value={decision.evaluated_at} />
         </span>
       </div>
 
       {/* Capped rather than full-bleed: on a wide screen an uncapped line of
           reasoning is a single 250-character row nobody finishes reading. */}
-      <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
         {decision.reasoning}
       </p>
 
       {terms.length > 0 ? (
         <div className="border-t border-rule-soft px-3 py-2">
           <Label>How this score was reached</Label>
-          <table className="mt-1.5 w-auto border-collapse font-mono text-[10px]">
+          <table className="mt-1.5 w-auto border-collapse font-mono text-[12px]">
             <tbody>
               {terms.map((term) => (
                 <tr key={term.label}>
-                  <td className="tabular w-14 py-0.5 pr-3 text-right text-ink">
-                    +{term.contribution.toFixed(1)}
+                  {/* Signed, because the model can now subtract as well as
+                      add (spec 26 §2), and a credit rendered as `+-1.5` reads
+                      as a formatting bug rather than as points earned back. */}
+                  <td
+                    className={`tabular w-14 py-0.5 pr-3 text-right ${
+                      term.contribution < 0 ? "text-pass" : "text-ink"
+                    }`}
+                  >
+                    {term.contribution < 0 ? "−" : "+"}
+                    {Math.abs(term.contribution).toFixed(1)}
                   </td>
                   <td className="py-0.5 pr-6 text-ink-2">{term.label}</td>
                   <td className="py-0.5 text-ink-3">{term.detail}</td>
@@ -160,10 +168,10 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
       {override ? (
         <div className="border-t border-rule-soft bg-accent-wash px-3 py-2">
           <Label>Override</Label>
-          <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+          <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
             {override.reason}
           </p>
-          <p className="mt-1 font-mono text-[10px] text-ink-3">
+          <p className="mt-1 font-mono text-[12px] text-ink-3">
             {override.overridden_by} · {override.original_recommendation} →{" "}
             {override.accepted_recommendation} ·{" "}
             <RelativeTime value={override.overridden_at} />
@@ -179,7 +187,7 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
         />
       )}
 
-      <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[9px] text-ink-3">
+      <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
         policy {decision.policy_version} · {decision.decision_id}
         {decision.github_check_run_id
           ? ` · check run ${decision.github_check_run_id}`

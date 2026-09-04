@@ -61,6 +61,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: << config.timeout_minutes | default(20) >>
 
+    # A cancelled upstream run is a superseded one - `cancel-in-progress` on
+    # the scanners means a newer run of that same scanner is already on its
+    # way, and it will fire this workflow again when it lands. Reacting to the
+    # cancellation as well is always duplicated work, and it is the larger
+    # half of an amplification measured on 2026-08-29: 25 oracle runs and 17
+    # patchwork runs for a single commit.
+    #
+    # `workflow_run` fires on `types: [completed]`, and "completed" includes
+    # cancelled and skipped - a distinction easy to miss, because the trigger
+    # reads as though it means "finished successfully".
+    #
+    # Deliberately not gated on `== 'success'`. A scanner that FAILED still
+    # uploads its ScanRun (`if: always()` on the upload step), so its findings
+    # are in the lake and a decision made without them would be a decision
+    # made on stale data. Failed upstreams must still reach this gate.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      !contains(fromJSON('["cancelled", "skipped"]'),
+                github.event.workflow_run.conclusion)
+
     steps:
       - name: Ask Patchwork for a run
         env:

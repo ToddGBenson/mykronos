@@ -7,6 +7,7 @@ that is a trust question.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -36,6 +37,77 @@ class TestTheHardConstraint:
                 "this capability from the interface. Adding it needs a "
                 "separately-reviewed design change, not a passing test."
             )
+
+    def test_no_fix_generator_setting_exists_anywhere(self) -> None:
+        """D-096. `fix_generator_url` was validated, persisted, exposed through
+        the API and threaded into the pipeline, and never used to make a
+        request — its only effect was choosing a rationale sentence. Withdrawn
+        rather than implemented, so nothing may claim it again without
+        reversing that decision."""
+        from mykronos.api import patchwork as patchwork_api
+        from mykronos.capabilities import PatchworkConfig
+        from mykronos.patchwork.pipeline import PatchworkPipeline
+
+        assert "fix_generator_url" not in PatchworkConfig.model_fields
+        assert not hasattr(PatchworkPipeline, "fix_generator_url")
+
+        signature = inspect.signature(PatchworkPipeline.__init__)
+        assert "fix_generator_url" not in signature.parameters
+
+        source = inspect.getsource(patchwork_api)
+        assert "config.get(\"fix_generator_url\")" not in source
+
+    def test_a_config_still_carrying_the_withdrawn_key_can_be_saved(self) -> None:
+        """The models are `extra=forbid` and the read path does not validate,
+        so a repo configured before the withdrawal keeps the dead key in its
+        stored JSON. The next save echoes it back, and rejecting it would fail
+        on a field the operator cannot see or remove."""
+        from mykronos.capabilities import validate_config
+
+        saved = validate_config(
+            "patchwork",
+            {
+                "fix_generator_url": "https://example.invalid/fix",
+                "min_confidence_to_generate_fix": 0.8,
+            },
+        )
+
+        assert "fix_generator_url" not in saved
+        assert saved["min_confidence_to_generate_fix"] == 0.8
+
+    def test_an_unknown_key_is_still_refused(self) -> None:
+        """Retirement is a named exception, not a hole in `extra=forbid`."""
+        from mykronos.capabilities import CapabilityConfigError, validate_config
+
+        with pytest.raises(CapabilityConfigError):
+            validate_config("patchwork", {"not_a_real_setting": 1})
+
+    def test_no_setting_anywhere_claims_the_platform_can_merge(self) -> None:
+        """D-095. `auto_merge_workflow_prs` was stored, returned by the API and
+        rendered nowhere — and could never act, because the method it would
+        need does not exist. A settable option that contradicts a refusal is
+        worse than no option: it tells an operator the platform will do
+        something it structurally cannot.
+        """
+        from mykronos.api import repos
+        from mykronos.db import models
+        from mykronos.db.session import RETIRED_COLUMNS
+
+        assert ("repo_onboardings", "auto_merge_workflow_prs") in RETIRED_COLUMNS
+
+        for module in (models, repos):
+            for name in dir(module):
+                attribute = getattr(module, name)
+                fields = getattr(attribute, "model_fields", None) or getattr(
+                    getattr(attribute, "__table__", None), "columns", None
+                )
+                for field in fields or ():
+                    field_name = getattr(field, "name", field)
+                    assert "auto_merge" not in str(field_name), (
+                        f"{module.__name__}.{name} still carries {field_name}. "
+                        "spec 03 §5 records auto-merge as refused by design; "
+                        "re-introducing it needs that decision reversed first."
+                    )
 
     def test_neither_implementation_has_one_either(self) -> None:
         from mykronos.github.client import RestGitHubClient
@@ -437,7 +509,12 @@ class TestPipeline:
             "SELECT pipeline_stage_reached, rationale FROM remediation_events"
         )[0]
         assert stage == "no_fix_available"
-        assert "no fix generator endpoint is configured" in rationale
+        # D-096: one sentence, because there is one generator. The rationale
+        # used to add "and no fix generator endpoint is configured for this
+        # deployment", which invited the operator to configure one — and
+        # configuring one changed this sentence and nothing else.
+        assert "No deterministic fixer matches this finding." in rationale
+        assert "generator" not in rationale
 
     def test_a_low_finding_is_not_worth_a_draft_pr(
         self, client, admin_auth, patchwork_auth, run_compaction, catalog
@@ -1029,3 +1106,99 @@ class TestOracleSeesFixesInFlight:
         )
 
         assert engine.evaluate(REPO).overall_risk_score > 0
+
+
+class TestRemediationCoverageIsStated:
+    """B-021. Across 560 remediation events on this estate, nothing has ever
+    reached `fix_generated`. That is correct -- four deterministic fixers
+    against a backlog of container, DAST and SAST findings -- and it looks
+    exactly like a broken capability.
+
+    An empty efficacy table means one of two opposite things: nothing was
+    fixable, or fixes were attempted and did not remove risk. The table alone
+    cannot say which, so the page says it.
+    """
+
+    def test_coverage_names_every_fixer(self) -> None:
+        """The page cannot silently fall behind the code: a fixer added
+        without a coverage line would be invisible to a reader."""
+        from mykronos.patchwork.fixers import COVERAGE, FIXERS
+
+        assert {entry["fixer"] for entry in COVERAGE} == {name for name, _ in FIXERS}
+
+    def test_every_coverage_entry_says_what_it_handles(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
+
+        for entry in COVERAGE:
+            assert entry["handles"].strip()
+            assert entry["capability"].strip()
+        for entry in NOT_COVERED:
+            assert entry["why"].strip(), (
+                "an absence stated is different from an absence inferred from "
+                "a blank table, and the difference is the reason"
+            )
+
+    def test_a_capability_is_not_both_covered_and_not_covered(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
+
+        covered = {entry["capability"] for entry in COVERAGE}
+        uncovered = {entry["capability"] for entry in NOT_COVERED}
+
+        assert not (covered & uncovered), (
+            f"{sorted(covered & uncovered)} is listed as both, so the page "
+            "would contradict itself"
+        )
+
+    def test_with_nothing_to_measure_the_page_says_so(
+        self, client, admin_auth
+    ) -> None:
+        """The state this estate is actually in."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert body["measured"] is False
+        assert "nothing to measure" in body["note"]
+        assert "not the same as fixes that did not work" in body["note"]
+        assert body["coverage"]["fixer_count"] == 4
+        assert body["coverage"]["covered"]
+        assert body["coverage"]["not_covered"]
+
+    def test_coverage_names_what_is_actually_piling_up(
+        self, client, admin_auth
+    ) -> None:
+        """`covered`/`not_covered` say which classes have a fixer in the
+        abstract. `unfixed_by_rule` says what is accumulating without one,
+        which is the number that tells somebody whether writing a fixer would
+        repay the effort — 26 findings of one rule is an argument, one finding
+        of twenty-six rules is not."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert "unfixed_by_rule" in body["coverage"]
+        assert isinstance(body["coverage"]["unfixed_by_rule"], list)
+
+    def test_the_unfixable_breakdown_is_true_positives_only(
+        self, catalog, buffer, run_compaction
+    ) -> None:
+        """A `likely_false_positive` with no fixer does not need one — it
+        needs dispositioning (B-020). Counting it here would argue for writing
+        a fixer for findings that are not defects."""
+        from mykronos.api.patchwork import _unfixed_by_rule
+
+        source = inspect.getsource(_unfixed_by_rule)
+        assert "triage_classification = 'true_positive'" in source
+        assert "f.status = 'open'" in source, (
+            "a rule whose findings are all closed is not piling up"
+        )
+
+    def test_coverage_is_carried_whether_or_not_anything_was_measured(
+        self, client, admin_auth
+    ) -> None:
+        """Beside the numbers, not instead of them: a reader needs it most
+        when the table is empty, and it must not vanish once it fills."""
+        body = client.get("/api/patchwork/efficacy", headers=admin_auth).json()
+
+        assert set(body["coverage"]) == {
+            "covered",
+            "not_covered",
+            "fixer_count",
+            "unfixed_by_rule",
+        }

@@ -73,6 +73,69 @@ class TestGitHubActionsDispatch:
         assert body["failed"] == []
         assert "No scanning capability" in body["detail"]
 
+    def test_asking_for_a_capability_this_repo_lacks_names_it(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """The refusal must not claim the repo has nothing enabled when it does.
+
+        Found on the platform's own repository: eleven capabilities enabled,
+        `dast` reporting findings every twenty minutes, and asking to run DAST
+        answered "No scanning capability is enabled for ToddGBenson/mykronos."
+        That sentence sent me to the repository's capability list, which was
+        not where the answer was.
+        """
+        repo_id = onboard(client, admin_auth).json()["id"]
+        patch = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        ).json()
+        deliver(
+            client,
+            "pull_request",
+            {
+                "action": "closed",
+                "pull_request": {
+                    "number": patch["pull_request_number"],
+                    "merged": True,
+                    "head": {"ref": "mykronos/enable-workflows-20260808T000000"},
+                },
+                "repository": {"full_name": REPO},
+            },
+        )
+
+        response = client.post(
+            f"/api/repos/{repo_id}/scan?capabilities=dast", headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        detail = response.json()["detail"]
+        assert "dast" in detail
+        # The part that was actively wrong before.
+        assert "No scanning capability is enabled" not in detail
+        # And it points at what you *can* run instead of leaving you guessing.
+        assert "sast" in detail
+
+    def test_a_reporting_lane_says_it_cannot_be_triggered(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """`aegis` and friends are not buttons, and enabling them never will be.
+
+        Distinct from the case above: there the capability was dispatchable
+        and absent, here it is present-in-spirit and undispatchable by design.
+        Collapsing the two into one message is what made the original wrong.
+        """
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.post(
+            f"/api/repos/{repo_id}/scan?capabilities=aegis", headers=admin_auth
+        )
+
+        assert response.status_code == 200
+        detail = response.json()["detail"]
+        assert "aegis" in detail
+        assert "cannot be dispatched on demand" in detail
+
     def test_an_offboarded_repo_is_409(
         self, client: TestClient, admin_auth: dict[str, str]
     ) -> None:

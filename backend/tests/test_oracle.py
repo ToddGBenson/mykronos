@@ -53,7 +53,7 @@ def critical(index: int = 0, **overrides):
 
 class TestPolicyValidation:
     def test_the_shipped_policy_loads(self, policy) -> None:
-        assert policy.version == "1.4"
+        assert policy.version == "1.9"
         assert policy.severity_weights["critical"] == 40
 
     def test_an_unknown_curve_is_refused(self) -> None:
@@ -218,6 +218,92 @@ class TestThresholds:
         assert engine.evaluate(REPO).recommendation == recommendation
 
 
+class TestAcceptedRisk:
+    """An acceptance is a decision with a premise, and the premise expires.
+
+    Accepted findings are excluded from every open count, which is right: a
+    risk somebody consciously took is not one nobody has looked at. That
+    exclusion is *earned* by acceptances that are decisions — and on the live
+    estate, 294 of 294 acceptances had no grounds and no review date, moved out
+    of the counts by a status somebody set once and never asked about again.
+    """
+
+    def _accept(self, catalog, finding_id, *, until=None, reason=None) -> None:
+        from tests.test_lake import set_status
+
+        set_status(catalog, finding_id, "accepted_risk")
+        with catalog.connect() as con:
+            from mykronos.lake.catalog import sql_path
+
+            pattern = sql_path(catalog.table_dir("findings") / "dt=*" / "*.parquet")
+            target = catalog.all_files("findings")[0]
+            con.execute(
+                f"CREATE TEMP TABLE fix AS SELECT * EXCLUDE (dt) FROM read_parquet('{pattern}', "
+                "hive_partitioning = 1, union_by_name = 1)"
+            )
+            con.execute(
+                "UPDATE fix SET accepted_until = ?, accepted_reason_code = ? "
+                "WHERE finding_id = ?",
+                [until, reason, finding_id],
+            )
+            con.execute(f"COPY fix TO '{sql_path(target)}' (FORMAT parquet)")
+
+    def _terms(self, decision) -> dict[str, float]:
+        return {
+            term["key"]: term["contribution"]
+            for term in decision.inputs_snapshot["terms"]
+        }
+
+    def test_an_unqualified_acceptance_is_scored(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        """No grounds, no review date — indistinguishable in effect from
+        ignoring it, and invisible to the score until now."""
+        seed(client, auth, run_compaction, [critical(0)])
+        (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
+        self._accept(catalog, finding_id)
+
+        terms = self._terms(engine.evaluate(REPO))
+
+        assert "accepted.unqualified" in terms
+        assert terms["accepted.unqualified"] > 0
+
+    def test_a_real_decision_costs_nothing(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        """Grounds recorded and a future review date. This is the acceptance
+        the exclusion from the open counts exists for, and scoring it would
+        punish the team that did the paperwork."""
+        seed(client, auth, run_compaction, [critical(0)])
+        (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
+        self._accept(
+            catalog, finding_id, until="2099-01-01", reason="no_vendor_fix"
+        )
+
+        terms = self._terms(engine.evaluate(REPO))
+
+        assert "accepted.unqualified" not in terms
+        assert "accepted.expired" not in terms
+
+    def test_an_expired_acceptance_costs_more(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        """Worse than never setting a date: somebody committed to revisiting
+        this and the date went by."""
+        seed(client, auth, run_compaction, [critical(0)])
+        (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
+        self._accept(
+            catalog, finding_id, until="2020-01-01", reason="no_vendor_fix"
+        )
+
+        terms = self._terms(engine.evaluate(REPO))
+
+        assert "accepted.expired" in terms
+        assert terms["accepted.expired"] > 0
+        # Counted once, as the heavier of the two — never in both buckets.
+        assert "accepted.unqualified" not in terms
+
+
 class TestScope:
     def test_human_dispositions_are_not_rescored(
         self, client, auth, catalog, run_compaction, engine
@@ -230,7 +316,14 @@ class TestScope:
         (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
         set_status(catalog, finding_id, "accepted_risk")
 
-        assert engine.evaluate(REPO).overall_risk_score == 0
+        # Zero from the *open* counts. An unqualified acceptance is scored
+        # separately and lightly — see TestAcceptedRisk below, which is the
+        # other half of this rule.
+        decision = engine.evaluate(REPO)
+        assert not [
+            term for term in decision.inputs_snapshot["terms"]
+            if term["key"].startswith("open.")
+        ]
 
     def test_network_findings_are_excluded_from_gates_but_not_portfolio(
         self, client, catalog, run_compaction, engine
@@ -376,8 +469,8 @@ class TestSnapshotCompleteness:
         """spec 09 §10: past decisions stay reproducible after a policy change."""
         seed(client, auth, run_compaction, [critical(0)])
         decision = engine.evaluate(REPO)
-        assert decision.policy_version == "1.4"
-        assert decision.inputs_snapshot["policy_version"] == "1.4"
+        assert decision.policy_version == "1.9"
+        assert decision.inputs_snapshot["policy_version"] == "1.9"
 
 
 class TestReasoning:

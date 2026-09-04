@@ -72,6 +72,12 @@ param(
     # because a garden task container's localhost is its own, not this machine's.
     [string]$DemoUrl = "http://192.168.0.14:8002",
     [string]$ProdUrl = "http://192.168.0.14:8000",
+    # The standing staging environment, which nothing scanned until 2026-09-03.
+    # 8081, not 8009: thehub-staging-frontend is the nginx that serves the SPA
+    # and is where the missing security headers are - the backend on 8009 sets
+    # its own. Deployed out of band by TheHub's deploy.sh, so `dast-staging`
+    # runs on the daily timer rather than after a deploy job.
+    [string]$StagingUrl = "http://192.168.0.14:8081",
     [string]$ReleaseBucket = "thehub-releases",
 
     # TheHub's own API, for reporting pipeline stages into its DevSecOps and
@@ -212,14 +218,48 @@ if ($hubDeployToken) {
 }
 
 Write-Host "Minting a GitHub App installation token (valid one hour)..." -ForegroundColor Cyan
+
+# Two places this can be minted from, tried in that order, because the CLI
+# needs the operational database and there is more than one copy of it.
+#
+# The host venv is tried first: that is how this has always worked, and on a
+# machine where the backend runs locally it is the right answer.
+#
+# It stopped being the right answer here. The deployed backend keeps its
+# database in a Docker *named volume* (`mykronos_mykronos-data`), so a host
+# CLI run from this checkout opens an empty SQLite file, reports "TheHub is
+# not onboarded", and this script threw -- pointing at backend/.env, which was
+# not the problem. Meanwhile the pipeline was still being applied from a
+# sibling checkout that happened to hold a populated database from 2026-08-19,
+# which is why TheHub's `mykronos-ref` sat at v4.1 while every other pipeline
+# moved to v5 and then v6: the two copies had quietly diverged and nothing
+# compared them.
+#
+# The container is the database of record because it is the one serving
+# traffic. Falling back to it makes this script work from any checkout and
+# removes the dependency on a stale sibling nobody remembers is load-bearing.
+$ghToken = ""
 Push-Location $backend
 try {
-    $ghToken = (& ".\.venv\Scripts\python.exe" -m mykronos.cli github-token ToddGBenson/TheHub 2>$null | Select-Object -Last 1).Trim()
+    if (Test-Path ".\.venv\Scripts\python.exe") {
+        $ghToken = (& ".\.venv\Scripts\python.exe" -m mykronos.cli github-token ToddGBenson/TheHub 2>$null | Select-Object -Last 1)
+        if ($ghToken) { $ghToken = $ghToken.Trim() }
+    }
 } finally {
     Pop-Location
 }
+
 if (-not $ghToken -or -not $ghToken.StartsWith("ghs_")) {
-    throw "Did not get an installation token. Is the GitHub App configured in backend/.env?"
+    Write-Host "  host CLI has no onboarding for TheHub; asking the running backend." -ForegroundColor DarkGray
+    $ghToken = (& docker exec mykronos-backend python -m mykronos.cli github-token ToddGBenson/TheHub 2>$null | Select-Object -Last 1)
+    if ($ghToken) { $ghToken = $ghToken.Trim() }
+}
+
+if (-not $ghToken -or -not $ghToken.StartsWith("ghs_")) {
+    throw "Did not get an installation token from the host CLI or from the " +
+          "mykronos-backend container. Check the GitHub App in backend/.env, " +
+          "and that TheHub is onboarded in whichever database you expect the " +
+          "CLI to read."
 }
 
 & $fly --target $Target login --concourse-url $Concourse `
@@ -318,15 +358,18 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        # v4.1, not v4. v4 crashes on upload for every lane that reports:
-        #   upload.py:116 _warn_rotated
-        #   TypeError: can't subtract offset-naive and offset-aware datetimes
-        # The code that warns you a token was rotated was itself the code
-        # that crashed, so the warning never arrived and three jobs -
-        # secrets, sast, containers - died on 2026-08-22 with no signal.
-        # v4.1 is v4 plus that fix. The server was moved to v4.1 the same
-        # day; this file was not, so applying it would have put v4 back.
-        "mykronos-ref: v4.1",
+        #
+        # v7 — and for TheHub that is three pins in one day, from v4.1, where
+        # it had been stranded by the stale-checkout problem this script's
+        # token-minting comment describes. Nothing was wrong with TheHub; the
+        # script that applied its pipeline was being run from a copy of this
+        # repository nobody remembered was load-bearing.
+        #
+        # Held at v5 briefly because v6 sent `cwe_ids` (spec 28 §1) to a
+        # backend that forbade extra keys and 422'd the whole batch. See the
+        # ordering rule in set-pipeline.ps1: deploy the backend first, then
+        # move the pin.
+        "mykronos-ref: v7",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #
@@ -357,6 +400,7 @@ try {
         "scan-timezone: $TimeZone",
         "thehub-demo-url: $DemoUrl",
         "thehub-prod-url: $ProdUrl",
+        "thehub-staging-url: $StagingUrl",
         "thehub-release-bucket: $ReleaseBucket",
         "deploy-timeout-minutes: $DeployTimeoutMinutes",
         # Where this pipeline reports its stages back to, so TheHub's own
@@ -459,4 +503,5 @@ Write-Host "functional-dast paused: D-053, no resource budget for the scan yet."
 Write-Host "`nDelivering branch '$Branch'." -ForegroundColor Green
 Write-Host "  demo: $DemoUrl (automatic, once Oracle clears it)"
 Write-Host "  prod: $ProdUrl (waits for you to trigger deploy-prod)"
+Write-Host "  staging: $StagingUrl (dast-staging, on the daily timer)"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

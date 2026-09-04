@@ -74,10 +74,36 @@ there.
 
 ### 2.1 Current state
 
-`stale_dependencies` and `maintenance_data_available_for` exist in the schema, the trust formula has a
-live penalty term for them, the frontend labels it "Unmaintained packages" — and `atlas_counts.py`
-initializes `stale_dependencies: 0` and never increments it. osv-scanner has no last-release-date
-signal. The term has contributed exactly zero to every trust score ever computed.
+**Status: built, opt-in, and enabled nowhere.** Not "Built" without
+qualification — that reading is what B-004 was filed against.
+
+`atlas_freshness.py` works and is tested. Both CI paths can now pass
+`--check-freshness`: the Actions template gates it on `config.check_freshness`,
+and the two Concourse pipelines gate it on `ATLAS_CHECK_FRESHNESS` (added by
+B-005/B-004; the Concourse path could not pass it at all before, and both
+primary repositories are Concourse-scanned).
+
+What has not happened is anybody turning it on. `check_freshness` defaults to
+`false` and no repository overrides it, so `stale_dependencies` is still zero
+everywhere — because nothing has been measured, not because nothing is stale.
+That stays a per-repo decision: the pass queries the npm and PyPI registries
+for each package's last publish date, which spec 07 §7 requires be opted into
+rather than assumed.
+
+**The dashboard now says which zero it is.** The `stale_dependencies` score
+term is always emitted, in three states: not measured (rendered `—`, the same
+treatment an unreadable provenance term gets under spec 29 §3), measured and
+clean (`0/N`), or measured and scoring. Previously the term was emitted only
+when it scored, so "nobody asked" and "asked, nothing stale" were both the
+term being absent.
+
+The original finding, which still describes why the term existed and did
+nothing:
+
+> `stale_dependencies` and `maintenance_data_available_for` exist in the schema, the trust formula has a
+> live penalty term for them, the frontend labels it "Unmaintained packages" — and `atlas_counts.py`
+> initializes `stale_dependencies: 0` and never increments it. osv-scanner has no last-release-date
+> signal. The term has contributed exactly zero to every trust score ever computed.
 
 ### 2.2 What ships
 

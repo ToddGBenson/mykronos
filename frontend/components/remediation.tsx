@@ -63,7 +63,7 @@ export function RemediationTab({
   if (events.length === 0) {
     return (
       <EmptyState
-        title="Patchwork has not run here"
+        title="Auto-remediation has not run here"
         detail={
           <>
             Enable the <span className="font-mono">patchwork</span> capability
@@ -86,12 +86,12 @@ export function RemediationTab({
     <div className="flex flex-col gap-3">
       <div className="border-l-2 border-accent bg-accent-wash px-3 py-2">
         <Label>The guarantee</Label>
-        <p className="mt-1 max-w-prose text-[11px] leading-relaxed text-ink-2">
+        <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
           {note}
         </p>
       </div>
 
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[10px] text-ink-3">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[12px] text-ink-3">
         <span>{events.length} finding(s) considered</span>
         <span>{openDraftPrs} awaiting review</span>
         {merged > 0 ? <span className="text-pass">{merged} merged</span> : null}
@@ -129,23 +129,23 @@ function EventCard({ event }: { event: RemediationEvent }) {
         </Pill>
 
         {isCombination ? (
-          <span className="font-mono text-[10px] text-ink-3">
+          <span className="font-mono text-[12px] text-ink-3">
             {(event.contributing_finding_ids ?? []).length} findings together
           </span>
         ) : (
-          <span className="font-mono text-[10px] text-ink-3">
+          <span className="font-mono text-[12px] text-ink-3">
             {event.finding_id.slice(0, 12)}
           </span>
         )}
 
-        <span className="font-mono text-[10px] text-ink-3">
+        <span className="font-mono text-[12px] text-ink-3">
           {event.triage_classification.replace(/_/g, " ")}
         </span>
 
         {event.fix_pr_number ? (
           <a
             href={event.fix_pr_url ?? "#"}
-            className="font-mono text-[10px] text-accent underline-offset-2 hover:underline"
+            className="font-mono text-[12px] text-accent underline-offset-2 hover:underline"
           >
             #{event.fix_pr_number}
           </a>
@@ -157,12 +157,12 @@ function EventCard({ event }: { event: RemediationEvent }) {
           </Pill>
         ) : null}
 
-        <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-ink-3">
+        <span className="ml-auto whitespace-nowrap font-mono text-[12px] text-ink-3">
           <RelativeTime value={event.updated_at as string | null} />
         </span>
       </div>
 
-      <p className="max-w-prose px-3 py-2 text-[11px] leading-relaxed text-ink-2">
+      <p className="max-w-prose px-3 py-2 text-[14px] leading-relaxed text-ink-2">
         {event.rationale}
       </p>
 

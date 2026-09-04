@@ -1,0 +1,23 @@
+{% extends "_test_lane.yml.j2" %}
+{#-
+  Functional tests against a deployed lower environment (D-046, PIP-2).
+
+  The traffic these generate is the input to proxy-first DAST: a functional
+  suite already knows how to log in and drive a multi-step flow, which is the
+  surface a spider starting at the login page never reaches (PIP-3).
+
+  `proxy_through_dast` is carried into the environment rather than acted on
+  here. Actions has no long-lived ZAP instance for a workflow to route
+  through — that is the Concourse lane's arrangement — so what this can
+  honestly do is tell the suite where the proxy is when one is configured, and
+  say nothing when one is not. Pretending otherwise would be a workflow that
+  claims a DAST corpus it never produced.
+-#}
+{% block extra_env %}
+          MYKRONOS_TARGET_ENVIRONMENT: "<< config.target_environment | default('demo') >>"
+{%- if config.proxy_through_dast | default(true) %}
+          # Set by the repository if it runs a proxy the suite should route
+          # through. Absent means "no proxy", not "proxy misconfigured".
+          MYKRONOS_DAST_PROXY: ${{ vars.MYKRONOS_DAST_PROXY }}
+{%- endif %}
+{% endblock %}

@@ -317,7 +317,13 @@ class TestApi:
 
         assert body["scope"] == "portfolio"
         assert len(body["points"]) == 12
-        assert "re-derived" in body["note"]
+        # The claim, not the wording: every point is computed from the findings
+        # rather than read from a stored snapshot, so the series cannot drift
+        # away from the data it describes.
+        assert "not a stored snapshot" in body["note"]
+        # And it says so without citing a specification section at the reader,
+        # who has no way to open one.
+        assert "spec " not in body["note"]
 
     def test_maturity_is_served(self, client, admin_auth) -> None:
         onboard(client, admin_auth)

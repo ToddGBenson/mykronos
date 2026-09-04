@@ -28,18 +28,24 @@ import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import blast_radius, worklist
+from mykronos.config import get_settings
+from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
-from mykronos.schemas import Severity, utcnow
+from mykronos.schemas import Capability, Severity, utcnow
 from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
@@ -111,6 +117,35 @@ STRIDE_BY_CAPABILITY: dict[str, tuple[str, ...]] = {
 }
 
 
+#: CWE -> STRIDE, loaded from a reviewed file (spec 28 §2). Cached: the map is
+#: read on every threat-model render and does not change between deploys.
+@lru_cache(maxsize=1)
+def stride_by_cwe(path: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """The CWE map, or an empty one if the file is absent.
+
+    Absent is a real state and not an error: a deployment that has not taken
+    `stride-map-v1.yaml` keeps the capability-level behaviour it had before,
+    with `mapping_resolution` saying so per row. Refusing to start would make
+    a taxonomy file a hard dependency of a tab that worked without one.
+    """
+    source = path or get_settings().stride_map_path
+    try:
+        document = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.warning("CWE-to-STRIDE map unreadable at %s; falling back to capability", source)
+        return {}
+    raw = document.get("map") or {}
+    known = set(STRIDE_CATEGORIES)
+    out: dict[str, tuple[str, ...]] = {}
+    for cwe, categories in raw.items():
+        if not isinstance(categories, list):
+            continue
+        kept = tuple(c for c in categories if c in known)
+        if kept:
+            out[str(cwe).upper()] = kept
+    return out
+
+
 def _worse(candidate: str, current: str) -> bool:
     """Whether `candidate` is a more severe level than `current`."""
     return _SEVERITY_RANK.get(candidate, -1) > _SEVERITY_RANK.get(current, -1)
@@ -151,16 +186,192 @@ def _age_days(first_seen_at: Any) -> int | None:
     return max(0, (utcnow() - seen).days)
 
 
+#: How close to its deadline a finding is (spec 24 §2.4).
+#:
+#: `no_target` is a fourth state rather than a null, and it is the one that
+#: matters: a finding with no target is not on track, it is unmeasured, and a
+#: queue that showed it as on track would report compliance it never assessed.
+DUE_STATES = ("overdue", "due_soon", "on_track", "no_target")
+
+#: How long before a deadline counts as "soon". A week, matching the shortest
+#: target in the shipped policy — long enough to schedule the work, short
+#: enough that it means something.
+DUE_SOON_DAYS = 7
+
+
+def due_state(due_at: datetime | None, *, now: datetime | None = None) -> str:
+    """Bucket a deadline. Pure, so the queue and the tile cannot disagree."""
+    if due_at is None:
+        return "no_target"
+    moment = now or utcnow()
+    if due_at.tzinfo is not None:
+        due_at = due_at.replace(tzinfo=None)
+    if moment.tzinfo is not None:
+        moment = moment.replace(tzinfo=None)
+    if due_at <= moment:
+        return "overdue"
+    if (due_at - moment).days < DUE_SOON_DAYS:
+        return "due_soon"
+    return "on_track"
+
+
+#: Effort bands (spec 27 §2). Three, not an hour estimate: an estimate this
+#: platform cannot verify is a number nobody should plan against.
+EFFORT_BANDS = ("one_click", "small", "investigation")
+
+
+def effort_band(*, fixable: bool | None, package_name: str | None) -> str:
+    """How much work this looks like, from what has been observed.
+
+    `one_click` means Patchwork has actually produced a fix for it — the
+    existing `fixable` badge, which spec 19 derives from observed outcome
+    rather than prediction.
+
+    `investigation` is a finding with no package: the deterministic fixers are
+    all dependency-shaped, so a code finding has no mechanical path and saying
+    "small" would be optimistic about somebody else's afternoon.
+    """
+    if fixable:
+        return "one_click"
+    if not package_name:
+        return "investigation"
+    return "small"
+
+
+def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str, Any]]]:
+    """`(score, contributing terms)` for one queue row (spec 27 §1).
+
+    Every term is returned, not just the total. A rank a person cannot argue
+    with is a rank they will ignore, and this platform's standing rule is that
+    a derived number carries its working (spec 10 §6).
+    """
+    rank = policy.triage_rank
+    terms: list[dict[str, Any]] = []
+
+    def add(key: str, points: float, detail: str) -> None:
+        if points:
+            terms.append({"key": key, "points": round(points, 2), "detail": detail})
+
+    severity = str(item.get("severity") or "")
+    add(
+        "severity",
+        rank.severity.get(severity, 0.0),
+        f"{severity} finding",
+    )
+    if item.get("in_kev"):
+        add("in_kev", rank.in_kev, "listed in CISA KEV — exploited in the wild")
+    epss = item.get("epss_score")
+    if epss:
+        add(
+            "epss",
+            rank.epss_at_1_0 * float(epss),
+            f"EPSS {float(epss):.2f} — probability of exploitation in 30 days",
+        )
+    due = item.get("due_state")
+    if due == "overdue":
+        add("overdue", rank.overdue, "past its remediation target")
+    elif due == "due_soon":
+        add("due_soon", rank.due_soon, "due within a week")
+    radius = float(item.get("blast_radius_ratio") or 0.0)
+    if radius:
+        add(
+            "blast_radius",
+            rank.blast_radius_at_max * radius,
+            f"affects {item.get('blast_radius_repos')} repositories",
+        )
+    if item.get("repo_recommendation") == "no_go":
+        add(
+            "repo_is_no_go",
+            rank.repo_is_no_go,
+            "in a repository the risk decision already refuses",
+        )
+    if item.get("orphaned"):
+        add(
+            "orphaned",
+            rank.orphaned_discount,
+            "in a file nothing in the repository imports (Python only)",
+        )
+    if item.get("effort") == "one_click":
+        add("fixable", rank.fixable_bonus, "auto-remediation has produced a fix for this")
+
+    return (sum(term["points"] for term in terms), terms)
+
+
+def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
+    """Which ranking inputs this deployment can actually consult (B-033).
+
+    The rank carries its working — every term it *used* is listed with its
+    points. What it never said is what it could not use, and that omission let
+    a queue ordered by severity and threat intel present itself as ordered by
+    risk. Oracle's check run has said "not yet consulted" since it shipped;
+    this is the same honesty applied to the queue.
+
+    Business context is the gap that matters. `internet_facing`,
+    `data_classification` and `business_criticality` are recorded on a risk
+    profile and are not terms in `rank_terms` at all — so a queue on an estate
+    with no profiles is not a degraded risk ranking, it is a threat-intel
+    ranking, and those are different claims about the same list.
+    """
+    from mykronos.db.models import RepoOnboarding, RiskProfile
+
+    repos = [
+        str(row[0])
+        for row in catalog.query(
+            "SELECT DISTINCT asset_id FROM findings WHERE status = 'open'"
+        )
+    ]
+    with_profile = {
+        str(name)
+        for (name,) in session.execute(
+            select(RepoOnboarding.github_repo_full_name)
+            .join(RiskProfile, RiskProfile.repo_onboarding_id == RepoOnboarding.id)
+        ).all()
+    }
+    missing_profile = sorted(set(repos) - with_profile)
+
+    return {
+        "consulted": ["severity", "threat intel (KEV, EPSS)", "remediation target", "blast radius"],
+        "not_consulted": (
+            [
+                {
+                    "input": "business context",
+                    "reason": (
+                        "no risk profile on "
+                        + ", ".join(missing_profile)
+                        + " — internet exposure, data classification and business "
+                        "criticality are unset, and they are not terms in this rank"
+                    ),
+                }
+            ]
+            if missing_profile
+            else []
+        ),
+        "repos_without_a_risk_profile": missing_profile,
+    }
+
+
 @dataclass
 class CapabilityState:
     """Per-capability scan state for one repo.
 
     spec 10 §7: a freshly-onboarded repo must show "awaiting first scan"
     rather than "0 findings", which would read as clean.
+
+    **One row per capability the platform has, not per capability this repo
+    enabled** (B-008). The list used to be built from `sorted(enabled)`, which
+    made "not enabled here" an *absence* — indistinguishable from a capability
+    that was enabled and had never reported, because both were simply missing
+    from the row. `enabled` and `has_scanned` together name the three states
+    that matter, and a caller no longer has to infer one of them from a gap.
     """
 
     capability: str
     has_scanned: bool
+    #: Whether this repository asked for the capability at all. False rows are
+    #: the point of emitting every capability: "nobody enabled this" is a
+    #: different answer from "enabled and silent", and only one of them is
+    #: somebody's problem.
+    enabled: bool = True
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
@@ -173,6 +384,10 @@ class PortfolioRow:
     status: str
     enabled_capabilities: list[str]
     pending_capabilities: list[str] | None
+    #: A seeded benchmark corpus (spec 23 §1.2). Listed, opened and scanned
+    #: like any other repository, and counted in no aggregate: deliberately
+    #: vulnerable code is not estate risk.
+    synthetic: bool = False
     severity_counts: dict[str, int] = field(default_factory=dict)
     total_open: int = 0
     last_scan_at: datetime | None = None
@@ -213,6 +428,28 @@ class PortfolioSummary:
     #: number, not an error. It belongs next to repos_no_go so the portfolio
     #: cannot be read as "three at risk" when forty were never looked at.
     repos_not_assessed: int = 0
+    #: Findings past a deadline set by policy or by CISA KEV (spec 24 §2.4).
+    #: Portfolio-wide, because a missed commitment is not a per-repo curiosity
+    #: — it is the number a security lead is answerable for.
+    overdue_findings: int = 0
+
+
+#: Capabilities that report through a table other than `scan_runs`, and the
+#: column that says when they last did (B-015).
+#:
+#: These are not gaps. Aegis assesses a pull request and writes an
+#: `InsiderRiskSignal` (spec 06 §3); Oracle writes a `RiskDecision`; Patchwork
+#: writes a `RemediationEvent`. None of them scans a tree, so none of them has
+#: a ScanRun to write — measured across the whole lake, all three sit at
+#: exactly zero while `sast` sits at 365.
+#:
+#: Add to this when a capability starts reporting through a table of its own.
+#: `test_no_capability_is_permanently_silent` fails if one does not.
+REPORTS_ELSEWHERE: dict[str, tuple[str, str]] = {
+    "aegis": ("insider_risk_signals", "evaluated_at"),
+    "oracle": ("risk_decisions", "evaluated_at"),
+    "patchwork": ("remediation_events", "created_at"),
+}
 
 
 class DashboardQueries:
@@ -229,7 +466,7 @@ class DashboardQueries:
             statement = statement.where(RepoOnboarding.status != "removed")
         onboardings = list(session.execute(statement).scalars())
 
-        severity_by_repo = self._open_severity_counts()
+        severity_by_repo, overdue_findings = self._open_severity_counts()
         scans_by_repo = self._capability_scan_state()
         decisions_by_repo = self._latest_portfolio_decisions()
 
@@ -254,15 +491,24 @@ class DashboardQueries:
             if onboarding.scanned_by != "github_actions":
                 enabled |= grants_by_repo.get(repo, set())
 
+            # Every capability, not only the enabled ones (B-008). A stage the
+            # repository never turned on is named as not configured rather
+            # than left out, so "no row" stops meaning two different things.
+            #
+            # A capability can be absent from `enabled` and still have
+            # scanned — a Concourse repo whose grants are the ledger, or one
+            # disabled after reporting — so `has_scanned` is read for all of
+            # them rather than assumed false for the disabled.
             capability_states = [
                 CapabilityState(
                     capability=capability,
+                    enabled=capability in enabled,
                     has_scanned=capability in scan_state,
                     last_scan_at=scan_state.get(capability, {}).get("last_scan_at"),
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
                 )
-                for capability in sorted(enabled)
+                for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
             ]
 
             last_scan_values = [
@@ -274,6 +520,7 @@ class DashboardQueries:
                     repo_full_name=repo,
                     repo_id=onboarding.id,
                     status=onboarding.status,
+                    synthetic=bool(onboarding.synthetic),
                     enabled_capabilities=sorted(enabled),
                     pending_capabilities=(
                         sorted(onboarding.pending_capabilities)
@@ -288,14 +535,22 @@ class DashboardQueries:
                 )
             )
 
+        # Every aggregate below is over `real` rather than `rows` (spec 23
+        # §1.2). The bench corpus is still returned and still opens like any
+        # other repository — a benchmark nobody can inspect is one nobody
+        # trusts — but counting seeded vulnerabilities as estate risk would
+        # make it permanently the worst repository in the fleet and would
+        # move every number on the landing page.
+        real = [r for r in rows if not r.synthetic]
         summary = PortfolioSummary(
-            active_repos=sum(1 for r in rows if r.status == "active"),
-            open_critical=sum(r.severity_counts.get("critical", 0) for r in rows),
-            open_high=sum(r.severity_counts.get("high", 0) for r in rows),
-            repos_awaiting_first_scan=sum(1 for r in rows if r.awaiting_first_scan),
-            repos_with_stale_scans=sum(1 for r in rows if r.is_stale),
-            repos_no_go=sum(1 for r in rows if r.recommendation == "no_go"),
-            repos_not_assessed=sum(1 for r in rows if r.recommendation is None),
+            active_repos=sum(1 for r in real if r.status == "active"),
+            open_critical=sum(r.severity_counts.get("critical", 0) for r in real),
+            open_high=sum(r.severity_counts.get("high", 0) for r in real),
+            repos_awaiting_first_scan=sum(1 for r in real if r.awaiting_first_scan),
+            repos_with_stale_scans=sum(1 for r in real if r.is_stale),
+            repos_no_go=sum(1 for r in real if r.recommendation == "no_go"),
+            repos_not_assessed=sum(1 for r in real if r.recommendation is None),
+            overdue_findings=overdue_findings,
         )
         return rows, summary
 
@@ -335,7 +590,7 @@ class DashboardQueries:
             "raw_risk_score": float(raw) if raw is not None else float(score),
         }
 
-    def _open_severity_counts(self) -> dict[str, dict[str, int]]:
+    def _open_severity_counts(self) -> tuple[dict[str, dict[str, int]], int]:
         # `asset_id`, not `repo_full_name` (spec 18 §1, D-061): every other
         # repo-scoped query in this file already keys on asset_id
         # (`_status_clause`) because it is the canonical column (spec 14 §5).
@@ -343,18 +598,29 @@ class DashboardQueries:
         # (see migrate_assets.py) was counted here and invisible to
         # open_findings() below it — the portfolio and the Findings tab
         # disagreeing about the same repo's open count.
+        #
+        # The overdue count (spec 24 §2.4) rides along here rather than in a
+        # query of its own. It had one, and it cost the portfolio endpoint its
+        # two-second budget: 2.74s for 200 repos against a 2.0s ceiling, caught
+        # by `test_portfolio_endpoint_stays_within_budget` — which exists
+        # precisely so that a second full scan of `findings` cannot be added
+        # without somebody noticing. One scan answers both questions.
         rows = self.catalog.query(
             """
-            SELECT asset_id, severity, count(*)
+            SELECT asset_id, severity, count(*),
+                   count(*) FILTER (WHERE due_at IS NOT NULL AND due_at <= ?)
             FROM findings
             WHERE status = 'open'
             GROUP BY 1, 2
-            """
+            """,
+            [utcnow()],
         )
         counts: dict[str, dict[str, int]] = {}
-        for repo, severity, count in rows:
+        overdue = 0
+        for repo, severity, count, overdue_count in rows:
             counts.setdefault(str(repo), {})[str(severity)] = int(count)
-        return counts
+            overdue += int(overdue_count or 0)
+        return counts, overdue
 
     def _capability_scan_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Latest scan per (repo, capability), plus its open finding count."""
@@ -390,6 +656,42 @@ class DashboardQueries:
                 "status": str(scan_status),
                 "open_findings": by_pair.get((str(repo), str(capability)), 0),
             }
+
+        # Three capabilities never write a ScanRun and never will, so reading
+        # only `scan_runs` reports them silent on every repository for ever
+        # (B-015). `last_successful_scan_at` already makes this exception for
+        # aegis, with a comment about the kind of permanent false alarm that
+        # trains people to ignore the panel; the same reasoning covers all
+        # three, and it belongs here too now that B-008 made "enabled and
+        # silent" a state a caller acts on rather than an absence it infers.
+        for capability, (table, column) in REPORTS_ELSEWHERE.items():
+            if not self.catalog.all_files(table):
+                continue
+            rows = self.catalog.query(
+                f"""
+                SELECT repo_full_name, max({column})
+                FROM {table}
+                WHERE repo_full_name IS NOT NULL
+                GROUP BY 1
+                """
+            )
+            for repo, latest in rows:
+                if latest is None:
+                    continue
+                # Never overwrites a real ScanRun. If one of these ever starts
+                # writing runs too, the run is the better answer and this is
+                # the weaker one.
+                state.setdefault(str(repo), {}).setdefault(
+                    capability,
+                    {
+                        "last_scan_at": latest,
+                        # Not a scan, so not a scan status. The row exists to
+                        # say "this has reported", and inventing `success`
+                        # would claim a run that never happened.
+                        "status": "reported",
+                        "open_findings": by_pair.get((str(repo), capability), 0),
+                    },
+                )
         return state
 
     # -- findings -------------------------------------------------------
@@ -404,6 +706,8 @@ class DashboardQueries:
         rule_id: str | None = None,
         first_seen_after: datetime | None = None,
         first_seen_before: datetime | None = None,
+        pr_number: int | None = None,
+        commit_sha: str | None = None,
         limit: int = 100,
         offset: int = 0,
         include_raw: bool = False,
@@ -439,6 +743,32 @@ class DashboardQueries:
         if first_seen_before is not None:
             where.append("first_seen_at <= ?")
             params.append(first_seen_before)
+
+        # "What did this change introduce?" — matched on *first seen*, not last.
+        #
+        # A finding is attributable to a pull request when the scan run that
+        # first saw it belongs to that pull request. Matching on `scan_run_id`
+        # (the most recent sighting) would answer a different and far less
+        # useful question: every pre-existing finding the branch also happens to
+        # reproduce, which on a repository with a backlog is nearly all of them
+        # and tells the author nothing about their own work.
+        #
+        # `first_seen_after` was the closest thing to this before, and a time
+        # window is not a change window — two pull requests land in the same
+        # hour and neither author can tell which findings are theirs.
+        scoped: tuple[tuple[str, int | str | None], ...] = (
+            ("pr_number", pr_number),
+            ("commit_sha", commit_sha),
+        )
+        for scope_column, scope_value in scoped:
+            if scope_value is None:
+                continue
+            where.append(
+                "first_seen_scan_run_id IN "
+                f"(SELECT scan_run_id FROM scan_runs WHERE {scope_column} = ?)"
+            )
+            params.append(scope_value)
+
         clause = " AND ".join(where)
 
         total_rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
@@ -509,6 +839,8 @@ class DashboardQueries:
         min_epss: float | None = None,
         triage: str | None = None,
         fixable: bool | None = None,
+        due: str | None = None,
+        owner: str | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -558,6 +890,9 @@ class DashboardQueries:
             "status",
             "first_seen_at",
             "last_seen_at",
+            "due_at",
+            "due_source",
+            "owner",
         ]
 
         counts = self._severity_counts(repo_full_name, finding_status)
@@ -600,7 +935,10 @@ class DashboardQueries:
         # session, so it is kept a separate flag from the threat-intel one
         # rather than folded into it and made to look like it does.
         wants_group_filter = (
-            wants_threat_intel_filter or triage is not None or fixable is not None
+            wants_threat_intel_filter
+            or triage is not None
+            or fixable is not None
+            or due is not None
         )
 
         if wants_group_filter:
@@ -611,6 +949,7 @@ class DashboardQueries:
                 capability=capability,
                 severity=severity,
                 rule_id=rule_id,
+                owner=owner,
                 limit=CORRELATION_CEILING,
             )
             pool_truncated = len(rows) >= CORRELATION_CEILING
@@ -622,6 +961,7 @@ class DashboardQueries:
                 capability=capability,
                 severity=severity,
                 rule_id=rule_id,
+                owner=owner,
                 limit=limit + 1,
             )
             pool_truncated = len(rows) > limit
@@ -655,6 +995,8 @@ class DashboardQueries:
             groups = [g for g in groups if g["triage"] == triage]
         if fixable is not None:
             groups = [g for g in groups if g["fixable"] is fixable]
+        if due is not None:
+            groups = [g for g in groups if g["due_state"] == due]
 
         if wants_group_filter:
             truncated = pool_truncated or len(groups) > limit
@@ -695,7 +1037,9 @@ class DashboardQueries:
 
     # -- threat model -----------------------------------------------------
 
-    def threat_model(self, repo_full_name: str) -> dict[str, Any]:
+    def threat_model(
+        self, repo_full_name: str, *, controls: list[Any] | None = None
+    ) -> dict[str, Any]:
         """A STRIDE-categorized attack-surface inventory (spec 18 §6).
 
         Capability-level, not per-finding: no `Finding` carries a structured
@@ -728,6 +1072,7 @@ class DashboardQueries:
             "status",
             "first_seen_at",
             "last_seen_at",
+            "cwe_ids_json",
         ]
         rows = self._finding_rows(
             repo_full_name,
@@ -738,24 +1083,84 @@ class DashboardQueries:
         )
         groups = self._group_findings(rows, repo_full_name, store=None, combination_of={})
 
+        # CWE per group, from the occurrences the grouping already carries.
+        cwe_map = stride_by_cwe()
+        cwes_by_group: dict[str, list[str]] = {}
+        for row in rows:
+            raw = row.get("cwe_ids_json")
+            if not raw:
+                continue
+            with suppress(json.JSONDecodeError, TypeError):
+                key = f"{row['rule_id']}::{row.get('package_name') or ''}"
+                for cwe in json.loads(str(raw)):
+                    cwes_by_group.setdefault(key, [])
+                    if str(cwe).upper() not in cwes_by_group[key]:
+                        cwes_by_group[key].append(str(cwe).upper())
+
         by_category: dict[str, list[dict[str, Any]]] = {c: [] for c in STRIDE_CATEGORIES}
+        unmapped: set[str] = set()
+        resolutions: set[str] = set()
         for group in groups:
-            categories: set[str] = set()
-            for capability in group["capabilities"]:
-                categories.update(STRIDE_BY_CAPABILITY.get(capability, ()))
+            cwes = cwes_by_group.get(group["group_key"], [])
+            mapped = {c for cwe in cwes for c in cwe_map.get(cwe, ())}
+            # A CWE the map does not know falls back rather than resolving to
+            # whatever looked closest, and is counted so the gap is visible
+            # and gets closed by somebody adding a row (spec 28 §2).
+            unmapped.update(cwe for cwe in cwes if cwe not in cwe_map)
+
+            if mapped:
+                categories = mapped
+                group["mapping_resolution"] = "cwe"
+                group["cwe_ids"] = cwes
+            else:
+                categories = set()
+                for capability in group["capabilities"]:
+                    categories.update(STRIDE_BY_CAPABILITY.get(capability, ()))
+                group["mapping_resolution"] = "capability"
+                group["cwe_ids"] = cwes
+            resolutions.add(group["mapping_resolution"])
             for category in categories:
                 by_category[category].append(group)
 
         evidence = self.sscs_evidence(repo_full_name, limit=1)
         latest = evidence[0] if evidence else None
 
+        # Four states rather than "empty or not" (spec 28 §4). A category with
+        # no findings because nothing ever looked and one with no findings
+        # because the code is clean rendered identically, and the data that
+        # separates them was already being fetched on the same page.
+        states = category_states(
+            categories=STRIDE_CATEGORIES,
+            findings_by_category={c: len(g) for c, g in by_category.items()},
+            controls=list(controls or []),
+            scanned_capabilities=set(self.last_successful_scan_at(repo_full_name)),
+            stride_by_capability=STRIDE_BY_CAPABILITY,
+        )
+        states_by_category = {s["stride"]: s for s in states}
+
         return {
             "repo_full_name": repo_full_name,
-            "mapping_resolution": "capability",
+            # Per page *and* per row: a repository will routinely be mixed —
+            # CodeQL tags its rules, Trivy does not — and a page-level label
+            # would be wrong for half of it. "mixed" says look at the rows.
+            "mapping_resolution": (
+                resolutions.pop()
+                if len(resolutions) == 1
+                else ("mixed" if resolutions else "capability")
+            ),
+            "unmapped_cwes": sorted(unmapped),
             "categories": [
-                {"stride": category, "findings": by_category[category]}
+                {
+                    "stride": category,
+                    "findings": by_category[category],
+                    **states_by_category[category],
+                }
                 for category in STRIDE_CATEGORIES
             ],
+            # Once, at the top, rather than six identical empty sections
+            # (spec 28 §6). A repository nothing has ever scanned is one fact
+            # about the repository, not six about its categories.
+            "nothing_scanned": all(s["state"] == "unscanned" for s in states),
             # Context for the Tampering/Information Disclosure categories'
             # atlas-derived findings, not a finding itself — the dependency
             # graph as a whole, distinct from the vulnerable slice of it the
@@ -802,6 +1207,7 @@ class DashboardQueries:
         capability: str | None = None,
         severity: str | None = None,
         rule_id: str | None = None,
+        owner: str | None = None,
     ) -> tuple[str, list[Any]]:
         # asset_id, not repo_full_name (spec 14 §5): for a repository asset the
         # two hold the same string, so this is a rename rather than a change.
@@ -811,6 +1217,24 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if owner:
+            # Exact match, not a substring: `@org/payments` and
+            # `@org/payments-legacy` are different teams, and a "mine" filter
+            # that quietly included a neighbouring team's work would be worse
+            # than no filter. `unresolved` is a legitimate value to ask for —
+            # it is the queue of work nobody is answerable for yet.
+            if owner == "unresolved":
+                where.append("(owner IS NULL OR owner = '')")
+            elif owner == "unclaimed":
+                # Nobody has taken responsibility *by name*. Distinct from
+                # `unresolved`, which now means the platform could not work it
+                # out at all — rare, and a different problem. This is the queue
+                # B-034 exists for: findings that have an owner only because
+                # they fell to the account the repository belongs to.
+                where.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
+            else:
+                where.append("owner = ?")
+                params.append(owner)
         if rule_id:
             # Free-text, not a category filter with a count on a button
             # (spec 17 §3) — matched against rule_id and title, since Trivy's
@@ -865,6 +1289,7 @@ class DashboardQueries:
         capability: str | None = None,
         severity: str | None = None,
         rule_id: str | None = None,
+        owner: str | None = None,
         capabilities: frozenset[str] | None = None,
         limit: int = CORRELATION_CEILING,
     ) -> list[dict[str, Any]]:
@@ -886,6 +1311,7 @@ class DashboardQueries:
             capability=capability,
             severity=severity,
             rule_id=rule_id,
+            owner=owner,
         )
         if capabilities is not None:
             placeholders = ", ".join("?" for _ in capabilities)
@@ -941,6 +1367,10 @@ class DashboardQueries:
                     "first_seen_at": finding.get("first_seen_at"),
                     "last_seen_at": finding.get("last_seen_at"),
                     "cvss_score": finding.get("cvss_score"),
+                    "due_at": None,
+                    "due_source": None,
+                    "owner": finding.get("owner"),
+                    "owner_split": False,
                     "toxic_combination_ids": [],
                 }
                 order.append(key)
@@ -966,6 +1396,29 @@ class DashboardQueries:
             # safe number to display.
             if _worse(str(finding["severity"]), str(group["severity"])):
                 group["severity"] = str(finding["severity"])
+            # An owner only when every occurrence agrees. One rule firing
+            # across two teams' files is one decision with two people
+            # answerable for it, and picking either would send the work to
+            # somebody who does not own half of it. `owner_split` says so
+            # rather than the row rendering as unowned.
+            if finding.get("owner") != group["owner"]:
+                group["owner_split"] = True
+                group["owner"] = None
+
+            # The soonest deadline among the occurrences, not the latest: a
+            # group is one decision, and the date that matters is the first
+            # one the team is answerable for. A KEV date on any occurrence
+            # makes the group's date a KEV date, because that is the one with
+            # an authority behind it.
+            incoming_due = finding.get("due_at")
+            if incoming_due is not None:
+                current_due = group.get("due_at")
+                if current_due is None or incoming_due < current_due:
+                    group["due_at"] = incoming_due
+                    group["due_source"] = finding.get("due_source")
+                elif finding.get("due_source") == "kev" and group["due_source"] != "kev":
+                    group["due_source"] = "kev"
+
             for field_name, better in (("first_seen_at", min), ("last_seen_at", max)):
                 current, incoming = group.get(field_name), finding.get(field_name)
                 if incoming is not None:
@@ -984,6 +1437,7 @@ class DashboardQueries:
         result = []
         for key in order:
             group = grouped[key]
+            group["due_state"] = due_state(group["due_at"])
             classification, rationale = classify(
                 {
                     "rule_id": group["rule_id"],
@@ -1067,6 +1521,13 @@ class DashboardQueries:
         limit: int = 100,
         kev_only: bool = False,
         min_epss: float | None = None,
+        order: str = "severity",
+        owner: str | None = None,
+        policy: Any = None,
+        include_snoozed: bool = False,
+        claimed_by: str | None = None,
+        triage: str | None = None,
+        store: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """The highest-priority open findings across every active repo.
 
@@ -1099,6 +1560,17 @@ class DashboardQueries:
             if value:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if owner:
+            if owner == "unresolved":
+                where.append("(owner IS NULL OR owner = '')")
+            elif owner == "unclaimed":
+                # Same queue as `open_findings` — nobody has taken this by
+                # name. See the note there for why it is separate from
+                # `unresolved`.
+                where.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
+            else:
+                where.append("owner = ?")
+                params.append(owner)
         if rule_id:
             where.append("(rule_id ILIKE ? OR title ILIKE ?)")
             needle = f"%{rule_id}%"
@@ -1125,13 +1597,24 @@ class DashboardQueries:
             "package_name",
             "package_version",
             "first_seen_at",
+            "due_at",
+            "due_source",
+            "owner",
         ]
         # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
         # is applied in Python against a different database, so the SQL
         # fetch has to stay generous enough that LIMIT doesn't cut candidates
         # before the filter ever sees them.
         wants_threat_intel_filter = kev_only or min_epss is not None
-        fetch_limit = CORRELATION_CEILING if wants_threat_intel_filter else limit
+        # Ranking reorders in Python, so the SQL fetch has to be generous for
+        # the same reason a KEV filter makes it generous: a severity-ordered
+        # LIMIT would cut exactly the fixable, exploited medium the ranking
+        # exists to surface, before the ranking ever saw it.
+        fetch_limit = (
+            CORRELATION_CEILING
+            if wants_threat_intel_filter or order == "rank"
+            else limit
+        )
         rows = self.catalog.query(
             f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
             "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
@@ -1158,6 +1641,55 @@ class DashboardQueries:
         # not conditional on the filter being active, so a caller can render
         # the badge whether or not they're also filtering by it.
         self._attach_threat_intel(session, queue)
+
+        # Claim and snooze live in the operational store (spec 27 §3.2), so
+        # they are stamped here rather than joined in SQL. One query for the
+        # page, not one per row.
+        states = worklist.states_for(session, [str(i["finding_id"]) for i in queue])
+        for item in queue:
+            item["state"] = worklist.as_dict(
+                states.get(str(item["finding_id"]), worklist.RowState())
+            )
+        if not include_snoozed:
+            # Hidden, not dispositioned: the finding is still open and still
+            # scores. `include_snoozed` is how somebody reviews what the team
+            # has put off, which is the point of recording a reason.
+            queue = [item for item in queue if not item["state"]["snoozed_until"]]
+        if claimed_by:
+            queue = [item for item in queue if item["state"]["claimed_by"] == claimed_by]
+
+        if order == "rank" and policy is not None:
+            self._attach_rank_inputs(queue)
+            for item in queue:
+                item["rank"], item["rank_terms"] = rank_terms(item, policy)
+            queue.sort(key=lambda item: (-float(item["rank"]), item["first_seen_at"]))
+
+        # Stamped on every row, not only when filtering - the same contract
+        # the KEV badge above has, so a caller can render "the machine could
+        # not judge this" whether or not it is also filtering by it (B-019).
+        #
+        # Computed rather than read from `remediation_events`, matching
+        # `open_findings`: the classification is a function of the rule, the
+        # severity and what the Knowledge Store has learned, and a finding
+        # Patchwork has not reached yet still has one.
+        learned = [] if store is None else store.active_entries()
+        for item in queue:
+            classification, rationale = classify(
+                {
+                    "rule_id": item["rule_id"],
+                    "severity": item["severity"],
+                    "capability": item["capability"],
+                },
+                str(item["repo_full_name"]),
+                entries=learned,
+            )
+            item["triage"] = classification
+            item["triage_rationale"] = rationale
+
+
+        if triage:
+            queue = [item for item in queue if item["triage"] == triage]
+
         if kev_only:
             queue = [item for item in queue if item["in_kev"]]
         if min_epss is not None:
@@ -1169,6 +1701,41 @@ class DashboardQueries:
         queue = queue[:limit]
 
         return queue, counts
+
+    def _attach_rank_inputs(self, queue: list[dict[str, Any]]) -> None:
+        """Stamp the signals ranking needs but the queue did not carry.
+
+        Three lookups for the whole page rather than per row: the fix stages
+        for every repository represented, the package blast-radius map, and
+        each repository's orphaned-file list. A per-row query here would be
+        the portfolio's two-second budget spent on a list of a hundred.
+        """
+        repos = {str(item["repo_full_name"]) for item in queue}
+        stages: dict[str, str] = {}
+        for repo in repos:
+            stages.update(self._fix_stages(repo))
+
+        radius = blast_radius.build(self.catalog)
+        widest = max(radius.values(), default=0)
+
+        for item in queue:
+            stage = stages.get(str(item["finding_id"]))
+            fixable = None if stage is None else stage in _FIX_PRODUCED
+            item["effort"] = effort_band(
+                fixable=fixable, package_name=item.get("package_name")
+            )
+            item["due_state"] = due_state(item.get("due_at"))
+            repos_affected = radius.get(str(item.get("package_name") or ""), 0)
+            item["blast_radius_repos"] = repos_affected
+            item["blast_radius_ratio"] = (
+                repos_affected / widest if widest > 1 and repos_affected > 1 else 0.0
+            )
+            # Orphaned-file reachability is per repository and lives in the
+            # operational store; the queue is cross-repo and has no session
+            # for it here. Left absent rather than assumed false — the
+            # discount simply does not apply until spec 19's report is joined
+            # in, and absent is the direction that cannot bury live work.
+            item["orphaned"] = False
 
     # -- Aegis and Atlas ------------------------------------------------
 
@@ -1266,6 +1833,42 @@ class DashboardQueries:
             return None
         return {"sbom_ref": rows[0][0]}
 
+    def latest_sscs_evidence(self, repo_full_name: str) -> dict[str, Any] | None:
+        """The newest evidence row that actually has an SBOM (B-037).
+
+        "What is in production right now" is the question customers, auditors
+        and incident responders ask, and answering it used to require knowing
+        an evidence id first — which nothing in the interface told you.
+
+        Pinning an SBOM to a build stays correct: an SBOM without one is a
+        guess about what shipped. This is a *lookup* of the most recent build,
+        not a floating document, so the answer is still an artifact somebody
+        can name and re-fetch.
+
+        Ordered by `evaluated_at` and filtered to rows that name a file, because
+        the newest evidence row is not always the newest *SBOM* — a run can
+        record trust scoring without capturing one, and returning that would be
+        a 404 that looked like "no SBOM here" rather than "not on that build".
+        """
+        rows = self.catalog.query(
+            """
+            SELECT evidence_id, sbom_ref, evaluated_at
+            FROM sscs_evidence
+            WHERE repo_full_name = ?
+              AND sbom_ref IS NOT NULL AND sbom_ref <> ''
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [repo_full_name],
+        )
+        if not rows:
+            return None
+        return {
+            "evidence_id": str(rows[0][0]),
+            "sbom_ref": rows[0][1],
+            "evaluated_at": rows[0][2],
+        }
+
     # -- scan health ----------------------------------------------------
 
     def introduced_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
@@ -1303,6 +1906,52 @@ class DashboardQueries:
         )
         return {str(severity): int(count) for severity, count in rows}
 
+    def introduced_rows(
+        self, repo_full_name: str, commit_sha: str, *, limit: int = 25
+    ) -> list[dict[str, Any]]:
+        """The findings a commit introduced, named rather than counted.
+
+        `introduced_by` answers "how many, and how bad" — enough for a gate to
+        decide. This answers "which ones", which is what the person who wrote
+        the commit needs, and it is the same join so the two can never
+        disagree about what "introduced" means.
+
+        Worst first and capped: a check run summary is read in a narrow column
+        on a pull request, and a change that introduced sixty findings is
+        better served by the worst twenty-five and a count than by sixty rows
+        nobody scrolls.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT f.severity, f.capability, f.rule_id, f.title,
+                   f.file_path, f.line_start
+            FROM findings f
+            WHERE f.asset_id = ?
+              AND f.status = 'open'
+              AND f.first_seen_scan_run_id IN (
+                    SELECT scan_run_id FROM scan_runs
+                    WHERE repo_full_name = ? AND commit_sha = ?
+              )
+            ORDER BY CASE f.severity
+                       WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                       WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+                     f.capability, f.rule_id
+            LIMIT ?
+            """,
+            [repo_full_name, repo_full_name, commit_sha, limit],
+        )
+        return [
+            {
+                "severity": str(severity),
+                "capability": str(capability),
+                "rule_id": str(rule_id),
+                "title": str(title),
+                "file_path": None if file_path is None else str(file_path),
+                "line_start": None if line_start is None else int(line_start),
+            }
+            for severity, capability, rule_id, title, file_path, line_start in rows
+        ]
+
     def vulnerability_management(self, repo_full_name: str | None = None) -> dict[str, Any]:
         """What is outstanding, how old, and what was accepted (PIP-9).
 
@@ -1321,9 +1970,15 @@ class DashboardQueries:
         scope = "AND asset_id = ?" if repo_full_name else ""
         params: list[Any] = [repo_full_name] if repo_full_name else []
 
+        # Capability as well as severity and age (B-008's sibling gap in
+        # B-010): "sixty high findings older than ninety days" is a number to
+        # be alarmed by, and "they are all container CVEs from one base image"
+        # is the thing to actually do something about. Without the capability
+        # the reader has to open every one to find that out.
         aging = self.catalog.query(
             f"""
             SELECT severity,
+                   capability,
                    CASE
                      WHEN first_seen_at > now() - INTERVAL 7 DAY  THEN '0-7'
                      WHEN first_seen_at > now() - INTERVAL 30 DAY THEN '8-30'
@@ -1333,7 +1988,7 @@ class DashboardQueries:
                    count(*)
             FROM findings
             WHERE status = 'open' {scope}
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3
             """,
             params,
         )
@@ -1349,6 +2004,37 @@ class DashboardQueries:
             WHERE status = 'accepted_risk' {scope}
             GROUP BY 1, 2
             ORDER BY 3 DESC
+            """,
+            params,
+        )
+
+        # Counts say how much was accepted; they cannot say what was accepted
+        # *on what grounds*, and the grounds are the part that decays. This
+        # repository carries acceptances that each said "no vendor fix", and
+        # that stops being true the day a vendor ships one (spec 24 §3).
+        #
+        # `now_fixable` is the decay made visible: an acceptance whose
+        # advisory has since named a fixed version. The daily sweep already
+        # re-opens those automatically, so a row here is either mid-flight or
+        # an acceptance on grounds the sweep cannot check — which is exactly
+        # what a person should be looking at.
+        accepted_detail = self.catalog.query(
+            f"""
+            SELECT finding_id,
+                   capability,
+                   severity,
+                   title,
+                   package_name,
+                   accepted_reason_code,
+                   accepted_until,
+                   first_seen_at,
+                   coalesce(
+                       json_extract_string(raw_finding_json, '$.fixed_version'), ''
+                   ) AS fixed_version
+            FROM findings
+            WHERE status = 'accepted_risk' {scope}
+            ORDER BY accepted_until NULLS LAST, first_seen_at
+            LIMIT 200
             """,
             params,
         )
@@ -1380,12 +2066,39 @@ class DashboardQueries:
         return {
             "scope": repo_full_name or "portfolio",
             "aging": [
-                {"severity": str(sev), "age_band": str(band), "count": int(n)}
-                for sev, band, n in aging
+                {
+                    "severity": str(sev),
+                    "capability": str(cap),
+                    "age_band": str(band),
+                    "count": int(n),
+                }
+                for sev, cap, band, n in aging
             ],
             "accepted_risk": [
                 {"capability": str(cap), "severity": str(sev), "count": int(n)}
                 for cap, sev, n in accepted
+            ],
+            "accepted_risk_detail": [
+                {
+                    "finding_id": str(fid),
+                    "capability": str(cap),
+                    "severity": str(sev),
+                    "title": str(title),
+                    "package_name": str(pkg or ""),
+                    #: Why it was accepted. A code rather than prose, so a
+                    #: later scan can contradict it (spec 24 3).
+                    "accepted_reason_code": str(code or ""),
+                    #: When somebody said they would look again. Null is an
+                    #: indefinite acceptance, which is a decision rather than
+                    #: an omission - the disposition endpoint refuses one
+                    #: without either a date or an explicit `indefinite`.
+                    "accepted_until": until,
+                    "first_seen_at": seen,
+                    "fixed_version": str(fix or ""),
+                    #: Accepted for want of a fix, and a fix now exists.
+                    "now_fixable": bool(fix) and str(code or "") == "no_vendor_fix",
+                }
+                for fid, cap, sev, title, pkg, code, until, seen, fix in accepted_detail
             ],
             "oldest_open": [
                 {
@@ -1445,7 +2158,19 @@ class DashboardQueries:
                    sum(CASE WHEN scan_status = 'no_applicable_targets'
                             THEN 1 ELSE 0 END)                              AS no_targets,
                    max(coalesce(completed_at, started_at))                  AS last_run_at,
-                   max(finding_count)                                       AS peak_findings
+                   max(finding_count)                                       AS peak_findings,
+                   -- The most recent run that *reported* coverage, not the
+                   -- most recent run (spec 31 §4). A pipeline that writes a
+                   -- coverage report on scheduled runs and not on every push
+                   -- would otherwise show a number one day and a blank the
+                   -- next, which reads as coverage having been lost.
+                   arg_max(line_coverage, coalesce(completed_at, started_at))
+                       FILTER (WHERE line_coverage IS NOT NULL)             AS line_coverage,
+                   arg_max(branch_coverage, coalesce(completed_at, started_at))
+                       FILTER (WHERE branch_coverage IS NOT NULL)           AS branch_coverage,
+                   max(coalesce(completed_at, started_at))
+                       FILTER (WHERE line_coverage IS NOT NULL
+                                  OR branch_coverage IS NOT NULL)           AS coverage_at
             FROM scan_runs
             WHERE repo_full_name = ?
             GROUP BY capability
@@ -1456,7 +2181,18 @@ class DashboardQueries:
         )
         recent = self._recent_scan_runs(repo_full_name)
         health = []
-        for capability, runs, succeeded, failed, no_targets, last_run_at, peak in rows:
+        for (
+            capability,
+            runs,
+            succeeded,
+            failed,
+            no_targets,
+            last_run_at,
+            peak,
+            line_coverage,
+            branch_coverage,
+            coverage_at,
+        ) in rows:
             total = int(runs) or 1
             health.append(
                 {
@@ -1478,6 +2214,24 @@ class DashboardQueries:
                     # a longer streak would only change how loudly, not
                     # whether.
                     "flaky": _is_flaky(recent.get(str(capability), [])),
+                    # Coverage where the runner reported it (spec 31 §4).
+                    # `None` rather than 0.0 when it did not: a lane with no
+                    # coverage report and a lane measured at zero are
+                    # different facts, and rendering both as 0% would make
+                    # the honest one look like the broken one.
+                    #
+                    # **Not a security metric**, and the tab says so. It is
+                    # context that stops a green pass rate being read as more
+                    # than it is: high coverage with no regression links
+                    # (spec 31 §3) means the tests are thorough about
+                    # something other than what has gone wrong here.
+                    "line_coverage": None if line_coverage is None else round(
+                        float(line_coverage), 3
+                    ),
+                    "branch_coverage": None if branch_coverage is None else round(
+                        float(branch_coverage), 3
+                    ),
+                    "coverage_at": coverage_at,
                 }
             )
         return health
@@ -1607,6 +2361,10 @@ class DashboardQueries:
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
+            "owner",
+            "owner_source",
+            "due_at",
+            "due_source",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]

@@ -1,28 +1,42 @@
-"""Where a repository is built, and how to get there (spec 15 §4a).
+"""Where a repository is built, and how to get there (spec 15 §4a, spec 32 §7).
 
-The traffic between Mykronos and Concourse has only ever run one way:
-pipelines upload findings, and the lake cannot tell which CI produced any of
-them. That is deliberate for analysis — spec 15 §4 — and useless for
-navigation. Somebody looking at a repository's findings has no way to reach
-the pipeline that produced them without already knowing which of three
-pipelines to open.
+The traffic between Mykronos and its CI has only ever run one way: pipelines
+upload findings, and the lake cannot tell which CI produced any of them. That
+is deliberate for analysis — spec 15 §4 — and useless for navigation. Somebody
+looking at a repository's findings has no way to reach the build that produced
+them without already knowing where to look.
 
 This closes that, and nothing more. Nothing read here is an input to a
 finding, a score or a decision; it is a link and a status next to it.
 
+**Two CI systems, one set of answers.** `ConcourseClient` reads Concourse and
+`ActionsClient` reads GitHub Actions, and everything downstream of them —
+`JobStatus`, `PipelineStatus`, `reconcile`, `coverage`, the dashboard panel —
+is shared and unaware of which answered. That is not a refactor made for
+elegance: `reconcile()` and `coverage()` are the two functions spec 15 §4a.1
+records getting wrong twice, and the cheapest way to avoid a third is to add a
+second reader in front of them rather than a second copy of them behind.
+
 Three properties worth stating, because each is a way this could go wrong:
 
-*Which pipeline covers a repository is derived.* The pipeline is the
-repository name, lowercased, checked against the live list. No configured
-mapping to go stale, and a repository Concourse does not cover reports
-exactly that rather than a dead link.
+*Which lane covers a repository is derived.* For Concourse the pipeline is the
+repository name, lowercased, checked against the live list. For Actions it is
+the workflow filename the installer itself chose, looked up in the template
+registry — exact rather than heuristic. Neither is a configured mapping that
+can go stale, and a repository nothing covers reports exactly that rather than
+a dead link.
 
 *It reads the job list, never build logs.* Logs carry scanner output and,
-until CNC-2 lands, resolved `((var))` values.
+until CNC-2 lands, resolved `((var))` values. True of Actions runs for the
+same reason.
 
-*It fails soft, always.* Concourse restarting must not affect a page about
-findings. Every failure resolves to "unavailable, and here is why", never an
-exception that reaches a request handler.
+*It fails soft, always.* Concourse restarting, or GitHub rate-limiting, must
+not affect a page about findings. Every failure resolves to "unavailable, and
+here is why", never an exception that reaches a request handler.
+
+One property is *not* shared, and is called out where it is lost: the
+Concourse read is anonymous, and the Actions read spends an installation
+token against a limit other things need more (see `StatusCache`).
 """
 
 from __future__ import annotations
@@ -33,6 +47,7 @@ from datetime import UTC, datetime
 
 import httpx2
 
+from mykronos.github.client import GitHubClient
 from mykronos.logsafe import scrub
 
 logger = logging.getLogger(__name__)
@@ -64,6 +79,22 @@ def pipeline_name_for(repo_full_name: str) -> str:
 #: exactly the case Aegis exists to notice. Cross-checking it reported every
 #: green insider job as a silent failure, which was this check being wrong
 #: about what the job is for.
+def jobs_for_capability(capability: str) -> set[str]:
+    """Which Concourse job(s) plausibly produce this capability.
+
+    The reverse of `CAPABILITY_BY_JOB`, and a heuristic in the same spirit and
+    for the same reason as the mapping it derives from: a pipeline that names
+    its job differently is simply not reached, which is the safe direction to
+    be wrong in — a 404 from Concourse, not a crash.
+
+    Lives here rather than in a caller because two of them now need it: the
+    "scan now" button (spec 17 §2.5) and fix verification (spec 25 §1). A
+    second private copy would be a second thing to update when a job is
+    renamed, and the first one to be forgotten.
+    """
+    return _JOBS_BY_CAPABILITY.get(capability, {capability})
+
+
 CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "sast": "sast",
     "secrets": "secrets",
@@ -113,6 +144,12 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
 REPORTING_GRACE_SECONDS = 3600
 
 
+_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
+for _job_name, _caps in CAPABILITY_BY_JOB.items():
+    for _cap in _caps if isinstance(_caps, tuple) else (_caps,):
+        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
+
+
 def _utc(moment: datetime | None) -> datetime | None:
     """Attach UTC to a naive timestamp.
 
@@ -145,9 +182,22 @@ class Reporting:
     capability: str
     built_at: datetime | None
     scanned_at: datetime | None
+    last_build_failed: bool = False
+    """The lane ran and its last build did not succeed.
+
+    Separate from `built_at` rather than folded into it, because the two
+    answer different questions and this check needs both: `built_at` is "when
+    did a SUCCESSFUL build last happen", which is what the lake is measured
+    against, and this is "did the lane run at all".
+    """
 
     @property
     def state(self) -> str:
+        # Before the built_at check, because a failed build leaves built_at
+        # unset - that is the whole reason a failing lane used to read as one
+        # that had never run.
+        if self.last_build_failed:
+            return "failed"
         built = _utc(self.built_at)
         scanned = _utc(self.scanned_at)
         if built is None:
@@ -221,6 +271,27 @@ class ConcourseClient:
         if not isinstance(payload, list):
             return None
         return [str(p["name"]) for p in payload if isinstance(p, dict) and "name" in p]
+
+    def has_pipeline_for(self, repo_full_name: str) -> bool | None:
+        """Is there a Concourse pipeline for this repository?
+
+        Three answers, and the third is the point: `True`, `False`, or `None`
+        for "could not be established" — Concourse unreachable, or not
+        configured for this deployment at all. A caller deciding whether it is
+        safe to rotate a credential has to be able to tell "no other reader"
+        from "could not check", because those warrant opposite actions
+        (D-097).
+
+        Distinct from `status_for`, which asks how the pipeline is *doing*.
+        This asks only whether it exists, which is a question about who reads
+        the repository's ingestion token.
+        """
+        if not self.configured:
+            return None
+        available = self.pipelines()
+        if available is None:
+            return None
+        return pipeline_name_for(repo_full_name) in available
 
     def status_for(self, repo_full_name: str) -> PipelineStatus:
         """Pipeline state for one repository. Never raises."""
@@ -331,6 +402,264 @@ class ConcourseClient:
         )
 
 
+#: GitHub's run conclusions, mapped onto the status vocabulary the rest of
+#: this module, the dashboard and `reconcile` already speak (spec 32 §7).
+#:
+#: Translating here rather than teaching four call sites a second vocabulary
+#: is the whole reason `reconcile()` and `coverage()` need no edit to work
+#: against Actions: they compare `status == "succeeded"`, and a client that
+#: handed them `"success"` would have reported every green lane as one that
+#: had never run — a silent, total false negative in exactly the check that
+#: exists to catch silent failures.
+#:
+#: `skipped` maps to `None` — *not run*. A skipped job produced no outcome,
+#: and calling it a success would let a lane that never executed vouch for a
+#: capability. `None` is also what an unrecognised conclusion becomes, which
+#: is the safe direction to be wrong in: "has not run" invites a look, while
+#: a wrong "succeeded" ends the conversation.
+_STATUS_BY_CONCLUSION: dict[str, str] = {
+    "success": "succeeded",
+    "failure": "failed",
+    "timed_out": "errored",
+    "startup_failure": "errored",
+    "action_required": "errored",
+    "cancelled": "aborted",
+    "stale": "aborted",
+}
+
+
+def status_from_conclusion(conclusion: str | None) -> str | None:
+    """One GitHub run conclusion as a platform status, or None for *not run*."""
+    if not conclusion:
+        return None
+    return _STATUS_BY_CONCLUSION.get(conclusion)
+
+
+def capability_by_workflow(templates: object) -> dict[str, str]:
+    """`mykronos-sast.yml` -> `sast`, from the template registry.
+
+    The Actions counterpart of `CAPABILITY_BY_JOB`, and unlike it, **not a
+    heuristic**: the Workflow Installer chose these filenames, so this is the
+    registry answering a question about its own output rather than a guess
+    about names somebody else picked.
+
+    Takes the library loosely rather than importing `TemplateLibrary`, which
+    would point this module at the installer for one attribute — and the
+    dependency runs the wrong way. A library without `specs` yields an empty
+    map, so a caller with no templates configured reports "no workflow
+    installed" rather than raising inside a status read that must not.
+    """
+    specs = getattr(templates, "specs", None)
+    if not isinstance(specs, dict):
+        return {}
+    return {
+        str(spec.target).rsplit("/", 1)[-1]: capability
+        for capability, spec in specs.items()
+        if getattr(spec, "target", None)
+    }
+
+
+class StatusCache:
+    """A short-lived cache in front of a status read (spec 32 §7.1).
+
+    Concourse was read anonymously off a server on the same host, so a read
+    per request cost nothing anybody could measure. GitHub is a network
+    round-trip against an installation limit of 5000/hour that token
+    rotation, the installer and Patchwork all draw on — and this is the least
+    important of the four. A repository page refreshed in a loop must not be
+    what stops a token rotating.
+
+    **Only successful reads are cached.** Caching a failure would pin a
+    transient blip in place for the whole TTL, and "GitHub did not answer"
+    is exactly the answer somebody re-loads the page to change.
+    """
+
+    def __init__(self, ttl_seconds: float = 60.0, limit: int = 512) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.limit = limit
+        self._entries: dict[str, tuple[float, PipelineStatus]] = {}
+
+    def get(self, key: str, *, now: float) -> PipelineStatus | None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        stored_at, value = entry
+        if now - stored_at > self.ttl_seconds:
+            self._entries.pop(key, None)
+            return None
+        return value
+
+    def put(self, key: str, value: PipelineStatus, *, now: float) -> None:
+        if value.unavailable is not None:
+            return
+        if len(self._entries) >= self.limit:
+            # Oldest first. A dashboard reads a bounded set of repositories,
+            # so this is a ceiling rather than an eviction strategy worth
+            # tuning.
+            oldest = min(self._entries, key=lambda k: self._entries[k][0])
+            self._entries.pop(oldest, None)
+        self._entries[key] = (now, value)
+
+
+class ActionsClient:
+    """Reads workflow state from GitHub Actions (spec 32 §7).
+
+    The second implementation of what `ConcourseClient` does, for the
+    repositories that moved. Everything downstream — `reconcile`, `coverage`,
+    `PipelineStatus`, the dashboard panel — is unchanged and unaware, because
+    those were always about job names, statuses and timestamps rather than
+    about Concourse.
+
+    Three properties are carried over deliberately, and one is lost:
+
+    *Derived, not configured.* Which lane produces which capability comes from
+    the template registry, because the installer chose the filename. Where the
+    Concourse mapping is a documented heuristic about names somebody else
+    picked, this one is exact.
+
+    *Never reads logs.* Run metadata only, for the same reason as spec 15 §4a:
+    logs carry scanner output.
+
+    *Fails soft, always.* Every failure resolves to "unavailable, and here is
+    why". The failure modes are richer than Concourse's — an expired
+    installation token, a 403, a rate limit — and none of them may reach a
+    request handler.
+
+    *Reads anonymously.* *Lost*, and worth stating rather than discovering.
+    Concourse was read with no credential because those pipelines are
+    `public: true` on a loopback-bound server. This spends an installation
+    token, against a limit shared with token rotation, the installer and
+    Patchwork — which is why the read is cached (§7.1) and why the panel is
+    the first consumer to give up.
+    """
+
+    def __init__(
+        self,
+        github: GitHubClient | None,
+        *,
+        capability_by_workflow: dict[str, str],
+    ) -> None:
+        self._github = github
+        #: `mykronos-sast.yml` -> `sast`. Built by the caller from the
+        #: template registry rather than restated here, so there is one
+        #: answer to "which lane is this" and the installer owns it.
+        self._capability_by_workflow = capability_by_workflow
+
+    @property
+    def configured(self) -> bool:
+        return self._github is not None
+
+    def _job_name_for(self, file_name: str) -> str | None:
+        """What to call this workflow's job, or None if it is not ours.
+
+        Two sources, in order, and the order is the point:
+
+        **The template registry, which is exact.** The installer chose
+        `mykronos-sast.yml`, so mapping it to `sast` is the registry answering
+        a question about its own output.
+
+        **`CAPABILITY_BY_JOB`, which is a heuristic and is already one.** A
+        repository may legitimately produce a capability from a workflow this
+        platform did not write — `demo-and-dast.yml` uploads `functional` and
+        `dast` from an ephemeral stack the templates cannot express (spec 32
+        §4.2). Before this fell back, both read `no_job`: rendered red, as a
+        coverage gap, while the scans were arriving.
+
+        Returning the *stem* rather than a resolved capability is what makes
+        the one-job-to-several-capabilities case work without touching
+        `reconcile()`. That function already splits a tuple — it has to, for
+        Concourse's `demo-and-dast` — so handing it the same key the Concourse
+        side hands it means the two CIs converge on one table rather than
+        growing a second.
+        """
+        capability = self._capability_by_workflow.get(file_name)
+        if capability is not None:
+            return capability
+        stem = file_name.rsplit(".", 1)[0]
+        return stem if stem in CAPABILITY_BY_JOB else None
+
+    async def status_for(self, repo_full_name: str) -> PipelineStatus:
+        """Workflow state for one repository. Never raises."""
+        url = f"https://github.com/{repo_full_name}/actions"
+        if not self.configured:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=None,
+                unavailable="No GitHub App is configured for this deployment.",
+            )
+
+        github = self._github
+        assert github is not None  # `configured` above
+        try:
+            workflows = await github.list_workflows(repo_full_name)
+            runs = await github.latest_workflow_runs(repo_full_name)
+        except Exception as exc:  # noqa: BLE001 - see the class docstring
+            logger.warning(
+                "Actions read of %s failed: %s", scrub(repo_full_name), scrub(str(exc))
+            )
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=url,
+                unavailable=(
+                    "GitHub did not answer, so this repository's workflow "
+                    "state is unknown."
+                ),
+            )
+
+        by_file = {run.workflow_file: run for run in runs}
+
+        jobs: list[JobStatus] = []
+        for workflow in workflows:
+            capability = self._job_name_for(workflow.file_name)
+            if capability is None:
+                # A workflow neither the template registry nor the job-name
+                # table recognises — the repository's own CI, `delivery.yml`
+                # among them. Not cross-checked, which is the safe direction to
+                # be wrong in: claiming somebody else's lane produces a
+                # capability would invent coverage.
+                continue
+            run = by_file.get(workflow.file_name)
+            # A workflow GitHub has switched off has not run and will not.
+            # Reporting its last conclusion would show a lane as green while
+            # it is paused, which is the "green pipeline, stale data"
+            # disagreement spec 15 §4a.1 exists to surface rather than hide.
+            status = (
+                status_from_conclusion(run.conclusion)
+                if run is not None and workflow.enabled
+                else None
+            )
+            jobs.append(
+                JobStatus(
+                    name=capability,
+                    status=status,
+                    build_name=str(run.run_number) if run and run.run_number else None,
+                    build_url=(run.url if run else None)
+                    or f"{url}/workflows/{workflow.file_name}",
+                    finished_at=run.finished_at if run and workflow.enabled else None,
+                )
+            )
+
+        if not jobs:
+            return PipelineStatus(
+                repo_full_name=repo_full_name,
+                pipeline=None,
+                url=url,
+                unavailable=(
+                    "No Mykronos workflow is installed in this repository. Enabling a "
+                    "capability opens the pull request that installs one (spec 03 §3)."
+                ),
+            )
+
+        return PipelineStatus(
+            repo_full_name=repo_full_name,
+            pipeline="github-actions",
+            url=url,
+            jobs=jobs,
+        )
+
+
 #: Every stage the platform claims to cover, in the order a pipeline runs
 #: them. Listed explicitly rather than derived from the Capability enum
 #: because the enum is an implementation detail and this is a promise: a
@@ -408,6 +737,115 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
     return out
 
 
+#: Whether a capability state constitutes *coverage* — findings from that
+#: capability actually reaching the lake. Used only to decide whether the
+#: Actions side is worse than the Concourse side; never rendered, because this
+#: is a comparison aid and not a fact about a repository.
+#:
+#: Two tiers, not a gradient. This was a seven-step ranking, and the ordering
+#: inside the uncovered tier was invented rather than observed: `not_run` sat
+#: ABOVE `silent`, so a capability going from "ran and reported nothing" to
+#: "has never run at all" was announced as an improvement. That is what
+#: `mykronos parity ToddGBenson/keel` said on 2026-08-29 — "No capability is
+#: worse under Actions" while every Actions lane read `not_run`, i.e. the new
+#: system had never executed once. A ranking that produces that sentence is
+#: not measuring what the gate exists to measure.
+#:
+#: There is no honest order within "not covered". `no_job`, `not_run`,
+#: `never_reported` and `silent` are four ways of describing the same
+#: outcome — nothing from this capability is in the lake — and they differ in
+#: what a human should go look at, not in how covered the repository is. So
+#: moving between them is never an improvement and never a regression.
+#:
+#: `event_driven` counts as covered: Aegis, Oracle and Patchwork are fed by
+#: webhooks and have no lane to run, so treating them as a gap would report a
+#: migration as having lost something it never had.
+#:
+#: `not_enabled` counts as NOT covered, which is a change. It used to rank
+#: alongside `reporting` on the grounds that a capability nobody asked for is
+#: not a gap — true when both sides agree, and that case still compares as
+#: "same". But it also meant a capability that was reporting under Concourse
+#: and merely never got enabled in the Actions ledger passed the gate in
+#: silence, which is exactly the migration mistake this is here to catch.
+_COVERED: frozenset[str] = frozenset({"reporting", "event_driven"})
+
+
+def _covers(state: str) -> bool:
+    return state in _COVERED
+
+
+@dataclass(frozen=True)
+class Parity:
+    """One capability, as each CI system reports it (spec 32 §9).
+
+    The check that authorises step 8. Retiring a pipeline because its
+    replacement looks green is how a lane goes quiet without anybody
+    noticing — spec 15 §4a.1's first day of existence found a lane that had
+    been green on every build and had never reported once.
+    """
+
+    capability: str
+    before: str
+    after: str
+
+    @property
+    def regressed(self) -> bool:
+        """Did this capability lose coverage in the move."""
+        return _covers(self.before) and not _covers(self.after)
+
+    @property
+    def verdict(self) -> str:
+        if self.regressed:
+            return "REGRESSED"
+        if self.before == self.after:
+            return "same"
+        if _covers(self.after) and not _covers(self.before):
+            return "improved"
+        # Different states, same tier. Named rather than folded into "same",
+        # because which uncovered state a capability is in is worth reading
+        # even though it does not change the answer — and because calling it
+        # "improved" is how a repository with no coverage at all came to be
+        # reported as ready to have its pipeline deleted.
+        return "no better"
+
+
+def compare(before: list[StageCoverage], after: list[StageCoverage]) -> list[Parity]:
+    """Line one CI system's coverage up against the other's (spec 32 §9).
+
+    Deliberately compares *states* rather than counting green lanes. "Both
+    systems report eleven capabilities" is satisfied by two systems reporting
+    eleven different ones; what has to hold before a pipeline is destroyed is
+    that no individual capability got worse.
+
+    A capability missing from one side is treated as `no_job` there — the
+    worst state — because a capability the new system does not know about is
+    exactly the gap this is looking for, not an absence to skip over.
+    """
+    before_by = {row.stage: row.state for row in before}
+    after_by = {row.stage: row.state for row in after}
+    return [
+        Parity(
+            capability=stage,
+            before=before_by.get(stage, "no_job"),
+            after=after_by.get(stage, "no_job"),
+        )
+        for stage in sorted(set(before_by) | set(after_by))
+    ]
+
+
+#: Terminal statuses that mean the lane ran and produced no successful build.
+#:
+#: `aborted` is here with the two failures. A cancelled run is not a fault,
+#: but it is equally not a successful build, and the question this feeds is
+#: "does this lane have something to report from" rather than "whose fault is
+#: it". Calling a cancelled run "never ran" is the same false statement.
+#:
+#: In-progress statuses (`started`, `pending`) are deliberately absent: a lane
+#: mid-flight has not failed, and `ActionsClient` never sees them anyway
+#: because it reads completed runs only.
+_DID_NOT_SUCCEED: frozenset[str] = frozenset({"failed", "errored", "aborted"})
+
+
 def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
@@ -438,6 +876,7 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
                     capability=capability,
                     built_at=job.finished_at if job.status == "succeeded" else None,
                     scanned_at=last_scan_at.get(capability),
+                    last_build_failed=job.status in _DID_NOT_SUCCEED,
                 )
             )
     return out

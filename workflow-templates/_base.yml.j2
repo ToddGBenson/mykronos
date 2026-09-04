@@ -69,8 +69,23 @@ jobs:
         # spec 05 §4. Better to stop in ten seconds than scan for twenty
         # minutes and find at upload time that the results have nowhere to go
         # — and silently skipping is not an option (spec 01 §6).
+        #
+        # Retried, because one slow answer is not an unreachable platform.
+        # On 2026-08-30 seven lanes failed together on `curl: (28) Operation
+        # timed out after 20002 milliseconds` while the ingestion host was
+        # briefly saturated — it was serving in 0.3s a few minutes either
+        # side. A single-shot probe turns a busy minute into seven red checks
+        # and a scan that never ran, which is a worse answer than waiting.
+        #
+        # `--retry-all-errors` is what makes this work: `--retry` alone does
+        # not retry a timeout, which is the exact failure observed.
+        #
+        # Still fails fast in the case it exists for. Three attempts at 15s
+        # with a 5s backoff is under a minute, against the twenty a scan
+        # would otherwise waste before discovering the same thing.
         run: |
-          curl --fail --silent --show-error --max-time 20 \
+          curl --fail --silent --show-error --max-time 15 \
+            --retry 2 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
             "<< ingestion_api_url >>/api/ingest/health" > /dev/null
 

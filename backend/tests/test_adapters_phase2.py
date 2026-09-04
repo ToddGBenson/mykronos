@@ -534,6 +534,123 @@ class TestRegistry:
             "must not be a tag."
         )
 
+    def test_every_reviewed_policy_file_is_in_the_image_and_configurable(
+        self,
+    ) -> None:
+        """Four YAML files decide what the platform judges repositories by.
+
+        Each is loaded through a path that defaults to
+        `Path(__file__).resolve().parents[2] / <name>`. From a checkout that
+        is the repository root and correct. From an installed wheel it is the
+        parent of site-packages -- `/usr/local/lib/python3.13` -- and wrong.
+
+        Two of the four were also never COPYed into the image, so the
+        deployed backend logged
+
+            Governance policy unreadable at
+            /usr/local/lib/python3.13/governance-policy-v1.yaml;
+            no score computed.
+
+        at WARNING and carried on with an empty weight table. Every
+        governance score in production was computed from nothing, every test
+        computed one correctly, and nothing failed. That is D-052's shape
+        exactly: right in every checkout, wrong in every deployment, quiet in
+        both.
+
+        The fix is the pattern the other two already had -- a Settings field
+        so the path is overridable, and an ENV in the Dockerfile pointing at
+        a file the image actually contains. This asserts all three halves,
+        because having the setting without the COPY still yields a missing
+        file, and having the COPY without the ENV still resolves to the
+        standard library.
+        """
+        from mykronos.config import Settings
+
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+
+        for setting, filename, env in (
+            ("oracle_policy_path", "oracle-policy-v1.yaml", "MYKRONOS_ORACLE_POLICY_PATH"),
+            ("maturity_model_path", "maturity-model-v1.yaml", "MYKRONOS_MATURITY_MODEL_PATH"),
+            (
+                "governance_policy_path",
+                "governance-policy-v1.yaml",
+                "MYKRONOS_GOVERNANCE_POLICY_PATH",
+            ),
+            ("stride_map_path", "stride-map-v1.yaml", "MYKRONOS_STRIDE_MAP_PATH"),
+        ):
+            assert setting in Settings.model_fields, (
+                f"{filename} has no Settings field, so its path cannot be "
+                "overridden and it will resolve relative to the module -- "
+                "which is the standard library in a deployed image."
+            )
+            assert (root / filename).is_file(), f"{filename} is missing from the repo root"
+            assert filename in dockerfile, (
+                f"{filename} is never COPYed into the image. The setting alone "
+                "does not help: the path will point at a file that is not there."
+            )
+            assert f"{env}=/app/{filename}" in dockerfile, (
+                f"{env} is not set to /app/{filename} in the Dockerfile, so the "
+                "deployed backend falls back to the module-relative path."
+            )
+
+    def test_the_package_spec_and_the_upload_action_pin_the_same_commit(
+        self,
+    ) -> None:
+        """Two settings install the same package into the same job.
+
+        `upload_action_ref` is what the shared upload action is resolved at.
+        `mykronos_package_spec` is what the aegis, atlas, ai and sast templates
+        pip-install for their collectors and adapters -- and they do it in a
+        step BEFORE the upload action runs.
+
+        `pip install` of an already-satisfied requirement is a no-op. It does
+        not compare versions and it does not warn. So whichever of these two
+        installs first is the one that wins, and the second silently does
+        nothing. If the package spec is older, it quietly downgrades the
+        uploader the action was carefully pinned to, and the pin above becomes
+        decorative.
+
+        That is not hypothetical. `upload_action_ref` was moved forward
+        repeatedly while this setting sat at `v1` and the tag series reached
+        `v7`. The `ai` and `atlas` lanes failed on
+
+            argument --capability: invalid choice: 'ai'
+            (choose from 'sast','dast','secrets','containers','iac','cloud',
+             'aegis','atlas','patchwork','oracle')
+
+        -- v1's Capability enum, running inside a job whose action had been
+        pinned to a commit that knew both. `sast` and `aegis` were unaffected
+        only because v1 happened to already know those two names, which is why
+        this went unnoticed: the failure looked capability-specific rather than
+        like a version pin.
+
+        Requiring the same 40-character commit in both makes that class of
+        drift a test failure instead of a red lane. Update them together.
+        """
+        from mykronos.config import Settings
+
+        def _default(name: str) -> str:
+            value = Settings.model_fields[name].default
+            return value() if callable(value) else value
+
+        _, _, action_rev = _default("upload_action_ref").rpartition("@")
+        spec = _default("mykronos_package_spec")
+        spec_rev = spec.rpartition("@")[2].partition("#")[0]
+
+        assert re.fullmatch(r"[0-9a-f]{40}", spec_rev), (
+            f"mykronos_package_spec is pinned to {spec_rev!r}, which is not a "
+            "40-character commit SHA. A tag here can be moved, and this "
+            "requirement is installed into every onboarded repository."
+        )
+        assert spec_rev == action_rev, (
+            "mykronos_package_spec and upload_action_ref install the same "
+            "package into the same job, and the first install wins -- so they "
+            f"must pin the same commit. The package spec is at {spec_rev!r} "
+            f"and the upload action is at {action_rev!r}. Whichever is older "
+            "is what actually runs. See this test's docstring."
+        )
+
     def test_the_upload_action_pins_no_version_of_its_own(self) -> None:
         """The composite action installs the `mykronos` package, and which
         version it installs must follow the ref the action was resolved at.

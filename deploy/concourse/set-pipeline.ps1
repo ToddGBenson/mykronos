@@ -154,7 +154,28 @@ try {
         # `pin-check` in the mykronos pipeline is what remembers now — it
         # installs this exact ref and fails if the runner modules and CLI
         # flags the pipelines pass are not in it. When it fails, cut the next tag here.
-        "mykronos-ref: v4",
+        #
+        # v7, and the history is worth keeping because it names the one
+        # ordering rule this pin has.
+        #
+        # v6 broke ingestion on 2026-08-25. It carries spec 28 §1, so the
+        # uploader sends `cwe_ids` on every finding; the backend deployed at
+        # the time predated the field and its submission model forbids extra
+        # keys (spec 05 §4), so every SAST and secrets upload 422'd and the
+        # findings were lost. Held at v5 until the backend caught up.
+        #
+        # `pin-check` did not catch it and could not: it asserts the pinned
+        # package still has the modules and flags the pipelines invoke, which
+        # was true. The failure is not the runner missing something — it is
+        # the runner having something the *backend* does not, which is a fact
+        # about two versions and not about one.
+        #
+        # **Deploy the backend first, then move this.** The ordering matters
+        # in one direction only: an old runner against a new backend is fine,
+        # because the new backend still accepts what the old one sends. v7 is
+        # safe in both directions anyway — it omits `cwe_ids` when empty — but
+        # the rule stands for the next field somebody adds.
+        "mykronos-ref: v7",
         # The branch the pipeline scans, which every upload now reports rather
         # than each one naming the default branch as a literal (PS-6). One
         # place to change if this pipeline is ever pointed somewhere else.

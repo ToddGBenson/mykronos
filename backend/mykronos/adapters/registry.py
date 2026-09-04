@@ -214,6 +214,18 @@ def normalize_results(
         outcome.skipped += parsed.skipped
         if parsed.scan_status is not ScanStatus.SUCCESS:
             outcome.scan_status = parsed.scan_status
+        # The highest of whatever the files reported (spec 31 §4). Sharded
+        # suites write one coverage report per shard, each measuring only the
+        # code its own shard touched; summing would exceed 1.0 and averaging
+        # would understate a repository whose shards are deliberately narrow.
+        # Neither is right, and the largest single measurement is at least a
+        # number that was actually observed.
+        for name in ("line_coverage", "branch_coverage"):
+            reported = getattr(parsed, name)
+            if reported is None:
+                continue
+            current = getattr(outcome, name)
+            setattr(outcome, name, reported if current is None else max(current, reported))
 
     logger.info(
         "%s/%s: %s finding(s) from %s file(s)",

@@ -143,8 +143,9 @@ async def add_note(request: Request, body: RetroNote, actor: AdminDep) -> EntryO
     """Write down something noticed in a retro (spec 11 §4).
 
     The only entry type with no machine-generated component. Admin-only
-    because it writes into the same corpus that eventually influences Oracle's
-    policy, and an unauthenticated way to inject a "learning" would be a
+    because it writes into the same corpus that eventually influences the
+    risk-decision policy, and an unauthenticated way to inject a "learning"
+    would be a
     quietly effective way to change how every repository is scored.
     """
     store = request.app.state.knowledge
@@ -289,7 +290,8 @@ async def promotion_candidates(
         "policy_proposal": render_policy_proposal(candidates),
         "note": (
             "Nothing here has been applied. Moving an entry between tiers is a "
-            "human decision, and changing the Oracle policy is a pull request "
+            "human decision, and changing the risk-decision policy is a pull "
+            "request "
             "(spec 11 §2)."
         ),
     }

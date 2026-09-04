@@ -27,6 +27,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/netassess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Netassess
+         * @description Judge a network-assessment run the host has just produced (spec 32 §4.4).
+         *
+         *     The half Concourse was good at — deciding whether the run that arrived is
+         *     worth believing, and saying what changed — with the half it was bad at
+         *     left where it works. The scan itself stays on Windows: an nmap sweep from
+         *     a container reported all 256 addresses of a /24 as up while the host's ARP
+         *     table had 38, because MAC-keyed inventory needs L2 adjacency a container
+         *     does not have.
+         *
+         *     **The failure this exists to catch is the Scheduled Task degrading rather
+         *     than dying**: still writing `network-status.md` every week with the checks
+         *     inside it no longer running. So an `unknown` line fails the run rather than
+         *     warning about it — a NAS that is switched off must not read the same as one
+         *     confirmed closed.
+         *
+         *     **A run that fails verification is still recorded.** "The last scan was bad"
+         *     is precisely what the freshness check needs to know, and discarding it
+         *     would make a degraded scanner indistinguishable from a silent one.
+         *
+         *     Requires the `network` capability, unlike `/lane-failure`: this *is* a
+         *     capability, it is the one spec 14 defines, and what may write it is what
+         *     the grant says.
+         */
+        post: operations["ingest_netassess_api_ingest_netassess_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ingest/lane-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Lane Failure
+         * @description A CI lane failed and has no ScanRun to say so with (spec 32 §11 q6).
+         *
+         *     Concourse put `on_failure: *slack_alert` on every job. On Actions most
+         *     lanes need no equivalent — `mykronos.upload` registers a ScanRun before it
+         *     interprets anything and finalises in a `finally`, so a failed scan already
+         *     reaches Slack through `/scan-run`. This covers the two cases it cannot: a
+         *     lane with nothing to upload (`delivery.yml` builds and publishes and
+         *     produces no findings by design), and a lane that died before its upload
+         *     step ever ran.
+         *
+         *     **Nothing is written to the lake.** A build failure is not a finding, has
+         *     no severity, and must not reach a risk score — D-046's rule about test
+         *     lanes, one step further out. This endpoint sends a message and returns.
+         *
+         *     **The repository comes from the token, never from the body.** A token
+         *     scoped to one repository cannot raise an alert that appears to be about
+         *     another.
+         *
+         *     **No capability grant is required**, because a lane failure is not a
+         *     capability. Requiring one would mean a repository could not report that
+         *     its build broke until somebody granted it something unrelated.
+         */
+        post: operations["ingest_lane_failure_api_ingest_lane_failure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/scan-run": {
         parameters: {
             query?: never;
@@ -113,7 +194,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ingest Aegis
+         * Ingest insider risk
          * @description Score a pull request for insider risk and record it (spec 06 §4).
          *
          *     The workflow reports *observations* — which signals fired and why — and
@@ -141,7 +222,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Ingest Atlas
+         * Ingest dependencies (SCA)
          * @description Record supply-chain evidence for a commit (spec 07 §4).
          *
          *     The workflow reports dependency counts per ecosystem; the trust score is
@@ -203,8 +284,9 @@ export interface paths {
          * Ingest Capability Payload
          * @description Capability-specific tables that do not have an endpoint yet.
          *
-         *     Declared here because spec 05 §4 defines the route. Aegis and Atlas have
-         *     their own handlers above — registered first, so this catch-all cannot
+         *     Declared here because spec 05 §4 defines the route. Insider risk and
+         *     dependencies (SCA) have their own handlers above — registered first, so
+         *     this catch-all cannot
          *     shadow them. Returning 501 rather than 404 keeps the contract visible
          *     instead of looking like a routing bug.
          */
@@ -248,7 +330,7 @@ export interface paths {
          *
          *     Read-only, and deliberately so. Each row links out to GitHub to review and
          *     merge; the platform offers no merge of its own. That is the same constraint
-         *     spec 08 §3 makes structural for Patchwork, applied to the view: a page that
+         *     spec 08 §3 makes structural for auto-remediation, applied to the view: a page that
          *     could merge a change to your code is a page that has to be trusted
          *     differently from one that can only show it to you.
          */
@@ -275,6 +357,12 @@ export interface paths {
          *     The portfolio table answers "which repo is worst". This answers "what do I
          *     do next" — the question somebody actually has on a Monday morning, and one
          *     a per-repo view makes you visit forty pages to answer.
+         *
+         *     `order=rank` applies spec 27 §1's weighted sum: severity describes the
+         *     vulnerability class, and everything else on the row describes this
+         *     instance of it. Severity ordering is kept and is still the default —
+         *     "show me every critical" remains a legitimate question, and a queue that
+         *     refuses to answer it is a worse queue.
          */
         get: operations["triage_api_dashboard_triage_get"];
         put?: never;
@@ -323,12 +411,130 @@ export interface paths {
          *
          *     Criteria measure evidence rather than switch positions: nothing here can
          *     be satisfied by changing configuration alone, and in particular no tier
-         *     rewards turning Oracle's gate on. Spec 09 §6 makes that conditional on
+         *     rewards turning the risk-decision gate on. Spec 09 §6 makes that conditional on
          *     shadow-mode data, so the model asks whether the data exists instead.
          */
         get: operations["maturity_api_dashboard_maturity_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/throughput": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Triage Throughput
+         * @description What moved this week, against last (spec 27 §5).
+         *
+         *     A queue with no memory of itself cannot tell a team clearing its backlog
+         *     from one treading water: both look like a list of open findings. Every
+         *     number is a query over `first_seen_at`, `resolved_at` and the verification
+         *     outcomes — no rollup table, for the reason `trend_series` gives.
+         *
+         *     Ordered before `/triage/{finding_id}/...` so the literal path is not
+         *     shadowed by the parameterised one.
+         */
+        get: operations["triage_throughput_api_dashboard_triage_throughput_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/{finding_id}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Finding
+         * @description Take a row (spec 27 §3.1).
+         *
+         *     Distinct from `owner` (spec 24 §1): ownership says who is *answerable*,
+         *     copied from CODEOWNERS; a claim says who is *doing it now*. Conflating
+         *     them would mean either nobody can pick up a neighbouring team's work
+         *     without rewriting ownership, or ownership drifts every time somebody
+         *     helps out.
+         *
+         *     First write wins. A silent overwrite here is two people fixing the same
+         *     finding.
+         */
+        post: operations["claim_finding_api_dashboard_triage__finding_id__claim_post"];
+        /**
+         * Release Finding
+         * @description Hand a row back. The snooze, if any, is a separate decision and stays.
+         */
+        delete: operations["release_finding_api_dashboard_triage__finding_id__claim_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/{finding_id}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snooze Finding
+         * @description Put a row down until a date, deciding nothing about it (spec 27 §3.1).
+         *
+         *     Deliberately not a `Finding.status`: a snoozed finding is still open,
+         *     still scores in the risk decision, and still goes overdue if it goes
+         *     overdue. That
+         *     separation is what stops "not now" becoming "not ever".
+         */
+        post: operations["snooze_finding_api_dashboard_triage__finding_id__snooze_post"];
+        /**
+         * Wake Finding
+         * @description Bring a snoozed row back early. The claim, if any, stays.
+         */
+        delete: operations["wake_finding_api_dashboard_triage__finding_id__snooze_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Triage Batch
+         * @description One action over a selection (spec 27 §3.1).
+         *
+         *     Reports per row rather than failing whole: one row somebody else claimed
+         *     must not stop the other ninety-nine.
+         *
+         *     Batching does not relax what a single action requires. A snooze still
+         *     needs a reason and a future date — spec 11 §4's reasons are what make the
+         *     Knowledge Store worth anything, and a bulk path that skipped them would be
+         *     the obvious way to stop having any.
+         */
+        post: operations["triage_batch_api_dashboard_triage_batch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -449,8 +655,196 @@ export interface paths {
          *     Admin-only — `may_see_raw_output`, the same gate every other archived
          *     tool output already sits behind (spec 12 §5): an SBOM is raw output too,
          *     just one atlas produced rather than a scanner.
+         *
+         *     **`evidence_id` is optional (B-037).** Pinning an SBOM to a build is
+         *     correct — one without a build is a guess about what shipped — but that
+         *     made the common question unanswerable without a lookup nobody knew to do.
+         *     Omitting it resolves the newest build that captured one, which is a lookup
+         *     of a real artifact rather than a floating document.
          */
         get: operations["repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/regression-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link Regression Test
+         * @description Record the test that would fail if this came back (spec 31 §2).
+         *
+         *     Its own endpoint rather than a field on the disposition form, and the
+         *     reason is a rule this platform already holds: `fixed` is not a disposition
+         *     a person may set -- it is an observation the scanners and the reconciler
+         *     own (`HUMAN_DISPOSITIONS`). Spec 31 §2 assumed somebody marks a finding
+         *     fixed by hand and is offered the field there; nobody can, so the moment
+         *     the spec described does not exist. What does exist is a person who has
+         *     just written the test, and this is where they say so.
+         *
+         *     Recorded as `asserted`. `demonstrated` is earned by watching the test fail
+         *     against the vulnerable code and pass against the fixed code, never claimed
+         *     through this route: the whole point of the distinction is that one is
+         *     somebody's word and the other is evidence.
+         */
+        post: operations["link_regression_test_api_dashboard_findings__finding_id__regression_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/regression-coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Regression Coverage
+         * @description Which fixed vulnerabilities would we notice coming back? (spec 31 §3)
+         *
+         *     The first number in this platform that measures a repository getting
+         *     structurally safer rather than temporarily cleaner. Everything else counts
+         *     what is open; this counts what was learned.
+         */
+        get: operations["regression_coverage_api_dashboard_repos__repo_id__regression_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/governance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Governance
+         * @description The controls that would catch a bad change (spec 30 §1, §2, §3).
+         *
+         *     Read live rather than from a stored snapshot. Branch protection is
+         *     configuration a person can change in the GitHub UI in ten seconds, and a
+         *     panel that told somebody their repository still required two reviews after
+         *     they had turned that off would be worse than no panel. The cost is one API
+         *     call per view, which is the right trade for a read this small.
+         *
+         *     Never raises on GitHub. An App without `administration: read` reports every
+         *     control as unknown and names the permission — a permissions gap is not a
+         *     security failure and is not scored as one.
+         */
+        get: operations["repo_governance_api_dashboard_repos__repo_id__governance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/incident": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Incident Lookup
+         * @description Are we affected by this? (spec 29 §2)
+         *
+         *     A CVE, a package name, or a purl, answered across every onboarded
+         *     repository. Nothing here is new information — the inventory, the findings,
+         *     the risk verdicts and the KEV/EPSS matches are all already held. The only
+         *     new thing is that they arrive together, joined by package name and ordered
+         *     worst-first, which is the difference between answering this in ten seconds
+         *     and answering it in twenty minutes across five tabs.
+         *
+         *     A read, deliberately. The batch actions spec 29 §2.1 describes go through
+         *     the existing story and auto-remediation paths and are triggered per repository by
+         *     a person: the platform does not open forty pull requests because KEV
+         *     published overnight.
+         */
+        get: operations["incident_lookup_api_dashboard_incident_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/briefing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Post Deployment Briefing
+         * @description What to do next about the open backlog (D-098).
+         *
+         *     The same view `mykronos briefing` prints after every deploy, for the
+         *     surfaces that want it rendered rather than in a terminal.
+         *
+         *     Its first section is the one that earns it. A finding closes only after
+         *     two consecutive *successful* scans observe its absence (spec 05 §5), so a
+         *     lane that is failing — or that quietly stopped running — freezes its
+         *     findings open however thoroughly the defect was fixed. Nothing else in the
+         *     platform joins "this lane is broken" to "so these findings cannot close":
+         *     the portfolio ranks repositories, the worklist ranks findings, the CI view
+         *     shows job status, and all three were correct while 91% of the backlog sat
+         *     unable to move.
+         *
+         *     A read. The actions it names are existing routes, and a person triggers
+         *     them.
+         */
+        get: operations["post_deployment_briefing_api_dashboard_briefing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/sscs/packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Vulnerable Packages
+         * @description Which packages are vulnerable, and which you can act on (B-027).
+         *
+         *     The Supply chain tab reported a trust score and advisory counts and never
+         *     named a package. "You have 234 container advisories" is a fact nobody can
+         *     act on; "setuptools has 2 and both are fixed in 78.1.1, libc6 has 18 and
+         *     none of them have a published fix" is two different decisions.
+         *
+         *     KEV is read from the operational store and passed in, so the lake query
+         *     itself stays a pure read.
+         */
+        get: operations["repo_vulnerable_packages_api_dashboard_repos__repo_id__sscs_packages_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -473,11 +867,187 @@ export interface paths {
          *     Composed from `open_findings`' own building blocks — `_finding_rows` and
          *     `_group_findings` — not a second grouping implementation reading the same
          *     table differently.
+         *
+         *     Now also carries what *stops* the things it lists (spec 28 §3, §4). A
+         *     threat model is made of four things and this had one; the declared
+         *     controls are read here rather than fetched separately because a category's
+         *     state is a fact about its findings and its controls together, and two
+         *     calls could disagree about it.
          */
         get: operations["repo_threat_model_api_dashboard_repos__repo_id__threat_model_get"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/guidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Guidance
+         * @description The scanners' own remediation for this repository (B-030).
+         *
+         *     The Remediation tab said what Patchwork did and did not do, which is
+         *     honest and incomplete: across the estate Patchwork declines almost
+         *     everything, because four deterministic fixers cover four narrow classes.
+         *     That left a tab whose truthful answer was "nothing", beside reports full
+         *     of remediation advice nobody was reading.
+         *
+         *     This is the other half. Same source as `/remediate` — ZAP's `solution`,
+         *     Trivy's `Fixed Version` — scoped to one repository.
+         */
+        get: operations["repo_guidance_api_dashboard_repos__repo_id__guidance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/surfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Surfaces
+         * @description Assets, entry points and trust boundaries (B-029).
+         *
+         *     The three quarters of a threat model the platform did not hold. Findings
+         *     say what was found; these say what is at stake, and without them "twelve
+         *     mediums in the payments service" and "twelve mediums in the internal
+         *     changelog renderer" are the same row.
+         */
+        get: operations["repo_surfaces_api_dashboard_repos__repo_id__surfaces_get"];
+        put?: never;
+        /**
+         * Declare Surface
+         * @description Declare one asset, entry point or trust boundary.
+         *
+         *     Admin-authored, and the response never dresses that up as more. Nothing in
+         *     this platform can confirm that a database holds customer records — a row
+         *     here is a person asserting it, which is weaker and clearer than a machine
+         *     implying it, and useful the day somebody types it.
+         */
+        post: operations["declare_surface_api_dashboard_repos__repo_id__surfaces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/surfaces/{surface_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Surface
+         * @description Withdraw a declaration that turned out to be wrong.
+         *
+         *     A correction, not a deletion of evidence: this register is a statement
+         *     about the present, which is exactly why it is operational rather than in
+         *     the append-only lake.
+         */
+        delete: operations["remove_surface_api_dashboard_repos__repo_id__surfaces__surface_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Declare Control
+         * @description Declare a mitigation (spec 28 §3).
+         *
+         *     Admin-authored, and the response never dresses that up as more. A declared
+         *     control says *a person asserted this*, which is a weaker and clearer claim
+         *     than a machine implying it — and it is useful the day it ships, where a
+         *     register waiting on spec 23 §2's entry-point inventory stays unbuilt for a
+         *     year.
+         *
+         *     `verified_by_capability` is derived from the kind rather than accepted
+         *     here: it says which capability could *contradict* this control, which is a
+         *     property of what the control is, not something a declarer may choose. A
+         *     control naming a capability that cannot see it would look checked and be
+         *     nothing of the kind.
+         */
+        post: operations["declare_control_api_dashboard_repos__repo_id__controls_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls/{control_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Control
+         * @description Somebody re-read it and it is still true.
+         *
+         *     Its own action rather than an edit, because the thing being recorded is
+         *     that a person looked — a mitigation nobody has checked since last quarter
+         *     is a belief, and the tab has to be able to say which of the two it is
+         *     showing.
+         */
+        post: operations["confirm_control_api_dashboard_repos__repo_id__controls__control_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/controls/{control_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Withdraw Control
+         * @description Remove a control that is no longer true.
+         *
+         *     Deleted rather than flagged withdrawn, unlike almost everything else here.
+         *     A control is a claim about the present; a withdrawn one is not evidence of
+         *     anything, and nobody needs to know that somebody once believed
+         *     authentication was enforced. The audit entry records who removed it, which
+         *     is the part that matters.
+         */
+        delete: operations["withdraw_control_api_dashboard_repos__repo_id__controls__control_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -608,6 +1178,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/classification-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Classification
+         * @description Confirm or reject what the classifier concluded (B-020).
+         *
+         *     The classifier labels findings `likely_false_positive` and
+         *     `needs_human_judgment` and deliberately cannot act on either: a machine
+         *     that could set `false_positive` would eventually dismiss a real finding,
+         *     silently. So the label waits for a person — and until this existed, the
+         *     only way to answer it was to open the right repository, find the row and
+         *     disposition it by hand, which is why 43 false positives have ever been
+         *     recorded and all of them are sast or secrets.
+         *
+         *     **Both answers are recorded, and that is the point.** Agreeing already
+         *     left a trace: the finding changes status and the rule earns a dismissal
+         *     observation that feeds dampening. Disagreeing left none, so a classifier
+         *     calling real findings false positives was indistinguishable from one
+         *     nobody had reviewed yet. A verdict nothing ever contradicts is a verdict
+         *     nobody is checking.
+         *
+         *     Rejection does not dampen anything and does not change the finding: it is
+         *     a fact about the classifier, not about the rule. Quietening a rule because
+         *     somebody said its finding was real would invert the loop.
+         */
+        post: operations["review_classification_api_dashboard_findings__finding_id__classification_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/findings/{finding_id}/status": {
         parameters: {
             query?: never;
@@ -625,10 +1234,40 @@ export interface paths {
          * Set Finding Status
          * @description Record a human disposition (spec 10 §2.2).
          *
-         *     Admin-only: this changes what Oracle will decide, so it is a write, not a
-         *     view. Viewers can read every finding and change none of them.
+         *     Admin-only: this changes what the risk-decision engine will decide, so it
+         *     is a write, not a view. Viewers can read every finding and change none of
+         *     them.
          */
         patch: operations["set_finding_status_api_dashboard_findings__finding_id__status_patch"];
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set Finding Owner
+         * @description Reassign a finding (spec 24 §1.2).
+         *
+         *     Admin-only, like the disposition endpoint next to it and for the same
+         *     reason: it changes who is answerable for a piece of work, which is a write.
+         *
+         *     A manual assignment survives re-scans — the compaction upsert refuses to
+         *     overwrite `owner_source = 'manual'`. Clearing the owner is therefore not
+         *     "nobody owns this" but "go back to asking CODEOWNERS", which is why the
+         *     null case restores `unresolved` rather than writing a manual null that
+         *     would freeze the finding out of resolution for ever.
+         */
+        patch: operations["set_finding_owner_api_dashboard_findings__finding_id__owner_patch"];
         trace?: never;
     };
     "/api/dashboard/threat-intel": {
@@ -650,6 +1289,345 @@ export interface paths {
          *     how they would.
          */
         get: operations["threat_intel_api_dashboard_threat_intel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/reown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reown Findings
+         * @description Re-derive ownership for a repository's open findings (B-034).
+         *
+         *     Ownership resolves at ingest, so a finding written before that code existed
+         *     — or before a repository grew a CODEOWNERS file — keeps whatever was true
+         *     the day it was first seen. On this deployment that left 1001 findings with
+         *     a null `owner_source`: not `unresolved`, which at least records that
+         *     somebody asked, but nothing at all.
+         *
+         *     Re-derived rather than migrated, because the answer is not a constant: it
+         *     depends on the repository's CODEOWNERS file *now*, its risk profile *now*,
+         *     and the finding's own path. So this asks the same function ingest asks and
+         *     writes what it says. A SQL update would freeze today's answer as though it
+         *     had always been the answer.
+         *
+         *     **Defaults to a dry run.** It rewrites a column people route work by, and
+         *     the safe default for that is to show somebody what would happen.
+         *
+         *     A finding assigned by hand is never touched — compaction already treats
+         *     `owner_source = 'manual'` as authoritative, and a backfill that ignored it
+         *     would undo the one kind of ownership a person actually decided.
+         */
+        post: operations["reown_findings_api_dashboard_repos__repo_id__reown_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whole Finding Record
+         * @description Everything about one finding, in one call (B-032).
+         *
+         *     Eleven surfaces held pieces of this: the triage queue had the verdict, the
+         *     findings tab the occurrences, supply chain the fixed version, remediate
+         *     today the fix, scan health whether the lane could close it. Deciding what
+         *     to do about a single finding meant visiting five pages, and three of the
+         *     facts that would change the decision were not on the page where it got
+         *     made.
+         *
+         *     Assembled, never recomputed. Two implementations of "which findings does
+         *     this fix close" would eventually disagree and both would look right.
+         */
+        get: operations["whole_finding_record_api_dashboard_findings__finding_id__record_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/inventory/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reindex Inventory
+         * @description Rebuild the component inventory from SBOMs already in the archive.
+         *
+         *     The extractor runs on Atlas evidence submission, so the index only ever
+         *     learns about a repository the next time it scans. That leaves three cases
+         *     with an archived document and no rows: a repository whose newest SBOM
+         *     predates the extractor, one whose extraction failed (every failure there
+         *     is swallowed deliberately so a truncated SBOM cannot fail an ingest), and
+         *     a lake restored from archive.
+         *
+         *     A third read of a file the runner produced. No new scan, no new tool, no
+         *     workflow change: the documents are on disk and this walks them.
+         *
+         *     Reads the **newest** SBOM per repository, not every archived one. This
+         *     estate has 177 of them going back months, and a table whose purpose is
+         *     answering "what do we run now" is not improved by every version a library
+         *     has ever been at — "which repositories contain lodash 4.17.20" would start
+         *     returning builds that shipped and moved on.
+         *
+         *     Skips anything already indexed, so it is safe to run repeatedly, and
+         *     defaults to a dry run because it writes to a table other views read.
+         */
+        post: operations["reindex_inventory_api_dashboard_inventory_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/libraries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estate Libraries
+         * @description Every library the estate carries, and where — the consolidation view.
+         *
+         *     The per-repository views answer "what does this service depend on". This
+         *     answers the question one level up, which no existing view could: *how many
+         *     distinct libraries are we maintaining across everything, and which of them
+         *     are we carrying at more than one version?*
+         *
+         *     Two reasons to act, and the ordering reflects them. A library in every
+         *     repository is a blast radius — one advisory against it is an estate-wide
+         *     event rather than a ticket. A library at three versions is a
+         *     standardisation target, and the oldest of those is where a CVE lands first
+         *     while the newest gives everybody false comfort.
+         *
+         *     Deliberately not filtered to vulnerable packages. The point is to reduce
+         *     the number of distinct dependencies *before* one becomes a finding; a view
+         *     that showed only the ones already causing pain would be the vulnerability
+         *     list again under another name.
+         */
+        get: operations["estate_libraries_api_dashboard_libraries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/risk-profile/proposal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Risk Profile Proposal
+         * @description Propose a risk profile from evidence, for a person to confirm.
+         *
+         *     0 of 4 repositories here have one, so `internet_facing`,
+         *     `data_classification` and `business_criticality` are unset everywhere — and
+         *     the triage queue now says out loud that it ranks by severity and threat
+         *     intelligence rather than by risk, because the context it would weigh does
+         *     not exist.
+         *
+         *     Asking humans to fill in a form has failed everywhere it has been tried, so
+         *     this proposes and a person confirms. The rule that keeps it honest is that
+         *     an absent field stays absent: a builder that guessed "internal, low
+         *     criticality" whenever it could not tell would be worse than the empty
+         *     profile, because an empty profile is visibly empty and a guessed one looks
+         *     like an answer.
+         *
+         *     The most useful thing here is not the proposals. It is
+         *     `what_would_settle_it` on the ones it refuses to guess — the empty form
+         *     becomes a short list of evidence to go and get.
+         */
+        get: operations["risk_profile_proposal_api_dashboard_repos__repo_id__risk_profile_proposal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/ssdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Ssdf
+         * @description Which SSDF practices this repository can evidence (SP 800-218).
+         *
+         *     **Evidence, never intent.** A practice is met only when the platform
+         *     observed something that meets it — a lane that *reported*, a control GitHub
+         *     confirmed. An enabled-but-silent capability evidences nothing, because
+         *     otherwise a repository could claim coverage by flipping a toggle, which is
+         *     the move the maturity model was written to refuse.
+         *
+         *     **No percentage, deliberately.** "68% SSDF compliant" is the number
+         *     everybody wants and it is not a real quantity: the practices are not
+         *     equally weighted, not equally applicable, and a single number invites
+         *     exactly the rounding this endpoint exists to prevent. Counts by status, and
+         *     the reader does their own arithmetic knowing what it is made of.
+         *
+         *     Practices this platform cannot assess are absent rather than reported unmet.
+         *     PO.1 and PO.2 are organisational and no scanner observes them; listing them
+         *     as failures would teach people to ignore the ones that mean something.
+         */
+        get: operations["repo_ssdf_api_dashboard_repos__repo_id__ssdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Tests
+         * @description What testing exists here, and what kinds of it do not.
+         *
+         *     The Harness tab answers "did the suite pass". This answers the question
+         *     behind it — which *kinds* of testing this repository has evidence of — and
+         *     names the kinds nothing here produces, with what would evidence each.
+         *
+         *     **Absent is the answer, not a blank.** A view that shows only the testing
+         *     that exists can never tell anybody what is missing, and what is missing is
+         *     the entire question. Contract, end-to-end, performance, accessibility,
+         *     resilience and post-deploy testing are listed by name whether or not this
+         *     repository does any of them.
+         *
+         *     **Coverage is a state, never a bare number.** `never_reported` is not 0%:
+         *     on 2026-09-03 every test run in this estate was in that state — the adapter
+         *     parses Cobertura and JaCoCo, the lake has the columns, and no pipeline was
+         *     writing a coverage document — and rendering it as zero would have been a
+         *     fabricated measurement of 227 real runs.
+         *
+         *     No score. The kinds are not equally applicable — a library needs no
+         *     post-deploy smoke test — so a single figure could only ever penalise a
+         *     repository for correctly not doing something.
+         */
+        get: operations["repo_tests_api_dashboard_repos__repo_id__tests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/consult": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Consult
+         * @description Consult the Champion — ask this platform what it knows about a repository.
+         *
+         *     Nine tabs is a filing system, not an answer. This is the answer: the
+         *     questions somebody actually arrives with, each answered from records, each
+         *     naming the tab where the reader can go and disagree with it.
+         *
+         *     **Not a chatbot, deliberately.** No model, no free-text box. It answers a
+         *     fixed set of questions and — the part that matters — names the questions it
+         *     *cannot* answer, with the reason. The failure mode of an assistant is not
+         *     saying "I do not know"; it is answering anyway.
+         *
+         *     Two reasons for that shape. This repository holds no model API key and must
+         *     not (spec 12 §2), so a chat window would be blocked on the operator exactly
+         *     as the notifier is. And grounding is the hard half regardless: a model
+         *     answering "what should I fix first" is only as good as the facts handed to
+         *     it, and those facts are what this endpoint is. B-043 adds the phrasing
+         *     layer over the same facts once a credential exists.
+         *
+         *     **It cannot act.** Every answer is a read. No dispositions, no acceptances,
+         *     no scans started, no pull requests opened.
+         */
+        get: operations["repo_consult_api_dashboard_repos__repo_id__consult_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/platform-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform Health Page
+         * @description Is the platform itself working?
+         *
+         *     It tells four repositories what is wrong with them and had no surface
+         *     saying whether it was running. Everything needed already existed —
+         *     `self_check` probes ingestion, Vault and Concourse, and every scheduled job
+         *     passes through one runner — and all of it went to a log file nobody tails.
+         *
+         *     **A caught failure is the quiet kind.** The job runner catches every
+         *     exception, logs it, and retries on the next tick. That is correct, and it
+         *     means a job which has thrown on every run for a fortnight is
+         *     indistinguishable from outside from one that has never had a problem.
+         *
+         *     The jobs whose silence matters most are the ones nothing else notices. If
+         *     `absences` stops, findings never close and every count on every page drifts
+         *     wrong in the reassuring direction — the CI failure this codebase keeps
+         *     writing about, happening inside the platform instead.
+         *
+         *     **Three states kept apart** because they need three different things done:
+         *     a failing job has an error to read, a late job has a scheduler to check,
+         *     and one that has never run is a deployment that came up without it.
+         *
+         *     Dependencies are probed live. A cached answer to "is Vault sealed" is worth
+         *     nothing — that is the question somebody asks precisely when they suspect
+         *     the cache.
+         */
+        get: operations["platform_health_page_api_dashboard_platform_health_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -692,8 +1670,9 @@ export interface paths {
          * @description Write down something noticed in a retro (spec 11 §4).
          *
          *     The only entry type with no machine-generated component. Admin-only
-         *     because it writes into the same corpus that eventually influences Oracle's
-         *     policy, and an unauthenticated way to inject a "learning" would be a
+         *     because it writes into the same corpus that eventually influences the
+         *     risk-decision policy, and an unauthenticated way to inject a "learning"
+         *     would be a
          *     quietly effective way to change how every repository is scored.
          */
         post: operations["add_note_api_knowledge_notes_post"];
@@ -842,8 +1821,9 @@ export interface paths {
          * Active Policy
          * @description The policy currently in force, verbatim (spec 09 §7).
          *
-         *     Readable by viewers as well as admins. Anyone whose pull request Oracle
-         *     judges is entitled to see how the number was produced — a risk score you
+         *     Readable by viewers as well as admins. Anyone whose pull request the
+         *     risk-decision engine judges is entitled to see how the number was
+         *     produced — a risk score you
          *     are not allowed to inspect is one people learn to route around.
          */
         get: operations["active_policy_api_oracle_policy_get"];
@@ -969,7 +1949,8 @@ export interface paths {
          *
          *     The decision itself is never rewritten — spec 09 §10 needs past decisions
          *     to stay reproducible. The override is recorded *alongside* it, so the
-         *     history shows both what Oracle said and what the human did about it.
+         *     history shows both what the risk decision said and what the human did
+         *     about it.
          *
          *     spec 09 §6 calls these "exactly the data that should most influence policy
          *     tuning over time", which is why the reason is mandatory rather than
@@ -1013,7 +1994,7 @@ export interface paths {
         put?: never;
         /**
          * Preview Finding Fix
-         * @description What Patchwork would do for one finding, without doing it (spec 18 §7.2).
+         * @description What auto-remediation would do for one finding, without doing it (spec 18 §7.2).
          *
          *     Principal-authenticated, not a workflow token: this is a person looking
          *     at one finding, not CI asking about a repository. Every guardrail the
@@ -1071,17 +2052,45 @@ export interface paths {
          *     change. This groups them for the reviewer.
          *
          *     Grouped by `rule_id`, which is not on `remediation_events` — it is on the
-         *     finding, so this joins. The spec expected `(rule_id, fixer_name)`; neither
-         *     column exists on the events table, and `fixer_name` is not recorded
-         *     anywhere, so the grouping is by rule alone. That is the coarser key, and
-         *     coarser is the safe direction: two fixers for one rule would land in one
-         *     card, which a reviewer can see, rather than one fixer's work being split
-         *     across two cards, which they cannot.
+         *     finding, so this joins. The spec expected `(rule_id, fixer_name)`, and
+         *     `fixer_name` is now recorded (spec 25 §3.1) — but the grouping stays by
+         *     rule alone, for the reason D-071 gave: coarser is the safe direction here,
+         *     because two fixers for one rule land in one card a reviewer can see,
+         *     rather than one fixer's work being split across two cards they cannot.
          *
          *     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed
          *     by the parameterised one.
          */
         get: operations["cross_repo_digest_api_patchwork_digest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/patchwork/efficacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Efficacy
+         * @description Does auto-remediation actually remove risk? (spec 25 §3)
+         *
+         *     Until the verification loop shipped, a fixer that opened pull requests
+         *     nobody merged was indistinguishable from one that silently removed real
+         *     risk every week: both showed as `pr_opened` rows. The first is a machine
+         *     generating review load, and that load is paid by exactly the people this
+         *     platform exists to help.
+         *
+         *     Ordered before `/repos/{repo_id}` — a literal path must not be shadowed by
+         *     the parameterised one.
+         */
+        get: operations["efficacy_api_patchwork_efficacy_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1099,7 +2108,7 @@ export interface paths {
         };
         /**
          * Repo Events
-         * @description What Patchwork did, and did not do, for one repository (spec 08 §7).
+         * @description What auto-remediation did, and did not do, for one repository (spec 08 §7).
          */
         get: operations["repo_events_api_patchwork_repos__repo_id__get"];
         put?: never;
@@ -1177,11 +2186,38 @@ export interface paths {
          *     Stops all scheduled activity and revokes every ingestion token and grant,
          *     but **does not delete historical data lake rows** — those are the audit
          *     trail. Deleting them is a separate, explicitly-confirmed action.
+         *
+         *     Two operational tables *are* purged, and the distinction is the one the
+         *     lake/operational split rests on. A triage claim is a fact about who is
+         *     working on something this week (spec 27 §3); a declared control is a claim
+         *     about the present (spec 28 §3). Neither is evidence of anything once the
+         *     repository is offboarded, and both would otherwise sit in the queue and on
+         *     the tab of a repository nobody scans any more. The counts go in the audit
+         *     entry, so the deletion is recorded even though the rows are not.
          */
         delete: operations["offboard_repo_api_repos__repo_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Set Scanner
+         * @description Record which system scans this repository.
+         *
+         *     `scanned_by` was introduced by spec 03 §3a and could only ever be set at
+         *     onboarding — a field describing which CI covers a repository, with no way
+         *     to say that it changed, in a platform whose whole current project is
+         *     changing exactly that. Migrating a repository meant editing the database
+         *     by hand.
+         *
+         *     **This records a fact; it does not perform a migration.** Nothing is
+         *     installed, uninstalled, granted or revoked here. What moves is which
+         *     source the dashboard reads for "enabled" (spec 03 §3a's ledger-versus-
+         *     grants split), which CI `scan_now` and fix verification dispatch to, which
+         *     reader answers for the CI panel, and whether the rotation job can deliver
+         *     a new token (D-086, spec 32 §8). Every one of those follows the field
+         *     rather than the other way round, which is why setting it wrongly is
+         *     visible immediately and costs one call to correct.
+         */
+        patch: operations["set_scanner_api_repos__repo_id__patch"];
         trace?: never;
     };
     "/api/repos/{repo_id}/capabilities": {
@@ -1229,6 +2265,82 @@ export interface paths {
          *     synchronous — both report only what was *attempted*.
          */
         post: operations["scan_now_api_repos__repo_id__scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workflows
+         * @description What runs in this repository, and whether it is switched on
+         *     (spec 32 §6.2).
+         *
+         *     **Derived, never stored.** GitHub is asked on every read, because a
+         *     `workflow_enabled` column would be wrong the moment somebody clicks
+         *     Disable in the GitHub UI, and nothing would ever correct it. This is the
+         *     same rule spec 15 §4a applied to Concourse pipeline names, for the same
+         *     reason.
+         *
+         *     **Fails soft.** A repository page is about findings; GitHub being
+         *     unreachable, rate-limited or 403 must not take it down. Every failure
+         *     resolves to a reason string beside an empty list.
+         */
+        get: operations["list_workflows_api_repos__repo_id__workflows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Enable Workflow
+         * @description Switch one installed workflow back on, with no pull request
+         *     (spec 32 §6).
+         */
+        put: operations["enable_workflow_api_repos__repo_id__workflows__capability__enable_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repos/{repo_id}/workflows/{capability}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Disable Workflow
+         * @description Stop one installed workflow now, with no pull request (spec 32 §6).
+         *
+         *     The `fly pause` equivalent spec 15 §4a.1 calls "state only an operator
+         *     remembers". The file stays, so it still says what the lane does when it
+         *     comes back.
+         */
+        put: operations["disable_workflow_api_repos__repo_id__workflows__capability__disable_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1284,7 +2396,8 @@ export interface paths {
          * Put Risk Profile
          * @description Record or replace this repository's risk profile (spec 21 §1.3).
          *
-         *     Admin-only and audit-logged: this changes what Oracle will decide, so it
+         *     Admin-only and audit-logged: this changes what the risk-decision engine
+         *     will decide, so it
          *     is a write in the same sense a finding disposition is (spec 10 §2.2), not
          *     a preference. `updated_by` is stamped from the caller rather than accepted
          *     from the body — "who said this repository is internet-facing" is exactly
@@ -1413,12 +2526,77 @@ export interface components {
              */
             detail: string;
         };
+        /**
+         * AffectedRepoOut
+         * @description One repository's exposure to one package (spec 29 §2).
+         */
+        AffectedRepoOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Repo Id
+             * @description The onboarding id, for linking to the repository page — which accepts only this, never `owner/repo`. Empty where the exposure outlived the onboarding, in which case there is nothing to link to and the caller should render the name as plain text.
+             * @default
+             */
+            repo_id: string;
+            /**
+             * Versions
+             * @description Every version present, not one. 'We have three copies and one is patched' is the actual state, and a single version would hide the two that are not.
+             */
+            versions?: string[];
+            /**
+             * Ecosystem
+             * @default
+             */
+            ecosystem: string;
+            /**
+             * Matched By
+             * @description `purl` is exact; `name` is a guess that is usually right. A package renamed upstream matches by name and not by purl, and a view that did not say which would present a guess as an identity.
+             * @default name
+             */
+            matched_by: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /** Observed At */
+            observed_at?: string | null;
+            /**
+             * Open Findings
+             * @description Exposure and a finding are different facts: a repository can contain a vulnerable package with no finding, because its last scan predates the advisory.
+             * @default 0
+             */
+            open_findings: number;
+            /**
+             * Highest Severity
+             * @default
+             */
+            highest_severity: string;
+            /**
+             * Fixed Version
+             * @default
+             */
+            fixed_version: string;
+            /**
+             * Recommendation
+             * @default
+             */
+            recommendation: string;
+            /** Risk Score */
+            risk_score?: number | null;
+        };
         /** AtlasAccepted */
         AtlasAccepted: {
             /** Accepted */
             accepted: number;
             /** Evidence Id */
             evidence_id: string;
+            /**
+             * Components Recorded
+             * @default 0
+             */
+            components_recorded: number;
             /** Trust Score */
             trust_score: number | null;
             /** Raw Trust Score */
@@ -1442,17 +2620,134 @@ export interface components {
              */
             detail: string;
         };
+        /** AwaitingClosureOut */
+        AwaitingClosureOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Findings */
+            findings: number;
+            /** Scans Needed */
+            scans_needed: number;
+        };
+        /**
+         * BatchRequest
+         * @description One action over a selection (spec 27 §3.1).
+         */
+        BatchRequest: {
+            /** Finding Ids */
+            finding_ids: string[];
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "claim" | "release" | "snooze" | "wake";
+            /** By */
+            by?: string | null;
+            /** Until */
+            until?: string | null;
+            /**
+             * Reason
+             * @description Applied to every finding in the batch. Batching must not become a way to skip the reason field — see the endpoint.
+             * @default
+             */
+            reason: string;
+        };
+        /** BatchResult */
+        BatchResult: {
+            /** Applied */
+            applied: string[];
+            /**
+             * Refused
+             * @description finding_id -> why. A batch reports per-row outcomes rather than failing whole: one claimed row must not stop the other ninety-nine.
+             */
+            refused?: {
+                [key: string]: string;
+            };
+        };
+        /** BriefingActionOut */
+        BriefingActionOut: {
+            /** Label */
+            label: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Effect */
+            effect: string;
+        };
+        /** BriefingClassOut */
+        BriefingClassOut: {
+            /** Capability */
+            capability: string;
+            /** Open Findings */
+            open_findings: number;
+            /** Route */
+            route: string;
+            /** Concentrated In */
+            concentrated_in: [
+                string,
+                number
+            ][];
+            action: components["schemas"]["BriefingActionOut"] | null;
+        };
+        /** BriefingOut */
+        BriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Total Open */
+            total_open: number;
+            /** Blocked Findings */
+            blocked_findings: number;
+            /** Closing Soon */
+            closing_soon: number;
+            /** Auto Fixable */
+            auto_fixable: number;
+            /** Stalled */
+            stalled: components["schemas"]["StalledLaneOut"][];
+            /** Classes */
+            classes: components["schemas"]["BriefingClassOut"][];
+            /** Awaiting */
+            awaiting: components["schemas"]["AwaitingClosureOut"][];
+            /** Guidance */
+            guidance: components["schemas"]["CapabilityGuidanceOut"][];
+            /** Fixes */
+            fixes: components["schemas"]["FixGroupOut"][];
+        };
         /**
          * Capability
          * @enum {string}
          */
         Capability: "sast" | "dast" | "secrets" | "containers" | "iac" | "cloud" | "aegis" | "atlas" | "patchwork" | "oracle" | "network" | "unit" | "functional" | "qa" | "ai";
+        /** CapabilityGuidanceOut */
+        CapabilityGuidanceOut: {
+            /** Capability */
+            capability: string;
+            /** Count */
+            count: number;
+            /** Actionable */
+            actionable: number;
+            /** Unactionable */
+            unactionable: number;
+            /** Rules */
+            rules: components["schemas"]["RuleGuidanceOut"][];
+        };
         /** CapabilityStateOut */
         CapabilityStateOut: {
             /** Capability */
             capability: string;
             /** Has Scanned */
             has_scanned: boolean;
+            /**
+             * Enabled
+             * @description Whether this repository asked for the capability. Every capability the platform has gets a row, so a stage nobody enabled is named rather than missing — `enabled: false` and `has_scanned: false` is 'not configured here', while `enabled: true` with `has_scanned: false` is enabled and silent, which is somebody's problem. They used to be the same absence.
+             * @default true
+             */
+            enabled: boolean;
             /** Last Scan At */
             last_scan_at?: string | null;
             /** Last Scan Status */
@@ -1577,9 +2872,228 @@ export interface components {
             scanned_at?: string | null;
             /**
              * State
-             * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. not_run: no successful build to compare against.
+             * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. failed: the lane ran and its last build did not succeed, so there is no successful build to measure the lake against - distinct from not_run, which used to absorb it and reads as 'nobody has triggered this yet'. not_run: the job exists and has never run.
              */
             state: string;
+        };
+        /** ClaimRequest */
+        ClaimRequest: {
+            /**
+             * By
+             * @description A handle. An anonymous claim tells nobody anything.
+             */
+            by: string;
+        };
+        /**
+         * ClassificationReview
+         * @description A person's verdict on what the classifier concluded (B-020).
+         */
+        ClassificationReview: {
+            /**
+             * Agrees
+             * @description True confirms the classifier and dispositions the finding. False records that it was wrong and leaves the finding open.
+             */
+            agrees: boolean;
+            /**
+             * Reason
+             * @description Why. Required when agreeing, because a dismissal without one is recorded as low-confidence and barred from promotion (spec 11 §4) -- and dampening, which these dispositions feed, needs the reason rather than the click.
+             * @default
+             */
+            reason: string;
+        };
+        /** ClassificationReviewResult */
+        ClassificationReviewResult: {
+            /** Finding Id */
+            finding_id: string;
+            /** Agreed */
+            agreed: boolean;
+            /** Status */
+            status: string;
+            /** Recorded */
+            recorded: string;
+        };
+        /**
+         * ClosureOut
+         * @description Whether this finding can close, and what is stopping it.
+         *
+         *     Typed rather than a loose dict: this block is the reason the record page
+         *     exists, and a `dict[str, Any]` generates `unknown` in the API types, which
+         *     pushes casts into every consumer and loses the field names at the boundary.
+         */
+        ClosureOut: {
+            /** Can Close */
+            can_close: boolean;
+            /** Lane */
+            lane: string;
+            /** Reason */
+            reason: string;
+            /** Required Absences */
+            required_absences: number;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Runs */
+            runs?: number | null;
+            /** Failure Rate */
+            failure_rate?: number | null;
+        };
+        /** ConsultAnswerOut */
+        ConsultAnswerOut: {
+            /** Key */
+            key: string;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Tab */
+            tab: string | null;
+            /** Evidence */
+            evidence: string[];
+        };
+        /**
+         * ConsultOut
+         * @description What this platform knows about one repository, and what it does not.
+         */
+        ConsultOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Answers */
+            answers: components["schemas"]["ConsultAnswerOut"][];
+            /** Cannot Answer */
+            cannot_answer: components["schemas"]["ConsultUnanswerableOut"][];
+            /** Note */
+            note: string;
+        };
+        /** ConsultUnanswerableOut */
+        ConsultUnanswerableOut: {
+            /** Question */
+            question: string;
+            /** Why */
+            why: string;
+        };
+        /**
+         * ControlDriftOut
+         * @description One control changing state, recorded when it happened.
+         */
+        ControlDriftOut: {
+            /** Control Key */
+            control_key: string;
+            /** From State */
+            from_state: string;
+            /** To State */
+            to_state: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Regression */
+            regression: boolean;
+        };
+        /**
+         * ControlOut
+         * @description A declared mitigation (spec 28 §3).
+         */
+        ControlOut: {
+            /** Control Id */
+            control_id: string;
+            /** Stride */
+            stride: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Evidence Ref
+             * @default
+             */
+            evidence_ref: string;
+            /**
+             * Evidence
+             * @description `referenced` when the control names a file, route, policy or test; `asserted` when it does not. Both are allowed — refusing the second would mean the register only ever holds the controls somebody had time to document — and the tab renders the second as the weaker claim it is.
+             */
+            evidence: string;
+            /**
+             * Verified By Capability
+             * @default
+             */
+            verified_by_capability: string;
+            /**
+             * Checkable
+             * @description Whether any capability in this platform could contradict this control. False is stated rather than left implied: a control nothing can check is not a verified control.
+             */
+            checkable: boolean;
+            /** Last Verified At */
+            last_verified_at?: string | null;
+            /**
+             * Stale
+             * @description Nobody has re-confirmed this in 90 days. A mitigation nobody has checked since last quarter is a belief, and the tab says which of the two it is showing.
+             */
+            stale: boolean;
+            /**
+             * Declared By
+             * @default
+             */
+            declared_by: string;
+            /**
+             * Declared At
+             * Format: date-time
+             */
+            declared_at: string;
+        };
+        /** ControlRequest */
+        ControlRequest: {
+            /** Stride */
+            stride: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Evidence Ref
+             * @description A file path, a route, a policy document, a test id. Optional: a control without one is the weaker claim and is still worth having, because requiring it would mean the register only ever holds the controls somebody had time to document.
+             * @default
+             */
+            evidence_ref: string;
+        };
+        /**
+         * ControlStateOut
+         * @description One change-governance control (spec 30 §2).
+         */
+        ControlStateOut: {
+            /** Key */
+            key: string;
+            /**
+             * State
+             * @description `on`, `partial`, `off`, or `unknown`. Four rather than two: a single required approval is genuinely better than none and genuinely is not two, and `unknown` is a control the platform could not read — a permissions gap, never a red cross.
+             */
+            state: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Value */
+            value?: number | null;
+            /**
+             * Prevents
+             * @description The insider-risk signals this control would have prevented. The link is the point of the panel: it turns a log of oddities into a diagnosis with a remedy the team can action themselves.
+             */
+            prevents?: string[];
+        };
+        /** DependencyHealthOut */
+        DependencyHealthOut: {
+            /** Name */
+            name: string;
+            /** Reachable */
+            reachable: boolean;
+            /** Detail */
+            detail: string;
         };
         /**
          * DigestGroupOut
@@ -1690,6 +3204,87 @@ export interface components {
             licenses_seen?: {
                 [key: string]: number;
             };
+        };
+        /**
+         * EfficacyPage
+         * @description Whether auto-remediation removes risk, or only opens pull requests.
+         *
+         *     Two breakdowns because they answer different questions: `by_fixer` says
+         *     which fixers work, `by_rule` says which rules are fixable here. A fixer
+         *     that works everywhere except one rule is a different problem from a fixer
+         *     nobody trusts, and one axis cannot tell them apart.
+         */
+        EfficacyPage: {
+            /** By Fixer */
+            by_fixer: components["schemas"]["EfficacyRowOut"][];
+            /** By Rule */
+            by_rule: components["schemas"]["EfficacyRowOut"][];
+            /** Note */
+            note: string;
+            /**
+             * Coverage
+             * @description Which finding classes have a deterministic fixer and which do not, with the reason (B-021). Carried beside the numbers because an empty efficacy table means one of two opposite things -- nothing was fixable, or fixes were attempted and did not work -- and the table alone cannot say which.
+             */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Measured
+             * @description Whether there is anything to measure yet. False means no fix has reached a pull request, so the rates below are absent rather than zero -- the same not-measured versus measured-zero distinction `stale_dependencies` draws (B-004).
+             * @default false
+             */
+            measured: boolean;
+        };
+        /**
+         * EfficacyRowOut
+         * @description One fixer's — or one rule's — record (spec 25 §3.1).
+         */
+        EfficacyRowOut: {
+            /**
+             * Key
+             * @description The fixer name, or the rule_id, depending on the list.
+             */
+            key: string;
+            /**
+             * Attempts
+             * @description Fixes generated.
+             */
+            attempts: number;
+            /**
+             * Prs Opened
+             * @description Reached a draft pull request.
+             */
+            prs_opened: number;
+            /**
+             * Merged
+             * @description A person merged it.
+             */
+            merged: number;
+            /**
+             * Rejected
+             * @description Closed unmerged.
+             */
+            rejected: number;
+            /**
+             * Verified
+             * @description The finding was gone from the verifying scan of the merge commit (spec 25 §2). This is the only column that says risk was removed.
+             */
+            verified: number;
+            /**
+             * Still Open
+             * @description Merged, re-scanned, and the finding was reported again.
+             */
+            still_open: number;
+            /**
+             * Unverified
+             * @description Merged but never established either way — inconclusive, not scanned, or still waiting. Deliberately not counted as a failure: the scan did not answer, which is not the same as the fix not working.
+             */
+            unverified: number;
+            /**
+             * Median Seconds To Verified
+             * @description Merge to verification. Null with nothing verified.
+             */
+            median_seconds_to_verified?: number | null;
         };
         /** EntriesPage */
         EntriesPage: {
@@ -1848,7 +3443,7 @@ export interface components {
             age_days?: number | null;
             /**
              * Triage
-             * @description Patchwork's own classification (`patchwork/triage.py`), plus `toxic_combination` for a group that cannot be judged alone.
+             * @description The auto-remediation classification (`patchwork/triage.py`), plus `toxic_combination` for a group that cannot be judged alone.
              */
             triage: string;
             /** Triage Rationale */
@@ -1875,9 +3470,46 @@ export interface components {
             epss_score?: number | null;
             /**
              * Fixable
-             * @description Whether Patchwork produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
+             * @description Whether auto-remediation produced a fix for any occurrence in this group (spec 19 §3.2). Read from what it actually did, not predicted — a fixer cannot say whether it applies without the file content, and a prediction would never self-correct. Null means nobody has looked yet, which is distinct from `false`: looked, and there is no mechanical fix.
              */
             fixable?: boolean | null;
+            /**
+             * Due At
+             * @description The soonest deadline among this group's occurrences (spec 24 §2). Null means no target applies — `info` findings, or a deployment with no remediation targets configured.
+             */
+            due_at?: string | null;
+            /**
+             * Due Source
+             * @description kev | policy | manual. A KEV date on any occurrence wins.
+             */
+            due_source?: string | null;
+            /**
+             * Owner
+             * @description The owner, when every occurrence in this group has the same one (spec 24 §1). Null when they disagree — see `owner_split` — or when no CODEOWNERS rule matched.
+             */
+            owner?: string | null;
+            /**
+             * Owner Split
+             * @description True when occurrences have different owners. One rule firing across two teams' files is one decision with two people answerable for it, and naming either would misroute half of it.
+             * @default false
+             */
+            owner_split: boolean;
+            /**
+             * Cwe Ids
+             * @description What the reporting tool declared, normalised (spec 28 §1).
+             */
+            cwe_ids?: string[];
+            /**
+             * Mapping Resolution
+             * @description How this row was placed in its STRIDE categories: `cwe` when the tool named one this platform maps, `capability` otherwise. Per row, because a repository is routinely mixed.
+             */
+            mapping_resolution?: string | null;
+            /**
+             * Due State
+             * @description overdue | due_soon | on_track | no_target. `no_target` is not 'on track': it is unmeasured, and showing it as on track would report compliance nobody assessed.
+             * @default no_target
+             */
+            due_state: string;
         };
         /**
          * FindingLocationOut
@@ -1947,6 +3579,14 @@ export interface components {
             package_version?: string | null;
             /** Status */
             status: string;
+            /** Owner */
+            owner?: string | null;
+            /** Owner Source */
+            owner_source?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Due Source */
+            due_source?: string | null;
             /** Fingerprint Version */
             fingerprint_version?: string | null;
             /** Superseded By */
@@ -1961,6 +3601,25 @@ export interface components {
             code_snippet?: string | null;
             /** Raw Finding Json */
             raw_finding_json?: unknown;
+        };
+        /**
+         * FindingRecordOut
+         * @description One finding, with everything the platform knows about it (B-032).
+         *
+         *     An assembly over services that already exist. The order of the blocks is
+         *     the order somebody asks in: what is it, does it matter *here*, what do I
+         *     do, what happened and can it end.
+         */
+        FindingRecordOut: {
+            finding: components["schemas"]["FindingOut"];
+            /** Repo Full Name */
+            repo_full_name: string;
+            closure: components["schemas"]["ClosureOut"];
+            fix: components["schemas"]["FixOut"] | null;
+            package: components["schemas"]["PackageOut"] | null;
+            severity_here?: components["schemas"]["SeverityHereOut"] | null;
+            /** Missing Context */
+            missing_context: components["schemas"]["RecordGap"][];
         };
         /**
          * FindingStatus
@@ -2013,6 +3672,11 @@ export interface components {
             /** Port */
             port?: number | null;
             /**
+             * Cwe Ids
+             * @description CWE identifiers the *tool* declared, normalised to `CWE-89` form (spec 28 §1). A list, not a field: a rule legitimately maps to several, and picking one would be the adapter inventing precision. Empty means the tool said nothing — which is absent, not 'no CWE applies', and the STRIDE mapping depends on that distinction.
+             */
+            cwe_ids?: string[];
+            /**
              * Raw Finding Json
              * @description Original tool record, preserved verbatim (spec 05 §3).
              */
@@ -2035,6 +3699,93 @@ export interface components {
              * @description False for viewer roles; raw output is admin-only (spec 12 §5).
              */
             raw_output_included: boolean;
+        };
+        /** FixGroupOut */
+        FixGroupOut: {
+            /** Fix Id */
+            fix_id: string;
+            /** Action */
+            action: string;
+            /** Capability */
+            capability: string;
+            /** Findings */
+            findings: number;
+            /** Rules */
+            rules: string[];
+            /** Repos */
+            repos: string[];
+            /** Effort */
+            effort: string;
+            /** Steps */
+            steps: string[];
+        };
+        /**
+         * FixOut
+         * @description The change that would close this finding, and what else it closes.
+         */
+        FixOut: {
+            /** Fix Id */
+            fix_id: string;
+            /** Action */
+            action: string;
+            /** Effort */
+            effort: string;
+            /** Steps */
+            steps: string[];
+            /** Closes */
+            closes: number;
+            /** Rules */
+            rules: string[];
+        };
+        /**
+         * GovernanceOut
+         * @description A repository's change-governance posture (spec 30).
+         */
+        GovernanceOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Read At */
+            read_at?: string | null;
+            /**
+             * Readable
+             * @default true
+             */
+            readable: boolean;
+            /**
+             * Unreadable Reason
+             * @default
+             */
+            unreadable_reason: string;
+            /**
+             * Source
+             * @description `branch_protection`, `ruleset`, `both`, or `none`. A repository governed entirely by rulesets would read as unprotected if only the older model were consulted.
+             * @default none
+             */
+            source: string;
+            /**
+             * Governance Score
+             * @description Null where too little could be read to say. Scored over the controls that *were* read, so an unreadable repository has no score rather than a bad one.
+             */
+            governance_score?: number | null;
+            /** Controls */
+            controls?: components["schemas"]["ControlStateOut"][];
+            /**
+             * Drift
+             * @description Controls that changed state since the platform last looked, newest first. A transition *to* `unknown` is a read that failed rather than a control that was removed — a revoked permission and a security regression must never look the same.
+             */
+            drift?: components["schemas"]["ControlDriftOut"][];
+            /**
+             * Merges
+             * @description Counts by repository over the window, never by author (spec 06 §9). Each is a statement about a control whose remedy is a settings change.
+             */
+            merges?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** GroomResult */
         GroomResult: {
@@ -2082,6 +3833,43 @@ export interface components {
             repo_full_name: string;
             /** Granted Capabilities */
             granted_capabilities?: string[];
+        };
+        /**
+         * IncidentOut
+         * @description Are we affected by this? (spec 29 §2)
+         */
+        IncidentOut: {
+            /** Query */
+            query: string;
+            /**
+             * Kind
+             * @description `cve`, `purl`, or `package`.
+             */
+            kind: string;
+            /**
+             * In Kev
+             * @description Null means the CVE has not been checked against KEV, which is not the same as not being listed.
+             */
+            in_kev?: boolean | null;
+            /** Epss Score */
+            epss_score?: number | null;
+            /** Affected */
+            affected?: components["schemas"]["AffectedRepoOut"][];
+            /**
+             * Clear
+             * @description Repositories with an SBOM and no match — genuinely checked.
+             */
+            clear?: string[];
+            /**
+             * Not Checked
+             * @description Repositories with no SBOM in the lake. **Never a clean result.** Folding these in with `clear` would convert an absence of data into a statement of safety, which is the worst thing this view could do and the thing it would do by default.
+             */
+            not_checked?: string[];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /**
          * IngestAccepted
@@ -2155,14 +3943,14 @@ export interface components {
             governance: string;
             /**
              * Blocking
-             * @description Whether this repository's Aegis Check Run can fail a pull request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, and off by default. Stated here rather than left to the reader because the gap between what an admin configured and what a reviewer believes is happening is exactly where a governance note stops being one.
+             * @description Whether this repository's insider-risk Check Run can fail a pull request, or is advisory (spec 06 §7, spec 20 §3.2). Per repo, and off by default. Stated here rather than left to the reader because the gap between what an admin configured and what a reviewer believes is happening is exactly where a governance note stops being one.
              * @default false
              */
             blocking: boolean;
         };
         /**
          * InsiderRiskSubmission
-         * @description What the Aegis workflow posts (spec 06 §3, §4).
+         * @description What the insider-risk workflow posts (spec 06 §3, §4).
          *
          *     No `repo_full_name` and no `signal_id`: the repo comes from the token and
          *     the id is derived server-side from repo + PR + commit, so a re-run on an
@@ -2186,6 +3974,182 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /** JobHealthOut */
+        JobHealthOut: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Last Succeeded At */
+            last_succeeded_at: string | null;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+        };
+        /**
+         * LaneFailure
+         * @description A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
+         *
+         *     Every Concourse job carries `on_failure: *slack_alert`. On Actions most
+         *     lanes need no equivalent, because `mykronos.upload` registers a ScanRun
+         *     before it interprets anything and finalises in a `finally` — so a failed
+         *     scan already reaches Slack through the ingestion path that records it.
+         *
+         *     Two cases that path cannot cover, and this exists for both:
+         *
+         *     *A lane with nothing to upload.* `delivery.yml` builds, publishes and
+         *     promotes, and produces no findings by design — `ci.py` says its absence
+         *     from the lake is not a fault. A failed build currently tells nobody.
+         *
+         *     *A lane that died before its upload step.* A failed checkout or a failing
+         *     fail-fast probe leaves no ScanRun, so the capability reads as never having
+         *     run rather than as having broken.
+         *
+         *     **This writes nothing to the lake.** It is a message, not evidence. A
+         *     build failure is not a finding, has no severity, and must not reach a risk
+         *     score — which is the same rule D-046 applies to test lanes, one step
+         *     further out.
+         */
+        LaneFailure: {
+            /**
+             * Lane
+             * @description Which lane failed, as a person would name it: `publish`, `promote`.
+             */
+            lane: string;
+            /**
+             * Detail
+             * @description What went wrong, in one or two lines. Rendered verbatim.
+             * @default
+             */
+            detail: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Run Url
+             * @description Where to go and look. The whole point of the message.
+             * @default
+             */
+            run_url: string;
+        };
+        /** LaneFailureAccepted */
+        LaneFailureAccepted: {
+            /** Notified */
+            notified: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * LibrariesOut
+         * @description The estate's dependency surface, for reducing it.
+         */
+        LibrariesOut: {
+            /** Total Libraries */
+            total_libraries: number;
+            /** Total Components */
+            total_components: number;
+            /** Repos Covered */
+            repos_covered: number;
+            /** Shared */
+            shared: number;
+            /** Divergent */
+            divergent: number;
+            /** Single Use */
+            single_use: number;
+            /** Libraries */
+            libraries: components["schemas"]["LibraryOut"][];
+            /** Note */
+            note: string;
+        };
+        /**
+         * LibraryOut
+         * @description One library across the estate.
+         */
+        LibraryOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Repos */
+            repos: string[];
+            /** Versions */
+            versions: string[];
+            /** Divergent */
+            divergent: boolean;
+            /** Direct Anywhere */
+            direct_anywhere: boolean;
+        };
+        /** NetassessAccepted */
+        NetassessAccepted: {
+            /** Believable */
+            believable: boolean;
+            /** Problems */
+            problems?: string[];
+            /**
+             * Host Count
+             * @default 0
+             */
+            host_count: number;
+            /** Hosts Appeared */
+            hosts_appeared?: string[];
+            /** Hosts Disappeared */
+            hosts_disappeared?: string[];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
+         * NetassessSubmission
+         * @description One network-assessment run, pushed by the host that produced it
+         *     (spec 32 §4.4).
+         *
+         *     **Push rather than pull, and that is the whole design decision.** The scan
+         *     runs on Windows under a Scheduled Task — a container cannot see LAN MAC
+         *     addresses, which is measured rather than assumed — and the publisher that
+         *     archives it to MinIO already runs there. Having the backend poll an object
+         *     store instead would mean an S3 client it does not otherwise need, MinIO
+         *     credentials it does not otherwise hold, and a schedule to guess at when the
+         *     arrival is already an event somebody could just report.
+         *
+         *     **Files, not an archive.** Two text files are what the judgement reads; a
+         *     zip would mean unpacking attacker-controlled entries inside the ingestion
+         *     path for no gain. The archive still goes to MinIO, which remains the
+         *     history — this platform stores what it needs to compare against next week.
+         */
+        NetassessSubmission: {
+            /**
+             * Run Key
+             * @description The publisher's object name, e.g. `netassess-2026.8.9.zip`.
+             */
+            run_key: string;
+            /**
+             * Inventory Csv
+             * @description `inventory.csv` verbatim. Empty means the run enumerated nothing.
+             * @default
+             */
+            inventory_csv: string;
+            /**
+             * Network Status Md
+             * @description `network-status.md` verbatim. Empty means the scan did not finish.
+             * @default
+             */
+            network_status_md: string;
+        };
+        /**
+         * NotConsulted
+         * @description A ranking input this deployment could not use, and why.
+         */
+        NotConsulted: {
+            /** Input */
+            input: string;
+            /** Reason */
+            reason: string;
+        };
         /** OnboardRequest */
         OnboardRequest: {
             /** Github Repo Full Name */
@@ -2202,6 +4166,12 @@ export interface components {
              * @default
              */
             org_login: string;
+            /**
+             * Synthetic
+             * @description A deliberately-vulnerable benchmark corpus (spec 23 §1.2). Scanned by the real pipelines — a benchmark run through a different code path measures a different platform — and counted in no portfolio aggregate, because seeded vulnerabilities are not estate risk. Stated at onboarding and never inferred: guessing from a repository name is how a real repository silently stops being counted.
+             * @default false
+             */
+            synthetic: boolean;
             /**
              * Scanned By
              * @description Which CI is supposed to scan this repository (spec 03 §3a). `concourse` and `none` install no workflows: enabling a capability grants ingestion and nothing else. Only `github_actions` opens an install pull request.
@@ -2282,6 +4252,60 @@ export interface components {
              */
             overridden_at: string;
         };
+        /**
+         * OwnerChange
+         * @description Reassign a finding by hand (spec 24 §1.2).
+         */
+        OwnerChange: {
+            /**
+             * Owner
+             * @description A GitHub handle or team slug. Null hands the finding back to CODEOWNERS — the next scan re-resolves it, rather than the finding staying permanently unowned because somebody cleared the field.
+             */
+            owner?: string | null;
+        };
+        /** OwnerChangeResult */
+        OwnerChangeResult: {
+            /** Finding Id */
+            finding_id: string;
+            /** Owner */
+            owner: string | null;
+            /** Owner Source */
+            owner_source: string;
+        };
+        /**
+         * PackageOut
+         * @description Supply-chain facts, joined rather than duplicated.
+         */
+        PackageOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem?: string | null;
+            /** Installed Version */
+            installed_version?: string | null;
+            /** Fixed Version */
+            fixed_version?: string | null;
+            /** Fixable */
+            fixable: boolean;
+            /** Direct */
+            direct?: boolean | null;
+            /** Advisories */
+            advisories?: number | null;
+        };
+        /**
+         * PlatformHealthOut
+         * @description Whether this platform is itself working.
+         */
+        PlatformHealthOut: {
+            /** Degraded */
+            degraded: boolean;
+            /** Jobs */
+            jobs: components["schemas"]["JobHealthOut"][];
+            /** Dependencies */
+            dependencies: components["schemas"]["DependencyHealthOut"][];
+            /** Note */
+            note: string;
+        };
         /** PortfolioOut */
         PortfolioOut: {
             summary: components["schemas"]["PortfolioSummary"];
@@ -2303,6 +4327,12 @@ export interface components {
             github_url: string;
             /** Pipeline Url */
             pipeline_url?: string | null;
+            /**
+             * Synthetic
+             * @description A seeded benchmark corpus (spec 23 §1.2). Scanned and browsable like any other repository, and counted in none of the summary totals beside it — which the row says, because a repository excluded from every number with nothing on the page explaining why is how somebody comes to distrust the numbers.
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -2323,7 +4353,7 @@ export interface components {
             capability_states: components["schemas"]["CapabilityStateOut"][];
             /**
              * Risk Score
-             * @description Oracle's standing score from the latest portfolio decision. Null means not judged — deliberately not 0, which would read as 'assessed, no risk'. Oracle is opt-in, so a repo that never enabled it stays null.
+             * @description The standing risk score from the latest portfolio decision. Null means not judged — deliberately not 0, which would read as 'assessed, no risk'. Risk decisions are opt-in, so a repo that never enabled them stays null.
              */
             risk_score?: number | null;
             /** Recommendation */
@@ -2376,6 +4406,44 @@ export interface components {
              * @default 0
              */
             repos_not_assessed: number;
+            /**
+             * Overdue Findings
+             * @default 0
+             */
+            overdue_findings: number;
+        };
+        /** PracticeOut */
+        PracticeOut: {
+            /** Practice Id */
+            practice_id: string;
+            /** Group */
+            group: string;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Evidence */
+            evidence: string[];
+            /** Missing */
+            missing: string[];
+            /** How To Evidence */
+            how_to_evidence: string;
+            /** Nist 800 53 */
+            nist_800_53: string[];
+        };
+        /**
+         * ProfileProposalOut
+         * @description What the platform can and cannot say about a repository (B-041).
+         */
+        ProfileProposalOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Already Confirmed */
+            already_confirmed: boolean;
+            /** Proposals */
+            proposals: components["schemas"]["ProposalOut"][];
+            /** Note */
+            note: string;
         };
         /**
          * PromotionApproval
@@ -2403,6 +4471,62 @@ export interface components {
             reasons_withheld: number;
             /** Note */
             note: string;
+        };
+        /** ProposalOut */
+        ProposalOut: {
+            /** Field */
+            field: string;
+            /** Value */
+            value: unknown | null;
+            /** Confidence */
+            confidence: string;
+            /** Evidence */
+            evidence: string;
+            /** What Would Settle It */
+            what_would_settle_it?: string | null;
+        };
+        /**
+         * ProvenanceSignals
+         * @description How this repository builds, as the runner observed it (spec 29 §3).
+         *
+         *     Every existing trust-score term is a fact about *dependencies*. Nothing
+         *     scored the integrity of the repository's own outputs — whether its commits
+         *     are signed, whether its artefacts carry a provenance attestation, whether
+         *     what it deploys is pinned by digest rather than by a tag somebody can move
+         *     underneath it.
+         *
+         *     **Every field is nullable and null means "not determined", never "no".** A
+         *     repository whose default branch this platform cannot read has not failed
+         *     the signed-commits check; it has not been checked. Scoring the two the
+         *     same way is how a permissions problem becomes a supply-chain verdict.
+         *
+         *     Observations, not a score — the same division spec 07 §7 makes an
+         *     acceptance criterion. The runner reports what it saw; the weighting lives
+         *     in the platform, so it can change without a resync across every onboarded
+         *     repository.
+         */
+        ProvenanceSignals: {
+            /**
+             * Signed Commits Ratio
+             * @description Verified signatures as a fraction of commits on the default branch in the last 90 days. Null where the branch could not be read.
+             */
+            signed_commits_ratio?: number | null;
+            /**
+             * Signed Commits Sampled
+             * @description How many commits the ratio is over. A ratio of 1.0 across two commits is not the same claim as 1.0 across two hundred, and the term reports the sample so the number can be judged.
+             * @default 0
+             */
+            signed_commits_sampled: number;
+            /**
+             * Attestation Present
+             * @description Whether a build provenance attestation exists for the published artefact. Presence only: verifying contents is a larger piece of work, and the field is named for exactly that reason so a repository never reads as `attested` on an attestation that does not verify (spec 29 §5).
+             */
+            attestation_present?: boolean | null;
+            /**
+             * Digest Pinned Deployment
+             * @description Whether the deployed image is pinned by digest rather than by a tag somebody can move underneath it.
+             */
+            digest_pinned_deployment?: boolean | null;
         };
         /** PullRequestOut */
         PullRequestOut: {
@@ -2444,6 +4568,40 @@ export interface components {
             unreachable: components["schemas"]["UnreachableRepoOut"][];
         };
         /**
+         * RankTermOut
+         * @description One contribution to a queue row's rank (spec 27 §1.1).
+         *
+         *     Modelled rather than a bare dict for the reason `FindingOut`'s docstring
+         *     gives: a `dict[str, Any]` types the whole frontend as `unknown` and pushes
+         *     the guessing into a cast — and this is the field whose entire purpose is
+         *     to be read.
+         */
+        RankTermOut: {
+            /** Key */
+            key: string;
+            /** Points */
+            points: number;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * RankingInputs
+         * @description What the order is actually made of (B-033).
+         *
+         *     The rank already carries its working — every term it used, with points.
+         *     This is the other half: what it could not use. Without it a queue ordered
+         *     by severity and threat intel presents itself as ordered by risk, and those
+         *     are different claims about the same list.
+         */
+        RankingInputs: {
+            /** Consulted */
+            consulted: string[];
+            /** Not Consulted */
+            not_consulted: components["schemas"]["NotConsulted"][];
+            /** Repos Without A Risk Profile */
+            repos_without_a_risk_profile: string[];
+        };
+        /**
          * RawAccepted
          * @description Archived raw tool output (spec 05 §7).
          */
@@ -2474,7 +4632,8 @@ export interface components {
          *     `analysed` is the field that carries the weight. False means the analysis
          *     has never run for this repository, which is not the same as it having run
          *     and found nothing — the second is a result, the first is a gap, and
-         *     Oracle reports them differently (`available: false` versus a real zero).
+         *     a risk decision reports them differently (`available: false` versus a real
+         *     zero).
          */
         ReachabilityOut: {
             /** Analysed */
@@ -2548,6 +4707,62 @@ export interface components {
              */
             files_unparseable: number;
         };
+        /** RecordGap */
+        RecordGap: {
+            /** Input */
+            input: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * RegressionLinkRequest
+         * @description Pin a test to a finding (spec 31 §2).
+         */
+        RegressionLinkRequest: {
+            /**
+             * Test Identifier
+             * @description A JUnit `classname.name`, as the runner reports it.
+             */
+            test_identifier: string;
+            /**
+             * Capability
+             * @description Which lane runs it.
+             * @default unit
+             * @enum {string}
+             */
+            capability: "unit" | "functional" | "qa";
+        };
+        /** RegressionLinkResult */
+        RegressionLinkResult: {
+            /** Link Id */
+            link_id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Test Identifier */
+            test_identifier: string;
+            /** Evidence */
+            evidence: string;
+        };
+        /**
+         * ReindexOut
+         * @description What rebuilding the component inventory found.
+         */
+        ReindexOut: {
+            /** Sboms Found */
+            sboms_found: number;
+            /** Sboms Read */
+            sboms_read: number;
+            /** Already Indexed */
+            already_indexed: number;
+            /** Unreadable */
+            unreadable: number;
+            /** Components */
+            components: number;
+            /** Repos */
+            repos: string[];
+            /** Dry Run */
+            dry_run: boolean;
+        };
         /** RemediationEventOut */
         RemediationEventOut: {
             /** Event Id */
@@ -2601,7 +4816,7 @@ export interface components {
             pr_status?: string | null;
             /**
              * Note
-             * @default Draft, and it stays that way. Patchwork has no ability to merge — the client it uses exposes no merge operation at all (spec 08 §3).
+             * @default Draft, and it stays that way. Auto-remediation has no ability to merge — the client it uses exposes no merge operation at all (spec 08 §3).
              */
             note: string;
         };
@@ -2615,7 +4830,7 @@ export interface components {
             open_draft_prs: number;
             /**
              * Note
-             * @default Patchwork never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
+             * @default Auto-remediation never merges. A draft pull request here is waiting for a person, and will wait indefinitely.
              */
             note: string;
         };
@@ -2648,6 +4863,24 @@ export interface components {
                 [key: string]: string;
             } | null;
         };
+        /**
+         * ReownOut
+         * @description What a re-derive changed, or would change.
+         */
+        ReownOut: {
+            /** Scanned */
+            scanned: number;
+            /** Changed */
+            changed: number;
+            /** Protected */
+            protected: number;
+            /** By Source */
+            by_source: {
+                [key: string]: number;
+            };
+            /** Dry Run */
+            dry_run: boolean;
+        };
         /** RepoDetail */
         RepoDetail: {
             /** Id */
@@ -2661,6 +4894,11 @@ export interface components {
              * @default concourse
              */
             scanned_by: string;
+            /**
+             * Synthetic
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -2680,8 +4918,6 @@ export interface components {
             github_installation_id: number;
             /** Onboarded By */
             onboarded_by: string;
-            /** Auto Merge Workflow Prs */
-            auto_merge_workflow_prs: boolean;
             /** Granted Capabilities */
             granted_capabilities: string[];
             /** Capability Config */
@@ -2690,6 +4926,21 @@ export interface components {
                     [key: string]: unknown;
                 };
             };
+        };
+        /**
+         * RepoGuidanceOut
+         * @description What the scanners recommend for one repository, two ways.
+         *
+         *     `fixes` is the actionable half — grouped by the change, so one entry can
+         *     close several rules — and `by_rule` is the detail behind it.
+         */
+        RepoGuidanceOut: {
+            /** Fixes */
+            fixes: components["schemas"]["FixGroupOut"][];
+            /** By Rule */
+            by_rule: components["schemas"]["CapabilityGuidanceOut"][];
+            /** Actionable Findings */
+            actionable_findings: number;
         };
         /** RepoSummary */
         RepoSummary: {
@@ -2704,6 +4955,11 @@ export interface components {
              * @default concourse
              */
             scanned_by: string;
+            /**
+             * Synthetic
+             * @default false
+             */
+            synthetic: boolean;
             /** Enabled Capabilities */
             enabled_capabilities: string[];
             /** Pending Capabilities */
@@ -2737,7 +4993,8 @@ export interface components {
          * @description What this application is, as an asset (spec 21 §1).
          *
          *     Every field independently nullable: a partially-filled profile is still
-         *     useful. `exists` distinguishes the two states that matter to Oracle — a
+         *     useful. `exists` distinguishes the two states that matter to a risk
+         *     decision — a
          *     profile recorded but not yet filled in is an auditable fact, no profile
          *     at all is `available: false`.
          */
@@ -2786,6 +5043,23 @@ export interface components {
             /** Notes */
             notes?: string | null;
         };
+        /** RuleGuidanceOut */
+        RuleGuidanceOut: {
+            /** Capability */
+            capability: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            /** Count */
+            count: number;
+            /** Fix */
+            fix: string;
+            /** Source */
+            source: string;
+            /** Effort */
+            effort: string;
+        };
         /**
          * RunRequest
          * @description What the workflow sends. No repo field — it comes from the token.
@@ -2818,7 +5092,7 @@ export interface components {
             errors?: string[];
             /**
              * Note
-             * @default Every pull request Patchwork opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
+             * @default Every pull request auto-remediation opens is a draft, and it has no ability to merge one — the GitHub client it uses exposes no merge operation (spec 08 §3).
              */
             note: string;
         };
@@ -2888,6 +5162,10 @@ export interface components {
             raw_output_ref?: string | null;
             /** Detail */
             detail?: string | null;
+            /** Line Coverage */
+            line_coverage?: number | null;
+            /** Branch Coverage */
+            branch_coverage?: number | null;
         };
         /**
          * ScanStatus
@@ -2895,10 +5173,58 @@ export interface components {
          */
         ScanStatus: "success" | "no_applicable_targets" | "partial_failure" | "failure";
         /**
+         * ScannerUpdate
+         * @description Which system scans this repository (spec 03 §3a, spec 32 §9.1).
+         */
+        ScannerUpdate: {
+            /**
+             * Scanned By
+             * @enum {string}
+             */
+            scanned_by: "concourse" | "github_actions" | "none";
+        };
+        /**
          * Severity
          * @enum {string}
          */
         Severity: "info" | "low" | "medium" | "high" | "critical";
+        /**
+         * SeverityHereOut
+         * @description This vulnerability's CVSS score, re-read for this system.
+         *
+         *     `environmental` equals `base` whenever nothing is known, by construction:
+         *     every undefined modifier takes the base metric's value, so a repository
+         *     with no confirmed risk profile is never quietly discounted. `stated` says
+         *     which of those two situations produced an equal pair.
+         */
+        SeverityHereOut: {
+            /** Vector */
+            vector: string;
+            /** Base */
+            base: number;
+            /** Environmental */
+            environmental: number;
+            /** Moved */
+            moved: boolean;
+            /** Stated */
+            stated: boolean;
+            /** Because */
+            because: string[];
+        };
+        /** SnoozeRequest */
+        SnoozeRequest: {
+            /**
+             * Until
+             * Format: date
+             * @description A date, not a timestamp — 'come back on Tuesday'.
+             */
+            until: string;
+            /**
+             * Reason
+             * @description Required. A row that reappears with no reason recorded is a deferral nobody can review.
+             */
+            reason: string;
+        };
         /** SscsEvidenceOut */
         SscsEvidenceOut: {
             /** Evidence Id */
@@ -2923,7 +5249,7 @@ export interface components {
             trust_score?: number | null;
             /**
              * Raw Trust Score
-             * @description Pre-clamp. Ranking has to survive the floor at 0, the same way Oracle's raw_score survives the ceiling at 100 (D-018).
+             * @description Pre-clamp. Ranking has to survive the floor at 0, the same way the risk decision's raw_score survives the ceiling at 100 (D-018).
              */
             raw_trust_score?: number | null;
             /** Provenance Json */
@@ -2935,7 +5261,7 @@ export interface components {
         };
         /**
          * SscsEvidenceSubmission
-         * @description What the Atlas workflow posts (spec 07 §3, §4).
+         * @description What the dependency (SCA) workflow posts (spec 07 §3, §4).
          *
          *     Counts rather than a trust score: the score is computed server-side from
          *     §5's formula so it is reproducible and cannot drift between the workflow's
@@ -2960,6 +5286,8 @@ export interface components {
             provenance?: {
                 [key: string]: unknown;
             };
+            /** @description How this repository builds (spec 29 §3). Distinct from `provenance` above, which records *this* build's identity: these are scored, and every one of them is absent by default so a repository that reports none scores exactly as it did before they existed. */
+            provenance_signals?: components["schemas"]["ProvenanceSignals"];
         };
         /** SscsPage */
         SscsPage: {
@@ -2970,6 +5298,22 @@ export interface components {
             /** @description Convenience for the header; the same row as evidence[0]. */
             latest?: components["schemas"]["SscsEvidenceOut"] | null;
         };
+        /**
+         * SsdfOut
+         * @description SSDF adherence for one repository, evidenced rather than asserted.
+         */
+        SsdfOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Practices */
+            practices: components["schemas"]["PracticeOut"][];
+            /** Note */
+            note: string;
+        };
         /** StageCoverageOut */
         StageCoverageOut: {
             /** Stage */
@@ -2978,11 +5322,35 @@ export interface components {
             enabled: boolean;
             /**
              * State
-             * @description not_enabled: nobody asked for this stage here. no_job: enabled, and nothing in the pipeline produces it - the gap hardest to see otherwise, because the repository believes it is covered and no job disagrees. reporting / silent / never_reported / not_run carry their meaning from the cross-check.
+             * @description not_enabled: nobody asked for this stage here. no_job: enabled, and nothing in the pipeline produces it - the gap hardest to see otherwise, because the repository believes it is covered and no job disagrees. reporting / silent / never_reported / failed / not_run carry their meaning from the cross-check.
              */
             state: string;
             /** Problem */
             problem: boolean;
+        };
+        /** StalledLaneOut */
+        StalledLaneOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Reason */
+            reason: string;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /** Streak Capped */
+            streak_capped: boolean;
+            /** Last Success */
+            last_success: string | null;
+            /** Detail */
+            detail: string;
+            /** Open Findings */
+            open_findings: number;
+            /** Days Since Run */
+            days_since_run: number;
+            /** Usual Gap Days */
+            usual_gap_days: number;
+            action: components["schemas"]["BriefingActionOut"];
         };
         /** StatusChange */
         StatusChange: {
@@ -2993,6 +5361,22 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Accepted Until
+             * @description Review date for an accepted risk (spec 24 §3.2). Required unless `indefinite` is set: an acceptance with no end is a decision nobody revisits, and this platform is currently carrying 243 of them that each said no vendor fix exists.
+             */
+            accepted_until?: string | null;
+            /**
+             * Indefinite
+             * @description Accept with no review date. Deliberately an explicit choice rather than the default — it is rarer than people expect once a date is the easy option.
+             * @default false
+             */
+            indefinite: boolean;
+            /**
+             * Accepted Reason Code
+             * @description Required when accepting a risk. See `AcceptanceReason`.
+             */
+            accepted_reason_code?: ("no_vendor_fix" | "not_exploitable_here" | "compensating_control" | "cost_exceeds_risk" | "other") | null;
         };
         /** StatusChangeResult */
         StatusChangeResult: {
@@ -3023,6 +5407,146 @@ export interface components {
              * @description Plain-language statement of what was observed and why it scored.
              */
             rationale: string;
+        };
+        /** SupplyChainPackagesOut */
+        SupplyChainPackagesOut: {
+            /** Total */
+            total: number;
+            /** Advisories */
+            advisories: number;
+            /** Fixable */
+            fixable: number;
+            /** Kev Packages */
+            kev_packages: number;
+            /** Unfixable Advisories */
+            unfixable_advisories: number;
+            /** Packages */
+            packages: components["schemas"]["VulnerablePackageOut"][];
+        };
+        /** SurfaceOut */
+        SurfaceOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Exposure */
+            exposure: string;
+            /** Sensitivity */
+            sensitivity: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Declared By */
+            declared_by: string;
+            /**
+             * Declared At
+             * Format: date-time
+             */
+            declared_at: string;
+        };
+        /** SurfaceRequest */
+        SurfaceRequest: {
+            /**
+             * Kind
+             * @description asset | entry_point | trust_boundary
+             */
+            kind: string;
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Exposure
+             * @description internet | internal | local | unknown. `unknown` is the default and a real answer — guessing `internal` would understate risk by default, which is the wrong direction to be wrong in.
+             * @default unknown
+             */
+            exposure: string;
+            /**
+             * Sensitivity
+             * @description pii | financial | credentials | source | public | unknown. Only meaningful for an asset; ignored for the other kinds rather than stored as a guess.
+             * @default unknown
+             */
+            sensitivity: string;
+            /**
+             * Evidence Ref
+             * @default
+             */
+            evidence_ref: string;
+        };
+        /** SurfacesOut */
+        SurfacesOut: {
+            /** Assets */
+            assets: components["schemas"]["SurfaceOut"][];
+            /** Entry Points */
+            entry_points: components["schemas"]["SurfaceOut"][];
+            /** Trust Boundaries */
+            trust_boundaries: components["schemas"]["SurfaceOut"][];
+            /** Total */
+            total: number;
+            /** Internet Facing */
+            internet_facing: number;
+            /** Unknowns */
+            unknowns: number;
+            /** Complete */
+            complete: boolean;
+        };
+        /**
+         * TestEstateOut
+         * @description What testing this repository has evidence of, and what kinds it lacks.
+         */
+        TestEstateOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Kinds */
+            kinds: components["schemas"]["TestKindOut"][];
+            /** Lanes */
+            lanes: components["schemas"]["TestLaneOut"][];
+            /** Note */
+            note: string;
+        };
+        /** TestKindOut */
+        TestKindOut: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Why */
+            why: string;
+            /** Presence */
+            presence: string;
+            /** Evidence */
+            evidence: string[];
+            /** How To Evidence */
+            how_to_evidence: string;
+        };
+        /** TestLaneOut */
+        TestLaneOut: {
+            /** Capability */
+            capability: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Runs */
+            runs: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Failed */
+            failed: number;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Coverage State */
+            coverage_state: string;
+            /** Line Coverage */
+            line_coverage: number | null;
         };
         /**
          * ThreatIntelEntryOut
@@ -3058,6 +5582,26 @@ export interface components {
             stride: string;
             /** Findings */
             findings: components["schemas"]["FindingGroupOut"][];
+            /**
+             * State
+             * @description `findings_open` | `unmitigated` | `mitigated` | `unscanned` (spec 28 §4). `unscanned` is the one that matters: a category nothing has ever reported into used to render identically to a clean one, which made an absence of looking read as good news.
+             * @default findings_open
+             */
+            state: string;
+            /** Controls */
+            controls?: components["schemas"]["ControlOut"][];
+            /**
+             * Contradicted
+             * @description Findings open *and* a control declared here. Shown rather than resolved: a control that exists while findings accumulate under it is either wrong, bypassed, or narrower than its description, and the platform has no basis to decide which.
+             * @default false
+             */
+            contradicted: boolean;
+            /**
+             * Reason
+             * @description Why this category is in this state.
+             * @default
+             */
+            reason: string;
         };
         /**
          * ThreatModelOut
@@ -3068,11 +5612,22 @@ export interface components {
             repo_full_name: string;
             /**
              * Mapping Resolution
-             * @description Always 'capability' today — no Finding carries a structured CWE, so this is the finest resolution the data honestly supports. A future CWE-aware pass would report 'cwe' here instead, distinguishing the two rather than letting the frontend assume one silently became the other.
+             * @description `cwe`, `capability`, or `mixed` (spec 28 §2). Until CWEs were read out of SARIF this was always `capability` — the finest resolution the data then supported. `mixed` is the common case now and is why every row carries its own: CodeQL tags its rules, Trivy does not, and a page-level label would be wrong for half of a real repository.
              */
             mapping_resolution: string;
+            /**
+             * Unmapped Cwes
+             * @description CWEs the tools declared and `stride-map-v1.yaml` does not know. Those rows fall back to capability mapping and are named here so the gap gets closed by somebody adding a row, rather than resolving to whatever category looked closest.
+             */
+            unmapped_cwes?: string[];
             /** Categories */
             categories: components["schemas"]["ThreatModelCategoryOut"][];
+            /**
+             * Nothing Scanned
+             * @description No capability that feeds any STRIDE category has ever reported here. Said once at the top rather than six times (spec 28 §6): it is one fact about the repository, not six about its categories.
+             * @default false
+             */
+            nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
         };
         /**
@@ -3150,11 +5705,23 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /**
+             * Triage
+             * @description What the classifier concluded about this row, and why. Carried on every row rather than only when filtered, so a queue can show it without a second request (B-019).
+             * @default needs_human_judgment
+             */
+            triage: string;
+            /**
+             * Triage Rationale
+             * @description The sentence behind the classification. spec 01 §6 makes an unexplained verdict a bug, and a row labelled 'needs human judgment' with nothing saying why is one.
+             * @default
+             */
+            triage_rationale: string;
             /** First Seen At */
             first_seen_at?: string | null;
             /**
              * Repo Recommendation
-             * @description The repo's standing Oracle verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
+             * @description The repo's standing risk verdict, carried per row so the queue reads without cross-referencing the portfolio. The same critical means something different in a repo already called no_go.
              */
             repo_recommendation?: string | null;
             /**
@@ -3172,6 +5739,38 @@ export interface components {
              * @description 0-1, null if not scored yet.
              */
             epss_score?: number | null;
+            /**
+             * Owner
+             * @description From CODEOWNERS or the risk profile (spec 24 §1).
+             */
+            owner?: string | null;
+            /**
+             * Due State
+             * @description overdue | due_soon | on_track | no_target (spec 24 §2.4).
+             */
+            due_state?: string | null;
+            /**
+             * Effort
+             * @description one_click | small | investigation (spec 27 §2). Three bands, not an hour estimate: an estimate this platform cannot verify is a number nobody should plan against.
+             */
+            effort?: string | null;
+            /**
+             * Blast Radius Repos
+             * @description Repositories carrying a finding on this package.
+             */
+            blast_radius_repos?: number | null;
+            /**
+             * Rank
+             * @description Only when ordering by rank (spec 27 §1).
+             */
+            rank?: number | null;
+            /** @description Claim and snooze, from the operational store (spec 27 §3.2). */
+            state?: components["schemas"]["TriageStateOut"];
+            /**
+             * Rank Terms
+             * @description Every term that produced `rank`, with its points and a sentence. A rank a person cannot argue with is a rank they will ignore.
+             */
+            rank_terms?: components["schemas"]["RankTermOut"][];
         };
         /** TriageQueue */
         TriageQueue: {
@@ -3183,11 +5782,31 @@ export interface components {
             };
             /** Total Open */
             total_open: number;
+            ranking: components["schemas"]["RankingInputs"];
             /**
              * Truncated
              * @description Whether the limit cut the list short. A queue that silently stops at 100 reads as 'that is all of it'.
              */
             truncated: boolean;
+        };
+        /**
+         * TriageStateOut
+         * @description Who holds this row, and until when (spec 27 §3).
+         */
+        TriageStateOut: {
+            /** Claimed By */
+            claimed_by?: string | null;
+            /** Claim Expires At */
+            claim_expires_at?: string | null;
+            /**
+             * Claim Lapsing
+             * @default false
+             */
+            claim_lapsing: boolean;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /** Snooze Reason */
+            snooze_reason?: string | null;
         };
         /**
          * TriggeredBy
@@ -3214,6 +5833,87 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** VulnerablePackageOut */
+        VulnerablePackageOut: {
+            /** Package Name */
+            package_name: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Installed Version */
+            installed_version: string;
+            /** Advisories */
+            advisories: number;
+            /** Worst Severity */
+            worst_severity: string;
+            /** Fixed Version */
+            fixed_version: string;
+            /** Fixable */
+            fixable: boolean;
+            /** Direct */
+            direct: boolean | null;
+            /** Kev Count */
+            kev_count: number;
+            /** Cves */
+            cves: string[];
+        };
+        /**
+         * WorkflowState
+         * @description One capability's workflow, as GitHub currently has it (spec 32 §6).
+         *
+         *     `state` is GitHub's own vocabulary, passed through rather than reduced to
+         *     a boolean, plus `not_installed` for a capability this repository has
+         *     enabled and has no workflow file for. The distinction that matters:
+         *     `disabled_manually` is somebody's decision, `disabled_inactivity` is
+         *     GitHub switching a scheduled workflow off after sixty days without a
+         *     push, and only the second is a coverage gap nobody chose.
+         */
+        WorkflowState: {
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Installed */
+            installed: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** State */
+            state: string;
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+        };
+        /** WorkflowStateResult */
+        WorkflowStateResult: {
+            /** Repo */
+            repo: string;
+            /** Capability */
+            capability: string;
+            /** Workflow File */
+            workflow_file: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * WorkflowsPage
+         * @description spec 32 §6.2. Never an error for a repository that simply has no
+         *     workflows: a Concourse-scanned repo and an unreachable GitHub are
+         *     different facts, and both render as an empty list unless the reason is
+         *     carried alongside it.
+         */
+        WorkflowsPage: {
+            /** Repo */
+            repo: string;
+            /** Scanned By */
+            scanned_by: string;
+            /** Workflows */
+            workflows: components["schemas"]["WorkflowState"][];
+            /** Unavailable */
+            unavailable?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -3239,6 +5939,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    ingest_netassess_api_ingest_netassess_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NetassessSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetassessAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_lane_failure_api_ingest_lane_failure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaneFailure"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaneFailureAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3531,6 +6297,12 @@ export interface operations {
                 rule_id?: string | null;
                 kev_only?: boolean;
                 min_epss?: number | null;
+                owner?: string | null;
+                order?: "severity" | "rank";
+                include_snoozed?: boolean;
+                claimed_by?: string | null;
+                /** @description What the classifier concluded. The per-repository findings view has had this filter; the queue did not, so 'show me everything the machine could not judge' meant one request per repository (B-019). Every row carries `triage` whether or not this is set. */
+                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 limit?: number;
             };
             header?: never;
@@ -3614,6 +6386,204 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_throughput_api_dashboard_triage_throughput_get: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_finding_api_dashboard_triage__finding_id__claim_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_finding_api_dashboard_triage__finding_id__claim_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    snooze_finding_api_dashboard_triage__finding_id__snooze_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    wake_finding_api_dashboard_triage__finding_id__snooze_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageStateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_batch_api_dashboard_triage_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResult"];
                 };
             };
             /** @description Validation Error */
@@ -3759,8 +6729,9 @@ export interface operations {
     };
     repo_sbom_api_dashboard_repos__repo_id__sscs_sbom_get: {
         parameters: {
-            query: {
-                evidence_id: string;
+            query?: {
+                /** @description Omit for the most recent build that captured one — the 'what is in production right now' question, which used to require knowing an id nothing in the interface told you. */
+                evidence_id?: string | null;
             };
             header?: never;
             path: {
@@ -3777,6 +6748,199 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    link_regression_test_api_dashboard_findings__finding_id__regression_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegressionLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegressionLinkResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regression_coverage_api_dashboard_repos__repo_id__regression_coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_governance_api_dashboard_repos__repo_id__governance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GovernanceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    incident_lookup_api_dashboard_incident_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_deployment_briefing_api_dashboard_briefing_get: {
+        parameters: {
+            query?: {
+                /** @description Narrow every section to one repository. Omit for the estate. The reasoning is identical either way — lanes that cannot close first, then cheapest work — applied to a different denominator. */
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_vulnerable_packages_api_dashboard_repos__repo_id__sscs_packages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplyChainPackagesOut"];
                 };
             };
             /** @description Validation Error */
@@ -3821,6 +6985,230 @@ export interface operations {
             };
         };
     };
+    repo_guidance_api_dashboard_repos__repo_id__guidance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoGuidanceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_surfaces_api_dashboard_repos__repo_id__surfaces_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfacesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_surface_api_dashboard_repos__repo_id__surfaces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SurfaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SurfaceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_surface_api_dashboard_repos__repo_id__surfaces__surface_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                surface_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_control_api_dashboard_repos__repo_id__controls_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_control_api_dashboard_repos__repo_id__controls__control_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                control_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_control_api_dashboard_repos__repo_id__controls__control_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                control_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     repo_findings_api_dashboard_repos__repo_id__findings_get: {
         parameters: {
             query?: {
@@ -3830,6 +7218,10 @@ export interface operations {
                 rule_id?: string | null;
                 first_seen_after?: string | null;
                 first_seen_before?: string | null;
+                /** @description Findings this pull request introduced — matched on the scan run that first saw them, not the most recent one. Answers 'what did my change add?' rather than 'what does my branch also reproduce?' */
+                pr_number?: number | null;
+                /** @description Findings first seen by a scan of this commit. */
+                commit_sha?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -3872,6 +7264,8 @@ export interface operations {
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
                 fixable?: boolean | null;
+                due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
+                owner?: string | null;
                 limit?: number;
             };
             header?: never;
@@ -4003,6 +7397,41 @@ export interface operations {
             };
         };
     };
+    review_classification_api_dashboard_findings__finding_id__classification_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClassificationReview"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClassificationReviewResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     set_finding_status_api_dashboard_findings__finding_id__status_patch: {
         parameters: {
             query?: never;
@@ -4038,6 +7467,41 @@ export interface operations {
             };
         };
     };
+    set_finding_owner_api_dashboard_findings__finding_id__owner_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerChangeResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     threat_intel_api_dashboard_threat_intel_get: {
         parameters: {
             query?: never;
@@ -4054,6 +7518,279 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThreatIntelEntryOut"][];
+                };
+            };
+        };
+    };
+    reown_findings_api_dashboard_repos__repo_id__reown_post: {
+        parameters: {
+            query?: {
+                /** @description Report what would change and write nothing. */
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReownOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    whole_finding_record_api_dashboard_findings__finding_id__record_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindingRecordOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reindex_inventory_api_dashboard_inventory_reindex_post: {
+        parameters: {
+            query?: {
+                repo_id?: string | null;
+                dry_run?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    estate_libraries_api_dashboard_libraries_get: {
+        parameters: {
+            query?: {
+                ecosystem?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibrariesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    risk_profile_proposal_api_dashboard_repos__repo_id__risk_profile_proposal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_ssdf_api_dashboard_repos__repo_id__ssdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SsdfOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_tests_api_dashboard_repos__repo_id__tests_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestEstateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_consult_api_dashboard_repos__repo_id__consult_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsultOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_health_page_api_dashboard_platform_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformHealthOut"];
                 };
             };
         };
@@ -4339,6 +8076,7 @@ export interface operations {
         parameters: {
             query?: {
                 days?: number;
+                repo_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -4598,6 +8336,26 @@ export interface operations {
             };
         };
     };
+    efficacy_api_patchwork_efficacy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EfficacyPage"];
+                };
+            };
+        };
+    };
     repo_events_api_patchwork_repos__repo_id__get: {
         parameters: {
             query?: {
@@ -4780,6 +8538,41 @@ export interface operations {
             };
         };
     };
+    set_scanner_api_repos__repo_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScannerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_capabilities_api_repos__repo_id__capabilities_patch: {
         parameters: {
             query?: never;
@@ -4836,6 +8629,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workflows_api_repos__repo_id__workflows_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_workflow_api_repos__repo_id__workflows__capability__enable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_workflow_api_repos__repo_id__workflows__capability__disable_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowStateResult"];
                 };
             };
             /** @description Validation Error */

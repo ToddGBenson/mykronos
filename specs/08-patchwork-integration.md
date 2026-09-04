@@ -38,17 +38,21 @@ requests for a human to review. **Patchwork never merges anything itself.**
    missing IaC property with a documented default. These need no model, they
    are reviewable line by line, and their output is identical every run.
 
-   LLM-generated fixes for the open-ended classes (parameterising a query,
-   adding input validation) require a configured endpoint —
-   `fix_generator_url`, §5 — and are **off when it is unset**. Same rule as
-   Aegis's classifier (spec 06 §5, spec 12 §5.2): a default that shipped
-   repository source to a third party without anybody choosing it would be
-   the wrong default, and a capability that silently did nothing without one
-   would be worse.
+   **Deterministic fixers are the only generator (D-096).** This section
+   previously specified a second, LLM-backed one behind a `fix_generator_url`
+   endpoint. That setting was validated, stored, exposed through the API and
+   threaded into the pipeline — and never used to make a request. Its only
+   effect was to choose between two rationale sentences, one of which read as
+   though a generator had been consulted and declined. It was withdrawn rather
+   than implemented: the deterministic half is the half that works, and an
+   endpoint an operator can configure and watch do nothing is worse than an
+   honest absence.
 
-   With no endpoint configured, findings outside the deterministic classes
-   reach `no_fix_available` with a rationale saying so, which is a true
-   statement about this deployment rather than a claim about the finding.
+   Findings outside the deterministic classes reach `no_fix_available` with a
+   rationale saying exactly that. Adding an LLM generator later is a design
+   change that needs its own decision — including the request and response
+   contract, failure behaviour, and what stops a bad fix reaching a pull
+   request — none of which this spec ever specified.
 5. **Open draft PR** — commit the fix to a new branch, open a **draft** PR
    referencing the original finding(s), with a description explaining the
    fix and linking back to the finding in the dashboard.
@@ -119,7 +123,7 @@ requests for a human to review. **Patchwork never merges anything itself.**
 | `source_capabilities` | list | `["sast", "secrets", "containers", "iac"]` | which capabilities' findings Patchwork may generate a **fix** for. Code-fixable by construction — see §5a |
 | `correlation_capabilities` | list | every capability | which capabilities' findings **toxic-combination detection** may consider (§5a) |
 | `min_confidence_to_generate_fix` | float (0–1) | `0.7` | below this, stage stops at `no_fix_available` rather than generating a possibly-wrong fix |
-| `fix_generator_url` | string, nullable | `null` | Endpoint for LLM-assisted fix generation. Null — the default — restricts Patchwork to its deterministic fixers and sends no source anywhere (§2 stage 4, spec 12 §5.2) |
+| ~~`fix_generator_url`~~ | — | — | **Withdrawn (D-096).** Never reached an HTTP call; see §2 stage 4. Stripped from stored configs on save rather than rejected, so a repo configured before the withdrawal still saves |
 | `toxic_combination_rules` | list of rule refs | built-in default set | admin-extensible rule definitions |
 | `max_open_draft_prs_per_repo` | int | `10` | Backpressure. A repository that wakes up to forty draft pull requests does not triage them, it turns the capability off. Over the limit, a candidate's event is recorded with `pipeline_stage_reached: queued` and the fix is *not* generated — the queue is the event table itself, re-examined on the next run, not a separate structure holding unreviewed generated code |
 

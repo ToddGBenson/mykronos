@@ -39,7 +39,16 @@ param(
     [string]$Root = (Join-Path $env:USERPROFILE 'netassess'),
     [string]$Run,
     [string]$Endpoint = "http://localhost:9000",
-    [string]$Bucket = "netassess-runs"
+    [string]$Bucket = "netassess-runs",
+    # Spec 32 section 4.4. Where the judgement goes. Empty skips it, which is
+    # the right behaviour for a deployment that has no Mykronos rather than an
+    # error about one.
+    [string]$MykronosUrl = $env:MYKRONOS_URL,
+    [string]$MykronosToken = $env:MYKRONOS_INGESTION_TOKEN,
+    # The perimeter gate in front of the whole API (gate.py). Separate from
+    # the ingestion token: one says which repository is writing, the other
+    # says the caller is allowed to reach this host at all.
+    [string]$MykronosGateToken = $env:MYKRONOS_GATE_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,7 +127,56 @@ try {
 
     $size = "{0:N0}" -f (Get-Item $zip).Length
     Write-Host "`nPublished $($runDir.Name) as $objectName ($size bytes)." -ForegroundColor Green
-    Write-Host "  The pipeline's netassess-ingest job verifies it from here."
+
+    # --- tell Mykronos ---------------------------------------------------
+    #
+    # Spec 32 section 4.4. The archive above is the history and stays where it
+    # is; this is the judgement, and it is a push rather than a poll because
+    # the alternative was giving the backend an S3 client and MinIO
+    # credentials it needs for nothing else, to discover an event this script
+    # already knows about.
+    #
+    # Two text files rather than the zip: the judgement reads those two, and
+    # unpacking an archive inside the ingestion path would buy nothing.
+    #
+    # Never fatal. The archive is published either way, and a scan that ran
+    # correctly must not be reported as a failure because a web request did
+    # not land. This script's whole contract is that it does not judge the run
+    # it uploads - reporting a transport failure as a scan failure would be
+    # exactly that, by the back door.
+    if (-not $MykronosUrl -or -not $MykronosToken) {
+        Write-Host "  Mykronos not configured; skipping the judgement push." -ForegroundColor DarkGray
+    } else {
+        try {
+            $inventory = Join-Path $runDir.FullName "inventory.csv"
+            $status = Join-Path $runDir.FullName "network-status.md"
+            $body = @{
+                run_key           = $objectName
+                inventory_csv     = if (Test-Path $inventory) { Get-Content $inventory -Raw } else { "" }
+                network_status_md = if (Test-Path $status) { Get-Content $status -Raw } else { "" }
+            } | ConvertTo-Json -Depth 3
+
+            $headers = @{
+                "Authorization" = "Bearer $MykronosToken"
+                "Content-Type"  = "application/json"
+            }
+            if ($MykronosGateToken) { $headers["X-Hub-Token"] = $MykronosGateToken }
+
+            $result = Invoke-RestMethod -Method Post -Uri "$($MykronosUrl.TrimEnd('/'))/api/ingest/netassess" `
+                -Headers $headers -Body $body -TimeoutSec 30
+            if ($result.believable) {
+                Write-Host "  Mykronos accepted the run: $($result.host_count) host(s)." -ForegroundColor Green
+            } else {
+                Write-Host "  Mykronos judged the run NOT believable:" -ForegroundColor Yellow
+                foreach ($p in $result.problems) { Write-Host "    - $p" -ForegroundColor Yellow }
+            }
+            foreach ($h in $result.hosts_appeared)    { Write-Host "    + new  $h" }
+            foreach ($h in $result.hosts_disappeared) { Write-Host "    - gone $h" }
+        } catch {
+            Write-Host "  Could not report to Mykronos: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  The archive is published; only the judgement did not run." -ForegroundColor DarkGray
+        }
+    }
 } finally {
     Remove-Item Env:\MC_HOST_netassess -ErrorAction SilentlyContinue
     if ($zip -and (Test-Path $zip)) { Remove-Item $zip -Force }

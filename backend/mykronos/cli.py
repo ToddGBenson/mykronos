@@ -9,8 +9,19 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
+    mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
+    mykronos self-check
+    mykronos briefing [--json]
+    mykronos parity <owner/repo>
+    mykronos workflows <owner/repo>
+    mykronos enable-workflow <owner/repo> <capability>
+    mykronos disable-workflow <owner/repo> <capability>
     mykronos query "SELECT ..."
     mykronos stats
+
+The three `workflow` commands are the off switch of spec 32 §6, here as well
+as in the API on purpose: the state an operator needs them for is the one
+where the dashboard is the thing that is misbehaving.
 
 `query` is the Phase 0 demo's second half (spec 13 §3): curl a finding in,
 then read it back out of the lake with SQL.
@@ -20,17 +31,30 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import sys
 from collections.abc import Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import briefing as briefing_report
 from mykronos.auth import TokenRegistry
+from mykronos.ci import (
+    ActionsClient,
+    ConcourseClient,
+    _covers,
+    capability_by_workflow,
+    compare,
+    coverage,
+    reconcile,
+)
 from mykronos.config import get_settings
+from mykronos.dashboard import DashboardQueries
 from mykronos.db import Database
-from mykronos.db.models import RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
@@ -38,10 +62,12 @@ from mykronos.jobs import (
     reconcile_installations,
     rotate_ingestion_tokens,
     score_portfolio,
+    self_check,
 )
 from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.migrate_assets import migrate_assets
+from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.reprocess import reprocess
@@ -128,6 +154,47 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Mint a short-lived GitHub App installation token (spec 02 §4)",
     )
     ghtoken.add_argument("repo", help="owner/repo the token should be scoped to.")
+
+    sub.add_parser(
+        "self-check",
+        help="Ask the internet whether this platform is reachable (spec 32 §8)",
+    )
+
+    briefing = sub.add_parser(
+        "briefing",
+        help="What to do next about the open backlog. Run this after a deploy.",
+    )
+    briefing.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the briefing as JSON, for a pipeline step rather than a person.",
+    )
+
+    parity = sub.add_parser(
+        "parity",
+        help="Compare what each CI reports for a repo, before retiring a pipeline",
+    )
+    parity.add_argument("repo")
+
+    workflows = sub.add_parser(
+        "workflows",
+        help="List this repo's installed workflows and whether each is switched on",
+    )
+    workflows.add_argument("repo")
+
+    wf_enable = sub.add_parser(
+        "enable-workflow",
+        help="Switch one installed workflow on, with no pull request (spec 32 §6)",
+    )
+    wf_enable.add_argument("repo")
+    wf_enable.add_argument("capability", choices=CAPABILITIES)
+
+    wf_disable = sub.add_parser(
+        "disable-workflow",
+        help="Stop one installed workflow now, with no pull request (spec 32 §6)",
+    )
+    wf_disable.add_argument("repo")
+    wf_disable.add_argument("capability", choices=CAPABILITIES)
 
     reproc = sub.add_parser(
         "reprocess",
@@ -349,7 +416,19 @@ def main(argv: list[str] | None = None) -> int:
             factory = _github_factory(settings)
             if args.command == "rotate-due":
                 rotation = asyncio.run(
-                    rotate_ingestion_tokens(db, factory, overlap_hours=settings.token_overlap_hours)
+                    rotate_ingestion_tokens(
+                        db,
+                        factory,
+                        overlap_hours=settings.token_overlap_hours,
+                        # Same reader check the scheduled job makes (D-097):
+                        # a hand-run rotation must not desynchronise Vault
+                        # either.
+                        concourse=ConcourseClient(
+                            settings.concourse_url,
+                            team=settings.concourse_team,
+                            external_url=settings.concourse_external_url,
+                        ),
+                    )
                 )
                 print(f"Token rotation: {rotation.summary()}")
                 for repo, reason in rotation.failed:
@@ -428,6 +507,278 @@ def main(argv: list[str] | None = None) -> int:
             # here would be a second place for App credential handling to
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
+            return 0
+
+        if args.command == "self-check":
+            # The check a container healthcheck cannot make, because a
+            # container healthcheck runs inside the thing it is checking. It
+            # deliberately uses the *public* URL: on 2026-08-29 the backend
+            # reported healthy for 22 hours while its host port was
+            # unpublished, and a localhost probe would have passed every
+            # minute of it.
+            # Distinct name: `outcome` is bound above by another subcommand
+            # and reusing it makes mypy infer the wrong type — the trap this
+            # file's `reprocess` branch already documents.
+            # Three dependencies, because one reboot took all three and
+            # nothing noticed for a day (spec 32 §8.1). Each gets its own
+            # line: "something is wrong" is not actionable, "Vault is sealed"
+            # is.
+            checks = asyncio.run(
+                self_check(
+                    settings, notifier=SlackNotifier(settings.slack_webhook_url)
+                )
+            )
+            _print_table(
+                ["dependency", "status", "detail"],
+                [
+                    [
+                        name,
+                        (
+                            "ok"
+                            if result.reachable
+                            # Three states, not two (B-014). A dependency this
+                            # deployment does not have is not one that failed,
+                            # and a command that is permanently red reports
+                            # nothing at all -- every run of this said FAILED
+                            # because `vault_url` was blank.
+                            else "not configured"
+                            if not result.configured
+                            else "FAILED"
+                        ),
+                        result.detail or result.url,
+                    ]
+                    for name, result in checks
+                ],
+            )
+            broken = [
+                name
+                for name, result in checks
+                if not result.reachable and result.configured
+            ]
+            unconfigured = [
+                name for name, result in checks if not result.configured
+            ]
+            if unconfigured:
+                # Said out loud rather than left as a blank line. "Not
+                # checked" is a fact about coverage, and the whole reason
+                # this command exists is that a thing nobody was watching
+                # broke for a day.
+                print()
+                print(
+                    f"Not checked: {', '.join(unconfigured)} — "
+                    "configured for nothing, so a failure there would not "
+                    "appear here."
+                )
+            if not broken:
+                print()
+                print("All dependencies reachable.")
+                return 0
+            print()
+            print(f"Not reachable: {', '.join(broken)}", file=sys.stderr)
+            if "ingestion" in broken:
+                print(
+                    "Scan uploads from GitHub Actions and from Concourse both go "
+                    "through the ingestion URL, so findings are being lost now.",
+                    file=sys.stderr,
+                )
+            return 1
+
+        if args.command == "parity":
+            # The check that authorises spec 32 §9 step 8. Retiring a pipeline
+            # because its replacement looks green is how a lane goes quiet
+            # without anybody noticing — spec 15 §4a.1's first day of
+            # existence found a lane green on every build that had never
+            # reported once.
+            #
+            # Reads both systems for the same repository and compares them
+            # capability by capability. Comparing counts would be satisfied by
+            # two systems covering different sets of eleven.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                par_enabled = set(onboarding.enabled_capabilities or [])
+                par_grants = {
+                    str(grant.capability)
+                    for grant in session.execute(
+                        select(CapabilityGrant).where(
+                            CapabilityGrant.repo_full_name == args.repo
+                        )
+                    ).scalars()
+                }
+                par_installation = onboarding.github_installation_id
+
+            # The same union every other view applies (spec 03 §3a): the
+            # installer's ledger never moves for a Concourse-scanned repo, so
+            # the grants are what may write and therefore what is enabled.
+            par_capabilities = par_enabled | par_grants
+            last_scan = DashboardQueries(catalog).last_successful_scan_at(args.repo)
+
+            concourse = ConcourseClient(
+                settings.concourse_url,
+                team=settings.concourse_team,
+                external_url=settings.concourse_external_url,
+            ).status_for(args.repo)
+
+            actions_client = ActionsClient(
+                _github_factory(settings).for_installation(par_installation),
+                capability_by_workflow=capability_by_workflow(
+                    TemplateLibrary(settings.workflow_templates_dir)
+                ),
+            )
+            actions = asyncio.run(actions_client.status_for(args.repo))
+
+            # A side that could not be read is not a side with no coverage,
+            # and the difference decides whether a pipeline gets destroyed.
+            #
+            # `status_for` fails soft by design — it returns `unavailable` and
+            # no jobs rather than raising, because a dashboard must not 500
+            # when a CI server restarts. Fed to `coverage()` that is
+            # indistinguishable from a system running nothing, so every
+            # capability reads `no_job` on the unreadable side and *every*
+            # comparison against it reports "improved". The check then says
+            # "no capability is worse" and exits 0, having compared real
+            # coverage against a connection error.
+            #
+            # That is the exact failure this platform exists to catch, in the
+            # check that authorises retiring the thing being compared. So it
+            # refuses to reach a verdict rather than reaching a flattering
+            # one.
+            unreadable = [
+                f"{label}: {status.unavailable}"
+                for label, status in (("concourse", concourse), ("actions", actions))
+                if status.unavailable
+            ]
+            if unreadable:
+                print("Cannot compare — one side could not be read:", file=sys.stderr)
+                for line in unreadable:
+                    print(f"  {line}", file=sys.stderr)
+                print(
+                    "\nNo verdict. An unreadable system reports no coverage, which "
+                    "compares favourably against everything and means nothing. Fix "
+                    "the read, then re-run.",
+                    file=sys.stderr,
+                )
+                return 2
+
+            # Distinct name: `rows` is bound above by other subcommands and
+            # reusing it makes mypy infer the wrong type — the same trap the
+            # `reprocess` branch already documents.
+            parity_rows = compare(
+                coverage(par_capabilities, reconcile(concourse.jobs, last_scan)),
+                coverage(par_capabilities, reconcile(actions.jobs, last_scan)),
+            )
+            _print_table(
+                ["capability", "concourse", "actions", "verdict"],
+                [[r.capability, r.before, r.after, r.verdict] for r in parity_rows],
+            )
+
+            regressed = [r.capability for r in parity_rows if r.regressed]
+            if regressed:
+                print()
+                print(
+                    "NOT SAFE to retire the pipeline. Worse under Actions: "
+                    + ", ".join(regressed),
+                    file=sys.stderr,
+                )
+                return 1
+
+            # "No capability is worse" is a true sentence about two systems
+            # that both cover nothing, and on its own it reads as permission
+            # to delete a pipeline. keel produced exactly that on 2026-08-29:
+            # every Actions lane at `not_run`, every Concourse lane `silent`,
+            # nothing regressed, and no coverage anywhere. So say what is
+            # actually covered before saying what is not worse.
+            covered_before = [r.capability for r in parity_rows if _covers(r.before)]
+            covered_after = [r.capability for r in parity_rows if _covers(r.after)]
+            print()
+            print(
+                f"Covered: {len(covered_after)} under Actions, "
+                f"{len(covered_before)} under Concourse."
+            )
+
+            if not covered_after:
+                print(file=sys.stderr)
+                print(
+                    "NOT SAFE to retire the pipeline. No capability is worse "
+                    "under Actions, but no capability is covered by it either — "
+                    "nothing has reported. That is not parity, it is two systems "
+                    "agreeing about silence.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            print("No capability is worse under Actions.")
+            return 0
+
+        if args.command in {"workflows", "enable-workflow", "disable-workflow"}:
+            # The off switch that works when the dashboard is the thing that
+            # is down (spec 32 §6.2). Same three operations as the API, and
+            # deliberately the same shape: state comes from GitHub on every
+            # read, and neither enable nor disable touches
+            # `enabled_capabilities` or a grant.
+            db.create_all()
+            with db.session() as session:
+                onboarding = (
+                    session.query(RepoOnboarding)
+                    .filter(RepoOnboarding.github_repo_full_name == args.repo)
+                    .one_or_none()
+                )
+                if onboarding is None:
+                    print(f"{args.repo} is not onboarded.", file=sys.stderr)
+                    return 1
+                if onboarding.scanned_by != "github_actions":
+                    print(
+                        f"{args.repo} is scanned by {onboarding.scanned_by!r}, so "
+                        "Mykronos installs no workflows into it (spec 03 §3a).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                wf_installation_id = onboarding.github_installation_id
+                wf_enabled = sorted(set(onboarding.enabled_capabilities or []))
+
+            templates = TemplateLibrary(settings.workflow_templates_dir)
+            gh = _github_factory(settings).for_installation(wf_installation_id)
+
+            if args.command == "workflows":
+                live = {
+                    ref.file_name: ref
+                    for ref in asyncio.run(gh.list_workflows(args.repo))
+                }
+                wf_rows: list[Sequence[object]] = []
+                for capability in wf_enabled:
+                    if capability not in templates.available:
+                        continue
+                    name = templates.target_path(capability).rsplit("/", 1)[-1]
+                    ref = live.get(name)
+                    wf_rows.append(
+                        [
+                            capability,
+                            name,
+                            ref.state if ref is not None else "not_installed",
+                        ]
+                    )
+                _print_table(["capability", "workflow", "state"], wf_rows)
+                return 0
+
+            if args.capability not in templates.available:
+                print(
+                    f"No workflow template for '{args.capability}', so there is "
+                    "nothing installed to switch.",
+                    file=sys.stderr,
+                )
+                return 1
+            wf_file = templates.target_path(args.capability).rsplit("/", 1)[-1]
+            wf_on = args.command == "enable-workflow"
+            asyncio.run(gh.set_workflow_state(args.repo, wf_file, enabled=wf_on))
+            print(f"{args.repo}: {wf_file} {'enabled' if wf_on else 'disabled'}.")
+            print("The capability is unchanged — its grant still permits writes.")
             return 0
 
         if args.command == "reprocess":
@@ -553,6 +904,20 @@ def main(argv: list[str] | None = None) -> int:
                     ["buffered segments", buffer.count_sealed()],
                 ],
             )
+            return 0
+
+        if args.command == "briefing":
+            # Run after every deploy. The first section is the point of it:
+            # a finding closes only after two consecutive *successful* scans
+            # observe its absence, so a failing lane freezes its findings
+            # open however well the defect was fixed — and nothing else in
+            # the platform says so. On 2026-09-01 that was 115 DAST findings
+            # against headers that had already shipped and were being served.
+            report = briefing_report.build(catalog)
+            if args.json:
+                print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
+            else:
+                print(briefing_report.render(report))
             return 0
 
         if args.command == "query":

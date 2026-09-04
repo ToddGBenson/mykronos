@@ -93,6 +93,32 @@ runs:
         python -m pip install --quiet --disable-pip-version-check \
           "mykronos @ git+https://github.com/ToddGBenson/mykronos@${REF}#subdirectory=backend"
 
+        # D-051: print the commit the pin actually resolved to.
+        #
+        # A pinned ref is a good practice and a silently stale one is not, and
+        # the difference is one line of output. `v1` sat 53 commits behind
+        # while every workflow reported installing `v1` and truthfully so —
+        # the ref was right and the code was old, and nothing on either side
+        # of that sentence was visible in a log.
+        #
+        # The Concourse lanes have printed this since D-051; the composite
+        # action never did, which left the install site used by *every
+        # onboarded repository* as the one that could not answer the question.
+        #
+        # Never fatal. This is provenance for a human reading a log, and an
+        # editable or local install legitimately has no `direct_url.json`.
+        python - <<'PY' || echo "mykronos uploader @ (could not resolve)"
+        import importlib.metadata as m, json
+        raw = m.distribution("mykronos").read_text("direct_url.json")
+        info = json.loads(raw) if raw else {}
+        commit = info.get("vcs_info", {}).get("commit_id", "")
+        # A VCS install has a commit; an editable or local one has a
+        # `direct_url.json` with no `vcs_info` at all. Saying "unknown" for
+        # the second would report a provenance failure where there is simply
+        # no ref to resolve.
+        print("mykronos uploader @", commit[:12] if commit else "(local install)")
+        PY
+
     - name: Upload results
       shell: bash
       env:

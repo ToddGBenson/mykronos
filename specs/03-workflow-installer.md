@@ -161,6 +161,23 @@ the correct signal that the PR is outstanding.
 
 Historical data lake rows for that capability are retained.
 
+### 5.1 Auto-merge is refused by design
+
+Mykronos does not merge the pull requests it opens — not the install and
+removal PRs above, and not the fix PRs of spec 08. There is no setting for it,
+and the absence is structural rather than a default: spec 08 §3 gives
+`GitHubClient` no merge method, and a test asserts no method whose name
+contains "merge" exists on the interface or on either implementation.
+
+This is stated here because an `auto_merge_workflow_prs` option was once
+stored on the onboarding record and returned by the API. Nothing consumed it
+and nothing could, so setting it changed only what an operator believed. It
+was removed in D-095; the column is retired on start by
+`Database.drop_retired_columns`.
+
+Re-introducing auto-merge is a design change that has to reverse D-095 and
+spec 08 §3 first. It is not a configuration gap.
+
 ## 6. Updating templates (versioning)
 
 - Every rendered workflow file includes a header comment:

@@ -77,7 +77,18 @@ _UPDATE_SETS: dict[str, str] = {
         -- suppressed -- are decisions, not observations, so a rescan does not
         -- overturn them.
         status      = CASE WHEN part.status = 'fixed' THEN 'open' ELSE part.status END,
-        resolved_at = CASE WHEN part.status = 'fixed' THEN NULL ELSE part.resolved_at END
+        resolved_at = CASE WHEN part.status = 'fixed' THEN NULL ELSE part.resolved_at END,
+        -- A person who reassigned a finding made a decision; a re-scan is not
+        -- new information about who should fix it, so ingest's CODEOWNERS
+        -- answer does not overwrite one (spec 24 §1.2). Same shape as the
+        -- disposition rule directly above: observations refresh, decisions
+        -- stand.
+        owner = CASE
+            WHEN part.owner_source = 'manual' THEN part.owner ELSE i.owner
+        END,
+        owner_source = CASE
+            WHEN part.owner_source = 'manual' THEN 'manual' ELSE i.owner_source
+        END
     """,
     # A decision is immutable once made -- re-evaluating produces a *new*
     # decision, because spec 09 §10 requires past decisions to stay
@@ -126,10 +137,66 @@ _UPDATE_SETS: dict[str, str] = {
         contributing_finding_ids = i.contributing_finding_ids,
         toxic_combination_id     = coalesce(i.toxic_combination_id, part.toxic_combination_id),
         rationale                = i.rationale,
+        -- Coalesced, not refreshed: the webhook and the verification job both
+        -- write this row and neither of them knows which fixer produced it
+        -- (spec 25 §3.1).
+        fixer_name               = coalesce(i.fixer_name, part.fixer_name),
+        -- Written once, by the webhook, and unknown to every other writer.
+        rejection_reason_code    = coalesce(
+            i.rejection_reason_code, part.rejection_reason_code
+        ),
+        rejection_reason         = coalesce(i.rejection_reason, part.rejection_reason),
         fix_pr_number            = coalesce(i.fix_pr_number, part.fix_pr_number),
         fix_pr_url               = coalesce(i.fix_pr_url, part.fix_pr_url),
         pr_status                = coalesce(i.pr_status, part.pr_status),
+        -- Three writers, three moments (spec 25 §2): the webhook knows the
+        -- merge commit, the job knows it dispatched, the resolver knows the
+        -- verdict. None of them holds the other two's values, so each
+        -- coalesces rather than blanking what it does not know.
+        verification_commit_sha    = coalesce(
+            i.verification_commit_sha, part.verification_commit_sha
+        ),
+        verification_dispatched_at = coalesce(
+            i.verification_dispatched_at, part.verification_dispatched_at
+        ),
+        verification_scan_run_id   = coalesce(
+            i.verification_scan_run_id, part.verification_scan_run_id
+        ),
+        verification_outcome       = coalesce(
+            i.verification_outcome, part.verification_outcome
+        ),
+        verified_at                = coalesce(i.verified_at, part.verified_at),
+        time_to_verified_seconds   = coalesce(
+            i.time_to_verified_seconds, part.time_to_verified_seconds
+        ),
         updated_at               = i.updated_at
+    """,
+    # A link is written once and then only ever refreshed by evidence: the
+    # lane's last green run, and a promotion from `asserted` to
+    # `demonstrated`. `evidence` coalesces so a later `asserted` write cannot
+    # demote a link the platform has actually watched work (spec 31 §1).
+    # A component row is rewritten whole on every scan that still sees it, so
+    # everything refreshes except `first_seen_at` — which is the entire reason
+    # for upserting rather than appending. "When did this repository first
+    # take this version" is answerable from that column alone, and appending
+    # would need a second table to answer it (spec 29 §1).
+    "sbom_components": """
+        commit_sha       = i.commit_sha,
+        scan_run_id      = i.scan_run_id,
+        direct           = i.direct,
+        purl             = i.purl,
+        license_ids_json = i.license_ids_json,
+        observed_at      = i.observed_at
+    """,
+    "finding_tests": """
+        test_identifier    = i.test_identifier,
+        capability         = i.capability,
+        evidence           = CASE
+            WHEN part.evidence = 'demonstrated' THEN 'demonstrated'
+            ELSE coalesce(i.evidence, part.evidence)
+        END,
+        lane_last_green_at = coalesce(i.lane_last_green_at, part.lane_last_green_at),
+        updated_at         = i.updated_at
     """,
     "scan_runs": """
         repo_full_name         = i.repo_full_name,

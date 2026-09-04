@@ -64,7 +64,7 @@ export function PromoteButton({
 
   if (result) {
     return (
-      <p className="max-w-prose font-mono text-[10px] text-pass">
+      <p className="max-w-prose font-mono text-[12px] text-pass">
         Promoted to {result.to_tier}. {result.note}
         {result.reasons_withheld > 0 ? (
           <span className="text-ink-3">
@@ -83,13 +83,13 @@ export function PromoteButton({
         type="button"
         onClick={approve}
         disabled={busy}
-        className={`self-start border border-accent px-1.5 py-0.5 font-mono text-[9px] text-accent ${
+        className={`self-start border border-accent px-1.5 py-0.5 font-mono text-[11px] text-accent ${
           busy ? "opacity-40" : "hover:bg-accent hover:text-paper"
         }`}
       >
         {busy ? "promoting…" : `promote to ${toTier}`}
       </button>
-      {error ? <p className="font-mono text-[9px] text-critical">{error}</p> : null}
+      {error ? <p className="font-mono text-[11px] text-critical">{error}</p> : null}
     </div>
   );
 }
