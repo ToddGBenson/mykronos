@@ -548,7 +548,7 @@ defect: two rankings on one estate disagree about which inputs exist.
 
 ---
 
-### B-050 — Six live TheHub vulnerabilities, verified against `develop`
+### B-050 — Eight live TheHub findings, verified against `develop`
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -643,6 +643,47 @@ internet-facing and holds personal financial data. `music.js:3968`, flagged by
 the neighbouring `raw-html-format` rule, is the counter-example: it wraps every
 interpolation in `_esc()` and was dispositioned as a false positive.
 
+**7 — Production's CSP permits `'unsafe-inline'` for scripts (added 2026-09-03).**
+Measured on the wire against prod rather than read from the config, which is the
+check that matters (`curl -D - http://<prod>:8000/`):
+
+    content-security-policy: default-src 'self';
+      script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net ... ;
+      ... frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+
+The policy is otherwise well built — `frame-ancestors 'none'`, `base-uri 'self'`
+and `form-action 'self'` are all present and all correct, and the full header set
+(HSTS, `X-Frame-Options: DENY`, `nosniff`, Referrer-Policy, Permissions-Policy) is
+served on every response. `'unsafe-inline'` in `script-src` is the one line that
+undoes the part that matters here: **it is exactly the defence that would have
+contained findings 5 and 6.** An injected `<script>` or inline handler arriving
+through one of the three unescaped `insertAdjacentHTML` interpolations executes,
+because the policy permits inline script. The two findings are individually
+survivable and compound badly.
+
+Removing it needs the inline handlers in the dashboard JS to move to
+`addEventListener`, or a nonce — the second is cheaper against a codebase this
+size. Note `img-src` also ends in a bare `*`, which is a smaller matter but
+undoes the rest of that directive.
+
+**A correction worth keeping.** This started as "TheHub serves no security
+headers", read from `nginx/conf.d/default.conf`, which declares none. That
+conclusion was wrong about production: **nginx is the staging frontend**
+(`thehub-staging-frontend`, `nginx:alpine`, `:8081`), and prod is
+`thehub-backend` serving HTML directly on `:8000` with the FastAPI middleware at
+`backend/main.py:464-492` applying the full set. What is true is narrower and
+still worth recording — **staging serves none at all**, confirmed on the wire, so
+staging and production do not share a security posture and any scan pointed at
+staging measures something production is not.
+
+**8 — Dependabot has no cooldown.** `.github/dependabot.yml` configures four
+ecosystems and not one declares `cooldown:`, so a newly published version is
+eligible for an automatic PR the day it appears. That is the window the recent
+registry compromises used: publish a malicious release, get auto-PR'd within
+hours, merged by a green pipeline. These four findings are **left open** rather
+than dispositioned, because unlike the other 39 mediums read today they name a
+real gap with a few lines of YAML as the fix.
+
 **Also worth carrying:** the two nginx findings were accepted rather than
 dismissed on the same reasoning. `proxy_set_header Host $host` is safe only
 because no handler in TheHub builds a URL from the request host today — a
@@ -659,6 +700,10 @@ properties of the current code, not of the proxy.
 - `data_hash` is either verified on read or its docstring stops claiming
   integrity.
 - The three unescaped interpolations are wrapped in `escapeHtml()`.
+- `'unsafe-inline'` leaves `script-src`, via a nonce or by moving inline
+  handlers to `addEventListener`.
+- `.github/dependabot.yml` declares a `cooldown` on all four ecosystems.
+- Staging serves the same header set as production, or it is recorded why not.
 - The four findings close on two consecutive successful scans — which requires
   B-045 first, since the lane cannot currently see `develop` at all.
 
