@@ -1132,9 +1132,9 @@ express it.
 
 ---
 
-### B-057 — An in-range SDK upgrade took TheHub's whole test suite down, and with it every scan
+### B-057 — A pin guarded by a comment, raised anyway — **done upstream**
 
-**Size:** S **State:** open **Verified:** 2026-09-04
+**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-04 (TheHub #281)
 
 `thehub/unit` #85, the first build after the pipeline moved to `develop`, failed
 in 4m34s without running a single test:
@@ -1144,45 +1144,55 @@ in 4m34s without running a single test:
     TypeError: Invalid `http_client` argument; Expected an instance of
       `httpx2.AsyncClient` but got <class 'httpx.AsyncClient'>
 
-The `anthropic` SDK has moved to `httpx2`. TheHub pins
-`anthropic>=1.0.0,<2.0` and `httpx>=0.28.1,<0.29`, so an in-range upgrade of the
-first is incompatible with the pin on the second. It fails at **conftest
-import**, so collection never happens and the failure is total rather than
-partial.
+**The cause was not a loose range.** `backend/requirements.txt` pinned
+`anthropic>=0.40.0,<1.0` under eleven lines of comment explaining why the bound
+must not move on its own, ending "Raise a bound only together with the matching
+call site in services/ai/." Dependabot #267 raised it to `>=1.0.0,<2.0` and the
+PR merged. **The comment survived; the pin it was guarding did not** — and this
+was the second occurrence of the same failure.
 
-**The blast radius is the whole repository's security scanning.** Every scan
-lane carries `passed: [unit]`, so while this holds, `secrets`, `sast`,
-`dependencies`, `iac`, `prompt-evals`, `build` and `containers` never start.
-TheHub is unscanned again — for the third distinct reason in two weeks, after
-the ingestion token (B-024) and the promotion-gate regression (B-055). None of
-the three was a scanner problem.
+**1.x breaks two things, and the first diagnosis here found only one.** Measured
+upstream against anthropic 1.3.0 rather than assumed:
 
-**This is B-050's dependabot finding arriving before anybody acted on it.** That
-entry notes `.github/dependabot.yml` declares no `cooldown` on any of its four
-ecosystems, so a newly published version is eligible for an automatic PR the day
-it appears. A wide range plus no cooldown is how an in-range breaking change
-reaches a build unannounced.
+    AsyncAnthropic(http_client=httpx.AsyncClient(...))   -> TypeError, at import
+    messages.create(..., temperature=0.3)                -> unexpected kwarg,
+                                                            on all four call sites
 
-**Not caused by moving to `develop`, and worth being exact.** `main` last passed
-`unit` on 2026-08-27 and has not been rebuilt since, so it has never met this
-version of the SDK. The branch change did not break the suite; it revealed that
-`develop` had been broken and nothing was running there to notice. That is
-B-046 again — a lane that reports nothing looks identical to one with nothing to
-report.
+The first is what #85 hit; the second would not have surfaced until a Claude
+call ran. A fix addressing only the first — passing `timeout=` and letting the
+SDK own its client — was drafted here and **abandoned**, because it would have
+made collection succeed while every Claude call failed at runtime. A green build
+over a broken service is worse than the red build it replaces.
 
-**Acceptance criteria**
+**Fixed upstream by TheHub #281**: revert the pin to `<1.0`, and turn the guard
+comment into `backend/tests/unit/test_sdk_pins_match_their_call_sites.py`, which
+asserts the coupling in both directions — move the pin without migrating the
+call sites and it fails; migrate the call sites and it tells you the pin may
+move. Their reasoning is the durable part: *a comment cannot fail a build.*
 
-- `anthropic` is pinned to a version compatible with the `httpx` pin, or the
-  conftest constructs the client the way the installed SDK expects.
-- `thehub/unit` goes green on `develop`, and the six lanes behind it record a
-  run.
-- `.github/dependabot.yml` gains a `cooldown` (B-050), so the next in-range
-  break arrives as a PR to review rather than as a red build.
+**What still stands from the original entry.** The blast radius was real: every
+scan lane carries `passed: [unit]`, so while this held, TheHub was not scanned at
+all — the third distinct cause in two weeks, after the ingestion token (B-024)
+and the promotion-gate regression (B-055), none of them a scanner problem. And
+moving to `develop` did not break this: `main` last passed `unit` on 2026-08-27
+and had never met the SDK, so the branch change revealed a break that was
+already there with nothing running to notice it (B-046).
+
+**What does not stand.** The original entry blamed a wide range plus B-050's
+missing dependabot `cooldown`. A cooldown would have delayed this, not prevented
+it — the range was *narrow* and correct, and the bot widened it. B-050's
+cooldown point is still worth doing and is not the mechanism here.
+
+**One note for the history.** The upstream entry records the bad pin as merging
+"in PR #276..#279". **#279 is this assessment's own re-export PR.** It did not
+introduce the pin, but it merged inside that window, so a reader bisecting the
+range will land on it.
 
 **Provenance:** DevSecOps assessment, 2026-09-04, from the first build after
-B-045 closed. Found because the reporting refactor landed the same day: this is
+B-045 closed. Found because the reporting refactor landed the same day: this was
 the first failed Concourse run TheHub has ever recorded — `Reported
 integration_tests=failed` — where before, a failed lane said nothing at all.
+Corrected the same day after finding #281 had already landed a better fix.
 
 ---
 
