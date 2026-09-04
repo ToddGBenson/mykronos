@@ -991,6 +991,58 @@ credentials in two more places: kaniko's `--destination` push, and the host's
 `docker login` before it pulls. Both can resolve from Vault, which already
 holds every other credential this pipeline uses.
 
+**The rule, and the measurement that makes it safe (2026-09-04).** The worry
+with a LAN-scoped block is that it also cuts the build, because Concourse
+pushes to the *LAN* address — `set-thehub-pipeline.ps1:115` sets
+`$Registry = "192.168.0.14:5000"`. Measured rather than assumed: a container on
+the concourse network was pointed at that address and the registry's own log
+recorded who called.
+
+    $ docker run --rm --network mykronos-concourse_concourse \
+        curlimages/curl:8.11.1 -sS http://192.168.0.14:5000/v2/     -> 200
+
+    registry log:
+      http.request.host="192.168.0.14:5000"
+      http.request.remoteaddr="172.19.0.1:43438"
+
+**Container traffic arrives from `172.19.0.1`, the bridge gateway — not from
+the LAN.** The host's own pulls arrive from `::1` (visible in the same log, from
+the healthcheck). So a block scoped to the LAN leaves both paths untouched.
+
+The host's own address is excluded from the block as well, so anything on this
+machine that dials `192.168.0.14:5000` rather than `localhost` keeps working.
+Needs an elevated shell:
+
+    New-NetFirewallRule `
+      -DisplayName "Block registry 5000 from the LAN (B-054)" `
+      -Direction Inbound -Action Block -Protocol TCP -LocalPort 5000 `
+      -RemoteAddress 192.168.0.1-192.168.0.13,192.168.0.15-192.168.0.254 `
+      -Profile Any -Enabled True
+
+A Block rule rather than a narrowed Allow, because the port is currently
+reachable through a program-scoped "Docker Desktop Backend" allow rule on the
+Public profile, and in Windows Firewall a block beats an allow. There is no
+rule bound to port 5000 today; this is the first.
+
+**Verify both halves, because either alone is not the fix:**
+
+    # from ANOTHER host on the network - must fail
+    curl -m 5 http://192.168.0.14:5000/v2/_catalog
+
+    # from this host, via a container - must still be 200
+    docker run --rm --network mykronos-concourse_concourse \
+      curlimages/curl:8.11.1 -sS -o /dev/null -w '%{http_code}\n' \
+      http://192.168.0.14:5000/v2/
+
+    # and a real push
+    fly -t mykronos trigger-job -j thehub/build
+
+**The limit of this fix, stated.** It is scoped to `192.168.0.0/24`. Move this
+machine to another network and the registry is open again, silently. That is
+the argument for `REGISTRY_AUTH=htpasswd` as the durable answer — a firewall
+rule is a property of where the machine is plugged in, and authentication is a
+property of the registry.
+
 **Acceptance criteria**
 
 - `GET /v2/_catalog` from another host on the network fails, **and** a `build`
