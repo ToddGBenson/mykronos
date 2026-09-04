@@ -1624,6 +1624,22 @@ jobs:
           STAGE: trivy
           STATUS: success
           TARGET_ENV: prod
+  # **The promotion gate (#55167).** `insider` is the last job a version clears
+  # before `deploy-prod` becomes reachable, so its `passed:` list IS the gate.
+  # Until 2026-09-04 it named only `oracle-gate`, which made `api-inventory`,
+  # `dast-demo` and `functional-dast` siblings of the gate rather than part of
+  # it: they hang off `deploy-demo` and nothing downstream required them, so a
+  # commit whose demo DAST failed was still eligible for production. That is
+  # the 2026-08-20 state, where api-inventory failed builds #14-#19 while
+  # oracle-gate #20 went green and the version stayed promotable. A security
+  # scan that cannot stop a release is advisory decoration.
+  #
+  # `functional-dast` is deliberately NOT listed, and that is not an oversight.
+  # It is **paused** on the server under D-053 -- the active scan measured 548%
+  # CPU and 7 GiB and took production down -- and a `passed:` constraint on a
+  # paused job can never be satisfied. Listing it would not tighten the gate,
+  # it would close it permanently. It goes in the day the scan has a resource
+  # budget and comes off pause, and not before.
   - name: insider
     public: true
     serial_groups: [worker]
@@ -1632,7 +1648,7 @@ jobs:
     plan:
       - get: source
         trigger: true
-        passed: [oracle-gate]
+        passed: [oracle-gate, api-inventory, dast-demo]
       - get: python
       - *preflight
       - task: aegis

@@ -971,72 +971,77 @@ declared surface on `mykronos` with the catalog response as its evidence.
 
 ---
 
-### B-055 — A failed DAST cannot stop a deploy to TheHub's production
+### B-055 — The promotion gate was fixed in one repository and applied from another — **half done**
 
-**Size:** M **State:** open **Verified:** 2026-09-03
+**Size:** M **State:** open **Verified:** 2026-09-04
 
-Computing the transitive `passed:` closure of `deploy-prod` over
-`deploy/concourse/pipelines/thehub.yml` — the copy this repository applies —
-gives eleven jobs:
+**The applied pipeline let a failed security scan promote to production, and had
+done since #55167 was "fixed".**
 
-    build, containers, dependencies, deploy-demo, iac, insider,
-    oracle-gate, prompt-evals, sast, secrets, unit
+Three copies of TheHub's pipeline existed and two of them disagreed:
 
-**`api-inventory`, `dast-demo` and `functional-dast` are not among them.** All
-three hang off `deploy-demo` as *siblings* of `oracle-gate`, so nothing
-downstream requires them. A commit whose demo DAST failed, whose functional
-suite failed, or whose API surface drifted is still eligible for
-`deploy-prod`.
+| copy | `insider.passed` | gates prod on the scans? |
+|---|---|---|
+| TheHub `main` (`7197a028`) | `[api-inventory, dast-demo, oracle-gate]` | yes |
+| TheHub `develop` | `[oracle-gate]` | **no — regressed** |
+| **this repo's copy, which is what gets applied** | `[oracle-gate]` | **no** |
+| live, from `fly get-pipeline` | `[oracle-gate]` | **no** |
 
-**TheHub already knows, and its alarm is ringing.**
-`backend/tests/unit/scripts/test_pipeline_promotion_gate.py` was written after
-incident #55167 to assert exactly this cannot happen, and it reads the pipeline
-YAML and fails:
+So the #55167 fix landed in TheHub's repository and **never reached the pipeline
+that runs**. `api-inventory`, `dast-demo` and `functional-dast` hung off
+`deploy-demo` as siblings of the gate rather than parts of it, and a commit whose
+demo DAST failed stayed eligible for `deploy-prod`. That is the 2026-08-20 state
+the guard test names — api-inventory failed builds #14-#19 while oracle-gate #20
+went green — still live on 2026-09-04. This is D-081 with a security
+consequence: the applied pipeline is the one that governs, and nothing compared
+it to the repository that fixed it.
 
-    test_promotion_requires_the_api_inventory_to_have_passed          FAILED
-    test_promotion_requires_the_demo_security_scan_to_have_passed     FAILED
-    test_the_2026_08_20_state_can_no_longer_reach_prod                FAILED
-      AssertionError: a version that failed api-inventory can still reach
-      deploy-prod — this is exactly the 2026-08-20 state
+**Fixed and applied 2026-09-04.** This repo's copy now reads
+`passed: [oracle-gate, api-inventory, dast-demo]`, verified live:
 
-Its own docstring is careful about what is and is not true here — it records
-that the original story's premise ("oracle-gate has no `passed:` on unit") was
-wrong, and that the real finding is narrower: those three are siblings. The
-narrower finding is the one that is still live.
+    LIVE insider.passed = ['api-inventory', 'dast-demo', 'oracle-gate']
+    LIVE gate (13 jobs): api-inventory, build, containers, dast-demo,
+      dependencies, deploy-demo, iac, insider, oracle-gate, prompt-evals,
+      sast, secrets, unit
 
-**The second half, and why this was invisible.** Every scan lane carries
-`passed: [unit]` — `secrets`, `sast`, `dependencies`, `iac`, `prompt-evals`,
-and `build` (and so `containers`) too. So a branch whose unit suite is red
-receives **zero** security scanning. Not degraded, not partial: the lanes never
-start, which produces no failure to notice — a silent lane by construction.
+`functional-dast` is deliberately excluded and the reason is now in the file, as
+the guard test requires: it is **paused** under D-053, and a `passed:` on a
+paused job can never be satisfied — listing it would close promotion
+permanently rather than tighten it.
 
-That is not theoretical. A one-off scan of `develop` was applied on 2026-09-03
-to answer B-045, and produced exactly one scan run: `unit`, failed, 0 findings.
-**12 of 7664 tests failed, and all twelve are the promotion-gate guards above.**
-So the defect in the gate is, through `passed: [unit]`, the reason no scan of
-`develop` can run — the alarm about the gate is what silences the scanners.
+All six of `test_pipeline_promotion_gate.py`'s gate assertions were replayed
+against this copy and pass.
 
-**This changes B-045's fix.** Repointing the pipeline at `develop` does not by
-itself unfreeze anything; while those twelve are red, `develop` gets nothing.
-The order is: fix the promotion gate, unit goes green, then the branch question
-matters.
+**What is left, and it is not this repository's to fix.**
+
+1. **TheHub's `develop` still carries the regression.** Its twelve red tests are
+   the guard working exactly as designed — catching a regression before it
+   reaches `main`. The fix is the same one-line change in
+   `concourse/pipelines/thehub.yml` there.
+2. **Until those twelve are green, `develop` cannot be scanned at all**, because
+   every scan lane carries `passed: [unit]`. That half of this entry stands: a
+   branch with a red suite receives zero security scanning, silently, and it is
+   why the one-off `develop` scan on 2026-09-03 produced a single run — unit,
+   failed, 0 findings. B-045's fix therefore still waits on this.
+3. **Nothing reconciles the two copies.** `scripts/check_applied_pipelines.py`
+   (D-081) compares the applied pipeline to *this* repository's file; it cannot
+   see that TheHub's own copy has moved ahead. That gap is what let a fix exist
+   and not take effect for two weeks.
 
 **Acceptance criteria**
 
-- `api-inventory`, `dast-demo` and `functional-dast` are upstream of
-  `deploy-prod`, or a decision records why a failed DAST may promote.
-- `test_pipeline_promotion_gate.py` passes against this repository's copy of the
-  pipeline, since that is the copy that gets applied.
-- The two copies are reconciled — `scripts/check_applied_pipelines.py` (D-081)
-  exists for this and should be run as part of the fix.
+- ~~`api-inventory` and `dast-demo` are upstream of `deploy-prod` in the applied
+  pipeline.~~ Done 2026-09-04.
+- TheHub's `develop` copy matches, and its twelve promotion-gate tests pass.
+- A check compares TheHub's copy against this repository's, not just the applied
+  pipeline against this one — the direction that was missing.
 - A scan lane that cannot run because an upstream job failed is distinguishable
   in the briefing from one that is merely silent.
 
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Found by
-applying `set-thehub-pipeline.ps1 -Branch develop -Pause` with `deploy-demo`,
-`deploy-prod` and `remediate` pinned off so the run could only scan, then
-reading why nothing scanned. The pipeline was restored to `main` and those jobs
-unpaused afterwards.
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); corrected and
+half-closed 2026-09-04. The first version of this entry said the gate had never
+been wired; it had, on TheHub's `main`, and the real defect was that the applied
+copy never received it.
 
 ---
 
