@@ -71,7 +71,7 @@ groups:
   - name: quality
     jobs: [unit, qa, prompt-evals]
   - name: security
-    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture]
+    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture, dast-staging]
   - name: build
     jobs: [build, containers]
   - name: demo
@@ -268,15 +268,32 @@ anchors:
   #
   # Never fails the build. A lifecycle that did not hear about a deploy is a
   # reporting problem; failing the deploy over it would turn it into an outage.
+  # The constant half of a report. STAGE, STATUS and TARGET_ENV vary per use
+  # and are merged onto this at each call site, the same way `mykronos_env` is
+  # merged into a task's params. Without this every one of the eighty-odd hooks
+  # below would restate three credentials.
+  hub_params: &hub_params
+    HUB_URL: ((thehub-url))
+    HUB_DEPLOY_TOKEN: ((hub-deploy-token))
+    SCANNED_BRANCH: ((thehub-branch))
+
   hub_report: &hub_report
     task: report-to-hub
-    image: python
     # PS-7. A hook that hangs holds the single worker exactly as a scan does,
     # and this one is one curl. Five minutes is a ceiling, not a budget.
     timeout: 5m
     config:
       platform: linux
-      inputs: [{ name: source }]
+      # Self-contained rather than `image: python`, and `source` optional
+      # rather than required. Both exist because this runs as a JOB-LEVEL HOOK
+      # now, not as a plan step: a job that dies before `get: python` has no
+      # python image to run a task on, and one that dies before `get: source`
+      # has no source to mount. A hook that cannot start reports nothing, which
+      # is the exact failure this task was moved to hooks to fix.
+      image_resource:
+        type: registry-image
+        source: { repository: python, tag: "3.14-slim" }
+      inputs: [{ name: source, optional: true }]
       run:
         path: bash
         args:
@@ -289,8 +306,12 @@ anchors:
             fi
             apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null 2>&1
 
-            SHA=$(git -C source rev-parse HEAD)
-            MSG=$(git -C source log -1 --pretty=%s)
+            # Guarded, because the early failures are the ones worth reporting
+            # and they are exactly the ones with no `source` on disk. An
+            # unguarded rev-parse here drops the report for every job that died
+            # before its checkout landed.
+            SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
+            MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo unknown)
 
             BODY=$(jq -nc \
               --arg d "$SHA" --arg s "$STAGE" --arg st "$STATUS" \
@@ -416,8 +437,24 @@ jobs:
   - name: unit
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: integration_tests, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: integration_tests, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -455,7 +492,14 @@ jobs:
         # minutes of that half-hour is testing; the rest is pip. The cap has to
         # cover a cold install or the cache can never come back, and every run
         # after it is minutes.
-        timeout: 60m
+        #
+        # [#55173] 60m -> 90m. Measured over 71 runs longer than five minutes:
+        # mean 21.7, p95 52.1, max 66.2 minutes. The old 60m cap sat BELOW the
+        # observed maximum, so the slow tail was a coin flip, and build #75
+        # lost three real failures to it. 90m is p95 x 1.7 and clears the max.
+        # There is also a 70m soft timeout inside the task -- see the pytest
+        # step -- so a slow run reports rather than being killed silently.
+        timeout: 90m
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -897,9 +941,45 @@ jobs:
                 # TheHub's tests never ran. The exit code is recovered after
                 # the upload: a failing suite must still report.
                 mkdir -p /tmp/results
+
+                # [#55173] A SOFT timeout below Concourse's hard one.
+                #
+                # Build #75 was killed by the 60m cap at 62 minutes having
+                # already observed three failures. A hard kill takes the task
+                # down before --junitxml is written, so the run produced no
+                # verdict whatsoever - worse than a red build, because nobody
+                # can tell a slow suite from a broken one.
+                #
+                # `timeout -s INT` sends SIGINT, which Python raises as
+                # KeyboardInterrupt and pytest handles: it stops, tears down,
+                # and WRITES THE REPORT for everything that finished. The
+                # remaining 20 minutes before the hard cap are for the upload.
+                SOFT_TIMEOUT_S=4200   # 70m
                 rc=0
-                python -m pytest tests/unit -q -p no:cacheprovider \
-                  --junitxml=/tmp/results/unit.xml || rc=$?
+                started=$(date +%s)
+                if command -v timeout >/dev/null 2>&1; then
+                  timeout -s INT "${SOFT_TIMEOUT_S}s" \
+                    python -m pytest tests/unit -q -p no:cacheprovider \
+                    --junitxml=/tmp/results/unit.xml || rc=$?
+                else
+                  # Stated rather than silently skipped: without coreutils
+                  # there is no soft timeout and the hard cap is all there is.
+                  echo "::warning::the timeout command is unavailable - no soft timeout; a slow run will be killed without a verdict"
+                  python -m pytest tests/unit -q -p no:cacheprovider \
+                    --junitxml=/tmp/results/unit.xml || rc=$?
+                fi
+                elapsed=$(( $(date +%s) - started ))
+
+                TIMED_OUT=false
+                if [ "$elapsed" -ge "$SOFT_TIMEOUT_S" ]; then
+                  TIMED_OUT=true
+                  echo "=================================================="
+                  echo "UNIT SUITE HIT THE ${SOFT_TIMEOUT_S}s SOFT TIMEOUT after ${elapsed}s."
+                  echo "The results below are PARTIAL - they cover the tests"
+                  echo "that finished, not the whole suite. A pass here is not"
+                  echo "evidence the suite passes."
+                  echo "=================================================="
+                fi
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -913,6 +993,14 @@ jobs:
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false || true
 
+                # [#55173] 124 distinguishes "ran out of time" from "tests
+                # failed". #75 reported neither: an errored build carries no
+                # verdict, so three real failures read the same as a crash.
+                # The junit above has already been uploaded either way.
+                if [ "$TIMED_OUT" = true ]; then
+                  echo "::error::unit suite exceeded its ${SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
+                  exit 124
+                fi
                 exit "$rc"
 
   # == Stage 2: build =======================================================
@@ -920,15 +1008,6 @@ jobs:
   # Tagged with the commit SHA and nothing else. No `latest`: a floating tag is
   # how an environment ends up running something nobody chose, and every deploy
   # job below names an exact SHA for that reason.
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: integration_tests
-          STATUS: success
-          TARGET_ENV: prod
   # -- QA: the capability this pipeline offered and never produced --------
   #
   # PS-5. `qa` is one of the fifteen capabilities in the standard set, the
@@ -950,8 +1029,24 @@ jobs:
   - name: qa
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: junit, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: junit, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: junit, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: junit, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -995,12 +1090,27 @@ jobs:
                   --severity-threshold low --blocking false || true
 
                 exit "$rc"
-
   - name: build
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: package_artifact, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: package_artifact, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1067,22 +1177,27 @@ jobs:
   # composite action calls. `--workspace` is not optional: without it findings
   # record the worker's absolute paths, which are not clickable and, because
   # identity derives from the path, change every time the checkout moves.
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: package_artifact
-          STATUS: success
-          TARGET_ENV: prod
-
-
   - name: secrets
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: gitleaks, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: gitleaks, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1151,12 +1266,27 @@ jobs:
                   echo "::error::gitleaks exited $rc - a scan failure, not a result."
                   exit "$rc"
                 fi
-
   - name: sast
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: semgrep, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: semgrep, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1236,12 +1366,27 @@ jobs:
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
-
   - name: dependencies
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1490,12 +1635,27 @@ jobs:
 
       - put: sbom
         params: { file: sbom-out/sbom-*.cdx.json }
-
   - name: containers
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: trivy, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: trivy, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1616,23 +1776,47 @@ jobs:
   # is the whole explanation; the short version is that Concourse sees a branch
   # and Aegis is built around a `pull_request`, so the missing context is
   # recovered by asking GitHub which pull request introduced this commit.
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: trivy
-          STATUS: success
-          TARGET_ENV: prod
+  # **The promotion gate (#55167).** `insider` is the last job a version clears
+  # before `deploy-prod` becomes reachable, so its `passed:` list IS the gate.
+  # Until 2026-09-04 it named only `oracle-gate`, which made `api-inventory`,
+  # `dast-demo` and `functional-dast` siblings of the gate rather than part of
+  # it: they hang off `deploy-demo` and nothing downstream required them, so a
+  # commit whose demo DAST failed was still eligible for production. That is
+  # the 2026-08-20 state, where api-inventory failed builds #14-#19 while
+  # oracle-gate #20 went green and the version stayed promotable. A security
+  # scan that cannot stop a release is advisory decoration.
+  #
+  # `functional-dast` is deliberately NOT listed, and that is not an oversight.
+  # It is **paused** on the server under D-053 -- the active scan measured 548%
+  # CPU and 7 GiB and took production down -- and a `passed:` constraint on a
+  # paused job can never be satisfied. Listing it would not tighten the gate,
+  # it would close it permanently. It goes in the day the scan has a resource
+  # budget and comes off pause, and not before.
   - name: insider
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: insider_risk, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: insider_risk, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: insider_risk, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: insider_risk, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
-        passed: [oracle-gate]
+        passed: [oracle-gate, api-inventory, dast-demo]
       - get: python
       - *preflight
       - task: aegis
@@ -1799,19 +1983,26 @@ jobs:
   # After every security lane, never alongside them. Oracle scores the whole
   # picture (spec 09 section 8); gating on a partial one produces a decision
   # the next finding invalidates.
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: insider_risk
-          STATUS: success
-          TARGET_ENV: prod
   - name: oracle-gate
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -1939,19 +2130,26 @@ jobs:
                 fi
 
   # == Stage 5: deliver to demo =============================================
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: oracle_gate
-          STATUS: success
-          TARGET_ENV: prod
   - name: deploy-demo
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_staging, STATUS: success, TARGET_ENV: staging }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_staging, STATUS: failed, TARGET_ENV: staging }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_staging, STATUS: errored, TARGET_ENV: staging }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_staging, STATUS: aborted, TARGET_ENV: staging }
     plan:
       - get: source
         trigger: true
@@ -2033,15 +2231,6 @@ jobs:
   # than an attack, but the boundary is worth being explicit about because it
   # is the one people erode first: attack traffic against production is a
   # decision with an incident report attached, not a pipeline setting.
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: deploy_staging
-          STATUS: success
-          TARGET_ENV: staging
   # -- Prompt evals: the AI quality gate (spec 16 section 14) --------------
   #
   # TheHub's prompts are code. `backend/prompts/<feature>/main.<v>.md` drives
@@ -2085,8 +2274,24 @@ jobs:
   - name: iac
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: checkov, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: checkov, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -2181,13 +2386,27 @@ jobs:
                     --commit-sha "$(git -C source rev-parse HEAD)" \
                     --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                     --severity-threshold low --blocking false
-
-
   - name: prompt-evals
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -2305,15 +2524,6 @@ jobs:
                   exit "$rc"
                 fi
                 echo "Prompt evals passed: $TAIL"
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: prompt_evals
-          STATUS: success
-          TARGET_ENV: prod
   # -- The API inventory is a contract, not a document ---------------------
   #
   # docs/api/inventory.json lists all ~1,739 operations The Hub exposes. It is
@@ -2332,8 +2542,24 @@ jobs:
   - name: api-inventory
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: api_inventory, STATUS: success, TARGET_ENV: demo }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: api_inventory, STATUS: failed, TARGET_ENV: demo }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: api_inventory, STATUS: errored, TARGET_ENV: demo }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: api_inventory, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
         trigger: true
@@ -2396,15 +2622,6 @@ jobs:
                 # Reported either way, then the inventory decides the job.
                 exit "$rc"
 
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: api_inventory
-          STATUS: success
-          TARGET_ENV: demo
-
   # -- Unauthenticated baseline DAST: Demo ----------------------------------
   #
   # zap-baseline.py is spider + passive rules only. It crawls the target and
@@ -2420,8 +2637,24 @@ jobs:
   - name: dast-demo
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: demo }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: demo }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: demo }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
         trigger: true
@@ -2549,15 +2782,6 @@ jobs:
                 }
                 echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against demo"
 
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: dast_headers
-          STATUS: success
-          TARGET_ENV: demo
-
   # -- Unauthenticated baseline DAST: Prod ----------------------------------
   #
   # zap-baseline.py is spider + passive rules only. It crawls the target and
@@ -2573,8 +2797,24 @@ jobs:
   - name: dast-prod
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -2702,14 +2942,152 @@ jobs:
                 }
                 echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against prod"
 
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: dast_headers
-          STATUS: success
-          TARGET_ENV: prod
+  # -- Unauthenticated baseline DAST: Staging -------------------------------
+  #
+  # Staging had never been scanned by anything. `dast-demo` targets
+  # ((thehub-demo-url)) and `dast-prod` targets ((thehub-url)); the standing
+  # staging environment on 8081 appears in neither, and a 2026-09-03 baseline
+  # run by hand found four rules with no counterpart anywhere in the lake --
+  # 10038 (no CSP), 10020 (no anti-clickjacking), 10021 (no
+  # X-Content-Type-Options) and 10036 (nginx version in the Server header).
+  # Production serves all of those correctly, so the two environments do not
+  # share a security posture and a result from one does not describe the other.
+  #
+  # **Time-triggered, not `passed:`, and that is the honest shape.** Staging is
+  # deployed out of band -- `thehub-staging-frontend` runs nginx over a
+  # locally-built `thehub-main-backend-staging` image, put there by TheHub's own
+  # deploy.sh rather than by this pipeline. There is no upstream job here whose
+  # success means "staging now runs this commit", so gating on one would assert
+  # something untrue. `daily` says what this actually is: a standing environment
+  # checked on a clock.
+  #
+  # **What `commit_sha` means here, because it is weaker than elsewhere.** For
+  # dast-demo and dast-prod the sha is the commit the upstream deploy shipped.
+  # Staging's deployed sha is not knowable to this job: /health returns only
+  # {"status":"healthy"}, /api/version is authenticated, and the image is built
+  # off-pipeline. So this reports the tip of ((thehub-branch)) at scan time,
+  # which is "what the branch looked like when staging was scanned" and NOT
+  # "what staging is running". Read it that way. The fix is an unauthenticated
+  # build-sha endpoint -- the image already carries HUB_BUILD_SHA as an env var
+  # for exactly this class of question -- and until that exists, saying so here
+  # beats a sha that silently means something different from the two jobs above.
+  #
+  # **This job reports only `success` to TheHub, like every other job here, and
+  # that is a known defect rather than a choice.**
+  # `test_every_job_reports_all_four_terminal_states_per_stage` already fails
+  # over fifteen stages for it; adding this one makes sixteen. The cause is
+  # structural -- `on_failure` is spent on *slack_alert, and Concourse allows one
+  # per job, so reporting a failure to both needs a `do:` wrapper across every
+  # job at once. Fixing it here alone would leave the test just as red while
+  # making this job inconsistent with its two siblings. Tracked in B-055.
+  - name: dast-staging
+    public: true
+    serial_groups: [worker]
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: staging }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: staging }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: staging }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: staging }
+    plan:
+      - get: daily
+        trigger: true
+      - get: source
+      - get: python
+      - get: zap
+      - *preflight
+      # One task, for the same reason dast-demo uses one: Concourse creates
+      # output volumes root-owned and this image runs as the unprivileged `zap`
+      # user, so a separate upload task cannot read the report.
+      - task: zap-baseline
+        image: zap
+        timeout: 45m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          params:
+            <<: *mykronos_env
+            TARGET_URL: ((thehub-staging-url))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # Reachability first (L0001). Staging is deployed by hand, so
+                # "nobody has brought it up since the last reboot" is a normal
+                # state here in a way it is not for demo -- and an unreachable
+                # target produces an empty report that reads as a clean one.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                  exit 1
+                fi
+
+                # zap-baseline hardcodes /zap/wrk as its report directory and
+                # checks only that it exists; the image ships without it.
+                mkdir -p /zap/wrk
+
+                # -I: informational warnings do not fail the run -- the severity
+                # decision is Mykronos's. -m 5 bounds the spider.
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                # 0 = nothing, 1 = a FAIL, 2 = warnings. All are results.
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+
+                test -s /zap/wrk/zap.json || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+
+                pip install --quiet --user --break-system-packages \
+                  --no-warn-script-location \
+                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
+                  echo "::error::Could not install the Mykronos uploader."
+                  exit 1
+                }
+
+                # The source volume is root-owned and this task runs as `zap`,
+                # so git refuses it as dubious ownership; the git resource in
+                # this same build put it there, so marking it safe is correct.
+                git config --global --add safe.directory "$PWD/source"
+                COMMIT_SHA=$(git -C source rev-parse HEAD)
+
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::Could not determine the commit under scan."
+                  exit 1
+                }
+
+                python3 -m mykronos.upload \
+                  --capability dast --tool zap \
+                  --results-path /zap/wrk \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$COMMIT_SHA" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false || {
+                  echo "::error::Uploading the DAST findings to Mykronos failed."
+                  exit 1
+                }
+                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
 
   # -- Functional tests, then DAST seeded by their traffic -----------------
   #
@@ -2729,8 +3107,32 @@ jobs:
   - name: functional-dast
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: success, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: failed, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: errored, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: aborted, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -3052,25 +3454,6 @@ jobs:
                     --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                     --severity-threshold low --blocking false || true
 
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: functional
-          STATUS: success
-          TARGET_ENV: demo
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: dast_headers
-          STATUS: success
-          TARGET_ENV: prod
-
       # The functional suite's job in THIS lane is to seed ZAP with real
       # authenticated traffic, and it does that even when individual tests
       # fail -- a test that times out on assertion 3 has already driven
@@ -3109,12 +3492,26 @@ jobs:
                 else
                   echo "Functional suite passed cleanly through the proxy."
                 fi
-
-
   - name: deploy-prod
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         passed: [insider]
@@ -3197,19 +3594,26 @@ jobs:
   # The service principal needs Reader and Security Reader at subscription
   # scope and nothing else. A posture scanner with write access to the thing it
   # audits is a finding of its own.
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: finish
-          STATUS: success
-          TARGET_ENV: prod
   - name: cloud-posture
     public: true
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prowler, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prowler, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prowler, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: prowler, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: daily
         trigger: true
@@ -3335,8 +3739,24 @@ jobs:
   - name: remediate
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -3399,15 +3819,6 @@ jobs:
                   done
                 fi
 
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: auto_remediation
-          STATUS: success
-          TARGET_ENV: prod
-
 
   # -- AI model inventory and retirement check ------------------------------
   #
@@ -3448,12 +3859,27 @@ jobs:
   # inventory and explicitly not checked: this job holds no OpenAI credential
   # and there is no equivalent lookup here, so reporting them as fine would be
   # claiming a check that did not happen.
-
   - name: ai-models
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
-    on_error: *slack_alert
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: model_inventory, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: model_inventory, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: model_inventory, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: model_inventory, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
         trigger: true
@@ -3613,13 +4039,3 @@ jobs:
                   --severity-threshold low --blocking false || true
 
                 exit "$rc"
-
-      - <<: *hub_report
-        params:
-          HUB_URL: ((thehub-url))
-          HUB_DEPLOY_TOKEN: ((hub-deploy-token))
-          SCANNED_BRANCH: ((thehub-branch))
-          STAGE: model_inventory
-          STATUS: success
-          TARGET_ENV: prod
-

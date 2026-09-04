@@ -24,6 +24,12 @@ dependencies = [
     # an unrelated dependency bump.
     "pyyaml>=6.0",
     "httpx2>=2.9",
+    # XML that arrives from a runner is parsed again server-side by
+    # `mykronos reprocess`, and the stdlib parser expands internal entities:
+    # 320 bytes of declarations reach a million characters. A runtime
+    # dependency rather than a dev one because the adapters that use it ship
+    # in the backend image.
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +43,7 @@ dev = [
     # test, so it parallelises without touching a line of it.
     "pytest-xdist>=3.8",
     "types-PyYAML>=6.0",
+    "types-defusedxml>=0.7",
     "ruff>=0.7",
     "mypy>=1.13",
 ]
