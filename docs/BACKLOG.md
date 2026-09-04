@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Thirteen. **Six need the operator rather than code**: B-018 is a decision only
+Sixteen. **Eight need the operator rather than code**: B-018 is a decision only
 they can make, B-035 and B-043 each need a credential this repository must not
 hold, B-042 is a call about this repository's CI budget, B-044 is one
 permission grant that lights four built-and-waiting features, and B-052 is one
@@ -879,6 +879,164 @@ files, with no scanning of any kind. `atlas`, `sast` and `secrets` — matching
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Registration was
 attempted and the blocker found rather than predicted; the `pending_install` row
 is deliberate and accurate — it records intent and disappears when the PR merges.
+
+---
+
+### B-053 — The DAST scanner is seventeen months old and says so itself
+
+**Size:** XS **State:** open **Verified:** 2026-09-03
+
+`ZAP-10116-CWE-1104` — "ZAP is Out of Date" — is open twice against `mykronos`,
+and it is the scanner reporting on itself rather than on the application. It is
+right. `deploy/demo/docker-compose.yml:124` pins
+`ghcr.io/zaproxy/zaproxy:2.16.1`, published **2025-03-25**. The current stable
+release is **v2.17.0**, published **2025-12-15**.
+
+So the passive DAST lane has been running roughly nine months behind the current
+detection rules, and a scanner that cannot see a class of defect reports the same
+green as one that looked and found nothing. That is B-051's shape in a third
+form: after a lane pinned to a stale commit and a lane pointed at a language its
+tool cannot read, a lane running a tool too old to know what to look for.
+
+**Not a one-line bump, which is why this is an entry rather than a fix.** D-053
+paused ZAP's active scanning after it measured 548% CPU and 7 GiB and took
+production down; spec 32 §11 holds that posture until somebody replaces it with
+a measurement taken on a runner. Changing the version of the tool that caused
+that outage deserves the same care — the passive lane is what is running today,
+and a major-minor bump can change its resource profile.
+
+**Acceptance criteria**
+
+- Either the pin moves to 2.17.x with the demo lane's CPU and memory observed
+  across a run, or a decision is recorded that it stays where it is and why.
+- If it moves, the two `ZAP-10116` findings close on their own.
+- Whatever is decided, the version is pinned rather than floating — `:2.16.1` is
+  a deliberate pin and that part is right.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Left open rather
+than dispositioned during the sweep because it names a real gap; quantified here
+because "out of date" without a version and a date is not something anybody can
+act on.
+
+---
+
+### B-054 — The image registry the deploy path pulls from takes anonymous writes
+
+**Size:** S **State:** open **Verified:** 2026-09-03
+
+`mykronos-registry` (`registry:2`) listens on **0.0.0.0:5000**, plain HTTP, with
+**no `auth:` block in its configuration at all**. Read it back from the running
+container — `/etc/distribution/config.yml` declares `version`, `log`, `storage`,
+`http` and `health`, and nothing else. There is no authentication to fail.
+
+Anonymous read is demonstrable from any host on the network:
+
+    $ curl http://192.168.0.14:5000/v2/_catalog
+    {"repositories":["mykronos-backend","mykronos-frontend","thehub"]}
+
+**The write side is what makes this more than disclosure.** A registry with no
+`auth:` accepts pushes from anyone who can reach it, and something already runs
+what it serves: `thehub-demo-backend` is running
+`localhost:5000/thehub:7197a02837377eef0af70f14746102df33286de7` right now.
+Overwriting a tag that the demo or deploy path consumes is code execution on this
+host, from any device on the LAN, with no credential involved.
+
+**Contrast, which is why this reads as an oversight rather than a posture.** The
+same scan found MinIO on 9000 also LAN-reachable and correctly refusing an
+anonymous bucket listing with `403 AccessDenied`, and Vault absent from the LAN
+entirely (127.0.0.1 only), and the Mykronos API answering an unauthenticated
+request with `401` plus a full security header set. Everything else on this host
+is authenticated or loopback. The registry is the one thing that is neither.
+
+**No scanner in this platform could have found it.** It is not in a repository,
+so SAST, secrets and IaC never see it; it is not a dependency, so `containers`
+and `atlas` never see it; DAST scans applications, not a registry API. It took a
+port scan of the host, which is the capability the README records as **"Not
+started — the authorization model and the ingest path exist; no scanner does."**
+This is the argument for finishing that lane.
+
+**Acceptance criteria**
+
+- The registry requires authentication, or binds to 127.0.0.1 so only this host
+  reaches it. Binding is the smaller change and matches how Vault, Concourse and
+  the dashboard frontend are already published.
+- `GET /v2/_catalog` from another host on the network fails.
+- A decision is recorded either way, because a registry that is deliberately open
+  on a trusted LAN is a defensible position — it is just not one anybody has
+  stated.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
+service scan of 192.168.0.14 run at the operator's request. Recorded as a
+declared surface on `mykronos` with the catalog response as its evidence.
+
+---
+
+### B-055 — A failed DAST cannot stop a deploy to TheHub's production
+
+**Size:** M **State:** open **Verified:** 2026-09-03
+
+Computing the transitive `passed:` closure of `deploy-prod` over
+`deploy/concourse/pipelines/thehub.yml` — the copy this repository applies —
+gives eleven jobs:
+
+    build, containers, dependencies, deploy-demo, iac, insider,
+    oracle-gate, prompt-evals, sast, secrets, unit
+
+**`api-inventory`, `dast-demo` and `functional-dast` are not among them.** All
+three hang off `deploy-demo` as *siblings* of `oracle-gate`, so nothing
+downstream requires them. A commit whose demo DAST failed, whose functional
+suite failed, or whose API surface drifted is still eligible for
+`deploy-prod`.
+
+**TheHub already knows, and its alarm is ringing.**
+`backend/tests/unit/scripts/test_pipeline_promotion_gate.py` was written after
+incident #55167 to assert exactly this cannot happen, and it reads the pipeline
+YAML and fails:
+
+    test_promotion_requires_the_api_inventory_to_have_passed          FAILED
+    test_promotion_requires_the_demo_security_scan_to_have_passed     FAILED
+    test_the_2026_08_20_state_can_no_longer_reach_prod                FAILED
+      AssertionError: a version that failed api-inventory can still reach
+      deploy-prod — this is exactly the 2026-08-20 state
+
+Its own docstring is careful about what is and is not true here — it records
+that the original story's premise ("oracle-gate has no `passed:` on unit") was
+wrong, and that the real finding is narrower: those three are siblings. The
+narrower finding is the one that is still live.
+
+**The second half, and why this was invisible.** Every scan lane carries
+`passed: [unit]` — `secrets`, `sast`, `dependencies`, `iac`, `prompt-evals`,
+and `build` (and so `containers`) too. So a branch whose unit suite is red
+receives **zero** security scanning. Not degraded, not partial: the lanes never
+start, which produces no failure to notice — a silent lane by construction.
+
+That is not theoretical. A one-off scan of `develop` was applied on 2026-09-03
+to answer B-045, and produced exactly one scan run: `unit`, failed, 0 findings.
+**12 of 7664 tests failed, and all twelve are the promotion-gate guards above.**
+So the defect in the gate is, through `passed: [unit]`, the reason no scan of
+`develop` can run — the alarm about the gate is what silences the scanners.
+
+**This changes B-045's fix.** Repointing the pipeline at `develop` does not by
+itself unfreeze anything; while those twelve are red, `develop` gets nothing.
+The order is: fix the promotion gate, unit goes green, then the branch question
+matters.
+
+**Acceptance criteria**
+
+- `api-inventory`, `dast-demo` and `functional-dast` are upstream of
+  `deploy-prod`, or a decision records why a failed DAST may promote.
+- `test_pipeline_promotion_gate.py` passes against this repository's copy of the
+  pipeline, since that is the copy that gets applied.
+- The two copies are reconciled — `scripts/check_applied_pipelines.py` (D-081)
+  exists for this and should be run as part of the fix.
+- A scan lane that cannot run because an upstream job failed is distinguishable
+  in the briefing from one that is merely silent.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Found by
+applying `set-thehub-pipeline.ps1 -Branch develop -Pause` with `deploy-demo`,
+`deploy-prod` and `remediate` pinned off so the run could only scan, then
+reading why nothing scanned. The pipeline was restored to `main` and those jobs
+unpaused afterwards.
 
 ---
 
