@@ -312,7 +312,7 @@ repository must not hold.
 
 ---
 
-### B-045 — TheHub is scanned on a branch nobody merges to
+### B-045 — TheHub is scanned on a branch nobody merges to — **done**
 
 **Size:** S **State:** open **Verified:** 2026-09-03
 
@@ -353,6 +353,16 @@ re-deciding is the assumption, not the script.
 - If `develop`: the pipeline re-applied with `-Branch develop`, and a scan run
   recorded whose `commit_sha` is on `develop`.
 - The 330 frozen findings re-evaluated against a current commit.
+
+**Closed 2026-09-04.** The pipeline now watches `develop`. Getting there
+took more than re-pointing it: `unit` was red on `develop`, and every scan
+lane carries `passed: [unit]`, so the branch could not be scanned at all until
+the twelve promotion-gate tests went green (B-055, TheHub #278/#279). The
+branch question itself turned out to be forced rather than chosen — see B-056:
+a lane has no branch dimension, so scanning `develop` while gating `main` is
+not expressible, and the 2026-08-18 directive was the only option available.
+The accepted cost is that `deploy-demo` now auto-deploys `develop` to the demo
+environment; production is untouched, since `deploy-prod` carries no trigger.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
@@ -955,15 +965,40 @@ port scan of the host, which is the capability the README records as **"Not
 started — the authorization model and the ingest path exist; no scanner does."**
 This is the argument for finishing that lane.
 
+**Correction, 2026-09-04: do not bind this to 127.0.0.1.** The first version of
+this entry proposed exactly that, and it would take the build down. The
+exposure is load-bearing and the compose file says so at the service:
+"Published on all interfaces because garden task containers reach it by host
+IP; they cannot resolve Docker service names." Confirmed in the pipeline —
+`set-thehub-pipeline.ps1:115` sets `$Registry = "192.168.0.14:5000"` and the
+kaniko task pushes to `${REGISTRY}/thehub:${SHA}`. Concourse reaches this
+registry at the **LAN address**, so no bind address can serve the build without
+also serving the network. The proposed fix and the working pipeline were
+mutually exclusive, which is worth more than the finding it was attached to.
+
+**Two fixes that actually work, in increasing order of effort.**
+
+*Firewall scope.* Concourse's garden containers arrive from the Docker bridge
+subnets, not from the LAN. On this host those are `172.17.0.0/16` (bridge),
+`172.19.0.0/16` (concourse), and `172.18/20/21/22/24.0.0/16` for the
+application stacks. A host rule permitting 5000 from `172.16.0.0/12` and
+loopback and denying it elsewhere closes LAN access with the build path intact.
+It is one rule and it changes no configuration any service reads.
+
+*Authentication.* `registry:2` takes `REGISTRY_AUTH=htpasswd`, which is the
+defence-in-depth version and survives a machine moving networks. It costs
+credentials in two more places: kaniko's `--destination` push, and the host's
+`docker login` before it pulls. Both can resolve from Vault, which already
+holds every other credential this pipeline uses.
+
 **Acceptance criteria**
 
-- The registry requires authentication, or binds to 127.0.0.1 so only this host
-  reaches it. Binding is the smaller change and matches how Vault, Concourse and
-  the dashboard frontend are already published.
-- `GET /v2/_catalog` from another host on the network fails.
-- A decision is recorded either way, because a registry that is deliberately open
-  on a trusted LAN is a defensible position — it is just not one anybody has
-  stated.
+- `GET /v2/_catalog` from another host on the network fails, **and** a `build`
+  job still pushes successfully. Both, or the change is not done.
+- Whichever route is taken, the compose comment stops saying the exposure is
+  required, because after the firewall rule it is required only from 172.16/12.
+- A decision is recorded either way: a registry deliberately open on a trusted
+  LAN is a defensible position, it is just not one anybody has stated.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
 service scan of 192.168.0.14 run at the operator's request. Recorded as a
@@ -1042,6 +1077,122 @@ against this copy and pass.
 half-closed 2026-09-04. The first version of this entry said the gate had never
 been wired; it had, on TheHub's `main`, and the real defect was that the applied
 copy never received it.
+
+---
+
+### B-056 — A lane is a repository and a capability, with no room for a branch
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+Lane health groups by capability alone (`dashboard.py:2124`):
+
+    SELECT capability, max(coalesce(completed_at, started_at))
+    FROM scan_runs
+    WHERE repo_full_name = ?  GROUP BY capability
+
+`scan_runs` carries a `branch` column and nothing reads it here. So a
+repository cannot have two branches scanned under one capability: both write to
+the same lane, and since closure requires two consecutive successful scans that
+no longer observe a finding (spec 05 §5), alternating branches flip findings
+between open and fixed depending on which tree ran last. That is B-048's defect
+— two producers, one lane — arrived from a different direction.
+
+**It forces an either/or that is not a real one.** TheHub's pipeline both
+*scans* and *gates*: `deploy-demo` requires
+`passed: [secrets, sast, dependencies, containers, prompt-evals, iac]`, and
+Concourse's `passed:` constrains versions of the resource being fetched, so a
+job cannot be gated on `unit`-of-main while fetching `develop`. Scanning
+therefore follows whichever branch the deploy path follows.
+
+The right answer — **scan `develop` because that is where the code is, gate
+deploys on `main` because that is what ships** — needs a second scan lane, and a
+second scan lane on the same capability is the collision above. So the 2026-08-18
+directive was not a preference; it was the only expressible option.
+
+**What was chosen instead, on 2026-09-04:** point the whole pipeline at
+`develop`. One producer per lane, no collision, and scanning follows the code.
+The cost is the one the directive named — `deploy-demo` now auto-deploys
+`develop` to the demo environment and can race `deploy.sh`. Production is
+unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
+
+**Acceptance criteria**
+
+- Lane health, and the two-consecutive-scans closure rule, are evaluated per
+  `(repo, capability, branch)` rather than per `(repo, capability)`.
+- A repository can declare which branch a capability's lane is *expected* on, so
+  a scan of another branch is recorded without disturbing that lane's health.
+- With that in place, TheHub can scan `develop` and gate `main` at once, and the
+  either/or above stops being one.
+- B-048 is re-read against this: mykronos's duplicate IaC findings are the same
+  defect with two CIs instead of two branches.
+
+**Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
+implement "scan develop, deploy from main" and discovering the platform cannot
+express it.
+
+---
+
+### B-057 — A pin guarded by a comment, raised anyway — **done upstream**
+
+**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-04 (TheHub #281)
+
+`thehub/unit` #85, the first build after the pipeline moved to `develop`, failed
+in 4m34s without running a single test:
+
+    ImportError while loading conftest '.../backend/tests/conftest.py'
+    anthropic/_base_client.py:1686: in __init__
+    TypeError: Invalid `http_client` argument; Expected an instance of
+      `httpx2.AsyncClient` but got <class 'httpx.AsyncClient'>
+
+**The cause was not a loose range.** `backend/requirements.txt` pinned
+`anthropic>=0.40.0,<1.0` under eleven lines of comment explaining why the bound
+must not move on its own, ending "Raise a bound only together with the matching
+call site in services/ai/." Dependabot #267 raised it to `>=1.0.0,<2.0` and the
+PR merged. **The comment survived; the pin it was guarding did not** — and this
+was the second occurrence of the same failure.
+
+**1.x breaks two things, and the first diagnosis here found only one.** Measured
+upstream against anthropic 1.3.0 rather than assumed:
+
+    AsyncAnthropic(http_client=httpx.AsyncClient(...))   -> TypeError, at import
+    messages.create(..., temperature=0.3)                -> unexpected kwarg,
+                                                            on all four call sites
+
+The first is what #85 hit; the second would not have surfaced until a Claude
+call ran. A fix addressing only the first — passing `timeout=` and letting the
+SDK own its client — was drafted here and **abandoned**, because it would have
+made collection succeed while every Claude call failed at runtime. A green build
+over a broken service is worse than the red build it replaces.
+
+**Fixed upstream by TheHub #281**: revert the pin to `<1.0`, and turn the guard
+comment into `backend/tests/unit/test_sdk_pins_match_their_call_sites.py`, which
+asserts the coupling in both directions — move the pin without migrating the
+call sites and it fails; migrate the call sites and it tells you the pin may
+move. Their reasoning is the durable part: *a comment cannot fail a build.*
+
+**What still stands from the original entry.** The blast radius was real: every
+scan lane carries `passed: [unit]`, so while this held, TheHub was not scanned at
+all — the third distinct cause in two weeks, after the ingestion token (B-024)
+and the promotion-gate regression (B-055), none of them a scanner problem. And
+moving to `develop` did not break this: `main` last passed `unit` on 2026-08-27
+and had never met the SDK, so the branch change revealed a break that was
+already there with nothing running to notice it (B-046).
+
+**What does not stand.** The original entry blamed a wide range plus B-050's
+missing dependabot `cooldown`. A cooldown would have delayed this, not prevented
+it — the range was *narrow* and correct, and the bot widened it. B-050's
+cooldown point is still worth doing and is not the mechanism here.
+
+**One note for the history.** The upstream entry records the bad pin as merging
+"in PR #276..#279". **#279 is this assessment's own re-export PR.** It did not
+introduce the pin, but it merged inside that window, so a reader bisecting the
+range will land on it.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from the first build after
+B-045 closed. Found because the reporting refactor landed the same day: this was
+the first failed Concourse run TheHub has ever recorded — `Reported
+integration_tests=failed` — where before, a failed lane said nothing at all.
+Corrected the same day after finding #281 had already landed a better fix.
 
 ---
 
