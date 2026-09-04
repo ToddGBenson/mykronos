@@ -965,15 +965,40 @@ port scan of the host, which is the capability the README records as **"Not
 started — the authorization model and the ingest path exist; no scanner does."**
 This is the argument for finishing that lane.
 
+**Correction, 2026-09-04: do not bind this to 127.0.0.1.** The first version of
+this entry proposed exactly that, and it would take the build down. The
+exposure is load-bearing and the compose file says so at the service:
+"Published on all interfaces because garden task containers reach it by host
+IP; they cannot resolve Docker service names." Confirmed in the pipeline —
+`set-thehub-pipeline.ps1:115` sets `$Registry = "192.168.0.14:5000"` and the
+kaniko task pushes to `${REGISTRY}/thehub:${SHA}`. Concourse reaches this
+registry at the **LAN address**, so no bind address can serve the build without
+also serving the network. The proposed fix and the working pipeline were
+mutually exclusive, which is worth more than the finding it was attached to.
+
+**Two fixes that actually work, in increasing order of effort.**
+
+*Firewall scope.* Concourse's garden containers arrive from the Docker bridge
+subnets, not from the LAN. On this host those are `172.17.0.0/16` (bridge),
+`172.19.0.0/16` (concourse), and `172.18/20/21/22/24.0.0/16` for the
+application stacks. A host rule permitting 5000 from `172.16.0.0/12` and
+loopback and denying it elsewhere closes LAN access with the build path intact.
+It is one rule and it changes no configuration any service reads.
+
+*Authentication.* `registry:2` takes `REGISTRY_AUTH=htpasswd`, which is the
+defence-in-depth version and survives a machine moving networks. It costs
+credentials in two more places: kaniko's `--destination` push, and the host's
+`docker login` before it pulls. Both can resolve from Vault, which already
+holds every other credential this pipeline uses.
+
 **Acceptance criteria**
 
-- The registry requires authentication, or binds to 127.0.0.1 so only this host
-  reaches it. Binding is the smaller change and matches how Vault, Concourse and
-  the dashboard frontend are already published.
-- `GET /v2/_catalog` from another host on the network fails.
-- A decision is recorded either way, because a registry that is deliberately open
-  on a trusted LAN is a defensible position — it is just not one anybody has
-  stated.
+- `GET /v2/_catalog` from another host on the network fails, **and** a `build`
+  job still pushes successfully. Both, or the change is not done.
+- Whichever route is taken, the compose comment stops saying the exposure is
+  required, because after the firewall rule it is required only from 172.16/12.
+- A decision is recorded either way: a registry deliberately open on a trusted
+  LAN is a defensible position, it is just not one anybody has stated.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
 service scan of 192.168.0.14 run at the operator's request. Recorded as a
@@ -1104,6 +1129,60 @@ unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
 **Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
 implement "scan develop, deploy from main" and discovering the platform cannot
 express it.
+
+---
+
+### B-057 — An in-range SDK upgrade took TheHub's whole test suite down, and with it every scan
+
+**Size:** S **State:** open **Verified:** 2026-09-04
+
+`thehub/unit` #85, the first build after the pipeline moved to `develop`, failed
+in 4m34s without running a single test:
+
+    ImportError while loading conftest '.../backend/tests/conftest.py'
+    anthropic/_base_client.py:1686: in __init__
+    TypeError: Invalid `http_client` argument; Expected an instance of
+      `httpx2.AsyncClient` but got <class 'httpx.AsyncClient'>
+
+The `anthropic` SDK has moved to `httpx2`. TheHub pins
+`anthropic>=1.0.0,<2.0` and `httpx>=0.28.1,<0.29`, so an in-range upgrade of the
+first is incompatible with the pin on the second. It fails at **conftest
+import**, so collection never happens and the failure is total rather than
+partial.
+
+**The blast radius is the whole repository's security scanning.** Every scan
+lane carries `passed: [unit]`, so while this holds, `secrets`, `sast`,
+`dependencies`, `iac`, `prompt-evals`, `build` and `containers` never start.
+TheHub is unscanned again — for the third distinct reason in two weeks, after
+the ingestion token (B-024) and the promotion-gate regression (B-055). None of
+the three was a scanner problem.
+
+**This is B-050's dependabot finding arriving before anybody acted on it.** That
+entry notes `.github/dependabot.yml` declares no `cooldown` on any of its four
+ecosystems, so a newly published version is eligible for an automatic PR the day
+it appears. A wide range plus no cooldown is how an in-range breaking change
+reaches a build unannounced.
+
+**Not caused by moving to `develop`, and worth being exact.** `main` last passed
+`unit` on 2026-08-27 and has not been rebuilt since, so it has never met this
+version of the SDK. The branch change did not break the suite; it revealed that
+`develop` had been broken and nothing was running there to notice. That is
+B-046 again — a lane that reports nothing looks identical to one with nothing to
+report.
+
+**Acceptance criteria**
+
+- `anthropic` is pinned to a version compatible with the `httpx` pin, or the
+  conftest constructs the client the way the installed SDK expects.
+- `thehub/unit` goes green on `develop`, and the six lanes behind it record a
+  run.
+- `.github/dependabot.yml` gains a `cooldown` (B-050), so the next in-range
+  break arrives as a PR to review rather than as a red build.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from the first build after
+B-045 closed. Found because the reporting refactor landed the same day: this is
+the first failed Concourse run TheHub has ever recorded — `Reported
+integration_tests=failed` — where before, a failed lane said nothing at all.
 
 ---
 
