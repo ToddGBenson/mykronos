@@ -665,3 +665,70 @@ class TestThreeMoreThatWereInThePayload:
         their own change, so it belongs with the approval controls rather than
         with the history ones."""
         assert governance.PREVENTS["review_dismissal_restricted"] == ("self_approval",)
+
+
+class TestTheSnapshotSurvivesBeingPersisted:
+    """A decision that cannot be written is a decision nobody has.
+
+    `oracle/service.py` persists `inputs_snapshot` with `json.dumps`, and this
+    snapshot carried `read_at` straight from the governance reading, where it
+    is a datetime. Portfolio scoring computed a score for every repository and
+    then threw all of them away:
+
+        WARNING Portfolio decision for ToddGBenson/mykronos failed:
+                Object of type datetime is not JSON serializable
+        INFO    Portfolio scoring: 0 scored, 3 failed
+
+    It was unreachable for as long as governance was unreadable -- with no read
+    there is no `read_at`, so this worked because one of its inputs was
+    permanently absent. Granting the App `administration: read` on 2026-09-04
+    broke every repository at once. The test is not "read_at is a string"; it
+    is that the snapshot goes through the function that stores it.
+    """
+
+    def _snapshot(self, reading: dict[str, Any] | None) -> dict[str, Any]:
+        from dataclasses import replace
+
+        from mykronos.config import get_settings
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.engine import _governance_snapshot
+
+        loaded = load_policy(get_settings().oracle_policy_path)
+        merged = GovernancePolicy(points_at_zero=8.0)
+        snapshot, _ = _governance_snapshot(reading, replace(loaded, governance=merged))
+        return snapshot
+
+    def test_a_datetime_read_at_is_serialisable(self) -> None:
+        import json
+        from datetime import datetime as dt
+
+        snapshot = self._snapshot(
+            {
+                "governance_score": 40,
+                "source": "branch_protection",
+                "read_at": dt(2026, 9, 4, 12, 0, 0),
+                # A count, not a list -- below `minimum_controls` the function
+                # returns an "not a posture" snapshot before it ever reaches
+                # read_at, which is the right behaviour and not what is under
+                # test here.
+                "controls_read": 9,
+            }
+        )
+
+        json.dumps(snapshot)  # the assertion: this is what service.py does
+        assert snapshot["read_at"] == "2026-09-04T12:00:00"
+
+    def test_an_absent_read_at_is_left_alone(self) -> None:
+        import json
+
+        snapshot = self._snapshot(
+            {"governance_score": 40, "source": "branch_protection", "controls_read": 9}
+        )
+
+        json.dumps(snapshot)
+        assert snapshot["read_at"] is None
+
+    def test_an_unavailable_reading_is_still_serialisable(self) -> None:
+        import json
+
+        json.dumps(self._snapshot(None))
