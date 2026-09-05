@@ -1404,6 +1404,69 @@ enforced" including the ones that were on.
 
 ---
 
+### B-061 — `event_driven` says a capability is fine without checking that anything runs it
+
+**Size:** S **State:** open **Verified:** 2026-09-04
+
+`ci.coverage()` exempts three capabilities from the pipeline/scan-run
+cross-check, because they produce decisions and pull requests rather than scan
+runs and so have neither side of the comparison:
+
+```python
+NON_SCANNING = frozenset({"aegis", "oracle", "patchwork"})
+...
+if stage in NON_SCANNING:
+    out.append(StageCoverage(stage, enabled=True, state="event_driven"))
+```
+
+The exemption is unconditional. It does not ask whether a job exists, only
+whether the capability is enabled. So `personal-soc` reported:
+
+```json
+{"stage": "oracle", "enabled": true, "state": "event_driven", "problem": false}
+```
+
+while its Concourse pipeline contained no oracle job of any kind. The
+capability was granted on 2026-09-04, no lane was ever written, and the
+platform reported the stage as healthy — `problem: false` — for as long as that
+was true. This is the same failure the coverage cross-check exists to catch,
+inside the branch that opts out of it.
+
+**Why this one is not simply "delete the exemption".** Remove it and every
+repository's oracle reads `no_job`, including TheHub and mykronos, which both
+*do* have a working gate. The check compares jobs against scan runs, and an
+oracle gate legitimately produces no scan run, so the honest answer needs a
+third thing to look at: whether a *job* exists, independent of whether it
+uploaded. `CAPABILITY_BY_JOB` is not that thing either — it maps jobs to the
+capability whose runs they produce, and oracle produces none, so registering
+`"oracle": "oracle"` there would be a lie in the other direction.
+
+**Aegis and patchwork are genuinely event-driven and should stay exempt.**
+Aegis is fed by webhooks as reviews happen; patchwork opens fix PRs on a timer
+inside Mykronos. Neither needs a pipeline job for the capability to be working.
+Oracle is different in this estate: it is *gate*-driven, run by a named job in
+a pipeline (`oracle-gate` on TheHub, `oracle` on personal-soc, a workflow on
+mykronos), and its absence is exactly the kind of gap worth reporting.
+
+**Acceptance criteria**
+
+- `oracle` reports `no_job` where no pipeline job or workflow runs it, and
+  `event_driven` is reserved for capabilities driven from inside Mykronos.
+- The check reads job existence, not scan-run existence, for this class — a
+  gate that ran and blocked nothing is still a gate that ran.
+- `aegis` and `patchwork` keep the current behaviour, with the reason recorded
+  in the code rather than only here.
+- A test asserts the personal-soc shape: capability enabled, no job, and the
+  stage reads as a problem.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while enabling oracle across
+the estate. Found by checking the pipeline against the dashboard rather than
+trusting the dashboard — the same method that caught the `personal-soc`
+Actions-disabled workflow, and the second time in two days that a green
+capability state has meant "not measured" rather than "measured and fine".
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned

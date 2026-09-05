@@ -544,6 +544,122 @@ jobs:
                 echo ""
                 echo "IaC scan complete."
 
+  # -- Risk decision --------------------------------------------------------
+  #
+  # `oracle` was granted for this repository on 2026-09-04 but had no lane, so
+  # the capability was enabled and nothing ever asked for a decision. A granted
+  # capability with no job is the same shape as a scan that writes no report:
+  # the dashboard says the control is on, and it produces nothing.
+  #
+  # WHAT THIS GATE BLOCKS ON, AND WHAT IT DOES NOT
+  #
+  # On what this commit INTRODUCED - no new criticals, no new highs - and not
+  # on the composite score. D-048 wrote down why: the score describes the whole
+  # estate, so a repository carrying an accepted backlog refuses every commit
+  # regardless of content, and a gate that refuses everything gets switched off
+  # or routed around. TheHub's gate was switched off on 2026-08-18 for exactly
+  # that reason. The floor here does not drift as the backlog grows, so it can
+  # be on permanently rather than until the next bad week.
+  #
+  # The score is still evaluated, still recorded and still drives the portfolio
+  # view. It just does not decide anything here.
+  #
+  # `passed: [secrets, iac]` and not `[guard]`. Those are the two capabilities
+  # granted to this repository that produce findings, and a decision requested
+  # before they have uploaded is a decision about the previous commit wearing
+  # this commit's SHA. The gate is downstream of the evidence it reads.
+  #
+  # There is no deploy in this repository, so nothing is withheld by a failure
+  # here beyond the red lane itself. That is the honest description: this is a
+  # tripwire, not a release gate, and it is worth having as one.
+  - name: oracle
+    public: false
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [secrets, iac]
+      - get: python
+      - task: evaluate
+        timeout: 10m
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+          MYKRONOS_GATE_TOKEN: ((mykronos-gate-token))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                cd source
+                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+                git config --global --add safe.directory "$PWD"
+
+                # No ingestion token is "the gate did not run", and a gate that
+                # cannot run must not report success - docs/lessons/0001, the
+                # same reasoning as the missing-SARIF check in the iac job.
+                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                  echo "::error:: No ingestion token. No decision was requested,"
+                  echo "          so this is an unevaluated commit, not a safe one."
+                  echo "          mykronos rotate-token ToddGBenson/personal-soc"
+                  echo "*personal-soc / oracle*: no ingestion token, no risk decision." > ../notify/message.txt
+                  exit 1
+                fi
+
+                # No repo_full_name: it comes from the ingestion token, so a
+                # pipeline cannot request a decision about somebody else's
+                # repository. The endpoint forbids extra fields, so sending it
+                # is a 422 rather than a harmless duplicate.
+                BODY=$(jq -nc \
+                  --arg sha "$(git rev-parse HEAD)" \
+                  '{commit_sha: $sha, decision_type: "portfolio"}')
+
+                curl --fail --silent --show-error --max-time 120 \
+                  -X POST "$MYKRONOS_URL/api/oracle/evaluate" \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  -H "X-Hub-Token: $MYKRONOS_GATE_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "$BODY" > decision.json
+
+                echo "Oracle: $(jq -r '.recommendation' decision.json) (score $(jq -r '.overall_risk_score' decision.json))"
+                jq -r '.reasoning // empty' decision.json
+
+                SCORE=$(jq -r '.overall_risk_score' decision.json)
+                SHORT=$(git rev-parse --short HEAD)
+                INTRODUCED_BLOCKING=$(jq -r '.introduced_blocking' decision.json)
+                NEW_CRITICAL=$(jq -r '.introduced.critical // 0' decision.json)
+                NEW_HIGH=$(jq -r '.introduced.high // 0' decision.json)
+
+                if [ "$(jq -r '.recommendation' decision.json)" = "no_go" ]; then
+                  echo "::warning::Oracle scores personal-soc no_go at ${SCORE}/100."
+                  echo "That is the standing backlog, not this change - see D-048."
+                fi
+
+                echo "Introduced by ${SHORT}: ${NEW_CRITICAL} critical, ${NEW_HIGH} high."
+
+                if [ "$INTRODUCED_BLOCKING" = "true" ]; then
+                  # Counts of findings a commit introduced describe the change,
+                  # not a person, so this is safe to broadcast to Slack.
+                  printf '*personal-soc / oracle* - commit `%s` introduced %s critical and %s high finding(s).' \
+                    "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
+
+                  echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
+                  echo "The floor is no new criticals and no new highs. Fix them, or"
+                  echo "disposition them - an accepted risk with a reason does not block."
+                  exit 1
+                fi
+
+                echo ""
+                echo "Risk decision complete."
+
   # -- Static analysis -----------------------------------------------------
   #
   # guard parses every script, which proves only that PowerShell can read it.
