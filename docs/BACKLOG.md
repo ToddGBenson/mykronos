@@ -354,6 +354,20 @@ re-deciding is the assumption, not the script.
   recorded whose `commit_sha` is on `develop`.
 - The 330 frozen findings re-evaluated against a current commit.
 
+**Re-opened and re-closed on 2026-09-05.** It did not hold for a day.
+
+The close put the decision in `-Branch develop` at apply time and left
+`set-thehub-pipeline.ps1`'s default at `main`. Re-applying the pipeline on
+2026-09-05 for an unrelated fix printed `Delivering branch 'main'` and moved
+TheHub back, silently — the third occurrence of the sentence this entry already
+quotes from that script's own comment, this time with the script saying `main`
+and the platform saying `develop`.
+
+The default is now `develop`, so the decision lives in the repository rather
+than in whoever remembers the flag, and `-Branch main` is the one-off. A
+decision recorded only as an argument is a decision that reverts on the next
+routine apply.
+
 **Closed 2026-09-04.** The pipeline now watches `develop`. Getting there
 took more than re-pointing it: `unit` was red on `develop`, and every scan
 lane carries `passed: [unit]`, so the branch could not be scanned at all until
@@ -1487,6 +1501,122 @@ the estate. Found by checking the pipeline against the dashboard rather than
 trusting the dashboard — the same method that caught the `personal-soc`
 Actions-disabled workflow, and the second time in two days that a green
 capability state has meant "not measured" rather than "measured and fine".
+
+---
+
+### B-062 — Enabling one capability silently revoked five others, and the audit said nothing was removed
+
+**Size:** M **State:** open **Verified:** 2026-09-05
+
+`PATCH /repos/{id}/capabilities` writes the grant table from the request and
+writes the audit entry from the *ledger*. When those two disagree, it revokes
+grants and records that it revoked nothing.
+
+```python
+previous = set(row.enabled_capabilities or [])          # the ledger
+grants_added, grants_removed = registry.sync_grants(    # the grant table
+    row.github_repo_full_name, requested)
+...
+db.audit(... added=sorted(requested - previous),
+             removed=sorted(previous - requested))      # <- ledger diff
+```
+
+`sync_grants` makes `capability_grants` **exactly** `requested`, deleting every
+row outside it. `grants_removed` holds what it actually deleted — and is used
+only to build a sentence. The `removed` field written to the audit log is
+`previous - requested`, computed from a different source entirely.
+
+**This is not hypothetical; it happened here, and this assessment caused it.**
+On 2026-09-05 03:45:58, enabling `oracle` for TheHub sent the six capabilities
+the ledger listed. The grant table held eleven. Five were deleted:
+
+```
+detail: {"repo": "ToddGBenson/TheHub",
+         "requested": ["aegis","atlas","containers","oracle","sast","secrets"],
+         "added": ["oracle"], "removed": []}
+```
+
+`removed: []`. Twenty-two minutes later TheHub's `iac` lane failed:
+
+```
+HTTP 403: {"detail":"'iac' is not enabled for ToddGBenson/TheHub.
+  Currently granted: aegis, atlas, containers, oracle, sast, secrets."}
+```
+
+The evidence that these were live grants and not a pre-existing gap is that
+they were being used. `iac` uploaded successfully on 2026-09-01 (`200 OK`), and
+`dast-staging` uploaded **70 DAST findings** on 2026-09-04 at 02:00 (`200 OK`).
+Both capabilities were absent from the ledger the whole time. The grant table
+was the thing that worked, and the ledger was the thing the audit believed.
+
+| when | lane | result |
+|---|---|---|
+| 2026-09-01 20:12Z | `iac` | 200 OK, uploaded |
+| 2026-09-04 09:00Z | `dast-staging` | 200 OK, 70 findings |
+| **2026-09-05 03:45Z** | **capabilities PATCH** | **5 grants deleted, `removed: []`** |
+| 2026-09-05 04:07Z | `iac` | 403, refused |
+
+**Four of the five failed silently.** Only `iac` fails the build on a rejected
+upload. `dast`, `ai`, `qa` and `unit` end their upload step with
+`|| echo "upload failed - the scan verdict above still stands."`, so those
+lanes went **green** while their findings were refused at the door. On the only
+internet-facing repository in the estate, DAST was one of them.
+
+**Why nothing else caught it.** `ci.coverage()` walks the *enabled* set and
+asks whether each capability is reporting. A capability that is not enabled is
+`not_enabled`, and `not_enabled` is not a problem — so the case where a job
+exists, runs, and has nowhere to put its output is the one direction the
+cross-check cannot see. That is the inverse of [[B-061]], which is a capability
+enabled with no job. Two failures either side of one comparison means the
+comparison is drawn against the wrong axis.
+
+**Acceptance criteria**
+
+- The audit records what was **done**, not what was intended: `added` and
+  `removed` come from `sync_grants`' return values, which already carry exactly
+  this and are currently discarded into a message string.
+- The ledger and the grant table are reconciled, or one of them stops being
+  authoritative. Today `enabled_capabilities` drives the dashboard and
+  `capability_grants` drives ingestion, and this defect is what their drift
+  looks like from the outside.
+- A PATCH that would revoke a grant not present in the ledger says so before
+  doing it, or refuses. Silently narrowing a repository's ingestion because the
+  caller sent the set the dashboard showed them is a trap for exactly the
+  routine, well-intentioned call that sprung it here.
+- The coverage cross-check reports a capability a pipeline uploads that the
+  repository has not enabled.
+- A 403 from `/api/ingest/*` reaches somewhere a person looks. Findings were
+  produced and discarded; that is a security event, not a routine auth failure.
+
+**mykronos was carrying the same trap, unfired.** After restoring TheHub, the
+whole estate was swept for the same drift:
+
+```
+ToddGBenson/mykronos   grant_only=['dast', 'functional']   <-- DRIFT
+```
+
+Its grant table held `dast` and `functional`; its ledger did not list them.
+Both were actively uploading. Any routine capability change made from the set
+the dashboard shows — the same well-intentioned call that broke TheHub — would
+have silently revoked DAST on this platform too. Resolved by aligning the
+ledger to the grants (`added: ['dast','functional'], removed: []`), and the
+estate now reports **0 repositories with drift**. The alignment is a
+workaround: the two sources can drift again tomorrow, which is why the
+reconciliation is still an acceptance criterion above.
+
+**Restored on 2026-09-05 07:18:** `ai`, `dast`, `iac`, `qa` and `unit` were
+re-granted to TheHub. `iac` and `qa` were re-run and now upload (`200 OK`,
+`Uploaded 0 finding(s) ... (success)`). `cloud` and `functional` were left
+disabled on purpose — `cloud-posture` and `functional-dast` are both paused
+(D-053, single worker), so enabling them would create an enabled capability
+with no lane feeding it, which is B-061's failure rather than this one's.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, found while working out why
+TheHub's `iac` lane was failing. Worth recording how it was found: the audit
+log said `removed: []` and was believed twice — first when the grants were
+deleted, and again an hour later when the deletion was ruled out as a cause on
+the strength of that same field. What settled it was reading `sync_grants`
+against the line that writes the audit entry, rather than reading either alone.
 
 ---
 

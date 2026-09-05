@@ -626,16 +626,30 @@ async def update_capabilities(
                 entity_id=row.id,
                 repo=row.github_repo_full_name,
                 requested=sorted(requested),
-                added=sorted(requested - previous),
-                removed=sorted(previous - requested),
+                # What `sync_grants` DID, not what the ledger diff implies it
+                # would do. These are two different sets whenever the ledger
+                # and the grant table have drifted, and on 2026-09-05 that
+                # difference deleted five of TheHub's grants while recording
+                # `removed: []` -- see B-062. `sync_grants` makes the grant
+                # table exactly `requested`, so it is the only side that knows
+                # what was actually revoked; it was already returning the
+                # answer and the answer was being spent on a sentence.
+                added=sorted(grants_added),
+                removed=sorted(grants_removed),
+                # Kept as well, because the two disagreeing IS the signal. A
+                # reader who sees these differ is looking at ledger drift, and
+                # that is worth being able to see in the record rather than
+                # having to reproduce.
+                ledger_added=sorted(requested - previous),
+                ledger_removed=sorted(previous - requested),
                 install_workflows=False,
             )
             session.commit()
 
             return CapabilityUpdateResult(
                 repo=_summary(row),
-                added=sorted(requested - previous),
-                removed=sorted(previous - requested),
+                added=sorted(grants_added),
+                removed=sorted(grants_removed),
                 secret_provisioned=False,
                 detail=(
                     "Enabled without installing workflows. Grants are live and "

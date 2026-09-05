@@ -52,10 +52,26 @@ param(
     #
     # This lived only in the deployment checkout's working tree until now,
     # which meant the repository said `develop` while the applied pipeline
-    # watched `main`, and nothing anywhere reconciled the two. Pass
-    # `-Branch develop` explicitly for a one-off scan of the integration
-    # branch.
-    [string]$Branch = "main",
+    # watched `main`, and nothing anywhere reconciled the two.
+    #
+    # -- Superseded 2026-09-05: the default is now `develop` ------------------
+    #
+    # The 2026-08-18 directive assumed the flow is PR -> merge to `main` ->
+    # pipeline runs. That flow produced no merge in eight days, so B-045 closed
+    # on 2026-09-04 by re-deciding the assumption: TheHub is scanned on
+    # `develop`, which is what `default_branch` has said all along.
+    #
+    # It closed by passing `-Branch develop` at apply time and leaving this
+    # default at `main`, which put the decision in an operator's memory rather
+    # than in the repository. It did not survive contact: applying this script
+    # on 2026-09-05 for an unrelated fix silently moved TheHub back to `main` -
+    # the same sentence three lines up, third occurrence, this time with the
+    # script as the thing that said `main` and the platform as the thing that
+    # said `develop`.
+    #
+    # A default is where a decision lives if it is to hold. Pass `-Branch main`
+    # explicitly for a one-off scan of the delivery branch.
+    [string]$Branch = "develop",
     # On by default again (D-083). It was "false" from 2026-08-18 because the
     # gate blocked on the composite score and so refused every commit; it now
     # blocks on what a commit introduced, which does not drift as the backlog

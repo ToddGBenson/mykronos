@@ -230,3 +230,87 @@ class TestThroughTheApi:
         # what is stored rather than by template fallbacks.
         assert sast["severity_threshold"] == "low"
         assert sast["blocking"] is False
+
+
+class TestTheAuditRecordsWhatWasRevoked:
+    """B-062: the grant table and the ledger are two sources, and the audit
+    entry was written from the one that does not control ingestion.
+
+    `sync_grants` makes `capability_grants` exactly the requested set, so it
+    deletes every grant outside it. The audit recorded `previous - requested`,
+    where `previous` is `row.enabled_capabilities`. While those two agree the
+    bug is invisible; when they drift, a capability can be revoked and the
+    record says nothing was.
+
+    That is not a hypothetical drift. On 2026-09-05 TheHub's grant table held
+    five capabilities its ledger did not -- `iac` and `dast` among them, both
+    demonstrably in use -- and enabling `oracle` deleted all five while writing
+    `removed: []`. Twenty-two minutes later the `iac` lane started failing with
+    403, and the audit log was the thing that made the cause hard to see.
+    """
+
+    @staticmethod
+    def _drifted_grant(client: TestClient, admin_auth, capability: str = "iac") -> str:
+        """Give the repo a grant its ledger does not list, and return its id."""
+        from mykronos.auth import TokenRegistry
+
+        onboard(client, admin_auth, scanned_by="concourse")
+        repo_id = client.get("/api/repos", headers=admin_auth).json()[0]["id"]
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            TokenRegistry(session).grant(REPO, capability)
+            session.commit()
+        return repo_id
+
+    def test_a_revoked_grant_is_recorded_as_removed(self, client, admin_auth) -> None:
+        from mykronos.db.models import AuditLogEntry
+
+        repo_id = self._drifted_grant(client, admin_auth)
+
+        # The shape that sprung this: the caller sends the set the dashboard
+        # showed them, which is the ledger, and never mentions `iac` at all.
+        response = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast", "secrets"], "install_workflows": False},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200
+        assert "iac" in response.json()["removed"]
+
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            entry = (
+                session.query(AuditLogEntry)
+                .filter(AuditLogEntry.action == "repo.capabilities")
+                .order_by(AuditLogEntry.created_at.desc())
+                .first()
+            )
+        assert entry is not None
+        assert "iac" in entry.detail["removed"]
+
+    def test_the_ledger_diff_is_kept_alongside_it(self, client, admin_auth) -> None:
+        """Both sets are recorded, because the two disagreeing is the signal.
+
+        A reader who sees `removed` and `ledger_removed` differ is looking at
+        drift between the grant table and the ledger, and being able to see
+        that in the record beats having to reproduce it.
+        """
+        from mykronos.db.models import AuditLogEntry
+
+        repo_id = self._drifted_grant(client, admin_auth)
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast", "secrets"], "install_workflows": False},
+            headers=admin_auth,
+        )
+
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            entry = (
+                session.query(AuditLogEntry)
+                .filter(AuditLogEntry.action == "repo.capabilities")
+                .order_by(AuditLogEntry.created_at.desc())
+                .first()
+            )
+        assert entry is not None
+        # The ledger never knew about `iac`, so its diff cannot mention it --
+        # which is exactly why it was the wrong thing to audit.
+        assert "iac" not in entry.detail["ledger_removed"]
+        assert "iac" in entry.detail["removed"]
