@@ -932,6 +932,46 @@ jobs:
                   exit 1
                 }
 
+                # TheHub reads its config through TWO mechanisms, and this job
+                # was setting only one of them.
+                #
+                #   HUB_CONFIG_DIR   read directly by four modules
+                #                    (lifecycle_pipelines, stage_guide,
+                #                    dev_routing, irra_actions), default
+                #                    /app/config
+                #   CONFIG_DIR       pydantic settings.config_dir, default the
+                #                    RELATIVE "config" -- and this task has
+                #                    already `cd backend`, so it resolved to
+                #                    backend/config
+                #
+                # backend/config exists, which is why nothing complained: it is
+                # a five-file legacy subset. The real config is the 63-file
+                # directory at the repo root. hub-config.yaml is not in the
+                # subset, so hub_config logged "No hub-config.yaml found, using
+                # defaults" and handed back its fallback zone -- America/
+                # New_York instead of the configured America/Phoenix. Any test
+                # asserting a local time then failed on a zone nobody chose,
+                # and agent_rollout.yaml was simply absent.
+                #
+                # The `test -f` above passes throughout, because
+                # lifecycle_pipelines.yaml IS reached via HUB_CONFIG_DIR. A
+                # guard that proves less than it appears to.
+                #
+                # Prod is the mirror image and correct by accident: compose
+                # sets CONFIG_DIR=/app/config and leaves HUB_CONFIG_DIR empty,
+                # so the four modules fall back to a default that happens to be
+                # where the volume is mounted. Both variables want the same
+                # directory in every environment; here it is already computed.
+                export CONFIG_DIR="$HUB_CONFIG_DIR"
+                echo "CONFIG_DIR=$CONFIG_DIR"
+                test -f "$CONFIG_DIR/hub-config.yaml" || {
+                  echo "::error::No hub-config.yaml under $CONFIG_DIR."
+                  echo "          hub_config would silently fall back to its"
+                  echo "          default timezone and any test asserting a"
+                  echo "          local time would fail on the wrong zone."
+                  exit 1
+                }
+
                 # `-p no:cacheprovider` because the checkout is thrown away
                 # after the build; writing .pytest_cache into it is pure IO.
                 #
