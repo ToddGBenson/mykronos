@@ -75,6 +75,9 @@ CONTROL_ORDER = (
     "force_push_blocked",
     "linear_history_required",
     "branch_deletion_blocked",
+    "conversation_resolution_required",
+    "branch_up_to_date_required",
+    "review_dismissal_restricted",
 )
 
 #: Which Aegis signal each control would have prevented (spec 30 §2). The link
@@ -94,6 +97,11 @@ PREVENTS: dict[str, tuple[str, ...]] = {
     # and the insider-risk signals are all about how a change got approved.
     "linear_history_required": (),
     "branch_deletion_blocked": (),
+    "conversation_resolution_required": (),
+    "branch_up_to_date_required": (),
+    # The one of the three that does map: an unrestricted dismissal lets the
+    # author of a change clear the review that was blocking it.
+    "review_dismissal_restricted": ("self_approval",),
 }
 
 #: CIS Software Supply Chain Security Benchmark v1.0, section 1.1 (Code
@@ -120,6 +128,9 @@ CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
     "force_push_blocked": ("1.1.16",),
     "linear_history_required": ("1.1.13",),
     "branch_deletion_blocked": ("1.1.17",),
+    "conversation_resolution_required": ("1.1.11",),
+    "branch_up_to_date_required": ("1.1.10",),
+    "review_dismissal_restricted": ("1.1.5",),
 }
 
 #: The recommendations in section 1.1 that these nine settings cannot answer,
@@ -129,10 +140,7 @@ CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
 CIS_UNCOVERED: dict[str, str] = {
     "1.1.1": "version control is in use -- true by construction here, not read",
     "1.1.2": "a change traces to a task; needs an issue/PR linkage convention",
-    "1.1.5": "who may dismiss reviews; not exposed by the branch-protection read",
     "1.1.8": "inactive branches are reviewed and removed; needs branch ages",
-    "1.1.10": "branches are up to date before merge; needs the merge queue setting",
-    "1.1.11": "open comments resolved before merge; not in branch protection",
     "1.1.18": "merges are scanned for risk -- the scan lanes answer this, not this read",
     "1.1.19": "branch-protection changes are audited; ControlDrift is the closest thing",
 }
@@ -226,6 +234,9 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
             "force_push_blocked": False,
             "linear_history_required": False,
             "branch_deletion_blocked": False,
+            "conversation_resolution_required": False,
+            "branch_up_to_date_required": False,
+            "review_dismissal_restricted": False,
         }
 
     reviews = protection.get("required_pull_request_reviews") or {}
@@ -256,6 +267,17 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
         "branch_deletion_blocked": not bool(
             (protection.get("allow_deletions") or {}).get("enabled")
         ),
+        "conversation_resolution_required": bool(
+            (protection.get("required_conversation_resolution") or {}).get("enabled")
+        ),
+        # `strict` lives inside required_status_checks, so it is absent
+        # whenever no checks are required at all -- which reads as off, and is
+        # right: a branch cannot be required to be up to date with respect to
+        # checks that do not exist.
+        "branch_up_to_date_required": bool(checks.get("strict")),
+        # Present only once somebody restricts dismissal; absent means anyone
+        # who can review can also dismiss.
+        "review_dismissal_restricted": bool(reviews.get("dismissal_restrictions")),
     }
 
 
@@ -508,6 +530,31 @@ def _controls(facts: dict[str, Any], coverage: float | None) -> list[Control]:
             on="The default branch cannot be deleted.",
             off="The default branch can be deleted, taking its protection "
             "rules with it.",
+            unknown="Not read.",
+        ),
+        "conversation_resolution_required": _bool_control(
+            "conversation_resolution_required",
+            facts.get("conversation_resolution_required"),
+            on="Every review comment must be resolved before a merge.",
+            off="A change can merge with a reviewer's unanswered question "
+            "still open on it.",
+            unknown="Not read.",
+        ),
+        "branch_up_to_date_required": _bool_control(
+            "branch_up_to_date_required",
+            facts.get("branch_up_to_date_required"),
+            on="A branch must be current with the base before it merges, so "
+            "the checks that passed ran against what actually lands.",
+            off="A branch can merge while behind the base, so a green check "
+            "may describe a combination that was never tested.",
+            unknown="Not read.",
+        ),
+        "review_dismissal_restricted": _bool_control(
+            "review_dismissal_restricted",
+            facts.get("review_dismissal_restricted"),
+            on="Only named people may dismiss a review.",
+            off="Anyone who can review can also dismiss one, including the "
+            "author of the change it was blocking.",
             unknown="Not read.",
         ),
     }
