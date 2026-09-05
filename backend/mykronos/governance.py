@@ -73,6 +73,8 @@ CONTROL_ORDER = (
     "signed_commits_required",
     "required_status_checks",
     "force_push_blocked",
+    "linear_history_required",
+    "branch_deletion_blocked",
 )
 
 #: Which Aegis signal each control would have prevented (spec 30 §2). The link
@@ -88,6 +90,10 @@ PREVENTS: dict[str, tuple[str, ...]] = {
     "pull_request_required": ("self_approval",),
     "required_status_checks": (),
     "force_push_blocked": (),
+    # No Aegis signal maps to either. They protect history rather than review,
+    # and the insider-risk signals are all about how a change got approved.
+    "linear_history_required": (),
+    "branch_deletion_blocked": (),
 }
 
 #: CIS Software Supply Chain Security Benchmark v1.0, section 1.1 (Code
@@ -112,6 +118,8 @@ CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
     "signed_commits_required": ("1.1.12",),
     "required_status_checks": ("1.1.9",),
     "force_push_blocked": ("1.1.16",),
+    "linear_history_required": ("1.1.13",),
+    "branch_deletion_blocked": ("1.1.17",),
 }
 
 #: The recommendations in section 1.1 that these nine settings cannot answer,
@@ -125,8 +133,6 @@ CIS_UNCOVERED: dict[str, str] = {
     "1.1.8": "inactive branches are reviewed and removed; needs branch ages",
     "1.1.10": "branches are up to date before merge; needs the merge queue setting",
     "1.1.11": "open comments resolved before merge; not in branch protection",
-    "1.1.13": "linear history required; readable, not yet read",
-    "1.1.17": "branch deletion denied; readable, not yet read",
     "1.1.18": "merges are scanned for risk -- the scan lanes answer this, not this read",
     "1.1.19": "branch-protection changes are audited; ControlDrift is the closest thing",
 }
@@ -218,6 +224,8 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
             "signed_commits_required": False,
             "required_status_checks": 0,
             "force_push_blocked": False,
+            "linear_history_required": False,
+            "branch_deletion_blocked": False,
         }
 
     reviews = protection.get("required_pull_request_reviews") or {}
@@ -237,6 +245,16 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
         "required_status_checks": len(contexts),
         "force_push_blocked": not bool(
             (protection.get("allow_force_pushes") or {}).get("enabled")
+        ),
+        "linear_history_required": bool(
+            (protection.get("required_linear_history") or {}).get("enabled")
+        ),
+        # Both of these are inverted, and for the same reason `force_push_blocked`
+        # is: the API reports the permission, and the control is its absence.
+        # Reading `allow_deletions.enabled` as the control would report every
+        # protected branch as unprotected.
+        "branch_deletion_blocked": not bool(
+            (protection.get("allow_deletions") or {}).get("enabled")
         ),
     }
 
@@ -474,6 +492,22 @@ def _controls(facts: dict[str, Any], coverage: float | None) -> list[Control]:
             facts.get("force_push_blocked"),
             on="Force pushes to the default branch are blocked.",
             off="History on the default branch can be rewritten.",
+            unknown="Not read.",
+        ),
+        "linear_history_required": _bool_control(
+            "linear_history_required",
+            facts.get("linear_history_required"),
+            on="Merge commits are refused, so history stays a straight line.",
+            off="Merge commits are allowed, so what shipped can be harder to "
+            "attribute to a single reviewed change.",
+            unknown="Not read.",
+        ),
+        "branch_deletion_blocked": _bool_control(
+            "branch_deletion_blocked",
+            facts.get("branch_deletion_blocked"),
+            on="The default branch cannot be deleted.",
+            off="The default branch can be deleted, taking its protection "
+            "rules with it.",
             unknown="Not read.",
         ),
     }

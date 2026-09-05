@@ -73,3 +73,17 @@ weights:
   # pushes protect history after the fact.
   signed_commits_required: 4
   force_push_blocked: 3
+
+  # CIS 1.1.13 and 1.1.17, added 2026-09-04 when the branch-protection read was
+  # extended to reach them. Weighted lowest deliberately, and the reasoning is
+  # the same one that puts force_push_blocked at 3: neither decides whether an
+  # unreviewed change gets in.
+  #
+  # `branch_deletion_blocked` is the more interesting of the two, because
+  # deleting the default branch takes every rule above it along — so it is
+  # cheap insurance on the rest of this table rather than a control in its own
+  # right. `linear_history_required` is a readability and attribution property
+  # first; a repository can be perfectly governed with merge commits, and
+  # several here are.
+  branch_deletion_blocked: 3
+  linear_history_required: 2
