@@ -1716,6 +1716,83 @@ believe about the thing it is attached to.
 
 ---
 
+### B-064 — TheHub encrypts its most sensitive table with unauthenticated CBC
+
+**Size:** M **State:** open **Verified:** 2026-09-05
+
+`backend/services/intimacy_service.py` encrypts with AES-256-CBC and no
+authentication:
+
+```python
+cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+encryptor = cipher.encryptor()
+ciphertext = encryptor.update(padded) + encryptor.finalize()
+```
+
+CBC provides confidentiality and nothing else. Nothing in the record proves the
+ciphertext is the one the service wrote, so an attacker with write access to
+the row — a SQL-injection foothold, a stolen database credential, a backup
+restored from the wrong place, a compromised backup job — can modify stored
+ciphertext and the service will decrypt whatever comes back. PKCS7 unpadding on
+attacker-modified input is also the classic padding-oracle shape: decryption
+raises on a bad pad and succeeds on a good one, and that difference is enough
+to recover plaintext a byte at a time if it is observable in a response or a
+log.
+
+**`_hash_data` is not a fix for this and is not intended as one.** It is
+SHA-256 over the *plaintext*, for deduplication, stored beside the row. It
+authenticates nothing about the ciphertext, and an attacker who can rewrite the
+ciphertext can rewrite that column too.
+
+**This is the one finding in TheHub's SAST backlog that is real.** The other
+sixteen HIGH findings resolved as follows on 2026-09-05: twelve
+`avoid-sqlalchemy-text` are false positives (every caller-supplied value is a
+bound parameter; every interpolation is a module constant or an uncalled
+maintenance helper) and are dispositioned with the call path recorded per site;
+two `run-shell-injection` were real and are fixed in TheHub#291. These two are
+what is left, and they are on the table the application treats as its most
+sensitive.
+
+**The fix TheHub already has.** `backend/utils/token_crypto.py` uses Fernet,
+which is AES-128-CBC with an HMAC-SHA256 over the ciphertext, and it carries a
+`fernet1:` version prefix precisely so stored values can be migrated in place.
+The same prefix pattern applies here. AES-GCM is the other option and is
+stronger per byte; Fernet is the one this repository already operates, tests
+and understands.
+
+**Why this is filed rather than fixed in passing.** Changing the encryption of
+existing personal data is a migration, not an edit: every stored row has to be
+read under CBC and rewritten under the new scheme, the read path has to accept
+both during the transition, and getting it wrong destroys data that by
+definition cannot be regenerated. `token_crypto.backfill_plaintext` is the
+shape to copy — it verifies every row by decrypting the new value back and
+comparing before it commits, and aborts the whole batch on a mismatch. That is
+the standard this migration should meet, and it is more work than a scan
+finding should be closed with.
+
+**Acceptance criteria**
+
+- New writes use an authenticated construction (Fernet, or AES-GCM), with a
+  version prefix on the stored value.
+- The read path accepts both schemes for as long as unmigrated rows exist, and
+  a check reports how many remain rather than assuming zero.
+- A backfill migrates existing rows, verifying each by decrypting the rewritten
+  value and comparing before commit, aborting the batch on any mismatch.
+- Decryption failure is handled without a distinguishable padding error
+  reaching a response or a log line, so the migration does not leave a padding
+  oracle behind while it runs.
+- The two semgrep findings close on their own once the mode changes, which is
+  the check that this was fixed rather than dispositioned.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, reading all 16 of TheHub's
+HIGH SAST findings by hand after the container backlog was dispositioned and
+stopped hiding them. Worth noting the order: these two were reachable only
+after 271 unfixable OS-package findings were accepted and twelve false
+positives were cleared. A backlog that is 93% noise does not hide its signal
+politely — it hides it completely.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
