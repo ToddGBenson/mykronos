@@ -1620,6 +1620,102 @@ against the line that writes the audit entry, rather than reading either alone.
 
 ---
 
+### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs
+
+**Size:** M **State:** open **Verified:** 2026-09-05
+
+TheHub's `dependencies` lane runs:
+
+```
+osv-scanner scan source --recursive --no-resolve ...
+```
+
+With `--no-resolve`, osv-scanner does not work out what a requirement actually
+resolves to. For `cryptography>=42.0.0` it assesses **42.0.0** — the floor. It
+then reported 15 advisories, four of them HIGH, against a repository running
+`cryptography 50.0.1`, which has none:
+
+```
+thehub-backend         50.0.1
+thehub-demo-backend    50.0.1
+```
+
+Every one of those findings is true about the floor and false about the
+deployment. A reader of the Findings tab cannot tell which, because the
+finding names a version (`cryptography@42.0.0`) that appears nowhere except in
+the requirement's lower bound.
+
+**`--no-resolve` is not a mistake and should stay.** The pipeline comment says
+why: transitive resolution calls deps.dev, which returns an internal error for
+any `requirements.txt` containing sqlalchemy — TheHub's does — and an extractor
+error is exit 127, which fails the whole lane. The choice was between a lane
+that reports floors and a lane that reports nothing, and floors won. What is
+missing is that the platform never says which of the two it is looking at.
+
+**Why this cuts both ways.** A floor is a real thing to assess: it is what the
+repository promises to accept, and a rebuild that resolves differently — a warm
+layer cache, a pinned internal index, an offline mirror — installs it. So these
+findings are not noise to be suppressed. But they are also not statements about
+running software, and the platform presents them as though they were: they
+carry a severity, they age, they count toward the Oracle score, and TheHub's
+score is the estate's worst.
+
+**They are also unfixable as stated.** Nothing can close a floor finding except
+raising the floor, and raising the floor changes no running byte. Until
+TheHub#290 there was no way to act on them at all, and no explanation in the
+platform of why the version in the finding did not match the version in the
+image.
+
+**Acceptance criteria**
+
+- A finding derived from an unresolved requirement says so, in the finding
+  itself: assessed at the declared floor, not at a resolved version.
+- The dashboard can tell the two apart, so "vulnerable dependency" and
+  "dependency floor permits a vulnerable version" are not the same row shape.
+- Either the Oracle weights floor findings differently from resolved ones, or
+  the decision to weight them identically is recorded with a reason. Today it
+  is neither — they are identical by accident of the scanner's flag.
+- The estate is swept for the same shape. Every repository with open-bounded
+  requirements and no lock file has this, not just TheHub.
+
+  **Swept on 2026-09-05, and mykronos had it too.** Its `pyproject.toml` uses
+  `>=` bounds and both its Concourse and Actions atlas lanes pass
+  `--no-resolve`, so the same reading applies. Four of twenty open-bounded
+  dependencies declared a floor carrying a known advisory:
+
+  | package | floor was | advisories at floor | raised to |
+  |---|---|---|---|
+  | `pyjwt[crypto]` | 2.9 | **13, two HIGH** | 2.13.0 |
+  | `jinja2` | 3.1 | 10 | 3.1.6 |
+  | `pynacl` | 1.5 | 2 | 1.6.2 |
+  | `pytest` | 8.3 | 2 | 9.0.3 |
+
+  As with TheHub, nothing was running the floor: the container reports `pyjwt
+  2.13.0`, `pynacl 1.6.2` and `jinja2 3.1.6` — precisely the versions the
+  advisories require. The floors were describing versions this project had
+  stopped running some time ago. Raised to what is installed, so the
+  declaration matches the deployment; mykronos now has **0 of 20** floors
+  carrying an advisory, and neither does TheHub after TheHub#290.
+- Revisit `--no-resolve` if the deps.dev sqlalchemy failure is fixed upstream,
+  or resolve locally with `pip-compile`/`uv` and scan the lock. A lock file
+  would answer this properly, and its absence is the actual root cause.
+
+**Fixed separately, and not a fix for this:** TheHub#290 raises the floor to
+50.0.1 and sweeps all 50 open-bounded requirements — zero now carry an advisory
+at their floor. That clears today's findings. It does not stop the next
+requirement whose floor drifts behind from being reported as though it were
+deployed.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, immediately after repairing
+the lane in [[B-062]]'s commit. Worth recording that the first reading of these
+findings was wrong: they were reported here and in mykronos#216 as four live
+HIGH vulnerabilities on the internet-facing application, and corrected only
+after checking `cryptography.__version__` inside the running containers rather
+than trusting the finding. A finding that names a version is very easy to
+believe about the thing it is attached to.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
