@@ -1471,10 +1471,29 @@ jobs:
                 # which returns an internal error for any requirements.txt
                 # containing sqlalchemy - TheHub's does - and an extractor
                 # error is exit 127, which would fail the whole lane.
+                # `set +e` is load-bearing, and this lane is what happens
+                # without it. The task runs under `bash -ec`, so errexit is on
+                # before the first line, and `set -uo pipefail` at the top
+                # turns pipefail ON without turning errexit OFF. osv-scanner
+                # exits 1 when it FINDS something, so the pipe below returned
+                # non-zero and killed the shell right there - before
+                # ${PIPESTATUS} could be read, before the rc branches, before
+                # the upload. The lane worked for as long as TheHub had no
+                # vulnerable dependency and died silently the moment it had
+                # one, which is the failure mode a dependency scanner can
+                # least afford.
+                #
+                # It failed this way from 2026-09-01 to 2026-09-05 and
+                # reported nothing: no error line, not even the `::error::`
+                # echo below, because the shell was already gone.
+                # `lint-and-types` and `prompt-evals` both carry this same
+                # comment; this is the third site and the one that was missed.
+                set +e
                 rc=0
                 osv-scanner scan source --recursive --no-resolve \
                   --format sarif --output-file /tmp/results/osv.sarif . 2>&1 | tee /tmp/osv.log
                 rc=${PIPESTATUS[0]}
+                set -e
 
                 # The same scan again as JSON. SARIF describes findings;
                 # it does not describe what was resolved, and the trust
@@ -2637,10 +2656,18 @@ jobs:
                 # No dependencies for the check itself: the generator uses only
                 # the standard library, precisely so this job needs nothing
                 # installed and cannot fail for a reason unrelated to the API.
+                # `set +e` for the same reason as `dependencies` and
+                # `lint-and-types`: `bash -ec` plus pipefail means a non-zero
+                # exit through a pipe kills the shell before ${PIPESTATUS} is
+                # read. `--check` exits non-zero precisely when the inventory
+                # has drifted, which is the case every branch below exists to
+                # describe.
+                set +e
                 rc=0
                 python scripts/api_inventory.py --url "$TARGET_URL" --check 2>&1 \
                   | tee /tmp/inventory.txt
                 rc=${PIPESTATUS[0]}
+                set -e
 
                 if [ "$rc" -eq 0 ]; then
                   echo "The committed inventory matches the deployed API."
