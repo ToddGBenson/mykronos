@@ -115,6 +115,15 @@ PRACTICES: tuple[Practice, ...] = (
     ),
     Practice(
         "PW.1", "Produce Well-Secured Software", "Design software to meet security requirements",
+        # `design_register` rather than a capability, because design is not a
+        # lane and no scanner answers it. When this practice was written nothing
+        # observable mapped to it and it was hardcoded `not_evidenced` — which
+        # was honest then and stopped being so when spec 28 added the surface
+        # and control registers. `how_to_evidence` below has told people to
+        # declare exactly those two things since; the assessment could not read
+        # either, so the instruction was unfollowable and the practice was
+        # unreachable for every repository regardless of what anybody did.
+        functions=("design_register",),
         nist_800_53=("SA-8", "SA-17"),
         how_to_evidence=(
             "Declare the attack surface and record the controls that mitigate it. "

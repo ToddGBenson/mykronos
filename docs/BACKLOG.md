@@ -1196,6 +1196,122 @@ Corrected the same day after finding #281 had already landed a better fix.
 
 ---
 
+### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+`ssdf.summarise` counts four statuses — `met`, `partial`, `not_evidenced`,
+`not_applicable` — and across all five onboarded repositories the fourth is
+**zero**. Nothing sets it. A practice a repository cannot possibly evidence and
+one it simply has not done are the same row.
+
+That understates two repositories badly, and on a compliance view an
+understatement is not the safe direction to be wrong in — it is the one that
+gets somebody told to build what they do not need.
+
+| repo | met | measured contents |
+|---|---|---|
+| `keel` | 2/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 10 workflows |
+| `personal-soc` | 0/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 0 tests, 2 workflows |
+
+So `keel` is marked down on **PW.4** ("run the dependency and container lanes")
+for having no containers, on **PW.8** ("run the test lanes") for having almost
+no tests, and on **RV.1** for not running `dast` on a schedule against an
+application that does not exist. `personal-soc` is 100% PowerShell with no
+build artifact at all. Neither is failing; neither has the thing.
+
+**The pressure this creates is the actual risk.** The obvious way to move those
+numbers is to enable `containers`, `dast` and `unit` anyway. Each would produce
+a lane that runs, finds nothing because there is nothing, and reports
+`success` — a green lane over an empty target, which is exactly what the
+maturity model refuses when it separates `reporting_capabilities` from
+`enabled_capabilities` so a repository cannot "claim coverage by flipping a
+toggle". The SSDF view has no such guard: a practice moves to `met` on a lane
+reporting, and a lane over nothing reports.
+
+**What was done instead, 2026-09-04.** Only `iac` was enabled on either, because
+it is the one that genuinely applies — checkov reads GitHub Actions workflows
+(`CKV_GHA_*`, which is where mykronos's own IaC findings come from), and keel
+has ten and personal-soc two. Install PRs: keel #77, personal-soc #6. Nothing
+else was enabled, so their scores stay low and honest rather than rising on
+lanes scanning nothing.
+
+**Acceptance criteria**
+
+- A practice whose capabilities have nothing to act on in this repository
+  reports `not_applicable`, with the reason — "no container image is built
+  here" reads differently from "the container lane has never run".
+- The determination is evidenced rather than declared: the SBOM, the presence
+  of a Dockerfile, a build artifact — something observable — not a per-repo
+  checkbox, which is a toggle again wearing a different hat.
+- `keel` and `personal-soc` stop being marked down for PW.4, PW.8 and RV.1.
+- The counts distinguish "12 of 13, one not applicable" from "12 of 13, one
+  outstanding". They are different sentences.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
+scoring repositories and finding most of their gaps were not gaps. Related to
+B-051: the same two repositories are also the ones whose languages no
+configured analyser can read.
+
+---
+
+### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+`scripts/check_pipeline_conformance.py` enforces the pipeline standard, and its
+own list is two entries long:
+
+    PIPELINES = (
+        "deploy/concourse/pipelines/mykronos.yml",
+        "deploy/concourse/pipelines/thehub.yml",
+    )
+
+`personal-soc.yml` and `keel` are not in it. That is not a small exemption:
+
+| pipeline | work tasks | **without a timeout** |
+|---|---|---|
+| `mykronos.yml` | 28 | **0** |
+| `personal-soc.yml` | 12 | **12** |
+
+**Every task in personal-soc's pipeline is uncapped, and the worker is
+shared.** PS-7's own rationale, written on the `hub_report` anchor, is that "a
+hook that hangs holds the single worker exactly as a scan does". There is one
+worker for the whole estate. A hung task in personal-soc holds `mykronos` and
+`thehub` behind it — so this is an availability property of the platform, not a
+tidiness property of one repository.
+
+The standard is also what asserts a reporting job is cross-checked, which is how
+`silent` and `never_reported` become detectable at all (spec 15 §4a.1). Two
+pipelines are outside that guarantee.
+
+**Adding them to `PIPELINES` fails immediately**, which is presumably why it was
+not done — twelve violations arrive at once and the check goes red on work
+nobody scheduled. That is an argument for a migration order, not for the
+exemption: the check that would have caught this is the check that was scoped
+around it.
+
+**Found by adding a job to it.** `iac` was enabled on `personal-soc` on
+2026-09-04 and the new job was written with a `timeout: 15m` — noticed only
+because the conformance test was run by hand against a pipeline it does not
+cover. Nothing would have objected to a thirteenth uncapped task.
+
+**Acceptance criteria**
+
+- `personal-soc.yml` and keel's pipeline are in `PIPELINES`, or an entry records
+  which rules they are exempt from and why, per pipeline rather than by absence.
+- Every work task in every listed pipeline carries a timeout. Twelve tasks need
+  a measured cap, the way D-051 set the others from observed durations rather
+  than from a round number.
+- A pipeline added to the repository is covered by the standard by default —
+  the current shape means a new pipeline is exempt until somebody remembers.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while adding the `iac` lane to
+`personal-soc`. Related to B-058: the same repository was also the one whose
+SSDF gaps were mostly practices it cannot apply.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned

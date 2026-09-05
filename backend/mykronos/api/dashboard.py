@@ -4144,6 +4144,54 @@ def _ssdf_functions(request: Request, repo_full_name: str) -> dict[str, ssdf.Fun
 
     states: dict[str, ssdf.FunctionState] = {}
 
+    # The design register — surfaces and controls — is operational rather than
+    # lake state, so it is counted here and not through `count()` above. Both
+    # halves are required: surfaces alone say what is at stake and name nothing
+    # that protects it, and controls alone claim mitigations for an attack
+    # surface nobody wrote down. PW.1 asks for the pair, so the pair is what
+    # evidences it.
+    try:
+        from mykronos.db.models import RepoControl, RepoSurface
+
+        with request.app.state.db.session() as design_session:
+            surfaces = int(
+                design_session.query(RepoSurface)
+                .filter(RepoSurface.repo_full_name == repo_full_name)
+                .count()
+            )
+            controls = int(
+                design_session.query(RepoControl)
+                .filter(RepoControl.repo_full_name == repo_full_name)
+                .count()
+            )
+    except Exception:  # noqa: BLE001 — unread, not empty, same as governance
+        logger.warning(
+            "Could not read the design register for %s; PW.1 will report it as "
+            "unread rather than as absent.",
+            scrub(repo_full_name),
+        )
+    else:
+        if surfaces and controls:
+            detail = (
+                f"{surfaces} declared surface(s) and {controls} declared "
+                "control(s) mitigating them"
+            )
+        elif surfaces:
+            detail = (
+                f"{surfaces} declared surface(s) and no controls recorded "
+                "against them"
+            )
+        elif controls:
+            detail = (
+                f"{controls} declared control(s) and no attack surface "
+                "recorded for them to mitigate"
+            )
+        else:
+            detail = "no attack surface or controls have been declared"
+        states["design_register"] = ssdf.FunctionState(
+            evidenced=bool(surfaces and controls), detail=detail
+        )
+
     decisions = count("risk_decisions")
     if decisions is not None:
         states["oracle"] = ssdf.FunctionState(

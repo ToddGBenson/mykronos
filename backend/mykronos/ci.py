@@ -133,6 +133,13 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # build, two uploads, each answering for itself (spec 15 §4a.1).
     "dast-demo": "dast",
     "dast-prod": "dast",
+    # `dast-staging` scans the standing staging environment on a daily timer
+    # rather than after a deploy, because staging is deployed out of band. That
+    # makes registering it matter more than for its two siblings, not less: a
+    # timer-triggered lane has no upstream build to be conspicuous by its
+    # absence, so the coverage cross-check is the only thing that can notice it
+    # has stopped.
+    "dast-staging": "dast",
     "functional-dast": ("functional", "dast"),
     "ai-models": "ai",
 }

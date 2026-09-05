@@ -200,3 +200,52 @@ class TestSummary:
 
         assert set(counts) == {"met", "partial", "not_evidenced", "not_applicable"}
         assert sum(counts.values()) == len(ssdf.PRACTICES)
+
+
+class TestDesignIsEvidencedByTheRegisterItAsksFor:
+    """PW.1 was unreachable for every repository, whatever anybody did.
+
+    Its `how_to_evidence` has said "declare the attack surface and record the
+    controls that mitigate it" since it was written, and the assessment could
+    read neither register — so the practice fell through to the branch for a
+    practice with nothing observable behind it and returned `not_evidenced`
+    permanently. That branch was honest when nothing mapped to design; spec 28
+    added the two registers and this practice was never reconnected to them.
+    An instruction a platform prints and then cannot act on is worse than no
+    instruction, because somebody follows it and nothing moves.
+    """
+
+    def _assess(self, state: ssdf.FunctionState | None):
+        return _by_id(
+            ssdf.assess(
+                reporting_capabilities=set(),
+                enabled_capabilities=set(),
+                confirmed_controls=set(),
+                known_controls=set(),
+                functions={"design_register": state} if state else {},
+            )
+        )
+
+    def test_surfaces_and_controls_together_evidence_it(self) -> None:
+        results = self._assess(
+            ssdf.FunctionState(True, "17 declared surface(s) and 10 declared control(s)")
+        )
+
+        assert results["PW.1"].status == "met"
+        assert "17 declared surface(s)" in results["PW.1"].evidence[0]
+
+    def test_surfaces_alone_do_not(self) -> None:
+        """What is at stake, with nothing recorded that protects it."""
+        results = self._assess(
+            ssdf.FunctionState(False, "10 declared surface(s) and no controls recorded")
+        )
+
+        assert results["PW.1"].status == "not_evidenced"
+        assert "no controls recorded" in results["PW.1"].missing[0]
+
+    def test_an_unread_register_leaves_it_unevidenced_rather_than_met(self) -> None:
+        """A read that failed supplies no state at all, the same shape as an
+        unreadable branch-protection control. It must not upgrade to met."""
+        results = self._assess(None)
+
+        assert results["PW.1"].status == "not_evidenced"
