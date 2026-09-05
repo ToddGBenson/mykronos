@@ -606,3 +606,62 @@ class TestTheTwoControlsThatWereAlwaysInThePayload:
 
         assert control(result, "linear_history_required").state == "off"
         assert control(result, "branch_deletion_blocked").state == "off"
+
+
+class TestThreeMoreThatWereInThePayload:
+    """1.1.5, 1.1.10 and 1.1.11, and one of them was described wrongly.
+
+    `CIS_UNCOVERED` said 1.1.11 was "not in branch protection". It is:
+    `required_conversation_resolution` arrives in the same response as
+    everything else, and on this platform's own repository it is enabled. The
+    entry was written from memory of the API rather than from a payload, which
+    is the failure this test exists to stop repeating -- a benchmark gap listed
+    for the wrong reason is worse than one listed for the right one, because
+    nobody re-checks it.
+    """
+
+    async def test_conversation_resolution_is_read(self) -> None:
+        on = await governance.read(
+            fake(protection(required_conversation_resolution={"enabled": True})),
+            REPO, BRANCH,
+        )
+        assert control(on, "conversation_resolution_required").state == "on"
+
+        off = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(off, "conversation_resolution_required").state == "off"
+
+    async def test_up_to_date_is_read_from_inside_the_status_check_block(self) -> None:
+        strict = await governance.read(
+            fake(protection(required_status_checks={"contexts": ["sast"], "strict": True})),
+            REPO, BRANCH,
+        )
+        assert control(strict, "branch_up_to_date_required").state == "on"
+
+    async def test_no_required_checks_means_up_to_date_is_off_not_unknown(self) -> None:
+        """`strict` lives inside required_status_checks, so it disappears with
+        it. Off is the right answer rather than unread: a branch cannot be
+        required to be current with respect to checks that do not exist."""
+        payload = protection()
+        payload.pop("required_status_checks")
+        result = await governance.read(fake(payload), REPO, BRANCH)
+
+        assert control(result, "branch_up_to_date_required").state == "off"
+
+    async def test_dismissal_restriction_is_read(self) -> None:
+        restricted = await governance.read(
+            fake(protection(required_pull_request_reviews={
+                "required_approving_review_count": 2,
+                "dismissal_restrictions": {"users": [], "teams": ["security"]},
+            })),
+            REPO, BRANCH,
+        )
+        assert control(restricted, "review_dismissal_restricted").state == "on"
+
+        unrestricted = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(unrestricted, "review_dismissal_restricted").state == "off"
+
+    async def test_dismissal_restriction_is_the_one_that_prevents_a_signal(self) -> None:
+        """An unrestricted dismissal lets the author clear the review blocking
+        their own change, so it belongs with the approval controls rather than
+        with the history ones."""
+        assert governance.PREVENTS["review_dismissal_restricted"] == ("self_approval",)
