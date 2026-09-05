@@ -4097,7 +4097,27 @@ async def _ssdf_assess(
         if posture.readable:
             for control in posture.controls:
                 known.add(control.key)
-                if control.state == "pass":
+                # `on`, not `pass`. governance.Control speaks on/off/partial/
+                # unknown and has since it was written; "pass" is in no branch
+                # of it, so this comparison never matched and `confirmed` was
+                # always empty. Every readable control reported as "is not
+                # enforced" -- including the ones that were on -- so PS.1, PS.2
+                # and PW.7 could not reach `met` for any repository however
+                # well it was configured.
+                #
+                # It stayed invisible because the App lacked `administration:
+                # read` until 2026-09-04 (B-044): while nothing was readable
+                # every control was "could not be read", which is a different
+                # sentence and the honest one. Granting the permission is what
+                # exposed this, and the Adherence tab disagreeing with the
+                # Governance tab about the same three controls is exactly the
+                # divergence this function's own docstring exists to prevent.
+                #
+                # `partial` is deliberately not confirmation. governance scores
+                # it 0.5 (governance.py:478) because two approvals is a
+                # different claim from one, and an SSDF practice is met or it
+                # is not.
+                if control.confirmed:
                     confirmed.add(control.key)
     except Exception:  # noqa: BLE001 — capability evidence still stands
         logger.warning(

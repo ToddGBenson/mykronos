@@ -111,6 +111,25 @@ class Control:
     def known(self) -> bool:
         return self.state != UNKNOWN
 
+    @property
+    def confirmed(self) -> bool:
+        """Whether this control counts as in place.
+
+        Here rather than at each caller, because it was at a caller and the
+        caller guessed. The SSDF assessment compared `state == "pass"`, which
+        is in no branch of this module's four-state vocabulary, so it never
+        matched: every readable control was reported as "is not enforced",
+        including the ones that were on, and PS.1, PS.2 and PW.7 could not be
+        met by any repository however it was configured. That went unseen for
+        as long as the App lacked `administration: read`, because while nothing
+        was readable the answer was "could not be read" and looked right.
+
+        `partial` is not confirmation. It is scored 0.5 below for a reason --
+        one required approval is a different claim from two -- and an SSDF
+        practice is met or it is not.
+        """
+        return self.state == "on"
+
 
 @dataclass(frozen=True)
 class Governance:

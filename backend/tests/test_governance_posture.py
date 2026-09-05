@@ -479,3 +479,44 @@ class TestTheEndpoint:
 
         with client.app.state.db.session() as session:  # type: ignore[attr-defined]
             assert governance.stored(session, REPO) is not None
+
+
+class TestAControlSaysWhetherItCounts:
+    """The bug this closes: two modules held the vocabulary and one guessed.
+
+    `_ssdf_assess` compared `control.state == "pass"`. This module emits `on`,
+    `off`, `partial` and `unknown` and never `pass`, so the comparison never
+    matched -- every readable control was reported to the Adherence tab as
+    "is not enforced", including the ones that were on, and PS.1, PS.2 and
+    PW.7 could not be met by any repository however well it was configured.
+
+    It hid behind a missing permission. While the App lacked
+    `administration: read` nothing was readable, every control answered "could
+    not be read", and that is a different sentence which happened to look
+    right. Granting the permission on 2026-09-04 is what surfaced it -- the
+    Governance tab said `pull_request_required: on` while Adherence said the
+    same control was not enforced, on the same read, in the same minute.
+    """
+
+    def test_on_confirms(self) -> None:
+        assert governance.Control(key="k", state="on").confirmed
+
+    def test_off_does_not(self) -> None:
+        assert not governance.Control(key="k", state="off").confirmed
+
+    def test_partial_does_not(self) -> None:
+        """Scored 0.5 for the score, but a practice is met or it is not."""
+        assert not governance.Control(key="k", state="partial").confirmed
+
+    def test_unknown_does_not(self) -> None:
+        """Unknown is not absent, and it is certainly not a pass."""
+        assert not governance.Control(key="k", state=governance.UNKNOWN).confirmed
+
+    def test_no_state_this_module_emits_is_missed_by_the_predicate(self) -> None:
+        """The shape of the original defect, asserted directly: a state this
+        module can produce that `confirmed` has never heard of would silently
+        answer False, which is how "pass" behaved for as long as it was there."""
+        emitted = {"on", "off", "partial", governance.UNKNOWN}
+        for state in emitted:
+            control = governance.Control(key="k", state=state)
+            assert control.confirmed is (state == "on"), state
