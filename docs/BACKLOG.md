@@ -1255,6 +1255,63 @@ configured analyser can read.
 
 ---
 
+### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+`scripts/check_pipeline_conformance.py` enforces the pipeline standard, and its
+own list is two entries long:
+
+    PIPELINES = (
+        "deploy/concourse/pipelines/mykronos.yml",
+        "deploy/concourse/pipelines/thehub.yml",
+    )
+
+`personal-soc.yml` and `keel` are not in it. That is not a small exemption:
+
+| pipeline | work tasks | **without a timeout** |
+|---|---|---|
+| `mykronos.yml` | 28 | **0** |
+| `personal-soc.yml` | 12 | **12** |
+
+**Every task in personal-soc's pipeline is uncapped, and the worker is
+shared.** PS-7's own rationale, written on the `hub_report` anchor, is that "a
+hook that hangs holds the single worker exactly as a scan does". There is one
+worker for the whole estate. A hung task in personal-soc holds `mykronos` and
+`thehub` behind it — so this is an availability property of the platform, not a
+tidiness property of one repository.
+
+The standard is also what asserts a reporting job is cross-checked, which is how
+`silent` and `never_reported` become detectable at all (spec 15 §4a.1). Two
+pipelines are outside that guarantee.
+
+**Adding them to `PIPELINES` fails immediately**, which is presumably why it was
+not done — twelve violations arrive at once and the check goes red on work
+nobody scheduled. That is an argument for a migration order, not for the
+exemption: the check that would have caught this is the check that was scoped
+around it.
+
+**Found by adding a job to it.** `iac` was enabled on `personal-soc` on
+2026-09-04 and the new job was written with a `timeout: 15m` — noticed only
+because the conformance test was run by hand against a pipeline it does not
+cover. Nothing would have objected to a thirteenth uncapped task.
+
+**Acceptance criteria**
+
+- `personal-soc.yml` and keel's pipeline are in `PIPELINES`, or an entry records
+  which rules they are exempt from and why, per pipeline rather than by absence.
+- Every work task in every listed pipeline carries a timeout. Twelve tasks need
+  a measured cap, the way D-051 set the others from observed durations rather
+  than from a round number.
+- A pipeline added to the repository is covered by the standard by default —
+  the current shape means a new pipeline is exempt until somebody remembers.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while adding the `iac` lane to
+`personal-soc`. Related to B-058: the same repository was also the one whose
+SSDF gaps were mostly practices it cannot apply.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned

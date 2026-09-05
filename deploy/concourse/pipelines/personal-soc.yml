@@ -440,6 +440,110 @@ jobs:
                 [ "$fail" -eq 0 ] && echo "Secret scan passed." || echo "Secret scan failed."
                 exit $fail
 
+  # -- Infrastructure as code ----------------------------------------------
+  #
+  # This repository has no Terraform, no CloudFormation and no Kubernetes
+  # manifests, which is why `iac` looked inapplicable and was never enabled.
+  # It has ten workflow files, and checkov reads those: the CKV_GHA_* rules
+  # are where this platform's own IaC findings come from. A repository whose
+  # only infrastructure is its CI is still a repository with infrastructure.
+  #
+  # In the Concourse pipeline rather than as an installed GitHub Actions
+  # workflow, and that distinction cost a merged PR to learn. `scanned_by`
+  # said `github_actions` for this repository, so enabling the capability
+  # opened an install PR (personal-soc #6) and merged a `mykronos-iac.yml`
+  # into a repository whose Actions are DISABLED at the repository level
+  # (`GET /actions/permissions` -> `enabled: false`). The workflow can never
+  # run. The record was corrected to `concourse` afterwards; the dead file is
+  # tracked separately.
+  - name: iac
+    public: false
+    serial_groups: [worker]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: source
+        trigger: true
+        passed: [guard]
+      - get: python
+      - task: checkov
+        image: python
+        # PS-7, and this pipeline is the only one in the estate whose tasks
+        # carry none - 12 of 12 work tasks here have no timeout, against 0 of
+        # 28 in mykronos.yml. There is ONE worker shared by every pipeline, so
+        # a task that hangs here holds mykronos and thehub behind it. This job
+        # is not going to be the thirteenth. B-059.
+        timeout: 15m
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+          MYKRONOS_REF: ((mykronos-ref))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet checkov
+
+                cd source
+                git config --global --add safe.directory "$PWD"
+                mkdir -p /tmp/results
+
+                # --framework github_actions, not everything. Pointing checkov
+                # at the whole tree here means it finds no terraform, no
+                # cloudformation and no kubernetes, reports zero, and the lane
+                # reads as clean rather than as inapplicable - the exact shape
+                # B-058 is about. Naming the framework says what was checked.
+                #
+                # --soft-fail because the severity decision belongs to Mykronos
+                # (spec 04 section 5), not to the scanner. A finding is still a
+                # finding; whether it stops anything is decided downstream.
+                echo "== checkov, github_actions framework =="
+                checkov --directory . --framework github_actions \
+                  --output sarif --output-file-path /tmp/results \
+                  --soft-fail --compact --quiet || true
+
+                # A missing report is "did not run", which is not "found
+                # nothing" - docs/lessons/0001, and the same check the secrets
+                # job makes for exactly the same reason.
+                if [ ! -f /tmp/results/results_sarif.sarif ]; then
+                  echo "::error:: checkov wrote no SARIF report. This is a failed scan,"
+                  echo "          not a clean one - nothing was checked."
+                  echo "*personal-soc / iac*: the IaC scan did not run." > ../notify/message.txt
+                  exit 1
+                fi
+
+                COUNT=$(python3 -c 'import json;d=json.load(open("/tmp/results/results_sarif.sarif"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])))')
+                echo "checkov findings: $COUNT"
+
+                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                  echo "=================================================="
+                  echo "No ingestion token; the scan ran and reports nowhere."
+                  echo "  mykronos rotate-token ToddGBenson/personal-soc"
+                  echo "=================================================="
+                else
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -m mykronos.upload \
+                    --capability iac --tool checkov \
+                    --results-path /tmp/results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch main \
+                    --workspace "$PWD" \
+                    --severity-threshold low --blocking false \
+                    || echo "upload failed - the scan verdict above still stands."
+                fi
+
+                echo ""
+                echo "IaC scan complete."
+
   # -- Static analysis -----------------------------------------------------
   #
   # guard parses every script, which proves only that PowerShell can read it.
