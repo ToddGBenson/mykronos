@@ -73,6 +73,11 @@ CONTROL_ORDER = (
     "signed_commits_required",
     "required_status_checks",
     "force_push_blocked",
+    "linear_history_required",
+    "branch_deletion_blocked",
+    "conversation_resolution_required",
+    "branch_up_to_date_required",
+    "review_dismissal_restricted",
 )
 
 #: Which Aegis signal each control would have prevented (spec 30 §2). The link
@@ -88,6 +93,56 @@ PREVENTS: dict[str, tuple[str, ...]] = {
     "pull_request_required": ("self_approval",),
     "required_status_checks": (),
     "force_push_blocked": (),
+    # No Aegis signal maps to either. They protect history rather than review,
+    # and the insider-risk signals are all about how a change got approved.
+    "linear_history_required": (),
+    "branch_deletion_blocked": (),
+    "conversation_resolution_required": (),
+    "branch_up_to_date_required": (),
+    # The one of the three that does map: an unrestricted dismissal lets the
+    # author of a change clear the review that was blocking it.
+    "review_dismissal_restricted": ("self_approval",),
+}
+
+#: CIS Software Supply Chain Security Benchmark v1.0, section 1.1 (Code
+#: Changes). Cross-references, not claims -- the same footing as the
+#: `nist_800_53` families on an SSDF practice. Whether a control as configured
+#: here satisfies a given benchmark recommendation is an assessor's judgement,
+#: and this platform reads nine settings rather than auditing an organisation.
+#:
+#: Stated so the gap is visible rather than implied: section 1.1 has nineteen
+#: recommendations and these nine reach ten of them. The rest need facts this
+#: read does not have -- whether a change traces to a task (1.1.2), whether
+#: inactive branches are pruned (1.1.8), whether branch-protection changes are
+#: themselves audited (1.1.19). Reporting a subset as a score would be the
+#: error this file already refuses elsewhere; reporting which subset is not.
+CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
+    "pull_request_required": ("1.1.3", "1.1.15"),
+    "approving_reviews_required": ("1.1.3",),
+    "dismiss_stale_reviews": ("1.1.4",),
+    "codeowner_review_required": ("1.1.7",),
+    "codeowners_coverage": ("1.1.6",),
+    "enforced_for_admins": ("1.1.14",),
+    "signed_commits_required": ("1.1.12",),
+    "required_status_checks": ("1.1.9",),
+    "force_push_blocked": ("1.1.16",),
+    "linear_history_required": ("1.1.13",),
+    "branch_deletion_blocked": ("1.1.17",),
+    "conversation_resolution_required": ("1.1.11",),
+    "branch_up_to_date_required": ("1.1.10",),
+    "review_dismissal_restricted": ("1.1.5",),
+}
+
+#: The recommendations in section 1.1 that these nine settings cannot answer,
+#: with what each would need. Carried in the response so the panel can say what
+#: it did not check -- an audit that lists only what it looked at reads as a
+#: clean bill of health for everything it skipped.
+CIS_UNCOVERED: dict[str, str] = {
+    "1.1.1": "version control is in use -- true by construction here, not read",
+    "1.1.2": "a change traces to a task; needs an issue/PR linkage convention",
+    "1.1.8": "inactive branches are reviewed and removed; needs branch ages",
+    "1.1.18": "merges are scanned for risk -- the scan lanes answer this, not this read",
+    "1.1.19": "branch-protection changes are audited; ControlDrift is the closest thing",
 }
 
 UNKNOWN = "unknown"
@@ -110,6 +165,25 @@ class Control:
     @property
     def known(self) -> bool:
         return self.state != UNKNOWN
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether this control counts as in place.
+
+        Here rather than at each caller, because it was at a caller and the
+        caller guessed. The SSDF assessment compared `state == "pass"`, which
+        is in no branch of this module's four-state vocabulary, so it never
+        matched: every readable control was reported as "is not enforced",
+        including the ones that were on, and PS.1, PS.2 and PW.7 could not be
+        met by any repository however it was configured. That went unseen for
+        as long as the App lacked `administration: read`, because while nothing
+        was readable the answer was "could not be read" and looked right.
+
+        `partial` is not confirmation. It is scored 0.5 below for a reason --
+        one required approval is a different claim from two -- and an SSDF
+        practice is met or it is not.
+        """
+        return self.state == "on"
 
 
 @dataclass(frozen=True)
@@ -158,6 +232,11 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
             "signed_commits_required": False,
             "required_status_checks": 0,
             "force_push_blocked": False,
+            "linear_history_required": False,
+            "branch_deletion_blocked": False,
+            "conversation_resolution_required": False,
+            "branch_up_to_date_required": False,
+            "review_dismissal_restricted": False,
         }
 
     reviews = protection.get("required_pull_request_reviews") or {}
@@ -178,6 +257,27 @@ def _from_protection(protection: dict[str, Any] | None) -> dict[str, Any]:
         "force_push_blocked": not bool(
             (protection.get("allow_force_pushes") or {}).get("enabled")
         ),
+        "linear_history_required": bool(
+            (protection.get("required_linear_history") or {}).get("enabled")
+        ),
+        # Both of these are inverted, and for the same reason `force_push_blocked`
+        # is: the API reports the permission, and the control is its absence.
+        # Reading `allow_deletions.enabled` as the control would report every
+        # protected branch as unprotected.
+        "branch_deletion_blocked": not bool(
+            (protection.get("allow_deletions") or {}).get("enabled")
+        ),
+        "conversation_resolution_required": bool(
+            (protection.get("required_conversation_resolution") or {}).get("enabled")
+        ),
+        # `strict` lives inside required_status_checks, so it is absent
+        # whenever no checks are required at all -- which reads as off, and is
+        # right: a branch cannot be required to be up to date with respect to
+        # checks that do not exist.
+        "branch_up_to_date_required": bool(checks.get("strict")),
+        # Present only once somebody restricts dismissal; absent means anyone
+        # who can review can also dismiss.
+        "review_dismissal_restricted": bool(reviews.get("dismissal_restrictions")),
     }
 
 
@@ -414,6 +514,47 @@ def _controls(facts: dict[str, Any], coverage: float | None) -> list[Control]:
             facts.get("force_push_blocked"),
             on="Force pushes to the default branch are blocked.",
             off="History on the default branch can be rewritten.",
+            unknown="Not read.",
+        ),
+        "linear_history_required": _bool_control(
+            "linear_history_required",
+            facts.get("linear_history_required"),
+            on="Merge commits are refused, so history stays a straight line.",
+            off="Merge commits are allowed, so what shipped can be harder to "
+            "attribute to a single reviewed change.",
+            unknown="Not read.",
+        ),
+        "branch_deletion_blocked": _bool_control(
+            "branch_deletion_blocked",
+            facts.get("branch_deletion_blocked"),
+            on="The default branch cannot be deleted.",
+            off="The default branch can be deleted, taking its protection "
+            "rules with it.",
+            unknown="Not read.",
+        ),
+        "conversation_resolution_required": _bool_control(
+            "conversation_resolution_required",
+            facts.get("conversation_resolution_required"),
+            on="Every review comment must be resolved before a merge.",
+            off="A change can merge with a reviewer's unanswered question "
+            "still open on it.",
+            unknown="Not read.",
+        ),
+        "branch_up_to_date_required": _bool_control(
+            "branch_up_to_date_required",
+            facts.get("branch_up_to_date_required"),
+            on="A branch must be current with the base before it merges, so "
+            "the checks that passed ran against what actually lands.",
+            off="A branch can merge while behind the base, so a green check "
+            "may describe a combination that was never tested.",
+            unknown="Not read.",
+        ),
+        "review_dismissal_restricted": _bool_control(
+            "review_dismissal_restricted",
+            facts.get("review_dismissal_restricted"),
+            on="Only named people may dismiss a review.",
+            off="Anyone who can review can also dismiss one, including the "
+            "author of the change it was blocking.",
             unknown="Not read.",
         ),
     }
@@ -668,8 +809,25 @@ def as_dict(
                 # link is the point of the panel: it turns a log of oddities
                 # into a diagnosis with a remedy the team can action.
                 "prevents": list(PREVENTS.get(control.key, ())),
+                # CIS Software Supply Chain Security Benchmark v1.0 section
+                # 1.1, as a cross-reference on the same footing as an SSDF
+                # practice's `nist_800_53` families. Named per control rather
+                # than totalled, because a benchmark score built from a subset
+                # of its recommendations is a number nobody can check.
+                "cis_supply_chain": list(CIS_SUPPLY_CHAIN.get(control.key, ())),
             }
             for control in governance.controls
+        ],
+        # What this read does NOT cover, carried in the response rather than
+        # left to be inferred. Ten of section 1.1's nineteen recommendations
+        # are answerable from branch protection; the other nine need facts a
+        # branch-protection read does not have. An audit that lists only what
+        # it checked reads as a clean bill of health for everything it skipped,
+        # which is the same failure as a silent lane looking like a clean one.
+        "cis_not_covered": [
+            {"recommendation": rec, "needs": needs}
+            for rec, needs in sorted(CIS_UNCOVERED.items(),
+                                     key=lambda kv: [int(n) for n in kv[0].split(".")])
         ],
         "note": (
             "Read, never written: this platform does not turn on branch "

@@ -2000,6 +2000,13 @@ class IncidentOut(BaseModel):
     note: str = ""
 
 
+class CisGapOut(BaseModel):
+    """A CIS recommendation this read does not reach, and why."""
+
+    recommendation: str
+    needs: str
+
+
 class ControlStateOut(BaseModel):
     """One change-governance control (spec 30 §2)."""
 
@@ -2020,6 +2027,19 @@ class ControlStateOut(BaseModel):
             "The insider-risk signals this control would have prevented. The link is "
             "the point of the panel: it turns a log of oddities into a "
             "diagnosis with a remedy the team can action themselves."
+        ),
+    )
+    cis_supply_chain: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CIS Software Supply Chain Security Benchmark v1.0 §1.1 "
+            "recommendations this control speaks to. A cross-reference on the "
+            "same footing as an SSDF practice's `nist_800_53` families, and "
+            "not a claim: whether a setting as configured satisfies a "
+            "recommendation is an assessor's judgement. Deliberately not "
+            "totalled into a benchmark score — nine settings reach ten of "
+            "nineteen recommendations, and a percentage built from that would "
+            "be a number nobody can check."
         ),
     )
 
@@ -2061,6 +2081,16 @@ class GovernanceOut(BaseModel):
         ),
     )
     controls: list[ControlStateOut] = Field(default_factory=list)
+    cis_not_covered: list[CisGapOut] = Field(
+        default_factory=list,
+        description=(
+            "The §1.1 recommendations this read cannot answer, and what each "
+            "would need. Carried rather than left to be inferred: an audit "
+            "that lists only what it checked reads as a clean bill of health "
+            "for everything it skipped, which is the same failure as a silent "
+            "lane looking like a clean one."
+        ),
+    )
     drift: list[ControlDriftOut] = Field(
         default_factory=list,
         description=(
@@ -4097,7 +4127,27 @@ async def _ssdf_assess(
         if posture.readable:
             for control in posture.controls:
                 known.add(control.key)
-                if control.state == "pass":
+                # `on`, not `pass`. governance.Control speaks on/off/partial/
+                # unknown and has since it was written; "pass" is in no branch
+                # of it, so this comparison never matched and `confirmed` was
+                # always empty. Every readable control reported as "is not
+                # enforced" -- including the ones that were on -- so PS.1, PS.2
+                # and PW.7 could not reach `met` for any repository however
+                # well it was configured.
+                #
+                # It stayed invisible because the App lacked `administration:
+                # read` until 2026-09-04 (B-044): while nothing was readable
+                # every control was "could not be read", which is a different
+                # sentence and the honest one. Granting the permission is what
+                # exposed this, and the Adherence tab disagreeing with the
+                # Governance tab about the same three controls is exactly the
+                # divergence this function's own docstring exists to prevent.
+                #
+                # `partial` is deliberately not confirmation. governance scores
+                # it 0.5 (governance.py:478) because two approvals is a
+                # different claim from one, and an SSDF practice is met or it
+                # is not.
+                if control.confirmed:
                     confirmed.add(control.key)
     except Exception:  # noqa: BLE001 — capability evidence still stands
         logger.warning(

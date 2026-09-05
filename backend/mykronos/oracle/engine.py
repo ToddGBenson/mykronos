@@ -840,12 +840,25 @@ def _governance_snapshot(
         )
 
     value = int(reading.get("governance_score") or 0)
+    # Stringified, because the snapshot is persisted with `json.dumps`
+    # (oracle/service.py) and a datetime is not serialisable. This was
+    # unreachable for as long as governance was unreadable: with no read there
+    # is no `read_at`, so the whole of portfolio scoring worked because one of
+    # its inputs was permanently absent. Granting the App `administration:
+    # read` on 2026-09-04 (B-044) made every repository fail to persist a
+    # decision at once, with the scores computed and thrown away.
+    raw_read_at = reading.get("read_at")
+    read_at = (
+        raw_read_at.isoformat()
+        if isinstance(raw_read_at, datetime)
+        else raw_read_at
+    )
     snapshot: dict[str, Any] = {
         "available": True,
         "governance_score": value,
         "source": reading.get("source"),
         "controls_read": read_controls,
-        "read_at": reading.get("read_at"),
+        "read_at": read_at,
         "good_enough": weights.good_enough,
         "contribution": 0.0,
     }

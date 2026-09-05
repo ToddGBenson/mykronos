@@ -73,3 +73,36 @@ weights:
   # pushes protect history after the fact.
   signed_commits_required: 4
   force_push_blocked: 3
+
+  # CIS 1.1.13 and 1.1.17, added 2026-09-04 when the branch-protection read was
+  # extended to reach them. Weighted lowest deliberately, and the reasoning is
+  # the same one that puts force_push_blocked at 3: neither decides whether an
+  # unreviewed change gets in.
+  #
+  # `branch_deletion_blocked` is the more interesting of the two, because
+  # deleting the default branch takes every rule above it along — so it is
+  # cheap insurance on the rest of this table rather than a control in its own
+  # right. `linear_history_required` is a readability and attribution property
+  # first; a repository can be perfectly governed with merge commits, and
+  # several here are.
+  branch_deletion_blocked: 3
+  linear_history_required: 2
+
+  # CIS 1.1.5, 1.1.10 and 1.1.11, added 2026-09-04 from the same payload.
+  #
+  # `review_dismissal_restricted` is weighted with the review controls rather
+  # than down here, and it is the one worth arguing about: an unrestricted
+  # dismissal lets the author of a change clear the review that was blocking
+  # it, which makes every approval requirement above conditional on nobody
+  # choosing to.
+  review_dismissal_restricted: 8
+
+  # A branch that merges while behind the base means the checks that passed
+  # ran against a combination that never existed. Weighted with
+  # required_status_checks because it is the same claim: that a green tick
+  # describes what actually lands.
+  branch_up_to_date_required: 5
+
+  # An unresolved conversation is a reviewer's unanswered question, which is a
+  # weaker signal than a withheld approval and a real one.
+  conversation_resolution_required: 4

@@ -45,6 +45,8 @@ def protection(**overrides: Any) -> dict[str, Any]:
         "required_signatures": {"enabled": True},
         "required_status_checks": {"contexts": ["oracle", "sast"]},
         "allow_force_pushes": {"enabled": False},
+        "required_linear_history": {"enabled": True},
+        "allow_deletions": {"enabled": False},
     }
     payload.update(overrides)
     return payload
@@ -479,3 +481,254 @@ class TestTheEndpoint:
 
         with client.app.state.db.session() as session:  # type: ignore[attr-defined]
             assert governance.stored(session, REPO) is not None
+
+
+class TestAControlSaysWhetherItCounts:
+    """The bug this closes: two modules held the vocabulary and one guessed.
+
+    `_ssdf_assess` compared `control.state == "pass"`. This module emits `on`,
+    `off`, `partial` and `unknown` and never `pass`, so the comparison never
+    matched -- every readable control was reported to the Adherence tab as
+    "is not enforced", including the ones that were on, and PS.1, PS.2 and
+    PW.7 could not be met by any repository however well it was configured.
+
+    It hid behind a missing permission. While the App lacked
+    `administration: read` nothing was readable, every control answered "could
+    not be read", and that is a different sentence which happened to look
+    right. Granting the permission on 2026-09-04 is what surfaced it -- the
+    Governance tab said `pull_request_required: on` while Adherence said the
+    same control was not enforced, on the same read, in the same minute.
+    """
+
+    def test_on_confirms(self) -> None:
+        assert governance.Control(key="k", state="on").confirmed
+
+    def test_off_does_not(self) -> None:
+        assert not governance.Control(key="k", state="off").confirmed
+
+    def test_partial_does_not(self) -> None:
+        """Scored 0.5 for the score, but a practice is met or it is not."""
+        assert not governance.Control(key="k", state="partial").confirmed
+
+    def test_unknown_does_not(self) -> None:
+        """Unknown is not absent, and it is certainly not a pass."""
+        assert not governance.Control(key="k", state=governance.UNKNOWN).confirmed
+
+    def test_no_state_this_module_emits_is_missed_by_the_predicate(self) -> None:
+        """The shape of the original defect, asserted directly: a state this
+        module can produce that `confirmed` has never heard of would silently
+        answer False, which is how "pass" behaved for as long as it was there."""
+        emitted = {"on", "off", "partial", governance.UNKNOWN}
+        for state in emitted:
+            control = governance.Control(key="k", state=state)
+            assert control.confirmed is (state == "on"), state
+
+
+class TestTheCisCrossReferenceSaysWhatItDidNotCheck:
+    """A benchmark audit that lists only what it looked at is a clean bill of
+    health for everything it skipped.
+
+    Nine branch-protection settings reach ten of CIS Software Supply Chain
+    Security Benchmark v1.0 §1.1's nineteen recommendations. Reporting those
+    ten as a percentage would be the failure this platform refuses everywhere
+    else -- a number nobody can check -- so the other nine are carried in the
+    response with what each would need instead.
+    """
+
+    def test_every_control_carries_its_cis_recommendations(self) -> None:
+        for key in governance.CONTROL_ORDER:
+            assert governance.CIS_SUPPLY_CHAIN.get(key), key
+
+    def test_covered_and_uncovered_do_not_overlap(self) -> None:
+        """A recommendation cannot be both answered and unanswerable."""
+        covered = {r for recs in governance.CIS_SUPPLY_CHAIN.values() for r in recs}
+        assert not (covered & set(governance.CIS_UNCOVERED)), (
+            covered & set(governance.CIS_UNCOVERED)
+        )
+
+    def test_together_they_account_for_all_of_section_1_1(self) -> None:
+        """The point of the pair: nothing in §1.1 is silently absent. If a
+        recommendation is neither answered nor listed as unanswerable, the
+        audit has skipped it without saying so."""
+        covered = {r for recs in governance.CIS_SUPPLY_CHAIN.values() for r in recs}
+        accounted = covered | set(governance.CIS_UNCOVERED)
+        expected = {f"1.1.{n}" for n in range(1, 20)}
+        assert accounted == expected, expected - accounted
+
+    def test_every_gap_says_what_it_would_need(self) -> None:
+        """A gap with no remedy is a complaint."""
+        for rec, needs in governance.CIS_UNCOVERED.items():
+            assert needs.strip(), rec
+
+
+class TestTheTwoControlsThatWereAlwaysInThePayload:
+    """CIS 1.1.13 and 1.1.17 were listed as unreadable and were not.
+
+    Both `required_linear_history` and `allow_deletions` arrive in the same
+    branch-protection response the other seven controls are read from. They sat
+    in `CIS_UNCOVERED` described as "readable, not yet read" — the cheapest
+    coverage available in the benchmark, and unclaimed because nobody looked at
+    the payload twice.
+    """
+
+    async def test_linear_history_is_read(self) -> None:
+        result = await governance.read(fake(protection()), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "on"
+
+    async def test_branch_deletion_blocked_is_the_inverse_of_the_permission(self) -> None:
+        """The trap in both of these, and the one `force_push_blocked` already
+        set: the API reports the PERMISSION and the control is its absence.
+        Reading `allow_deletions.enabled` straight through would report every
+        protected branch in the estate as unprotected."""
+        blocked = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(blocked, "branch_deletion_blocked").state == "on"
+
+        allowed = await governance.read(
+            fake(protection(allow_deletions={"enabled": True})), REPO, BRANCH
+        )
+        assert control(allowed, "branch_deletion_blocked").state == "off"
+
+    async def test_absent_fields_read_as_off_rather_than_on(self) -> None:
+        """An older API response, or a branch protected without them. The
+        permission being absent means it is not granted, so the control holds —
+        but linear history absent means it is not required, so it does not."""
+        payload = protection()
+        payload.pop("required_linear_history")
+        payload.pop("allow_deletions")
+        result = await governance.read(fake(payload), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "off"
+        assert control(result, "branch_deletion_blocked").state == "on"
+
+    async def test_an_unprotected_branch_reports_both_as_off(self) -> None:
+        result = await governance.read(fake(None), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "off"
+        assert control(result, "branch_deletion_blocked").state == "off"
+
+
+class TestThreeMoreThatWereInThePayload:
+    """1.1.5, 1.1.10 and 1.1.11, and one of them was described wrongly.
+
+    `CIS_UNCOVERED` said 1.1.11 was "not in branch protection". It is:
+    `required_conversation_resolution` arrives in the same response as
+    everything else, and on this platform's own repository it is enabled. The
+    entry was written from memory of the API rather than from a payload, which
+    is the failure this test exists to stop repeating -- a benchmark gap listed
+    for the wrong reason is worse than one listed for the right one, because
+    nobody re-checks it.
+    """
+
+    async def test_conversation_resolution_is_read(self) -> None:
+        on = await governance.read(
+            fake(protection(required_conversation_resolution={"enabled": True})),
+            REPO, BRANCH,
+        )
+        assert control(on, "conversation_resolution_required").state == "on"
+
+        off = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(off, "conversation_resolution_required").state == "off"
+
+    async def test_up_to_date_is_read_from_inside_the_status_check_block(self) -> None:
+        strict = await governance.read(
+            fake(protection(required_status_checks={"contexts": ["sast"], "strict": True})),
+            REPO, BRANCH,
+        )
+        assert control(strict, "branch_up_to_date_required").state == "on"
+
+    async def test_no_required_checks_means_up_to_date_is_off_not_unknown(self) -> None:
+        """`strict` lives inside required_status_checks, so it disappears with
+        it. Off is the right answer rather than unread: a branch cannot be
+        required to be current with respect to checks that do not exist."""
+        payload = protection()
+        payload.pop("required_status_checks")
+        result = await governance.read(fake(payload), REPO, BRANCH)
+
+        assert control(result, "branch_up_to_date_required").state == "off"
+
+    async def test_dismissal_restriction_is_read(self) -> None:
+        restricted = await governance.read(
+            fake(protection(required_pull_request_reviews={
+                "required_approving_review_count": 2,
+                "dismissal_restrictions": {"users": [], "teams": ["security"]},
+            })),
+            REPO, BRANCH,
+        )
+        assert control(restricted, "review_dismissal_restricted").state == "on"
+
+        unrestricted = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(unrestricted, "review_dismissal_restricted").state == "off"
+
+    async def test_dismissal_restriction_is_the_one_that_prevents_a_signal(self) -> None:
+        """An unrestricted dismissal lets the author clear the review blocking
+        their own change, so it belongs with the approval controls rather than
+        with the history ones."""
+        assert governance.PREVENTS["review_dismissal_restricted"] == ("self_approval",)
+
+
+class TestTheSnapshotSurvivesBeingPersisted:
+    """A decision that cannot be written is a decision nobody has.
+
+    `oracle/service.py` persists `inputs_snapshot` with `json.dumps`, and this
+    snapshot carried `read_at` straight from the governance reading, where it
+    is a datetime. Portfolio scoring computed a score for every repository and
+    then threw all of them away:
+
+        WARNING Portfolio decision for ToddGBenson/mykronos failed:
+                Object of type datetime is not JSON serializable
+        INFO    Portfolio scoring: 0 scored, 3 failed
+
+    It was unreachable for as long as governance was unreadable -- with no read
+    there is no `read_at`, so this worked because one of its inputs was
+    permanently absent. Granting the App `administration: read` on 2026-09-04
+    broke every repository at once. The test is not "read_at is a string"; it
+    is that the snapshot goes through the function that stores it.
+    """
+
+    def _snapshot(self, reading: dict[str, Any] | None) -> dict[str, Any]:
+        from dataclasses import replace
+
+        from mykronos.config import get_settings
+        from mykronos.oracle import load_policy
+        from mykronos.oracle.engine import _governance_snapshot
+
+        loaded = load_policy(get_settings().oracle_policy_path)
+        merged = GovernancePolicy(points_at_zero=8.0)
+        snapshot, _ = _governance_snapshot(reading, replace(loaded, governance=merged))
+        return snapshot
+
+    def test_a_datetime_read_at_is_serialisable(self) -> None:
+        import json
+        from datetime import datetime as dt
+
+        snapshot = self._snapshot(
+            {
+                "governance_score": 40,
+                "source": "branch_protection",
+                "read_at": dt(2026, 9, 4, 12, 0, 0),
+                # A count, not a list -- below `minimum_controls` the function
+                # returns an "not a posture" snapshot before it ever reaches
+                # read_at, which is the right behaviour and not what is under
+                # test here.
+                "controls_read": 9,
+            }
+        )
+
+        json.dumps(snapshot)  # the assertion: this is what service.py does
+        assert snapshot["read_at"] == "2026-09-04T12:00:00"
+
+    def test_an_absent_read_at_is_left_alone(self) -> None:
+        import json
+
+        snapshot = self._snapshot(
+            {"governance_score": 40, "source": "branch_protection", "controls_read": 9}
+        )
+
+        json.dumps(snapshot)
+        assert snapshot["read_at"] is None
+
+    def test_an_unavailable_reading_is_still_serialisable(self) -> None:
+        import json
+
+        json.dumps(self._snapshot(None))
