@@ -1333,7 +1333,13 @@ speaks to.
 | `signed_commits_required` | 1.1.12 | **off** | **off** | **off** | **off** | **off** |
 | `required_status_checks` | 1.1.9 | **off** | **off** | **off** | **off** | **off** |
 | `force_push_blocked` | 1.1.16 | on | **off** | on | on | on |
-| **governance score** | | **33** | **11** | **57** | **52** | **52** |
+| `linear_history_required` | 1.1.13 | on | **off** | on | on | on |
+| `branch_deletion_blocked` | 1.1.17 | on | **off** | on | on | on |
+| `conversation_resolution_required` | 1.1.11 | **off** | **off** | on | on | on |
+| `branch_up_to_date_required` | 1.1.10 | **off** | **off** | **off** | **off** | **off** |
+| `review_dismissal_restricted` | 1.1.5 | **off** | **off** | **off** | **off** | **off** |
+| **governance score, 9 controls** | | **33** | **11** | **57** | **52** | **52** |
+| **governance score, 14 controls** | | **30** | **8** | **53** | **49** | **49** |
 
 **Three gaps are estate-wide**, and they are the ones that matter most:
 
@@ -1359,12 +1365,23 @@ repository in the estate and scores lowest of the four established ones, at 33.
 account that owns it, and `force_push_blocked` is the one thing standing
 between its history and a rewrite.
 
-**What this does not say.** Nine settings reach ten of §1.1's nineteen
-recommendations; the response carries the other nine with what each would need,
-and no score is computed across the subset. Two of the nine —
-**1.1.13 linear history** and **1.1.17 branch-deletion denial** — are already in
-the branch-protection payload and simply not read yet. They are the cheapest
-coverage available and should land before anything harder.
+**What this does not say.** Fourteen settings reach fourteen of §1.1's
+nineteen recommendations; the response carries the other five with what each
+would need, and no score is computed across the subset.
+
+*Updated 2026-09-05, after the deploy.* This paragraph said nine settings and
+ten recommendations, which was true when written and stopped being true in the
+same pull request: the five controls named as "already in the branch-protection
+payload and simply not read yet" were then read. They were the cheapest
+coverage available and they landed first, as the story asked. Verified live —
+14 covered plus 5 uncovered is 19, which is every recommendation in §1.1 and
+none counted twice.
+
+**Four of the five were already on and nobody knew.** `linear_history_required`
+and `branch_deletion_blocked` read `on` for TheHub, keel, mykronos and
+personal-soc; `conversation_resolution_required` is `on` for three. That is
+real coverage this estate already had and could not see, which is worth
+separating from the coverage it does not have.
 
 **Sequencing matters more than the list.** Requiring pull requests and status
 checks changes how work reaches `main`, and two repositories cannot absorb that
@@ -1395,6 +1412,12 @@ status checks there would stop every merge until those five tests pass; and
   cost of two field reads.
 - The governance scores are re-read afterwards and recorded here, so the change
   is evidenced rather than asserted.
+
+**Scores fell when coverage grew, and that is the reading working.** Every
+score dropped 3-4 points on 2026-09-05 because five more controls now count and
+three of them are off everywhere. Nothing was turned off; the denominator got
+honest. A governance score that only ever rises as the audit widens would be
+measuring the audit rather than the estate.
 
 **Provenance:** DevSecOps assessment, 2026-09-04, from the first readable
 governance pass after B-044. The read also exposed the defect that had hidden

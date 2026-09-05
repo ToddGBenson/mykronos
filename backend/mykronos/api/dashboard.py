@@ -2037,8 +2037,9 @@ class ControlStateOut(BaseModel):
             "same footing as an SSDF practice's `nist_800_53` families, and "
             "not a claim: whether a setting as configured satisfies a "
             "recommendation is an assessor's judgement. Deliberately not "
-            "totalled into a benchmark score — nine settings reach ten of "
-            "nineteen recommendations, and a percentage built from that would "
+            "totalled into a benchmark score — fourteen settings reach "
+            "fourteen of nineteen recommendations, and a percentage built "
+            "from that would "
             "be a number nobody can check."
         ),
     )

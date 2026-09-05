@@ -3097,7 +3097,7 @@ export interface components {
             prevents?: string[];
             /**
              * Cis Supply Chain
-             * @description CIS Software Supply Chain Security Benchmark v1.0 §1.1 recommendations this control speaks to. A cross-reference on the same footing as an SSDF practice's `nist_800_53` families, and not a claim: whether a setting as configured satisfies a recommendation is an assessor's judgement. Deliberately not totalled into a benchmark score — nine settings reach ten of nineteen recommendations, and a percentage built from that would be a number nobody can check.
+             * @description CIS Software Supply Chain Security Benchmark v1.0 §1.1 recommendations this control speaks to. A cross-reference on the same footing as an SSDF practice's `nist_800_53` families, and not a claim: whether a setting as configured satisfies a recommendation is an assessor's judgement. Deliberately not totalled into a benchmark score — fourteen settings reach fourteen of nineteen recommendations, and a percentage built from that would be a number nobody can check.
              */
             cis_supply_chain?: string[];
         };

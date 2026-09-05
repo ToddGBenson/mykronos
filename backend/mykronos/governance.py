@@ -108,7 +108,8 @@ PREVENTS: dict[str, tuple[str, ...]] = {
 #: Changes). Cross-references, not claims -- the same footing as the
 #: `nist_800_53` families on an SSDF practice. Whether a control as configured
 #: here satisfies a given benchmark recommendation is an assessor's judgement,
-#: and this platform reads nine settings rather than auditing an organisation.
+#: and this platform reads fourteen settings rather than auditing an
+#: organisation.
 #:
 #: Stated so the gap is visible rather than implied: section 1.1 has nineteen
 #: recommendations and these nine reach ten of them. The rest need facts this
@@ -133,7 +134,8 @@ CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
     "review_dismissal_restricted": ("1.1.5",),
 }
 
-#: The recommendations in section 1.1 that these nine settings cannot answer,
+#: The recommendations in section 1.1 that these fourteen settings cannot
+#: answer,
 #: with what each would need. Carried in the response so the panel can say what
 #: it did not check -- an audit that lists only what it looked at reads as a
 #: clean bill of health for everything it skipped.
@@ -819,8 +821,9 @@ def as_dict(
             for control in governance.controls
         ],
         # What this read does NOT cover, carried in the response rather than
-        # left to be inferred. Ten of section 1.1's nineteen recommendations
-        # are answerable from branch protection; the other nine need facts a
+        # left to be inferred. Fourteen of section 1.1's nineteen
+        # recommendations are answerable from branch protection; the other
+        # five need facts a
         # branch-protection read does not have. An audit that lists only what
         # it checked reads as a clean bill of health for everything it skipped,
         # which is the same failure as a silent lane looking like a clean one.
