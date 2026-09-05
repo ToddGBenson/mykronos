@@ -1196,6 +1196,65 @@ Corrected the same day after finding #281 had already landed a better fix.
 
 ---
 
+### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+`ssdf.summarise` counts four statuses — `met`, `partial`, `not_evidenced`,
+`not_applicable` — and across all five onboarded repositories the fourth is
+**zero**. Nothing sets it. A practice a repository cannot possibly evidence and
+one it simply has not done are the same row.
+
+That understates two repositories badly, and on a compliance view an
+understatement is not the safe direction to be wrong in — it is the one that
+gets somebody told to build what they do not need.
+
+| repo | met | measured contents |
+|---|---|---|
+| `keel` | 2/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 10 workflows |
+| `personal-soc` | 0/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 0 tests, 2 workflows |
+
+So `keel` is marked down on **PW.4** ("run the dependency and container lanes")
+for having no containers, on **PW.8** ("run the test lanes") for having almost
+no tests, and on **RV.1** for not running `dast` on a schedule against an
+application that does not exist. `personal-soc` is 100% PowerShell with no
+build artifact at all. Neither is failing; neither has the thing.
+
+**The pressure this creates is the actual risk.** The obvious way to move those
+numbers is to enable `containers`, `dast` and `unit` anyway. Each would produce
+a lane that runs, finds nothing because there is nothing, and reports
+`success` — a green lane over an empty target, which is exactly what the
+maturity model refuses when it separates `reporting_capabilities` from
+`enabled_capabilities` so a repository cannot "claim coverage by flipping a
+toggle". The SSDF view has no such guard: a practice moves to `met` on a lane
+reporting, and a lane over nothing reports.
+
+**What was done instead, 2026-09-04.** Only `iac` was enabled on either, because
+it is the one that genuinely applies — checkov reads GitHub Actions workflows
+(`CKV_GHA_*`, which is where mykronos's own IaC findings come from), and keel
+has ten and personal-soc two. Install PRs: keel #77, personal-soc #6. Nothing
+else was enabled, so their scores stay low and honest rather than rising on
+lanes scanning nothing.
+
+**Acceptance criteria**
+
+- A practice whose capabilities have nothing to act on in this repository
+  reports `not_applicable`, with the reason — "no container image is built
+  here" reads differently from "the container lane has never run".
+- The determination is evidenced rather than declared: the SBOM, the presence
+  of a Dockerfile, a build artifact — something observable — not a per-repo
+  checkbox, which is a toggle again wearing a different hat.
+- `keel` and `personal-soc` stop being marked down for PW.4, PW.8 and RV.1.
+- The counts distinguish "12 of 13, one not applicable" from "12 of 13, one
+  outstanding". They are different sentences.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
+scoring repositories and finding most of their gaps were not gaps. Related to
+B-051: the same two repositories are also the ones whose languages no
+configured analyser can read.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
