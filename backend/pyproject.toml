@@ -13,11 +13,17 @@ dependencies = [
     # data lake by design -- see docs/DECISIONS.md D-010.
     "sqlalchemy>=2.0",
     # GitHub App auth: RS256 JWT -> installation access token.
-    "pyjwt[crypto]>=2.9",
+    # >=2.13.0, not >=2.9: the 2.9 floor carries 13 advisories, two of them
+    # HIGH (GHSA-752w-5fwx-jx9f, GHSA-xgmm-8j9v-c9wx). 2.13.0 is what is
+    # installed and what clears them -- the floor was describing a version
+    # this project has not run in some time. See B-063 for why a floor is
+    # worth getting right even when the deployment is fine: osv-scanner runs
+    # `--no-resolve` and assesses exactly this number.
+    "pyjwt[crypto]>=2.13.0",
     # libsodium sealed box, required by GitHub's Secrets API (spec 03 §4a).
-    "pynacl>=1.5",
+    "pynacl>=1.6.2",
     # Workflow template rendering (spec 03 §2).
-    "jinja2>=3.1",
+    "jinja2>=3.1.6",
     # The Oracle scoring policy is YAML so a human reviews it (spec 09 §5).
     # Declared explicitly rather than relied on transitively: it arrived
     # via another package, which is exactly how a working build breaks on
@@ -34,7 +40,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     # starlette's TestClient requires httpx2; plain httpx is deprecated there.
     "httpx2>=2.9",
     "pytest-asyncio>=0.24",
