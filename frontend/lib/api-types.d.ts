@@ -2876,6 +2876,16 @@ export interface components {
              */
             state: string;
         };
+        /**
+         * CisGapOut
+         * @description A CIS recommendation this read does not reach, and why.
+         */
+        CisGapOut: {
+            /** Recommendation */
+            recommendation: string;
+            /** Needs */
+            needs: string;
+        };
         /** ClaimRequest */
         ClaimRequest: {
             /**
@@ -3085,6 +3095,11 @@ export interface components {
              * @description The insider-risk signals this control would have prevented. The link is the point of the panel: it turns a log of oddities into a diagnosis with a remedy the team can action themselves.
              */
             prevents?: string[];
+            /**
+             * Cis Supply Chain
+             * @description CIS Software Supply Chain Security Benchmark v1.0 §1.1 recommendations this control speaks to. A cross-reference on the same footing as an SSDF practice's `nist_800_53` families, and not a claim: whether a setting as configured satisfies a recommendation is an assessor's judgement. Deliberately not totalled into a benchmark score — nine settings reach ten of nineteen recommendations, and a percentage built from that would be a number nobody can check.
+             */
+            cis_supply_chain?: string[];
         };
         /** DependencyHealthOut */
         DependencyHealthOut: {
@@ -3769,6 +3784,11 @@ export interface components {
             governance_score?: number | null;
             /** Controls */
             controls?: components["schemas"]["ControlStateOut"][];
+            /**
+             * Cis Not Covered
+             * @description The §1.1 recommendations this read cannot answer, and what each would need. Carried rather than left to be inferred: an audit that lists only what it checked reads as a clean bill of health for everything it skipped, which is the same failure as a silent lane looking like a clean one.
+             */
+            cis_not_covered?: components["schemas"]["CisGapOut"][];
             /**
              * Drift
              * @description Controls that changed state since the platform last looked, newest first. A transition *to* `unknown` is a read that failed rather than a control that was removed — a revoked permission and a security regression must never look the same.
