@@ -45,6 +45,8 @@ def protection(**overrides: Any) -> dict[str, Any]:
         "required_signatures": {"enabled": True},
         "required_status_checks": {"contexts": ["oracle", "sast"]},
         "allow_force_pushes": {"enabled": False},
+        "required_linear_history": {"enabled": True},
+        "allow_deletions": {"enabled": False},
     }
     payload.update(overrides)
     return payload
@@ -557,3 +559,50 @@ class TestTheCisCrossReferenceSaysWhatItDidNotCheck:
         """A gap with no remedy is a complaint."""
         for rec, needs in governance.CIS_UNCOVERED.items():
             assert needs.strip(), rec
+
+
+class TestTheTwoControlsThatWereAlwaysInThePayload:
+    """CIS 1.1.13 and 1.1.17 were listed as unreadable and were not.
+
+    Both `required_linear_history` and `allow_deletions` arrive in the same
+    branch-protection response the other seven controls are read from. They sat
+    in `CIS_UNCOVERED` described as "readable, not yet read" — the cheapest
+    coverage available in the benchmark, and unclaimed because nobody looked at
+    the payload twice.
+    """
+
+    async def test_linear_history_is_read(self) -> None:
+        result = await governance.read(fake(protection()), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "on"
+
+    async def test_branch_deletion_blocked_is_the_inverse_of_the_permission(self) -> None:
+        """The trap in both of these, and the one `force_push_blocked` already
+        set: the API reports the PERMISSION and the control is its absence.
+        Reading `allow_deletions.enabled` straight through would report every
+        protected branch in the estate as unprotected."""
+        blocked = await governance.read(fake(protection()), REPO, BRANCH)
+        assert control(blocked, "branch_deletion_blocked").state == "on"
+
+        allowed = await governance.read(
+            fake(protection(allow_deletions={"enabled": True})), REPO, BRANCH
+        )
+        assert control(allowed, "branch_deletion_blocked").state == "off"
+
+    async def test_absent_fields_read_as_off_rather_than_on(self) -> None:
+        """An older API response, or a branch protected without them. The
+        permission being absent means it is not granted, so the control holds —
+        but linear history absent means it is not required, so it does not."""
+        payload = protection()
+        payload.pop("required_linear_history")
+        payload.pop("allow_deletions")
+        result = await governance.read(fake(payload), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "off"
+        assert control(result, "branch_deletion_blocked").state == "on"
+
+    async def test_an_unprotected_branch_reports_both_as_off(self) -> None:
+        result = await governance.read(fake(None), REPO, BRANCH)
+
+        assert control(result, "linear_history_required").state == "off"
+        assert control(result, "branch_deletion_blocked").state == "off"
