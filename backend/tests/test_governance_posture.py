@@ -520,3 +520,40 @@ class TestAControlSaysWhetherItCounts:
         for state in emitted:
             control = governance.Control(key="k", state=state)
             assert control.confirmed is (state == "on"), state
+
+
+class TestTheCisCrossReferenceSaysWhatItDidNotCheck:
+    """A benchmark audit that lists only what it looked at is a clean bill of
+    health for everything it skipped.
+
+    Nine branch-protection settings reach ten of CIS Software Supply Chain
+    Security Benchmark v1.0 §1.1's nineteen recommendations. Reporting those
+    ten as a percentage would be the failure this platform refuses everywhere
+    else -- a number nobody can check -- so the other nine are carried in the
+    response with what each would need instead.
+    """
+
+    def test_every_control_carries_its_cis_recommendations(self) -> None:
+        for key in governance.CONTROL_ORDER:
+            assert governance.CIS_SUPPLY_CHAIN.get(key), key
+
+    def test_covered_and_uncovered_do_not_overlap(self) -> None:
+        """A recommendation cannot be both answered and unanswerable."""
+        covered = {r for recs in governance.CIS_SUPPLY_CHAIN.values() for r in recs}
+        assert not (covered & set(governance.CIS_UNCOVERED)), (
+            covered & set(governance.CIS_UNCOVERED)
+        )
+
+    def test_together_they_account_for_all_of_section_1_1(self) -> None:
+        """The point of the pair: nothing in §1.1 is silently absent. If a
+        recommendation is neither answered nor listed as unanswerable, the
+        audit has skipped it without saying so."""
+        covered = {r for recs in governance.CIS_SUPPLY_CHAIN.values() for r in recs}
+        accounted = covered | set(governance.CIS_UNCOVERED)
+        expected = {f"1.1.{n}" for n in range(1, 20)}
+        assert accounted == expected, expected - accounted
+
+    def test_every_gap_says_what_it_would_need(self) -> None:
+        """A gap with no remedy is a complaint."""
+        for rec, needs in governance.CIS_UNCOVERED.items():
+            assert needs.strip(), rec

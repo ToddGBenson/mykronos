@@ -90,6 +90,47 @@ PREVENTS: dict[str, tuple[str, ...]] = {
     "force_push_blocked": (),
 }
 
+#: CIS Software Supply Chain Security Benchmark v1.0, section 1.1 (Code
+#: Changes). Cross-references, not claims -- the same footing as the
+#: `nist_800_53` families on an SSDF practice. Whether a control as configured
+#: here satisfies a given benchmark recommendation is an assessor's judgement,
+#: and this platform reads nine settings rather than auditing an organisation.
+#:
+#: Stated so the gap is visible rather than implied: section 1.1 has nineteen
+#: recommendations and these nine reach ten of them. The rest need facts this
+#: read does not have -- whether a change traces to a task (1.1.2), whether
+#: inactive branches are pruned (1.1.8), whether branch-protection changes are
+#: themselves audited (1.1.19). Reporting a subset as a score would be the
+#: error this file already refuses elsewhere; reporting which subset is not.
+CIS_SUPPLY_CHAIN: dict[str, tuple[str, ...]] = {
+    "pull_request_required": ("1.1.3", "1.1.15"),
+    "approving_reviews_required": ("1.1.3",),
+    "dismiss_stale_reviews": ("1.1.4",),
+    "codeowner_review_required": ("1.1.7",),
+    "codeowners_coverage": ("1.1.6",),
+    "enforced_for_admins": ("1.1.14",),
+    "signed_commits_required": ("1.1.12",),
+    "required_status_checks": ("1.1.9",),
+    "force_push_blocked": ("1.1.16",),
+}
+
+#: The recommendations in section 1.1 that these nine settings cannot answer,
+#: with what each would need. Carried in the response so the panel can say what
+#: it did not check -- an audit that lists only what it looked at reads as a
+#: clean bill of health for everything it skipped.
+CIS_UNCOVERED: dict[str, str] = {
+    "1.1.1": "version control is in use -- true by construction here, not read",
+    "1.1.2": "a change traces to a task; needs an issue/PR linkage convention",
+    "1.1.5": "who may dismiss reviews; not exposed by the branch-protection read",
+    "1.1.8": "inactive branches are reviewed and removed; needs branch ages",
+    "1.1.10": "branches are up to date before merge; needs the merge queue setting",
+    "1.1.11": "open comments resolved before merge; not in branch protection",
+    "1.1.13": "linear history required; readable, not yet read",
+    "1.1.17": "branch deletion denied; readable, not yet read",
+    "1.1.18": "merges are scanned for risk -- the scan lanes answer this, not this read",
+    "1.1.19": "branch-protection changes are audited; ControlDrift is the closest thing",
+}
+
 UNKNOWN = "unknown"
 
 
@@ -687,8 +728,25 @@ def as_dict(
                 # link is the point of the panel: it turns a log of oddities
                 # into a diagnosis with a remedy the team can action.
                 "prevents": list(PREVENTS.get(control.key, ())),
+                # CIS Software Supply Chain Security Benchmark v1.0 section
+                # 1.1, as a cross-reference on the same footing as an SSDF
+                # practice's `nist_800_53` families. Named per control rather
+                # than totalled, because a benchmark score built from a subset
+                # of its recommendations is a number nobody can check.
+                "cis_supply_chain": list(CIS_SUPPLY_CHAIN.get(control.key, ())),
             }
             for control in governance.controls
+        ],
+        # What this read does NOT cover, carried in the response rather than
+        # left to be inferred. Ten of section 1.1's nineteen recommendations
+        # are answerable from branch protection; the other nine need facts a
+        # branch-protection read does not have. An audit that lists only what
+        # it checked reads as a clean bill of health for everything it skipped,
+        # which is the same failure as a silent lane looking like a clean one.
+        "cis_not_covered": [
+            {"recommendation": rec, "needs": needs}
+            for rec, needs in sorted(CIS_UNCOVERED.items(),
+                                     key=lambda kv: [int(n) for n in kv[0].split(".")])
         ],
         "note": (
             "Read, never written: this platform does not turn on branch "

@@ -2000,6 +2000,13 @@ class IncidentOut(BaseModel):
     note: str = ""
 
 
+class CisGapOut(BaseModel):
+    """A CIS recommendation this read does not reach, and why."""
+
+    recommendation: str
+    needs: str
+
+
 class ControlStateOut(BaseModel):
     """One change-governance control (spec 30 §2)."""
 
@@ -2020,6 +2027,19 @@ class ControlStateOut(BaseModel):
             "The insider-risk signals this control would have prevented. The link is "
             "the point of the panel: it turns a log of oddities into a "
             "diagnosis with a remedy the team can action themselves."
+        ),
+    )
+    cis_supply_chain: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CIS Software Supply Chain Security Benchmark v1.0 §1.1 "
+            "recommendations this control speaks to. A cross-reference on the "
+            "same footing as an SSDF practice's `nist_800_53` families, and "
+            "not a claim: whether a setting as configured satisfies a "
+            "recommendation is an assessor's judgement. Deliberately not "
+            "totalled into a benchmark score — nine settings reach ten of "
+            "nineteen recommendations, and a percentage built from that would "
+            "be a number nobody can check."
         ),
     )
 
@@ -2061,6 +2081,16 @@ class GovernanceOut(BaseModel):
         ),
     )
     controls: list[ControlStateOut] = Field(default_factory=list)
+    cis_not_covered: list[CisGapOut] = Field(
+        default_factory=list,
+        description=(
+            "The §1.1 recommendations this read cannot answer, and what each "
+            "would need. Carried rather than left to be inferred: an audit "
+            "that lists only what it checked reads as a clean bill of health "
+            "for everything it skipped, which is the same failure as a silent "
+            "lane looking like a clean one."
+        ),
+    )
     drift: list[ControlDriftOut] = Field(
         default_factory=list,
         description=(
