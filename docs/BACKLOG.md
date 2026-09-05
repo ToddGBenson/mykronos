@@ -1312,6 +1312,98 @@ SSDF gaps were mostly practices it cannot apply.
 
 ---
 
+### B-060 — Branch protection, read for the first time, against CIS §1.1
+
+**Size:** M **State:** open **Verified:** 2026-09-04
+
+`administration: read` was granted on 2026-09-04 (B-044), so this is the first
+time the estate's change-governance posture has been readable at all. Every
+number below is a live read, not an assumption, and the CIS column is the
+Software Supply Chain Security Benchmark v1.0 §1.1 recommendation each control
+speaks to.
+
+| control | CIS | TheHub | binnacle | keel | mykronos | personal-soc |
+|---|---|---|---|---|---|---|
+| `pull_request_required` | 1.1.3, 1.1.15 | on | **off** | on | on | on |
+| `approving_reviews_required` | 1.1.3 | partial | **off** | **off** | **off** | **off** |
+| `dismiss_stale_reviews` | 1.1.4 | **off** | **off** | on | on | on |
+| `codeowner_review_required` | 1.1.7 | **off** | **off** | **off** | **off** | **off** |
+| `codeowners_coverage` | 1.1.6 | unknown | on | on | unknown | unknown |
+| `enforced_for_admins` | 1.1.14 | **off** | **off** | on | on | on |
+| `signed_commits_required` | 1.1.12 | **off** | **off** | **off** | **off** | **off** |
+| `required_status_checks` | 1.1.9 | **off** | **off** | **off** | **off** | **off** |
+| `force_push_blocked` | 1.1.16 | on | **off** | on | on | on |
+| **governance score** | | **33** | **11** | **57** | **52** | **52** |
+
+**Three gaps are estate-wide**, and they are the ones that matter most:
+
+- **No repository requires an approving review (1.1.3).** TheHub asks for one,
+  which this platform scores `partial` on purpose — one approval on a
+  repository with no CODEOWNERS is one rubber stamp from a self-merge, and
+  calling that `on` would say something untrue. Everywhere else the answer is
+  none.
+- **No repository requires status checks to pass before merge (1.1.9).** Every
+  scan lane in this estate is therefore advisory at the repository boundary. A
+  red `sast` does not stop a merge anywhere, which is the same shape as B-055's
+  promotion gate one layer up: the checks run, and nothing is downstream of
+  them.
+- **No repository requires signed commits (1.1.12).**
+
+**`binnacle` is at 11 and that is expected rather than alarming** — it was
+onboarded on 2026-09-04 (B-052) and has had no hardening pass at all. It is the
+clean case for doing this in the right order rather than retrofitting.
+
+**TheHub is the outlier worth reading twice.** It is the only internet-facing
+repository in the estate and scores lowest of the four established ones, at 33.
+`enforced_for_admins` off means the rules it does have are advisory for the
+account that owns it, and `force_push_blocked` is the one thing standing
+between its history and a rewrite.
+
+**What this does not say.** Nine settings reach ten of §1.1's nineteen
+recommendations; the response carries the other nine with what each would need,
+and no score is computed across the subset. Two of the nine —
+**1.1.13 linear history** and **1.1.17 branch-deletion denial** — are already in
+the branch-protection payload and simply not read yet. They are the cheapest
+coverage available and should land before anything harder.
+
+**Sequencing matters more than the list.** Requiring pull requests and status
+checks changes how work reaches `main`, and two repositories cannot absorb that
+today: TheHub's `unit` lane is red (B-057's successor failures), so requiring
+status checks there would stop every merge until those five tests pass; and
+`main` is what TheHub's production deploy gates from. Order:
+
+1. `binnacle` and `keel` first — no deploy path depends on either, so a mistake
+   costs a re-push rather than an outage.
+2. `mykronos` next. Its lanes are green, so `required_status_checks` is
+   immediately meaningful rather than immediately blocking.
+3. `personal-soc` — Concourse-scanned with Actions disabled, so
+   `required_status_checks` needs the Concourse checks wired to the commit
+   status first, or it will block on checks that never arrive.
+4. `TheHub` last, and not before its `unit` lane is green.
+
+**Acceptance criteria**
+
+- `approving_reviews_required`, `required_status_checks` and
+  `signed_commits_required` are `on` for every repository, or a decision is
+  recorded per repository for why not — `partial` is an answer, an absence is
+  not.
+- `enforced_for_admins` and `force_push_blocked` are `on` for TheHub and
+  binnacle.
+- A CODEOWNERS file exists where `codeowners_coverage` reads `unknown`, so
+  `codeowner_review_required` becomes meaningful rather than decorative.
+- 1.1.13 and 1.1.17 are read and reported, closing two of the nine gaps for the
+  cost of two field reads.
+- The governance scores are re-read afterwards and recorded here, so the change
+  is evidenced rather than asserted.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from the first readable
+governance pass after B-044. The read also exposed the defect that had hidden
+this: the SSDF assessment compared `state == "pass"` against a module that
+emits `on`/`off`/`partial`/`unknown`, so every readable control reported as "not
+enforced" including the ones that were on.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
