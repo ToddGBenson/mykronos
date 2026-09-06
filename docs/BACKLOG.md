@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Twenty-two, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Twenty-three, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -106,6 +106,14 @@ Its sibling B-049 — filling in the four risk profiles turned an accurate
 disclosure off without changing the rank behind it, found only because the
 operator half of B-033 was finally done — was built on 2026-09-05 and is in
 Closed.
+
+**B-066 is the live one, and it is an outage rather than a gap.** `keel` and
+`binnacle` are Actions-scanned, the public ingest path is their only route into
+the lake, and it has answered 502 since 08:40 on 2026-09-05 because the
+cloudflared service is reading a stale copy of its own ingress. Two of four
+watched repositories have been unable to file anything for twelve hours while the
+briefing, which measures silence rather than coverage, reads healthy — B-046 seen
+from outside the platform. One elevated script fixes it.
 
 **B-065 arrived from checking the work rather than from a sweep.** Re-applying
 the `mykronos` pipeline for D-113 produced a clean drift report and, in the same
@@ -319,10 +327,12 @@ prints the reason on every build — `Performance budgets scaled x3 for this
 worker` — and coverage tracing is CPU-bound, so what disappeared into fixture
 setup on a fast host does not disappear on `-n 6` at a third of the speed.
 
-**So coverage is on the Actions lane only.** mykronos is public, Actions minutes
-are free, and that lane gates nothing. Concourse's command is back to what it
-was, re-applied and verified with no drift. `pytest-cov` stays in the `dev`
-extra, which is what the Actions lane installs.
+**Coverage went to the Actions lane, and then that lane was retired (D-118).**
+The Actions unit lane was one of eleven duplicating Concourse, so mykronos is now
+`scanned_by=concourse` and those eleven are gone. Coverage therefore has no free
+home: it is Concourse at the +322s D-117 rejected, or unmeasured. `pytest-cov`
+stays in the `dev` extra either way — it costs nothing installed, and the local
+runs above used it.
 
 **The ingest path was proved before the flag came off.** #226 succeeded, wrote
 `coverage.xml` beside `unit.xml`, POSTed both to `/api/ingest/raw`, and the
@@ -332,29 +342,22 @@ entry was correct.
 
 **What is left, and it is why this stays open.**
 
-1. **The Actions unit lane cannot report at all right now**, so no figure will
-   arrive from it. Its last two runs failed on the upload, not the tests:
-   `POST https://mykronos.toddbenson.net/api/ingest/scan-run -> 502` six times,
-   then a deliberate failure (spec 01 §6). From this host that hostname does not
-   answer while `hub.toddbenson.net` returns 200 through the same tunnel, and
-   `cloudflared` is running — which is the failure
-   `scripts/install-tunnel-route.ps1` documents: the service's copy of the
-   ingress at `C:\Windows\System32\config\systemprofile\.cloudflared\`
-   is stale against `~/.cloudflared/config.yml`, where the mykronos API paths
-   correctly point at `127.0.0.1:8100`. That script, run elevated, is the fix.
-   **This is much larger than coverage: all nine mykronos Actions lanes upload
-   through that hostname.** Worth its own entry if it is not fixed in place.
-2. **The workflow file is generated and this change is not durable.**
-   `.github/workflows/mykronos-unit.yml` opens with "Do not edit by hand. A
-   template resync will overwrite this file (spec 03 §6)", and
-   `workflow-templates/_test_lane.yml.j2:60` takes the command from
-   `config.get('command')` — the repo's `unit` capability config. The committed
-   file carries `--cov` and works today; a resync drops it. The durable change is
-   `PATCH /api/repos/{id}/capabilities` with `config.unit.command`, and that call
-   sets the enabled set from its own request body, which is B-062 — so it has to
-   be made with the full current capability list or it silently revokes the rest.
-3. The figure still has to appear on the Harness tab from a real Actions run,
-   which is blocked on (1).
+1. **Nothing measures coverage right now.** The flag is off Concourse and the
+   Actions lane that carried it no longer exists. Choosing between paying the
+   +322s on Concourse, measuring by hand on a cadence, and recording that this
+   repository does not measure coverage is the whole of what remains here.
+2. **The figure has to come from a lane rather than from a laptop**, whichever
+   way that goes. 88.3% line and 79.9% branch are recorded above from Concourse
+   `unit` #226, so the number exists and the ingest path is proved; what is not
+   established is a figure that keeps arriving.
+
+**Two things left this list on 2026-09-05.** The generated-file problem — that
+`_test_lane.yml.j2` takes the command from the repo's `unit` capability config,
+so a resync would drop `--cov` — went away with D-118: mykronos is
+`scanned_by=concourse` and spec 03 §3a means an install has no workflows to
+write. And the tunnel route, still broken, is no longer this entry's blocker; it
+belongs to `keel` and `binnacle`, which are Actions-scanned and cannot report
+without it (B-066).
 
 **Acceptance criteria**
 
@@ -1835,6 +1838,70 @@ reported no drift and, in the same output, three `CREDENTIALS INLINE` lines that
 nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
+
+---
+
+### B-066 — The tunnel's service copy is stale, so two repositories cannot report at all
+
+**Size:** XS **State:** open **Verified:** 2026-09-05
+
+`keel` and `binnacle` are both `scanned_by=github_actions`, and
+`https://mykronos.toddbenson.net/api/ingest/` is their only path into the lake.
+It has been returning 502 since about 08:40 on 2026-09-05.
+
+The failure is in the upload, not the scan. From a runner:
+
+    POST https://mykronos.toddbenson.net/api/ingest/scan-run -> 502  (x6)
+    ERROR /api/ingest/scan-run failed after 6 attempts — HTTP 502
+      Findings were NOT recorded; this step fails deliberately rather than
+      letting the scan look clean (spec 01 §6)
+
+**The tunnel is up and serving everything else**, which is what makes this
+diagnosable in one step: `hub.toddbenson.net` answers 200 through the same
+tunnel, `cloudflared` is running as a service, and `~/.cloudflared/config.yml`
+correctly routes the mykronos API paths to `127.0.0.1:8100`.
+
+**So the user config is right and the service is not reading it.**
+`scripts/install-tunnel-route.ps1` documents exactly this: the service runs as
+LocalSystem and keeps its own copy at
+`C:\Windows\System32\config\systemprofile\.cloudflared\config.yml`, made when
+the service was installed, so editing the profile copy "changes nothing until it
+is copied across, which is why a new hostname resolves, reaches the tunnel, and
+then falls through". The fix is that script, run elevated. It backs the service
+copy up, shows what it replaces, restarts, and verifies.
+
+**Two things to know before running it.** It restarts the tunnel, which briefly
+drops `hub`, `blog` and `demo` — seconds, but not zero, and its own notes say
+so. And its default `-VerifyUrl` is `https://mykronos.toddbenson.net/healthz`,
+which is the right probe here: `/healthz` is the one path exempt from the
+perimeter gate, so a 200 proves the route end to end without a credential.
+
+**What is not wrong.** Not the ingestion tokens (B-024's failure, and these are
+502s from Cloudflare's edge rather than 401s from the API), not the backend
+(`127.0.0.1:8100/healthz` answers 200), not Vault, and not the perimeter gate —
+`/api/ingest/*` is exempt from it by design.
+
+**This is B-046 from the outside.** Two repositories stopped reporting twelve
+hours ago and the platform's own briefing measures silence rather than coverage,
+so the estate reads as four watched repositories when two of them have been
+unable to file anything since morning. `keel` has 135 runs across four
+capabilities and `binnacle`'s first ever scans landed that morning, hours before
+this started.
+
+**Acceptance criteria**
+
+- `scripts/install-tunnel-route.ps1` run elevated, and
+  `https://mykronos.toddbenson.net/healthz` answering 200 from off-host.
+- A `keel` and a `binnacle` scan run recorded with a `started_at` after the fix.
+- `hub`, `blog` and `demo` still answering afterwards, which the script checks.
+- The gap is not silently absorbed: the runs missed between 08:40 and the fix
+  are a coverage hole in two repositories, and whether they are re-run or
+  accepted is recorded rather than left to the next sweep to rediscover.
+
+**Provenance:** found on 2026-09-05 while checking whether D-113's coverage flag
+had produced a figure on the Actions unit lane. The lane had failed, and it had
+failed on the upload rather than the tests — which is only visible by reading the
+log, because the run reports as a failed suite.
 
 ---
 

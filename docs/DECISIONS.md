@@ -4847,6 +4847,12 @@ it cost nothing measurable. The Concourse lane then ran it and the figure was
 jobs carry `passed: [unit, ...]`, so that is five and a half minutes added to
 every commit, in front of everything that gates on the suite.
 
+**Superseded by D-118 within the day.** The Actions unit lane was retired as a
+duplicate of Concourse's, so the free home this decision found no longer exists.
+Coverage is either back on Concourse at the +322s rejected below, or unmeasured;
+B-042 carries it as open. What stands is the measurement and the rule drawn from
+it.
+
 **Coverage moves to the Actions lane only.** `ToddGBenson/mykronos` is a public
 repository, so Actions minutes are free, and that lane gates nothing. Concourse's
 `unit` command is back to what it was. The `dev` extra keeps `pytest-cov`,
@@ -4880,3 +4886,74 @@ a build to answer.
 moved for any of this. The lane's two files merge into one result carrying
 `line_coverage=0.883` and `branch_coverage=0.799` — verified from the real
 Concourse artifacts before this decision took the flag back off that lane.
+
+---
+
+## D-118 — mykronos is Concourse-scanned, and now actually is
+
+**2026-09-05.** `ToddGBenson/mykronos` was `scanned_by=github_actions` with
+eleven generated Actions lanes running against the same commits as a full
+Concourse pipeline. It is now `scanned_by=concourse` and the eleven are removed.
+
+**D-080 already recorded this as done, and it was not.** That entry retired
+TheHub's Mykronos Actions lanes "as this repo's were" — but the platform's own
+record said `github_actions`, the workflow files were present, and they were
+running today: `mykronos-sast`, `mykronos-secrets` and `mykronos-qa` all failing
+on ingestion, `mykronos-atlas` and `mykronos-containers` succeeding. So D-038's
+harm was live for however long that has been true: two CI systems scanning one
+commit, and a repository's capability coverage decided by whichever uploaded
+last.
+
+**Every lane was checked against a Concourse job before it was deleted**, not
+assumed. Eight map by capability — `unit`, `sast`, `secrets`, `containers`,
+`iac`, `ai` one-to-one; `qa` to `lint-and-types`, `qa-spec-links` and
+`frontend`; `atlas` to `dependencies`. The other three upload no capability at
+all and had to be matched by endpoint:
+
+| Actions lane | calls | Concourse job that also calls it |
+|---|---|---|
+| `mykronos-aegis` | `/api/ingest/aegis` | `insider` |
+| `mykronos-oracle` | `/api/oracle/evaluate` | `oracle-gate` |
+| `mykronos-patchwork` | `/api/patchwork/run` | `remediate` |
+
+**Three workflows stay, and none of them is a duplicate.**
+`demo-and-dast.yml` is hand-written and says so: it *replaces* the Concourse
+`demo-and-dast` job, which is paused under D-053, so it is the only thing
+producing `functional` and `dast` here. `delivery.yml` and `promote.yml` are
+delivery rather than scanning.
+
+**The public hostname stays, and this decision does not touch it.** It was
+examined in the same pass and the reasoning is now recorded where it can be
+found: `keel` and `binnacle` are both `scanned_by=github_actions` and both
+reporting — 135 runs across four capabilities for keel, and binnacle's first
+scans arriving on 2026-09-05 after the B-052 grant — and
+`https://mykronos.toddbenson.net/api/ingest/` is their only path. keel's own
+Concourse pipeline posts to the same hostname rather than over the LAN, and
+`demo-and-dast.yml` needs it too. Removing it would have ended scanning for two
+of the four watched repositories, which is why it was not removed.
+
+**And the exposure question it was raised under is already answered.**
+`PerimeterGate` (`gate.py`) fronts this host with the Hub's own credential —
+`X-Hub-Token`, the `hub_token` cookie, or `?_token=`, against the same secret,
+so one credential reaches both. Confirmed live from the container's logs. Only
+five paths are exempt and each carries stronger proof than the gate: per-repo
+ingestion tokens for `/api/ingest/*`, those plus a named grant for
+`/api/oracle/evaluate` and `/api/patchwork/run`, HMAC over the body for
+`/webhooks/github`, and nothing for `/healthz`, which must answer before
+anything is configured. The dashboard was unpublished on 2026-09-03. What is
+reachable from the internet is an authenticated API, not a browsable
+application.
+
+**What this costs, and it is not nothing.** D-117 moved coverage to the Actions
+unit lane because mykronos is public and those minutes are free. That lane is
+now gone, so coverage has no free home: it is either back on Concourse at the
++322s that decision rejected, or not measured. B-042 carries that as open rather
+than pretending it was settled.
+
+**The live failure this pass started from is untouched by all of it.** The
+cloudflared service's copy of the ingress at
+`C:\Windows\System32\config\systemprofile\.cloudflared\config.yml` is stale
+against `~/.cloudflared/config.yml`, so `mykronos.toddbenson.net` returns 502
+while `hub.toddbenson.net` answers 200 through the same tunnel.
+`scripts/install-tunnel-route.ps1`, run elevated, is the fix, and it is now the
+only thing keeping keel and binnacle from reporting.
