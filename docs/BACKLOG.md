@@ -45,8 +45,8 @@ already shipped.
 
 ## Open
 
-Twenty-one, from four sweeps: 2026-09-03 (first and second), 2026-09-04 and
-2026-09-05. Every entry here was reproduced against the live system before it
+Twenty-two, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
@@ -105,6 +105,16 @@ Its sibling B-049 — filling in the four risk profiles turned an accurate
 disclosure off without changing the rank behind it, found only because the
 operator half of B-033 was finally done — was built on 2026-09-05 and is in
 Closed.
+
+**B-065 arrived from checking the work rather than from a sweep.** Re-applying
+the `mykronos` pipeline for D-113 produced a clean drift report and, in the same
+output, three credentials stored inline in the other two applied pipelines. One
+is a live model key that is already in Vault and inline only because `thehub` has
+not been re-applied since; one is an ingestion token genuinely missing from
+Vault; one is a deliberate one-hour token that should stay. The other half of the
+entry is that the check flags three more that are empty strings, so a warning
+about six names three real problems — and a warning that overstates gets
+discounted along with the parts of it that matter.
 
 B-055 is half done. The applied pipeline no longer lets a failed security scan
 promote to production; what remains is TheHub's own copy, and a check that
@@ -1697,6 +1707,95 @@ stopped hiding them. Worth noting the order: these two were reachable only
 after 271 unfixable OS-package findings were accepted and twelve false
 positives were cleared. A backlog that is 93% noise does not hide its signal
 politely — it hides it completely.
+
+---
+
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back
+
+**Size:** S **State:** open **Verified:** 2026-09-05
+
+PS-9 says a credential belongs in the credential manager rather than in a
+`((vars))` file, because Concourse stores pipeline configuration verbatim and
+anyone who can run `fly get-pipeline` reads it back. It was done for `mykronos`
+(D-079) and never for the other two. Read out of the live configs on 2026-09-05,
+after re-applying `mykronos`:
+
+| pipeline | credential | in the applied config |
+|---|---|---|
+| `thehub` | `anthropic-api-key` | **literal, 76 chars, twice** |
+| `thehub` | `github-token` | **literal, 383 chars** |
+| `personal-soc` | `personal-soc-ingestion-token` | **literal, 43 chars, three times** |
+| `mykronos` | everything | placeholder — resolves at egress |
+
+Only presence and length were read; no value was printed or copied anywhere.
+
+**The Anthropic key is a stale apply, not a missing secret, and that is the
+cheapest fix in this file.** `concourse/main/anthropic-api-key` is in Vault
+today, and `set-thehub-pipeline.ps1`'s own probe finds it — reproduced with the
+same `CONCOURSE_VAULT_TOKEN` the script uses:
+
+    absent : concourse/main/thehub/anthropic-api-key
+    PRESENT: concourse/main/anthropic-api-key
+
+Concourse looks up pipeline scope then team scope, `Test-VaultSecret` probes
+those two paths in that order, and the second hits. So a re-apply of `thehub`
+today removes two inline copies of a live model key with no other change. The
+config is carrying a literal because it has not been applied since the key
+reached Vault.
+
+**The ingestion token is genuinely absent from Vault** — neither
+`concourse/main/personal-soc/personal-soc-ingestion-token` nor
+`concourse/main/personal-soc-ingestion-token` exists — so that one needs
+`Import-EnvSecretsToVault.ps1 -Pipeline personal-soc` first, then a re-apply.
+It is the one credential here that is inline *and* current: `personal-soc` was
+applied on 2026-09-05.
+
+**`github-token` is deliberate and stays.** `set-thehub-pipeline.ps1:301` records
+why: it is a GitHub App installation token minted fresh per run and dead in an
+hour (CNC-2), and a stale secret resolving in place of a live one is worse than a
+config holding something already expiring. Worth naming here so the next reader
+does not "fix" it. The residual exposure is real but bounded — one hour, and only
+to somebody who can already reach this Concourse.
+
+**Three of the six the drift check flags have nothing in them, and the check
+cannot tell.** `check_applied_pipelines.py` classifies a var as `CREDENTIALS
+INLINE` when it is not resolved from Vault, which is the right question for
+configuration and the wrong one for exposure. Read back:
+
+- `thehub`: `azure-client-secret`, and `azure-client-id`, `azure-tenant-id`,
+  `azure-subscription-id` — **all four empty.**
+- `personal-soc`: `anthropic-api-key` and `hibp-api-key` — **both empty.**
+
+So the warning names six credentials where three are real, one of those three is
+a deliberate one-hour token, and two of the empties are empty for reasons already
+recorded (D-108 for Azure; the paused `breach-check` for HIBP). A warning that
+overstates gets discounted, and then the two entries in it that matter get
+discounted with it.
+
+**This independently confirms D-108.** B-018 concluded that TheHub's Azure
+principal is unset from `deploy/concourse/.env`; the applied pipeline agrees —
+all four Azure variables are empty strings in the running config. `cloud` could
+not have reported no matter what was enabled.
+
+**Acceptance criteria**
+
+- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied config.
+- `personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
+  three `MYKRONOS_TOKEN` assignments reading as placeholders.
+- `check_applied_pipelines.py` distinguishes an inline credential with a value
+  from an inline empty string, and says which. Empty is not an exposure and must
+  stop being reported as one.
+- `github-token`'s exclusion is recorded where the check reports it, so the one
+  deliberate case does not read as the two accidental ones.
+- The two keys that were inline are treated as exposed and rotated, because
+  every apply since they landed has stored them somewhere readable.
+
+**Provenance:** found on 2026-09-05 while verifying that D-113's coverage flag
+had reached the running `mykronos` pipeline. `check_applied_pipelines.py`
+reported no drift and, in the same output, three `CREDENTIALS INLINE` lines that
+nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
+empty-versus-real split was found by reading the applied configs rather than by
+trusting the label.
 
 ---
 

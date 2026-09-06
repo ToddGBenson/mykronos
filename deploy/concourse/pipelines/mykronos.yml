@@ -407,7 +407,17 @@ jobs:
               - |
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
-                pip install --quiet -e ".[dev]"
+                # pytest-cov named here as well as in the `dev` extra, and this
+                # is not belt-and-braces. This pipeline's config is applied by
+                # hand while `source` is pinned to `main`, so the config can run
+                # ahead of the code it needs: applying the --cov command before
+                # the extra reached `main` would fail every `unit` build with
+                # "unrecognized arguments: --cov", and seven jobs carry
+                # `passed: [unit, ...]`. That is B-055's second failure mode -
+                # a red suite silently costing a branch its security scanning -
+                # arriving from the config side instead. A task that installs
+                # what its own command needs cannot be broken by a pending merge.
+                pip install --quiet -e ".[dev]" pytest-cov
 
                 # Said out loud, every run. A performance budget that was
                 # quietly relaxed is a budget nobody knows the value of.
