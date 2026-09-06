@@ -87,7 +87,19 @@ jobs:
 
           cd backend
           python -m pip install --quiet -e ".[dev]"
-          python -m pytest -q -n auto --junitxml="$MYKRONOS_RESULTS/unit.xml"
+          # `--cov` alongside the JUnit XML (D-113). The uploader rglobs every
+          # *.xml under $MYKRONOS_RESULTS and the JUnit adapter reads Cobertura
+          # `line-rate`, so dropping coverage.xml beside unit.xml is the whole
+          # of the change — no platform code moved for this.
+          #
+          # `--cov-branch` is not optional. Without it Cobertura still writes
+          # branch-rate="0", the adapter reads 0.0 rather than None, and the
+          # Harness tab shows a measured 0% branch coverage for a measurement
+          # nobody took — an absence presented as a reading, which is the
+          # failure four other backlog entries are about.
+          python -m pytest -q -n auto --junitxml="$MYKRONOS_RESULTS/unit.xml" \
+            --cov=mykronos --cov-branch \
+            --cov-report="xml:$MYKRONOS_RESULTS/coverage.xml"
 
 
       - name: Say what the suite did

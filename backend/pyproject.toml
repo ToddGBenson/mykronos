@@ -48,6 +48,12 @@ dev = [
     # catalog per test - not by the tests. That work is already isolated per
     # test, so it parallelises without touching a line of it.
     "pytest-xdist>=3.8",
+    # Coverage is measured on the unit lane and reported into the lake as
+    # `line_coverage` (B-042, D-113). The plumbing to carry it has existed
+    # since the JUnit adapter shipped — adapter, registry, lake column,
+    # `scan_health` and the uploader's rglob — and every one of the 318 test
+    # runs in the lake reported NULL because no pipeline passed `--cov`.
+    "pytest-cov>=6.0",
     "types-PyYAML>=6.0",
     "types-defusedxml>=0.7",
     "ruff>=0.7",

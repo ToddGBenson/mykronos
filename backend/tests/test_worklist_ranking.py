@@ -101,6 +101,87 @@ class TestTheWeightedSum:
         assert cheap - plain == policy.triage_rank.fixable_bonus
 
 
+class TestEveryTermSaysWhatInputItIs:
+    """D-116 — a term the rank produces and the disclosure omits is the defect.
+
+    `ranking_inputs` used to restate what the queue consulted as a hardcoded
+    list, and it was already wrong by three terms. The fix is that `RANK_INPUTS`
+    is the single declaration and `add()` refuses a key that is not in it, so
+    the two cannot drift again. A comment could not have held this; the upstream
+    fix for B-057 makes the same argument about a pin.
+    """
+
+    def _loud(self) -> dict[str, Any]:
+        """One item that lights every branch in `rank_terms` at once."""
+        return {
+            "severity": "critical",
+            "in_kev": True,
+            "epss_score": 0.9,
+            "due_state": "overdue",
+            "blast_radius_ratio": 1.0,
+            "blast_radius_repos": 4,
+            "repo_recommendation": "no_go",
+            "orphaned": True,
+            "effort": "one_click",
+        }
+
+    def test_every_term_the_rank_can_produce_is_declared(self, policy: Any) -> None:
+        from mykronos.dashboard import RANK_INPUTS
+
+        _, terms = rank_terms(self._loud(), policy)
+        produced = {term["key"] for term in terms}
+
+        assert produced, "the loud item should light most of the rank"
+        assert produced <= set(RANK_INPUTS), (
+            f"undeclared rank terms: {sorted(produced - set(RANK_INPUTS))}"
+        )
+        # `due_soon` is the one branch the loud item cannot reach, because it is
+        # the other side of `overdue`. Reach it separately rather than leaving a
+        # term untested.
+        _, soon = rank_terms({**self._loud(), "due_state": "due_soon"}, policy)
+        assert "due_soon" in {term["key"] for term in soon}
+
+    def test_nothing_declared_is_unreachable(self, policy: Any) -> None:
+        """The other direction: a label for a term that no longer exists would
+        have the queue claim an input it cannot use."""
+        from mykronos.dashboard import RANK_INPUTS
+
+        reachable = {
+            term["key"]
+            for state in ("overdue", "due_soon")
+            for term in rank_terms({**self._loud(), "due_state": state}, policy)[1]
+        }
+
+        assert set(RANK_INPUTS) == reachable, (
+            f"declared but unreachable: {sorted(set(RANK_INPUTS) - reachable)}"
+        )
+
+    def test_an_undeclared_term_raises_rather_than_ranking_silently(
+        self, policy: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard itself. Ranking by something undisclosed is the failure
+        this whole entry is about, so it must be loud rather than plausible."""
+        from mykronos import dashboard
+
+        monkeypatch.delitem(dashboard.RANK_INPUTS, "severity")
+
+        with pytest.raises(KeyError, match="RANK_INPUTS"):
+            rank_terms(self._item_for_guard(), policy)
+
+    def _item_for_guard(self) -> dict[str, Any]:
+        return {
+            "severity": "critical",
+            "in_kev": False,
+            "epss_score": None,
+            "due_state": "on_track",
+            "blast_radius_ratio": 0.0,
+            "blast_radius_repos": 0,
+            "repo_recommendation": "go",
+            "orphaned": False,
+            "effort": "small",
+        }
+
+
 class TestTheQueue:
     def _seed(
         self,

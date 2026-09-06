@@ -424,7 +424,13 @@ jobs:
                 # fresh DuckDB catalog per test - and that work is already
                 # isolated, so it parallelises without touching a test. 32
                 # minutes to 6 on this host.
-                python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
+                # --cov writes Cobertura beside the JUnit report (D-113). The
+                # uploader rglobs every *.xml under --results-path, so no
+                # upload argument changes; `line_coverage` stops being NULL.
+                # --cov-branch is required with it: without it Cobertura writes
+                # branch-rate="0", which the adapter reads as a measured 0%
+                # rather than as absent.
+                python -m pytest -q -n 6 --junitxml=../../results/unit.xml --cov=mykronos --cov-branch --cov-report=xml:../../results/coverage.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"

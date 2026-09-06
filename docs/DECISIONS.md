@@ -4697,6 +4697,44 @@ uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS`. Drop a `coverage.xml`
 beside `unit.xml` and the number appears. That is the proof the plumbing was
 right, and it is why this is operator config rather than platform work.
 
+**Measured 2026-09-05, and the premise was wrong.** Three full runs of the
+2592-test suite on the development host at `-n auto`, all green:
+
+| run | suite time | step wall |
+|---|---|---|
+| no coverage | 179.07s | 189s |
+| `--cov` | 173.90s | 178s |
+| `--cov --cov-branch` | 173.24s | 177s |
+
+Both coverage runs came in *faster* than the baseline. The added cost is below
+this host's run-to-run variance — a spread of about 6s, 3%, with the two
+coverage runs at the fast end — so the honest reading is no measurable cost
+rather than a small one. B-042 deferred this on the assumption that coverage
+under `pytest-xdist` costs real time; on this host it does not. The likely
+reasons are that coverage 7.x on Python 3.13 collects through `sys.monitoring`
+rather than a trace function, and that this suite is dominated by per-test
+fixture setup — a fresh DuckDB catalog per test — rather than by interpreted
+lines. That explanation is inference from the timings, not something these runs
+measured.
+
+**This is the development host, not either runner.** Actions runs `-n auto` on
+ubuntu and Concourse runs `-n 6` on the shared worker; neither number is in hand
+until the lanes run. What is recorded here is what was actually measured, and
+the lane's own figure is what B-042's criterion asks for.
+
+**`--cov` alone would have published a number nobody measured.** Found by
+normalising the real pair of files a lane writes rather than by reading the flag
+list: with `--cov` only, the merged result carried `line_coverage=0.883` and
+`branch_coverage=0.0`. Cobertura writes `branch-rate="0"` whether or not branch
+data was collected, the adapter reads `0.0` rather than `None`, and
+`dashboard.py` surfaces it — so the Harness tab would have shown a measured 0%
+branch coverage for a measurement that never happened. That is the same
+absence-presented-as-a-reading this estate has four open entries about (B-046,
+B-051, B-058, B-061), arriving inside the fix for a fifth. `--cov-branch` is
+therefore part of this decision rather than a refinement of it. With it, the
+same merge yields `line_coverage=0.883`, `branch_coverage=0.799`, `success`, no
+findings and no warnings.
+
 **Not a nightly lane.** Coverage that lags the branch cannot show a regression
 at review time, and adding a lane nobody watches is the defect this backlog
 already has four entries about.

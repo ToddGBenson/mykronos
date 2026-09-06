@@ -45,14 +45,14 @@ already shipped.
 
 ## Open
 
-Twenty-two, from four sweeps: 2026-09-03 (first and second), 2026-09-04 and
+Twenty-one, from four sweeps: 2026-09-03 (first and second), 2026-09-04 and
 2026-09-05. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
 **The nine that needed the operator rather than code were decided on
-2026-09-05, as D-108 to D-116.** Eight of them stay open as execution and each
-carries its decision inline: `cloud` is disabled and recorded as unavailable
+2026-09-05, as D-108 to D-116.** Seven stay open as execution and each carries
+its decision inline: `cloud` is disabled and recorded as unavailable
 (B-018, D-108); the registry is closed by network scope rather than by binding
 (B-054, D-109); two of three branch-protection controls are required and commit
 signing is deliberately deferred (B-060, D-110); binnacle is granted with its
@@ -61,14 +61,15 @@ a webhook, now that ownership is real (B-035, D-112); coverage goes on the
 pull-request lane with its CI cost measured rather than assumed (B-042, D-113);
 ZAP moves to 2.17.x with a resource read taken first (B-053, D-114); and the
 ranking queue's disclosure is derived from its terms while the rank itself waits
-for a separate decision (B-049, D-116). The ninth, B-043, closed as a decision:
-free-text Consult stays deferred and D-104's position stands (D-115).
+for a separate decision (B-049, D-116 — built the same day, and in Closed).
+The ninth, B-043, closed as a decision: free-text Consult stays deferred and
+D-104's position stands (D-115).
 
-**None of the eight is blocked any longer, and none of them was a defect in this
+**None of the seven is blocked any longer, and none of them was a defect in this
 platform's code.** Six are a setting, a credential or a rule outside this
-repository; two are a call about what this deployment is for. Writing code
-against any of them before the decision would have been guessing, which is why
-they waited.
+repository; the seventh is a call about this deployment's CI budget. Writing
+code against any of them before the decision would have been guessing, which is
+why they waited.
 
 **B-044 is done and not yet closed.** `administration: read` was granted on
 2026-09-04 and the estate's governance posture is readable — B-060 is the first
@@ -98,11 +99,12 @@ no scanner in this platform could have found. B-050 — eight live TheHub
 findings, read by hand because B-045 meant no scanner had looked at that code in
 sixteen days.
 
-**And two are the platform mis-recording its own state.** B-062: enabling one
+**And one is the platform mis-recording its own state.** B-062: enabling one
 capability silently revoked five others and the audit said nothing was removed.
-B-049: filling in the four risk profiles turned an accurate disclosure off
-without changing the rank behind it — found only because the operator half of
-B-033 was finally done.
+Its sibling B-049 — filling in the four risk profiles turned an accurate
+disclosure off without changing the rank behind it, found only because the
+operator half of B-033 was finally done — was built on 2026-09-05 and is in
+Closed.
 
 B-055 is half done. The applied pipeline no longer lets a failed security scan
 promote to production; what remains is TheHub's own copy, and a check that
@@ -270,6 +272,40 @@ pull-request unit lane rather than a nightly one, because coverage that lags the
 branch cannot show a regression at review time. If the measured CI time is
 unacceptable, the decision to stop rests on that figure rather than on an
 assumption — the standard D-053 set for ZAP.
+
+**Built 2026-09-05, and the cost turned out to be nothing measurable.**
+`pytest-cov>=6.0` in the `dev` extra, and `--cov=mykronos --cov-branch
+--cov-report=xml:.../coverage.xml` on *both* mykronos unit lanes — this entry
+quoted the Actions one, but `deploy/concourse/pipelines/mykronos.yml` runs the
+same suite and uploads into the same lake, and instrumenting one of two leaves
+`line_coverage` alternating between a figure and NULL.
+
+Three full runs of the 2592-test suite at `-n auto` on the development host, all
+green: 179.07s with no coverage, 173.90s with `--cov`, 173.24s with
+`--cov --cov-branch`. Both coverage runs were *faster* than the baseline, so the
+overhead is below this host's ~3% run-to-run variance. **This entry's stated
+reason for deferring — that coverage under `pytest-xdist` costs real time — does
+not hold here.** Neither runner's own number is in hand until the lanes run.
+
+**The plumbing was right, and it was proved rather than asserted.** The real pair
+of files a lane writes was normalised through `normalize_results`: one merged
+result, `line_coverage=0.883`, `branch_coverage=0.799`, `success`, zero findings,
+zero warnings. No platform code was touched to get that.
+
+**`--cov` alone would have published a number nobody measured**, and this is the
+part worth keeping. Cobertura writes `branch-rate="0"` whether or not branch data
+was collected; `_rate` reads it as `0.0` rather than `None`; `dashboard.py:2281`
+surfaces it. The first version of this change would have put a measured 0% branch
+coverage on the Harness tab for a measurement that never happened — B-046,
+B-051, B-058 and B-061's own failure, arriving inside the fix for a fifth entry.
+`--cov-branch` is on both lanes for that reason.
+
+**What is left, and it is why this stays open.** The Concourse lane needs
+`deploy/concourse/set-pipeline.ps1` re-applied before the flag reaches the
+running pipeline; until then `check_applied_pipelines.py` will correctly report
+drift on the `unit` job. The Actions lane picks it up on its next run. The
+figure has to appear on the Harness tab from a real lane run, and the lane's own
+added time has to be read there rather than inferred from this host.
 
 **Acceptance criteria**
 
@@ -482,63 +518,6 @@ fix, not evidence for retirement.
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). The retirement
 recommendation was corrected by the operator the same day; the original entry
 had repeated `parity`'s verdict without checking what either lane reached.
-
----
-
-### B-049 — Filling in a risk profile silences the disclosure without changing the rank
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-B-033 gave the triage queue a disclosure: what the rank consulted, and what it
-could not. It was accurate, and its closing note was sharper than the story —
-business context "is not a term in `rank_terms` at all, so this was a
-threat-intel ranking presenting itself as a risk one."
-
-The disclosure is wired to whether a **profile exists**, not to whether the rank
-**uses one**. `ranking_inputs` (`dashboard.py:315`) computes
-`missing_profile = repos - repos_with_a_profile` and emits the "business
-context — not consulted" line only when that set is non-empty. `consulted` is a
-hardcoded four-element list that never contains business context at all.
-
-So filling the profiles in — the operator half B-033 left open — turns an
-accurate warning off:
-
-| | `not_consulted` | is business context a rank term? |
-|---|---|---|
-| Before (no profiles) | "business context — no risk profile on …" | no |
-| After (profiles set)  | `[]` | **still no** |
-
-`rank_terms` (`dashboard.py:241`) is unchanged by this: its terms are severity,
-`in_kev`, `epss`, `overdue`/`due_soon`, `blast_radius`, `repo_is_no_go`,
-`orphaned` and `fixable`. Not one reads `internet_facing`,
-`data_classification` or `business_criticality`. The queue now reports that
-nothing is un-consulted while consulting exactly what it did before.
-
-This could not be seen until a profile existed, which is why it survived
-B-033's own review. It was found by filling all four in on 2026-09-03.
-
-**The profiles are not wasted** — `oracle/engine.py:719-747` reads all three,
-and mykronos's portfolio decision now carries `Handles confidential data
-(+10.0)`. The Oracle consumes business context; the queue does not. That is the
-defect: two rankings on one estate disagree about which inputs exist.
-
-**Decided 2026-09-05 — D-116: fix the disclosure now, rank terms separately.**
-`not_consulted` reports business context whenever it is not a term, and
-`consulted` is derived from the terms the rank can produce rather than restated
-as a literal. Adding the three profile fields to `rank_terms` reorders every
-queue on the estate and needs stated weights, so it gets its own decision rather
-than riding in on a fix for an inaccurate warning.
-
-**Acceptance criteria**
-
-- Either the rank gains terms for the three profile fields, or `not_consulted`
-  reports business context whenever it is not a term — regardless of whether a
-  profile exists.
-- `consulted` is derived from the terms the rank can actually produce rather
-  than restated as a literal.
-- With all four profiles set, the queue's claim about its own inputs is true.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
 ---
 
@@ -1750,11 +1729,13 @@ into entries here:
 
 ## Closed
 
-Thirty-five entries. The count below was stale at "nineteen": it covered
+Thirty-six entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-04 and 09-05 — three.** B-043 closed as a decision (D-115), the
+**2026-09-04 and 09-05 — four.** B-049 built the day it was decided (D-116):
+the queue's disclosure is derived from `RANK_INPUTS` rather than restated, so it
+survives the profiles being filled in. B-043 closed as a decision (D-115), the
 same disposition B-038 got. B-045, which took three applies to hold
 because the decision lived in a flag rather than in the script's default,
 and B-057, fixed upstream by TheHub #281 with a better fix than the one
@@ -1778,6 +1759,89 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-049 — Filling in a risk profile silences the disclosure without changing the rank — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-05 (D-116)
+
+B-033 gave the triage queue a disclosure: what the rank consulted, and what it
+could not. It was accurate, and its closing note was sharper than the story —
+business context "is not a term in `rank_terms` at all, so this was a
+threat-intel ranking presenting itself as a risk one."
+
+The disclosure is wired to whether a **profile exists**, not to whether the rank
+**uses one**. `ranking_inputs` (`dashboard.py:315`) computes
+`missing_profile = repos - repos_with_a_profile` and emits the "business
+context — not consulted" line only when that set is non-empty. `consulted` is a
+hardcoded four-element list that never contains business context at all.
+
+So filling the profiles in — the operator half B-033 left open — turns an
+accurate warning off:
+
+| | `not_consulted` | is business context a rank term? |
+|---|---|---|
+| Before (no profiles) | "business context — no risk profile on …" | no |
+| After (profiles set)  | `[]` | **still no** |
+
+`rank_terms` (`dashboard.py:241`) is unchanged by this: its terms are severity,
+`in_kev`, `epss`, `overdue`/`due_soon`, `blast_radius`, `repo_is_no_go`,
+`orphaned` and `fixable`. Not one reads `internet_facing`,
+`data_classification` or `business_criticality`. The queue now reports that
+nothing is un-consulted while consulting exactly what it did before.
+
+This could not be seen until a profile existed, which is why it survived
+B-033's own review. It was found by filling all four in on 2026-09-03.
+
+**The profiles are not wasted** — `oracle/engine.py:719-747` reads all three,
+and mykronos's portfolio decision now carries `Handles confidential data
+(+10.0)`. The Oracle consumes business context; the queue does not. That is the
+defect: two rankings on one estate disagree about which inputs exist.
+
+**Decided 2026-09-05 — D-116: fix the disclosure now, rank terms separately.**
+`not_consulted` reports business context whenever it is not a term, and
+`consulted` is derived from the terms the rank can produce rather than restated
+as a literal. Adding the three profile fields to `rank_terms` reorders every
+queue on the estate and needs stated weights, so it gets its own decision rather
+than riding in on a fix for an inaccurate warning.
+
+**Acceptance criteria**
+
+- Either the rank gains terms for the three profile fields, or `not_consulted`
+  reports business context whenever it is not a term — regardless of whether a
+  profile exists.
+- `consulted` is derived from the terms the rank can actually produce rather
+  than restated as a literal.
+- With all four profiles set, the queue's claim about its own inputs is true.
+
+**Closed 2026-09-05.** The second branch of the first criterion, per D-116.
+Business context is now named whenever it is not a term and only the *reason*
+moves with profile coverage — "unset anyway on <repos>" while profiles are
+missing, "recorded on every risk profile and read by the portfolio decision, but
+not a term in this rank" once they exist.
+
+**`consulted` is derived, and the literal turned out to be wrong as well as
+un-derived.** It listed four inputs; the rank also produces `repo_is_no_go`,
+`orphaned` and `fixable`, and none of the three was disclosed. `RANK_INPUTS` is
+now the single declaration — term key to the input it speaks for — and
+`rank_terms`'s `add()` raises on a key that is not in it. A term cannot be added
+to the rank without saying what input it discloses, which is the same move
+TheHub #281 made for the SDK pin in B-057: a comment cannot fail a build, and a
+hand-maintained list cannot stay true.
+
+Four tests, and each one fails against the old code: the disclosure survives the
+profiles being filled in; `consulted` equals what `RANK_INPUTS` declares; every
+term the rank can produce is declared and nothing declared is unreachable; and an
+undeclared term raises rather than ranking silently. The empty-portfolio case now
+discloses too — the disclosure describes the rank, not the estate.
+
+**Not done, deliberately:** the three profile fields are still not rank terms.
+That reorders every queue on the estate and needs stated weights, so it is its
+own decision rather than something smuggled in behind a fix for an inaccurate
+warning (D-116).
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
 
 ### B-043 — Free-text questions need a model credential this repo must not hold — **closed as a decision** (D-115)
 
