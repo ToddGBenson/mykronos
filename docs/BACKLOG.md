@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Twenty-three, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Twenty-two, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -106,14 +106,6 @@ Its sibling B-049 — filling in the four risk profiles turned an accurate
 disclosure off without changing the rank behind it, found only because the
 operator half of B-033 was finally done — was built on 2026-09-05 and is in
 Closed.
-
-**B-066 is the live one, and it is an outage rather than a gap.** `keel` and
-`binnacle` are Actions-scanned, the public ingest path is their only route into
-the lake, and it has answered 502 since 08:40 on 2026-09-05 because the
-cloudflared service is reading a stale copy of its own ingress. Two of four
-watched repositories have been unable to file anything for twelve hours while the
-briefing, which measures silence rather than coverage, reads healthy — B-046 seen
-from outside the platform. One elevated script fixes it.
 
 **B-065 arrived from checking the work rather than from a sweep.** Re-applying
 the `mykronos` pipeline for D-113 produced a clean drift report and, in the same
@@ -1841,9 +1833,74 @@ trusting the label.
 
 ---
 
-### B-066 — The tunnel's service copy is stale, so two repositories cannot report at all
+## Watching, not filed
 
-**Size:** XS **State:** open **Verified:** 2026-09-05
+Recorded so the next sweep does not rediscover them, and deliberately not turned
+into entries here:
+
+- **`thehub`: `deploy-demo` and `api-inventory` are failing.** `deploy-demo`
+  timed out after 25 minutes waiting for the demo environment to report a SHA
+  ("host-side poller is not running, or it failed and rolled back");
+  `api-inventory` reports "The API surface has changed and the inventory has
+  not". Both are TheHub's own code, in TheHub's repository. This repo holds the
+  pipeline definition, not the fix.
+- **`keel`: `compliance-daily` is errored** — *errored*, not failed, so the task
+  did not complete rather than completing unhappily. Its weekly and monthly
+  siblings pass. Recorded in
+  [`current-state/keel-pipeline-inventory.md`](current-state/keel-pipeline-inventory.md)
+  as F3, along with three never-run jobs; keel's work belongs in keel's repo.
+- **Two overdue critical findings on TheHub** — *resolved 2026-09-03.* Both were
+  false positives in `concourse/pipelines/thehub.yml`: gitleaks matched the
+  Concourse variable placeholder `((anthropic-api-key))` and a line inside an
+  escaped YAML flow scalar. Every credential in that file resolves to a Vault
+  placeholder and the file holds no literal secret. Dispositioned with reasons.
+  Worth keeping because the mechanism worked and the input did not: all four of
+  this estate's critical findings were false positives, which is what a critical
+  count has to survive to mean anything.
+
+---
+
+## Closed
+
+Thirty-seven entries. The count below was stale at "nineteen": it covered
+the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
+entries (B-001 to B-007) or the seven that closed on 2026-09-03.
+
+**2026-09-06 — one.** B-066, the only outage in this set rather than a gap: a
+stale copy of the tunnel's own ingress had stopped `keel` and `binnacle`
+reporting for twenty hours while the briefing read healthy. Found by checking
+whether the previous day's work had produced a figure.
+
+**2026-09-04 and 09-05 — four.** B-049 built the day it was decided (D-116):
+the queue's disclosure is derived from `RANK_INPUTS` rather than restated, so it
+survives the profiles being filled in. B-043 closed as a decision (D-115), the
+same disposition B-038 got. B-045, which took three applies to hold
+because the decision lived in a flag rather than in the script's default,
+and B-057, fixed upstream by TheHub #281 with a better fix than the one
+drafted here — a test that asserts a pin against its call sites, because a
+comment cannot fail a build.
+
+**2026-09-03 — seven.** B-032, B-033 (the code half), B-034, B-036, B-037,
+B-040, and B-038 closed as a decision (D-101).
+
+**2026-08-31 — eight.** Seven built and one, B-009, closed without code because
+the decision it asked for already existed. Each was re-verified against the
+working tree before it was touched and every one still reproduced.
+
+**2026-09-01 — eleven.** B-013 from the outage that day, then B-008 and B-010
+rescoped from the import, then B-011 and B-012, which had been iceboxed and were
+built rather than left waiting. B-012's trigger turned out to have fired
+already, which is the argument for re-reading an icebox rather than trusting it
+to announce itself.
+
+Everything is recorded where this repo already looks: a decision for the four
+that changed what the platform promises, a spec amendment for those that made a
+document match the code. Final state: 2311 backend tests, mypy over 108 files,
+ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-066 — The tunnel's service copy is stale, so two repositories cannot report at all — **done**
+
+**Size:** XS **Verified:** 2026-09-05 **Closed:** 2026-09-06
 
 `keel` and `binnacle` are both `scanned_by=github_actions`, and
 `https://mykronos.toddbenson.net/api/ingest/` is their only path into the lake.
@@ -1888,6 +1945,53 @@ unable to file anything since morning. `keel` has 135 runs across four
 capabilities and `binnacle`'s first ever scans landed that morning, hours before
 this started.
 
+**Closed 2026-09-06.** `install-tunnel-route.ps1` run elevated by the operator.
+Verified against the public edge rather than from this host, which matters — see
+below:
+
+| path | before | after |
+|---|---|---|
+| `/healthz` | 502 | **200** |
+| `/api/ingest/health` | 502 | **401**, the ingestion token being demanded |
+| `/api/dashboard/portfolio` | 502 | **401**, the perimeter gate |
+
+`hub`, `blog` and `demo` all still answer 200, which is the check the script's
+`-MustStayUp` exists for.
+
+**And a real run filed, which is the criterion that mattered.** `Mykronos atlas`
+dispatched by hand on `keel`, success in 33s, and the row is present:
+
+    ToddGBenson/keel | atlas | success | 2026-09-06T04:06:51 | main
+
+It did not appear in `scan_runs` at first because a run lands in
+`_buffer/scan_runs/*.jsonl` and reaches Parquet only at compaction — the same
+buffering that makes an un-compacted read of a risk decision look stale.
+`ToddGBenson/TheHub | dast | success | develop` was in the same buffer, so the
+Concourse path is reporting too.
+
+**The gap is accepted rather than replayed.** `keel` and `binnacle` missed their
+scheduled passes between 08:40 on 2026-09-05 and the repair, roughly twenty
+hours. Their next scheduled runs cover the same trees, and nothing was pushed to
+either repository in the window, so a replay would re-scan identical commits and
+produce identical findings. Recorded here so the hole is a decision rather than
+something the next sweep rediscovers as unexplained silence.
+
+**One correction worth carrying forward, because it would mislead the next
+reader.** The original entry said the hostname "does not answer" from this host
+while `hub.toddbenson.net` returned 200 through the same tunnel, and offered that
+contrast as evidence. It was not evidence: this machine pins
+`mykronos.toddbenson.net` to `127.0.0.1` in
+`C:\Windows\System32\drivers\etc\hosts`, added 2026-09-03 when the dashboard
+went LAN-only, so a local `curl` was failing to reach `127.0.0.1:443` and never
+touched Cloudflare at all. The real evidence was always the runner's 502 from the
+public internet. To check the edge from this host, bypass the override:
+
+    curl --resolve mykronos.toddbenson.net:443:104.21.6.227 \
+      https://mykronos.toddbenson.net/healthz
+
+The conclusion happened to be right and the reasoning was not, which is the
+worse of the two failure modes because it survives review.
+
 **Acceptance criteria**
 
 - `scripts/install-tunnel-route.ps1` run elevated, and
@@ -1904,66 +2008,6 @@ failed on the upload rather than the tests — which is only visible by reading 
 log, because the run reports as a failed suite.
 
 ---
-
-## Watching, not filed
-
-Recorded so the next sweep does not rediscover them, and deliberately not turned
-into entries here:
-
-- **`thehub`: `deploy-demo` and `api-inventory` are failing.** `deploy-demo`
-  timed out after 25 minutes waiting for the demo environment to report a SHA
-  ("host-side poller is not running, or it failed and rolled back");
-  `api-inventory` reports "The API surface has changed and the inventory has
-  not". Both are TheHub's own code, in TheHub's repository. This repo holds the
-  pipeline definition, not the fix.
-- **`keel`: `compliance-daily` is errored** — *errored*, not failed, so the task
-  did not complete rather than completing unhappily. Its weekly and monthly
-  siblings pass. Recorded in
-  [`current-state/keel-pipeline-inventory.md`](current-state/keel-pipeline-inventory.md)
-  as F3, along with three never-run jobs; keel's work belongs in keel's repo.
-- **Two overdue critical findings on TheHub** — *resolved 2026-09-03.* Both were
-  false positives in `concourse/pipelines/thehub.yml`: gitleaks matched the
-  Concourse variable placeholder `((anthropic-api-key))` and a line inside an
-  escaped YAML flow scalar. Every credential in that file resolves to a Vault
-  placeholder and the file holds no literal secret. Dispositioned with reasons.
-  Worth keeping because the mechanism worked and the input did not: all four of
-  this estate's critical findings were false positives, which is what a critical
-  count has to survive to mean anything.
-
----
-
-## Closed
-
-Thirty-six entries. The count below was stale at "nineteen": it covered
-the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
-entries (B-001 to B-007) or the seven that closed on 2026-09-03.
-
-**2026-09-04 and 09-05 — four.** B-049 built the day it was decided (D-116):
-the queue's disclosure is derived from `RANK_INPUTS` rather than restated, so it
-survives the profiles being filled in. B-043 closed as a decision (D-115), the
-same disposition B-038 got. B-045, which took three applies to hold
-because the decision lived in a flag rather than in the script's default,
-and B-057, fixed upstream by TheHub #281 with a better fix than the one
-drafted here — a test that asserts a pin against its call sites, because a
-comment cannot fail a build.
-
-**2026-09-03 — seven.** B-032, B-033 (the code half), B-034, B-036, B-037,
-B-040, and B-038 closed as a decision (D-101).
-
-**2026-08-31 — eight.** Seven built and one, B-009, closed without code because
-the decision it asked for already existed. Each was re-verified against the
-working tree before it was touched and every one still reproduced.
-
-**2026-09-01 — eleven.** B-013 from the outage that day, then B-008 and B-010
-rescoped from the import, then B-011 and B-012, which had been iceboxed and were
-built rather than left waiting. B-012's trigger turned out to have fired
-already, which is the argument for re-reading an icebox rather than trusting it
-to announce itself.
-
-Everything is recorded where this repo already looks: a decision for the four
-that changed what the platform promises, a spec amendment for those that made a
-document match the code. Final state: 2311 backend tests, mypy over 108 files,
-ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
 
 ### B-049 — Filling in a risk profile silences the disclosure without changing the rank — **done**
 
