@@ -45,25 +45,69 @@ already shipped.
 
 ## Open
 
-Sixteen. **Eight need the operator rather than code**: B-018 is a decision only
-they can make, B-035 and B-043 each need a credential this repository must not
-hold, B-042 is a call about this repository's CI budget, B-044 is one
-permission grant that lights four built-and-waiting features, and B-052 is one
-repository grant that lets binnacle be scanned at all. Writing code
-against any of them would be guessing.
+Twenty-two, from four sweeps: 2026-09-03 (first and second), 2026-09-04 and
+2026-09-05. Every entry here was reproduced against the live system before it
+was written; the evidence is in each entry rather than a link to a dashboard
+that will have moved on.
 
-**Four arrived from the 2026-09-03 second sweep, and they are one story told
-four ways: nothing here checks that a scan covered anything.** B-045 is the
-instance — TheHub has been scanned on `main` since 2026-08-19 while every commit
-lands on `develop`, so 330 findings describe a tree eight days stale. B-046 is
-the reason nobody saw it: the stalled-lane detector measures silence, not
-coverage, and a lane re-scanning one frozen commit reports healthy forever.
-B-047 is the exit that does not exist for the 32 findings a disabled capability
-left behind. B-048 is the same blind spot from the other side — two lanes
-scanning one repository at different path bases, each supplying the other's
-absence evidence, and `parity` recommending that the wrong one be retired
-because it compares what a lane reports and never what it reaches.
-B-045 is a decision; B-046, B-047 and B-048 are code. B-050 is the one that is neither: four live vulnerabilities in TheHub, found by reading all twenty-one of its high findings by hand because B-045 means no scanner has looked at that code in sixteen days. B-051 came from asking what the other repositories look like, and is the widest gap here: four of the account's eleven repositories are watched at all, and two of the four are green because their analyser cannot read the language they are written in. B-049 arrived last and only because the operator half of B-033 was finally done: filling in the four risk profiles turned an accurate disclosure off without changing the rank behind it.
+**The nine that needed the operator rather than code were decided on
+2026-09-05, as D-108 to D-116.** Eight of them stay open as execution and each
+carries its decision inline: `cloud` is disabled and recorded as unavailable
+(B-018, D-108); the registry is closed by network scope rather than by binding
+(B-054, D-109); two of three branch-protection controls are required and commit
+signing is deliberately deferred (B-060, D-110); binnacle is granted with its
+partial coverage recorded rather than withheld (B-052, D-111); the notifier gets
+a webhook, now that ownership is real (B-035, D-112); coverage goes on the
+pull-request lane with its CI cost measured rather than assumed (B-042, D-113);
+ZAP moves to 2.17.x with a resource read taken first (B-053, D-114); and the
+ranking queue's disclosure is derived from its terms while the rank itself waits
+for a separate decision (B-049, D-116). The ninth, B-043, closed as a decision:
+free-text Consult stays deferred and D-104's position stands (D-115).
+
+**None of the eight is blocked any longer, and none of them was a defect in this
+platform's code.** Six are a setting, a credential or a rule outside this
+repository; two are a call about what this deployment is for. Writing code
+against any of them before the decision would have been guessing, which is why
+they waited.
+
+**B-044 is done and not yet closed.** `administration: read` was granted on
+2026-09-04 and the estate's governance posture is readable — B-060 is the first
+pass over it. The entry's own text still reads as though nobody had granted it;
+what is left is confirming the SSDF count moved and closing it.
+
+**One story keeps arriving from different directions: nothing here checks that a
+scan covered anything.** It began as the second 2026-09-03 sweep's four —
+B-045 the instance (TheHub scanned on `main` while every commit landed on
+`develop`, now closed), B-046 the reason nobody saw it (the stalled-lane
+detector measures silence, not coverage), B-047 the missing exit for findings a
+disabled capability strands, B-048 the same blind spot from the other side (two
+lanes at different path bases, each supplying the other's absence evidence).
+Every sweep since has added a form of it: B-051, a lane pointed at a language
+its analyser cannot read, and the widest gap here — four of the account's eleven
+repositories watched at all, two of the four green for that reason. B-053, a
+scanner too old to know what to look for. B-056, no branch dimension on a lane,
+which is why B-045 was forced rather than chosen. B-058, a status nothing sets,
+so a repository is failed for lacking what it cannot have. B-061, `event_driven`
+calling a capability fine without checking anything runs it. B-063, `--no-resolve`
+assessing the declared floor, so a finding names a version nobody runs.
+
+**Three are live defects rather than reporting gaps.** B-064 — TheHub's most
+sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
+deploy path pulls from taking anonymous writes from any host on the LAN, which
+no scanner in this platform could have found. B-050 — eight live TheHub
+findings, read by hand because B-045 meant no scanner had looked at that code in
+sixteen days.
+
+**And two are the platform mis-recording its own state.** B-062: enabling one
+capability silently revoked five others and the audit said nothing was removed.
+B-049: filling in the four risk profiles turned an accurate disclosure off
+without changing the rank behind it — found only because the operator half of
+B-033 was finally done.
+
+B-055 is half done. The applied pipeline no longer lets a failed security scan
+promote to production; what remains is TheHub's own copy, and a check that
+compares the two repositories rather than only the applied pipeline against this
+one.
 
 B-038 closed on 2026-09-03 as D-101 — the answer was that the position stands.
 The risk gate was asked about at the same time and stays advisory, recorded as
@@ -72,24 +116,26 @@ evidence to defend it is a decision and not outstanding work.
 
 Everything from the 2026-09-01 monitoring sweep, all three gaps that writing
 [`finding-lifecycle.md`](finding-lifecycle.md) exposed, and five of the seven
-entries the 2026-09-03 DevSecOps assessment produced are in Closed. Every entry
-here was reproduced against the live system before it was written; the evidence
-is in each entry rather than a link to a dashboard that will have moved on.
+entries the 2026-09-03 DevSecOps assessment produced are in Closed.
 
 **B-032 through B-038 came from a DevSecOps assessment of the workflow on
 2026-09-03.** Five landed the same day — the check run now names what a change
 introduced (B-036), every finding has an owner (B-034), the queue says what it
 could not rank by (B-033), a finding has a record of its own (B-032), and the
 current SBOM is reachable without knowing an evidence id (B-037). They shared a
-shape worth noticing: almost none of them was a missing feature. The finding record is an assembly over eleven services that
-already exist; the risk model is built and unpopulated; routing is switched on
-and nothing is routed; the notifier is configured and addressed to nobody; the
-check run's introduced-findings query has existed since D-048 and only the gate
-reads it. The platform's capabilities are ahead of its wiring, which is a better
-problem than the reverse and a different one from the backlog it usually
-collects.
+shape worth noticing: almost none of them was a missing feature. The finding
+record is an assembly over eleven services that already exist; the risk model is
+built and unpopulated; routing is switched on and nothing is routed; the notifier
+is configured and addressed to nobody; the check run's introduced-findings query
+has existed since D-048 and only the gate reads it. The platform's capabilities
+are ahead of its wiring, which is a better problem than the reverse and a
+different one from the backlog it usually collects.
 
 B-038 is the exception and the only one that is genuinely absent.
+
+**The sequence below is the 2026-09-03 ordering and is kept as written.** Six of
+its seven entries have since closed; it is left here because the reasoning about
+what unlocks what is the reusable part, not the list.
 
 ### The sequence, and why
 
@@ -141,47 +187,6 @@ that choice would be guessing. It was deferred on 2026-09-01 with the capability
 left enabled and inert, which this entry itself calls the one indefensible
 state; that is a deliberate hold, not an oversight.
 
-### B-043 — Free-text questions need a model credential this repo must not hold
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-The Consult tab answers a fixed set of questions from records and links each
-answer to the tab that produced it. It has no free-text box, and the brief
-asked for a chat window.
-
-**Two reasons it shipped without one, and only the first is a blocker.**
-
-This repository holds no model API key and must not (spec 12 §2). A chat window
-that needs one is blocked on the operator exactly as B-035 is, and shipping the
-box before the credential is a feature that fails on first use.
-
-The second is why this is M and not S: **grounding is the hard half.** A model
-answering "what should I fix first here" is only as good as the facts handed
-to it, and those facts are `consult.Facts` — already built, already tested,
-already the thing the fixed answers are made of. Adding a model is a phrasing
-layer over the same struct. Building the phrasing first and the grounding
-later is how assistants end up confidently wrong, which is the failure this
-platform can least afford: it exists to be believed about security.
-
-**The refusals are not a placeholder.** `consult.UNANSWERABLE` names six
-questions people will ask and this platform cannot answer, with the reason for
-each. Those stay when a model arrives — a model that answers them anyway is
-worse than the list, and the list is what makes the rest trustworthy.
-
-**Acceptance criteria**
-
-- The key reaches the backend the way every other secret does, via Vault.
-- Free text is answered *only* from `consult.Facts` and whatever the caller is
-  already authorised to read. No repository source, no lake queries the asker
-  could not run themselves.
-- Every sentence carries the same tab citation the fixed answers carry. An
-  answer that cannot cite is not shown.
-- It still cannot act: no dispositions, no acceptances, no scans, no PRs.
-- A question on the `UNANSWERABLE` list is refused with its stated reason
-  rather than attempted.
-
----
-
 ### B-044 — One App permission is holding four features shut
 
 **Size:** S **State:** open **Verified:** 2026-09-03
@@ -195,8 +200,9 @@ governance read on this deployment returns unreadable:
 The GitHub App does not carry `administration: read`. D-097 decided that
 permission is *optional* rather than required, and that decision is right —
 making it required would fail the spec 02 §8 permission smoke test for every
-installation that already exists. But nobody has granted it here, and the
-consequence is larger than the governance panel it was added for.
+installation that already exists. It had not been granted here until
+2026-09-04, and the consequence was larger than the governance panel it was
+added for.
 
 **Four things are inert because of it, and none of them is broken.**
 
@@ -212,6 +218,15 @@ consequence is larger than the governance panel it was added for.
 **One click.** Granting `administration: read` on the App installation lights
 all four with no code change, which is also the proof that each was built
 right: none of them fabricated a value in its absence.
+
+**Granted 2026-09-04, and it did light them.** The estate's governance posture
+was readable for the first time that day and B-060 is the pass over it — every
+number in that entry is a live read of what this entry said was unreadable. The
+grant also exposed the defect that had been hiding the result: the SSDF
+assessment compared `state == "pass"` against a module emitting
+`on`/`off`/`partial`/`unknown`, so every readable control still reported as not
+enforced. This entry stays open only until the SSDF count is confirmed to have
+moved and the first drift sweep is recorded.
 
 **Acceptance criteria**
 
@@ -250,6 +265,12 @@ real time on a 14-minute suite that runs on every pull request, and spending
 that is a call about this repository's CI budget rather than a defect to fix.
 The per-repo lane `command` is operator config, not platform code.
 
+**Decided 2026-09-05 — D-113: add it, and measure the cost.** On the
+pull-request unit lane rather than a nightly one, because coverage that lags the
+branch cannot show a regression at review time. If the measured CI time is
+unacceptable, the decision to stop rests on that figure rather than on an
+assumption — the standard D-053 set for ZAP.
+
 **Acceptance criteria**
 
 - `pytest-cov` in the `dev` extra and `--cov=mykronos
@@ -283,6 +304,12 @@ only the operator knows whether it was lost with the rest of `.env` on
 recorded as not available on this deployment. Both are defensible; leaving it
 enabled and inert is not.
 
+**Decided 2026-09-05 — D-108: disable and record.** `cloud` is not available
+on this deployment. Restoring the principal was the alternative and was rejected
+because it needs a credential that may not exist; disabling is reversible the day
+one does. What is left here is the toggle and the dashboard reading `cloud` as
+absent rather than as a real zero.
+
 **Acceptance criteria**
 
 - Either `cloud-posture` can run, or `cloud` is not presented as enabled.
@@ -303,82 +330,18 @@ somebody only if they remember to look.
 **Needs the operator, not code** — the webhook URL is a credential this
 repository must not hold.
 
+**Decided 2026-09-05 — D-112: configure the webhook.** Through Vault, like
+every other secret. B-034 closing is what unblocked it — before ownership was
+real these would have been broadcasts. Three separate multi-day scanning outages
+in two weeks (B-024, B-055, B-057), none of which announced itself, are the
+argument.
+
 **Acceptance criteria**
 
 - Either a webhook is configured, or the absence is recorded as a decision the
   way D-053 recorded paused DAST, so it stops reading as an oversight.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-045 — TheHub is scanned on a branch nobody merges to — **done**
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-Mykronos's own record of TheHub says `default_branch: develop`. Its Concourse
-pipeline watches `main`. Nothing reconciles the two, and the gap is now eight
-days wide.
-
-- `origin/main` is at `7197a028`, dated 2026-08-26. No merge since.
-- `origin/develop` has commits through 2026-09-03 — eight of them that day.
-- `develop` was scanned **295 times**, the last on **2026-08-19**. Not once since.
-- Every TheHub scan run after that date carries
-  `commit_sha = 7197a02837377eef0af70f14746102df33286de7` — the same frozen
-  commit, re-scanned and recorded `success` each time.
-
-TheHub's active branch has therefore been unscanned for sixteen days, and its
-330 open findings describe a commit that is eight days behind the code people
-are actually writing.
-
-**This is not B-024.** That entry was the ingestion token (D-097) and it closed
-correctly — scanning did resume, at 2026-09-01 20:07. It resumed against
-`main`, so the repair bought nothing that lasts.
-
-The branch is a parameter, `((thehub-branch))`, set by
-`deploy/concourse/set-thehub-pipeline.ps1` and defaulting to `main` under an
-operator directive dated 2026-08-18. That script's own comment records the
-failure mode exactly: "the repository said `develop` while the applied pipeline
-watched `main`, and nothing anywhere reconciled the two." It was written about a
-working-tree divergence. The same sentence now describes the platform.
-
-The directive was reasonable. It assumed the flow is PR -> merge to `main` ->
-pipeline runs. That flow has not produced a merge in eight days, so what needs
-re-deciding is the assumption, not the script.
-
-**Acceptance criteria**
-
-- A decision recorded on which branch TheHub is scanned on — matching
-  `default_branch`, or stating in writing why it does not.
-- If `develop`: the pipeline re-applied with `-Branch develop`, and a scan run
-  recorded whose `commit_sha` is on `develop`.
-- The 330 frozen findings re-evaluated against a current commit.
-
-**Re-opened and re-closed on 2026-09-05.** It did not hold for a day.
-
-The close put the decision in `-Branch develop` at apply time and left
-`set-thehub-pipeline.ps1`'s default at `main`. Re-applying the pipeline on
-2026-09-05 for an unrelated fix printed `Delivering branch 'main'` and moved
-TheHub back, silently — the third occurrence of the sentence this entry already
-quotes from that script's own comment, this time with the script saying `main`
-and the platform saying `develop`.
-
-The default is now `develop`, so the decision lives in the repository rather
-than in whoever remembers the flag, and `-Branch main` is the one-off. A
-decision recorded only as an argument is a decision that reverts on the next
-routine apply.
-
-**Closed 2026-09-04.** The pipeline now watches `develop`. Getting there
-took more than re-pointing it: `unit` was red on `develop`, and every scan
-lane carries `passed: [unit]`, so the branch could not be scanned at all until
-the twelve promotion-gate tests went green (B-055, TheHub #278/#279). The
-branch question itself turned out to be forced rather than chosen — see B-056:
-a lane has no branch dimension, so scanning `develop` while gating `main` is
-not expressible, and the 2026-08-18 directive was the only option available.
-The accepted cost is that `deploy-demo` now auto-deploys `develop` to the demo
-environment; production is untouched, since `deploy-prod` carries no trigger.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
 ---
 
@@ -558,6 +521,13 @@ B-033's own review. It was found by filling all four in on 2026-09-03.
 and mykronos's portfolio decision now carries `Handles confidential data
 (+10.0)`. The Oracle consumes business context; the queue does not. That is the
 defect: two rankings on one estate disagree about which inputs exist.
+
+**Decided 2026-09-05 — D-116: fix the disclosure now, rank terms separately.**
+`not_consulted` reports business context whenever it is not a term, and
+`consulted` is derived from the terms the rank can produce rather than restated
+as a literal. Adding the three profile fields to `rank_terms` reorders every
+queue on the estate and needs stated weights, so it gets its own decision rather
+than riding in on a fix for an inaccurate warning.
 
 **Acceptance criteria**
 
@@ -891,6 +861,11 @@ private, pushed 2026-08-31, 30 shell scripts, 46 workflow YAMLs and 9 Python
 files, with no scanning of any kind. `atlas`, `sast` and `secrets` — matching
 `keel`, which it is a fork of — is the starting set.
 
+**Decided 2026-09-05 — D-111: grant, then `atlas`/`sast`/`secrets`.** The
+qualification below is recorded with the grant rather than blocking it: `atlas`
+and `secrets` are language-blind and report truthfully today, and shell analysis
+is B-051's work.
+
 **Acceptance criteria**
 
 - `binnacle` appears in `GET /installation/repositories`.
@@ -928,6 +903,10 @@ production down; spec 32 §11 holds that posture until somebody replaces it with
 a measurement taken on a runner. Changing the version of the tool that caused
 that outage deserves the same care — the passive lane is what is running today,
 and a major-minor bump can change its resource profile.
+
+**Decided 2026-09-05 — D-114: move the pin to 2.17.x with the resource read
+taken.** Not chained to the wider DAST posture revisit, because that would leave
+the passive lane on nine-month-old detection rules for as long as that takes.
 
 **Acceptance criteria**
 
@@ -1004,6 +983,12 @@ defence-in-depth version and survives a machine moving networks. It costs
 credentials in two more places: kaniko's `--destination` push, and the host's
 `docker login` before it pulls. Both can resolve from Vault, which already
 holds every other credential this pipeline uses.
+
+**Decided 2026-09-05 — D-109: close it by network scope.** A host rule
+permitting 5000 from `172.16.0.0/12` and loopback, denying it elsewhere.
+`REGISTRY_AUTH=htpasswd` from Vault is recorded as the follow-up rather than the
+first move, because scope is a property of where this machine sits and
+authentication survives it moving.
 
 **Acceptance criteria**
 
@@ -1143,70 +1128,6 @@ unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
 **Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
 implement "scan develop, deploy from main" and discovering the platform cannot
 express it.
-
----
-
-### B-057 — A pin guarded by a comment, raised anyway — **done upstream**
-
-**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-04 (TheHub #281)
-
-`thehub/unit` #85, the first build after the pipeline moved to `develop`, failed
-in 4m34s without running a single test:
-
-    ImportError while loading conftest '.../backend/tests/conftest.py'
-    anthropic/_base_client.py:1686: in __init__
-    TypeError: Invalid `http_client` argument; Expected an instance of
-      `httpx2.AsyncClient` but got <class 'httpx.AsyncClient'>
-
-**The cause was not a loose range.** `backend/requirements.txt` pinned
-`anthropic>=0.40.0,<1.0` under eleven lines of comment explaining why the bound
-must not move on its own, ending "Raise a bound only together with the matching
-call site in services/ai/." Dependabot #267 raised it to `>=1.0.0,<2.0` and the
-PR merged. **The comment survived; the pin it was guarding did not** — and this
-was the second occurrence of the same failure.
-
-**1.x breaks two things, and the first diagnosis here found only one.** Measured
-upstream against anthropic 1.3.0 rather than assumed:
-
-    AsyncAnthropic(http_client=httpx.AsyncClient(...))   -> TypeError, at import
-    messages.create(..., temperature=0.3)                -> unexpected kwarg,
-                                                            on all four call sites
-
-The first is what #85 hit; the second would not have surfaced until a Claude
-call ran. A fix addressing only the first — passing `timeout=` and letting the
-SDK own its client — was drafted here and **abandoned**, because it would have
-made collection succeed while every Claude call failed at runtime. A green build
-over a broken service is worse than the red build it replaces.
-
-**Fixed upstream by TheHub #281**: revert the pin to `<1.0`, and turn the guard
-comment into `backend/tests/unit/test_sdk_pins_match_their_call_sites.py`, which
-asserts the coupling in both directions — move the pin without migrating the
-call sites and it fails; migrate the call sites and it tells you the pin may
-move. Their reasoning is the durable part: *a comment cannot fail a build.*
-
-**What still stands from the original entry.** The blast radius was real: every
-scan lane carries `passed: [unit]`, so while this held, TheHub was not scanned at
-all — the third distinct cause in two weeks, after the ingestion token (B-024)
-and the promotion-gate regression (B-055), none of them a scanner problem. And
-moving to `develop` did not break this: `main` last passed `unit` on 2026-08-27
-and had never met the SDK, so the branch change revealed a break that was
-already there with nothing running to notice it (B-046).
-
-**What does not stand.** The original entry blamed a wide range plus B-050's
-missing dependabot `cooldown`. A cooldown would have delayed this, not prevented
-it — the range was *narrow* and correct, and the bot widened it. B-050's
-cooldown point is still worth doing and is not the mechanism here.
-
-**One note for the history.** The upstream entry records the bad pin as merging
-"in PR #276..#279". **#279 is this assessment's own re-export PR.** It did not
-introduce the pin, but it merged inside that window, so a reader bisecting the
-range will land on it.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, from the first build after
-B-045 closed. Found because the reporting refactor landed the same day: this was
-the first failed Concourse run TheHub has ever recorded — `Reported
-integration_tests=failed` — where before, a failed lane said nothing at all.
-Corrected the same day after finding #281 had already landed a better fix.
 
 ---
 
@@ -1411,6 +1332,13 @@ status checks there would stop every merge until those five tests pass; and
    `required_status_checks` needs the Concourse checks wired to the commit
    status first, or it will block on checks that never arrive.
 4. `TheHub` last, and not before its `unit` lane is green.
+
+**Decided 2026-09-05 — D-110: two of the three, in this entry's order.**
+`approving_reviews_required` and `required_status_checks` are being turned on
+binnacle-and-keel first, then mykronos, then personal-soc, then TheHub.
+`signed_commits_required` is deliberately deferred and recorded as such: on a
+single-operator estate an unsigned commit from a forgotten path becomes an
+unmergeable one, which fails at the moment somebody is shipping a fix.
 
 **Acceptance criteria**
 
@@ -1822,7 +1750,19 @@ into entries here:
 
 ## Closed
 
-Nineteen entries, over two days.
+Thirty-five entries. The count below was stale at "nineteen": it covered
+the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
+entries (B-001 to B-007) or the seven that closed on 2026-09-03.
+
+**2026-09-04 and 09-05 — three.** B-043 closed as a decision (D-115), the
+same disposition B-038 got. B-045, which took three applies to hold
+because the decision lived in a flag rather than in the script's default,
+and B-057, fixed upstream by TheHub #281 with a better fix than the one
+drafted here — a test that asserts a pin against its call sites, because a
+comment cannot fail a build.
+
+**2026-09-03 — seven.** B-032, B-033 (the code half), B-034, B-036, B-037,
+B-040, and B-038 closed as a decision (D-101).
 
 **2026-08-31 — eight.** Seven built and one, B-009, closed without code because
 the decision it asked for already existed. Each was re-verified against the
@@ -1838,6 +1778,190 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-043 — Free-text questions need a model credential this repo must not hold — **closed as a decision** (D-115)
+
+**Size:** M **Verified:** 2026-09-03 **Closed:** 2026-09-05 (D-115)
+
+The Consult tab answers a fixed set of questions from records and links each
+answer to the tab that produced it. It has no free-text box, and the brief
+asked for a chat window.
+
+**Two reasons it shipped without one, and only the first is a blocker.**
+
+This repository holds no model API key and must not (spec 12 §2). A chat window
+that needs one is blocked on the operator exactly as B-035 is, and shipping the
+box before the credential is a feature that fails on first use.
+
+The second is why this is M and not S: **grounding is the hard half.** A model
+answering "what should I fix first here" is only as good as the facts handed
+to it, and those facts are `consult.Facts` — already built, already tested,
+already the thing the fixed answers are made of. Adding a model is a phrasing
+layer over the same struct. Building the phrasing first and the grounding
+later is how assistants end up confidently wrong, which is the failure this
+platform can least afford: it exists to be believed about security.
+
+**The refusals are not a placeholder.** `consult.UNANSWERABLE` names six
+questions people will ask and this platform cannot answer, with the reason for
+each. Those stay when a model arrives — a model that answers them anyway is
+worse than the list, and the list is what makes the rest trustworthy.
+
+**Deferred 2026-09-05 — D-115.** The answer is that D-104's position stands:
+grounding before phrasing, and the refusal list is what makes the fixed answers
+trustworthy. Not blocked by anything and blocking nothing — and six open entries
+(B-046, B-051, B-056, B-058, B-061, B-063) say the platform cannot yet vouch for
+what a scan covered, which is the worst possible substrate for a fluent answer.
+The credential is deliberately not provisioned early: the blocker was never the
+key. The criteria below stand as the shape of the work whenever it is scheduled.
+
+**Acceptance criteria**
+
+- The key reaches the backend the way every other secret does, via Vault.
+- Free text is answered *only* from `consult.Facts` and whatever the caller is
+  already authorised to read. No repository source, no lake queries the asker
+  could not run themselves.
+- Every sentence carries the same tab citation the fixed answers carry. An
+  answer that cannot cite is not shown.
+- It still cannot act: no dispositions, no acceptances, no scans, no PRs.
+- A question on the `UNANSWERABLE` list is refused with its stated reason
+  rather than attempted.
+
+---
+
+### B-045 — TheHub is scanned on a branch nobody merges to — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-04, re-opened and
+re-closed 2026-09-05
+
+Mykronos's own record of TheHub says `default_branch: develop`. Its Concourse
+pipeline watches `main`. Nothing reconciles the two, and the gap is now eight
+days wide.
+
+- `origin/main` is at `7197a028`, dated 2026-08-26. No merge since.
+- `origin/develop` has commits through 2026-09-03 — eight of them that day.
+- `develop` was scanned **295 times**, the last on **2026-08-19**. Not once since.
+- Every TheHub scan run after that date carries
+  `commit_sha = 7197a02837377eef0af70f14746102df33286de7` — the same frozen
+  commit, re-scanned and recorded `success` each time.
+
+TheHub's active branch has therefore been unscanned for sixteen days, and its
+330 open findings describe a commit that is eight days behind the code people
+are actually writing.
+
+**This is not B-024.** That entry was the ingestion token (D-097) and it closed
+correctly — scanning did resume, at 2026-09-01 20:07. It resumed against
+`main`, so the repair bought nothing that lasts.
+
+The branch is a parameter, `((thehub-branch))`, set by
+`deploy/concourse/set-thehub-pipeline.ps1` and defaulting to `main` under an
+operator directive dated 2026-08-18. That script's own comment records the
+failure mode exactly: "the repository said `develop` while the applied pipeline
+watched `main`, and nothing anywhere reconciled the two." It was written about a
+working-tree divergence. The same sentence now describes the platform.
+
+The directive was reasonable. It assumed the flow is PR -> merge to `main` ->
+pipeline runs. That flow has not produced a merge in eight days, so what needs
+re-deciding is the assumption, not the script.
+
+**Acceptance criteria**
+
+- A decision recorded on which branch TheHub is scanned on — matching
+  `default_branch`, or stating in writing why it does not.
+- If `develop`: the pipeline re-applied with `-Branch develop`, and a scan run
+  recorded whose `commit_sha` is on `develop`.
+- The 330 frozen findings re-evaluated against a current commit.
+
+**Closed 2026-09-04.** The pipeline now watches `develop`. Getting there
+took more than re-pointing it: `unit` was red on `develop`, and every scan
+lane carries `passed: [unit]`, so the branch could not be scanned at all until
+the twelve promotion-gate tests went green (B-055, TheHub #278/#279). The
+branch question itself turned out to be forced rather than chosen — see B-056:
+a lane has no branch dimension, so scanning `develop` while gating `main` is
+not expressible, and the 2026-08-18 directive was the only option available.
+The accepted cost is that `deploy-demo` now auto-deploys `develop` to the demo
+environment; production is untouched, since `deploy-prod` carries no trigger.
+
+**Re-opened and re-closed on 2026-09-05.** It did not hold for a day.
+
+The close put the decision in `-Branch develop` at apply time and left
+`set-thehub-pipeline.ps1`'s default at `main`. Re-applying the pipeline on
+2026-09-05 for an unrelated fix printed `Delivering branch 'main'` and moved
+TheHub back, silently — the third occurrence of the sentence this entry already
+quotes from that script's own comment, this time with the script saying `main`
+and the platform saying `develop`.
+
+The default is now `develop`, so the decision lives in the repository rather
+than in whoever remembers the flag, and `-Branch main` is the one-off. A
+decision recorded only as an argument is a decision that reverts on the next
+routine apply.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
+
+---
+
+### B-057 — A pin guarded by a comment, raised anyway — **done upstream**
+
+**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-04 (TheHub #281)
+
+`thehub/unit` #85, the first build after the pipeline moved to `develop`, failed
+in 4m34s without running a single test:
+
+    ImportError while loading conftest '.../backend/tests/conftest.py'
+    anthropic/_base_client.py:1686: in __init__
+    TypeError: Invalid `http_client` argument; Expected an instance of
+      `httpx2.AsyncClient` but got <class 'httpx.AsyncClient'>
+
+**The cause was not a loose range.** `backend/requirements.txt` pinned
+`anthropic>=0.40.0,<1.0` under eleven lines of comment explaining why the bound
+must not move on its own, ending "Raise a bound only together with the matching
+call site in services/ai/." Dependabot #267 raised it to `>=1.0.0,<2.0` and the
+PR merged. **The comment survived; the pin it was guarding did not** — and this
+was the second occurrence of the same failure.
+
+**1.x breaks two things, and the first diagnosis here found only one.** Measured
+upstream against anthropic 1.3.0 rather than assumed:
+
+    AsyncAnthropic(http_client=httpx.AsyncClient(...))   -> TypeError, at import
+    messages.create(..., temperature=0.3)                -> unexpected kwarg,
+                                                            on all four call sites
+
+The first is what #85 hit; the second would not have surfaced until a Claude
+call ran. A fix addressing only the first — passing `timeout=` and letting the
+SDK own its client — was drafted here and **abandoned**, because it would have
+made collection succeed while every Claude call failed at runtime. A green build
+over a broken service is worse than the red build it replaces.
+
+**Fixed upstream by TheHub #281**: revert the pin to `<1.0`, and turn the guard
+comment into `backend/tests/unit/test_sdk_pins_match_their_call_sites.py`, which
+asserts the coupling in both directions — move the pin without migrating the
+call sites and it fails; migrate the call sites and it tells you the pin may
+move. Their reasoning is the durable part: *a comment cannot fail a build.*
+
+**What still stands from the original entry.** The blast radius was real: every
+scan lane carries `passed: [unit]`, so while this held, TheHub was not scanned at
+all — the third distinct cause in two weeks, after the ingestion token (B-024)
+and the promotion-gate regression (B-055), none of them a scanner problem. And
+moving to `develop` did not break this: `main` last passed `unit` on 2026-08-27
+and had never met the SDK, so the branch change revealed a break that was
+already there with nothing running to notice it (B-046).
+
+**What does not stand.** The original entry blamed a wide range plus B-050's
+missing dependabot `cooldown`. A cooldown would have delayed this, not prevented
+it — the range was *narrow* and correct, and the bot widened it. B-050's
+cooldown point is still worth doing and is not the mechanism here.
+
+**One note for the history.** The upstream entry records the bad pin as merging
+"in PR #276..#279". **#279 is this assessment's own re-export PR.** It did not
+introduce the pin, but it merged inside that window, so a reader bisecting the
+range will land on it.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from the first build after
+B-045 closed. Found because the reporting refactor landed the same day: this was
+the first failed Concourse run TheHub has ever recorded — `Reported
+integration_tests=failed` — where before, a failed lane said nothing at all.
+Corrected the same day after finding #281 had already landed a better fix.
+
+---
 
 ### B-040 — Accepted risk is invisible to the risk decision — **done**
 
