@@ -57,8 +57,9 @@ its decision inline: `cloud` is disabled and recorded as unavailable
 (B-054, D-109); two of three branch-protection controls are required and commit
 signing is deliberately deferred (B-060, D-110); binnacle is granted with its
 partial coverage recorded rather than withheld (B-052, D-111); the notifier gets
-a webhook, now that ownership is real (B-035, D-112); coverage goes on the
-pull-request lane with its CI cost measured rather than assumed (B-042, D-113);
+a webhook, now that ownership is real (B-035, D-112); coverage goes on the free
+Actions lane with its CI cost measured on the runner rather than assumed
+(B-042, D-113 corrected by D-117);
 ZAP moves to 2.17.x with a resource read taken first (B-053, D-114); and the
 ranking queue's disclosure is derived from its terms while the rank itself waits
 for a separate decision (B-049, D-116 — built the same day, and in Closed).
@@ -310,12 +311,50 @@ coverage on the Harness tab for a measurement that never happened — B-046,
 B-051, B-058 and B-061's own failure, arriving inside the fix for a fifth entry.
 `--cov-branch` is on both lanes for that reason.
 
-**What is left, and it is why this stays open.** The Concourse lane needs
-`deploy/concourse/set-pipeline.ps1` re-applied before the flag reaches the
-running pipeline; until then `check_applied_pipelines.py` will correctly report
-drift on the `unit` job. The Actions lane picks it up on its next run. The
-figure has to appear on the Harness tab from a real lane run, and the lane's own
-added time has to be read there rather than inferred from this host.
+**The lane ran, and the local measurement did not survive it (D-117).**
+Concourse `unit` #226 with `--cov --cov-branch`: **540.81s**, against 218.61s
+(#224) and 238.16s (#223) clean. **+322s, about 2.5x**, on a lane carrying
+`trigger: true` with seven jobs gating on `passed: [unit, ...]`. The worker
+prints the reason on every build — `Performance budgets scaled x3 for this
+worker` — and coverage tracing is CPU-bound, so what disappeared into fixture
+setup on a fast host does not disappear on `-n 6` at a third of the speed.
+
+**So coverage is on the Actions lane only.** mykronos is public, Actions minutes
+are free, and that lane gates nothing. Concourse's command is back to what it
+was, re-applied and verified with no drift. `pytest-cov` stays in the `dev`
+extra, which is what the Actions lane installs.
+
+**The ingest path was proved before the flag came off.** #226 succeeded, wrote
+`coverage.xml` beside `unit.xml`, POSTed both to `/api/ingest/raw`, and the
+adapter merged them — `0 finding(s) from 2 file(s)`, `line_coverage=0.883`,
+`branch_coverage=0.799`, no platform code touched. The plumbing claim in this
+entry was correct.
+
+**What is left, and it is why this stays open.**
+
+1. **The Actions unit lane cannot report at all right now**, so no figure will
+   arrive from it. Its last two runs failed on the upload, not the tests:
+   `POST https://mykronos.toddbenson.net/api/ingest/scan-run -> 502` six times,
+   then a deliberate failure (spec 01 §6). From this host that hostname does not
+   answer while `hub.toddbenson.net` returns 200 through the same tunnel, and
+   `cloudflared` is running — which is the failure
+   `scripts/install-tunnel-route.ps1` documents: the service's copy of the
+   ingress at `C:\Windows\System32\config\systemprofile\.cloudflared\`
+   is stale against `~/.cloudflared/config.yml`, where the mykronos API paths
+   correctly point at `127.0.0.1:8100`. That script, run elevated, is the fix.
+   **This is much larger than coverage: all nine mykronos Actions lanes upload
+   through that hostname.** Worth its own entry if it is not fixed in place.
+2. **The workflow file is generated and this change is not durable.**
+   `.github/workflows/mykronos-unit.yml` opens with "Do not edit by hand. A
+   template resync will overwrite this file (spec 03 §6)", and
+   `workflow-templates/_test_lane.yml.j2:60` takes the command from
+   `config.get('command')` — the repo's `unit` capability config. The committed
+   file carries `--cov` and works today; a resync drops it. The durable change is
+   `PATCH /api/repos/{id}/capabilities` with `config.unit.command`, and that call
+   sets the enabled set from its own request body, which is B-062 — so it has to
+   be made with the full current capability list or it silently revokes the rest.
+3. The figure still has to appear on the Harness tab from a real Actions run,
+   which is blocked on (1).
 
 **Acceptance criteria**
 

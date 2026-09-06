@@ -407,17 +407,7 @@ jobs:
               - |
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
-                # pytest-cov named here as well as in the `dev` extra, and this
-                # is not belt-and-braces. This pipeline's config is applied by
-                # hand while `source` is pinned to `main`, so the config can run
-                # ahead of the code it needs: applying the --cov command before
-                # the extra reached `main` would fail every `unit` build with
-                # "unrecognized arguments: --cov", and seven jobs carry
-                # `passed: [unit, ...]`. That is B-055's second failure mode -
-                # a red suite silently costing a branch its security scanning -
-                # arriving from the config side instead. A task that installs
-                # what its own command needs cannot be broken by a pending merge.
-                pip install --quiet -e ".[dev]" pytest-cov
+                pip install --quiet -e ".[dev]"
 
                 # Said out loud, every run. A performance budget that was
                 # quietly relaxed is a budget nobody knows the value of.
@@ -434,13 +424,15 @@ jobs:
                 # fresh DuckDB catalog per test - and that work is already
                 # isolated, so it parallelises without touching a test. 32
                 # minutes to 6 on this host.
-                # --cov writes Cobertura beside the JUnit report (D-113). The
-                # uploader rglobs every *.xml under --results-path, so no
-                # upload argument changes; `line_coverage` stops being NULL.
-                # --cov-branch is required with it: without it Cobertura writes
-                # branch-rate="0", which the adapter reads as a measured 0%
-                # rather than as absent.
-                python -m pytest -q -n 6 --junitxml=../../results/unit.xml --cov=mykronos --cov-branch --cov-report=xml:../../results/coverage.xml || rc=$?
+                # No --cov here, deliberately (D-117). Coverage is collected on
+                # the Actions unit lane instead: mykronos is public, so Actions
+                # minutes are free, while this worker measured the same suite at
+                # 218s clean against 541s with coverage - 2.5x, on a lane that
+                # carries `trigger: true` with seven jobs gating on
+                # `passed: [unit, ...]`. Paying five and a half minutes per
+                # commit on the gating path buys a number the free runner can
+                # produce.
+                python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"

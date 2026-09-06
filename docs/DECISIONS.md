@@ -4697,6 +4697,11 @@ uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS`. Drop a `coverage.xml`
 beside `unit.xml` and the number appears. That is the proof the plumbing was
 right, and it is why this is operator config rather than platform work.
 
+**Superseded in part by D-117.** The measurement below is from the development
+host and its conclusion did not survive the Concourse worker, which ran the same
+suite at 218s clean against 541s with coverage. Coverage is now on the Actions
+lane only. The rest of this entry stands.
+
 **Measured 2026-09-05, and the premise was wrong.** Three full runs of the
 2592-test suite on the development host at `-n auto`, all green:
 
@@ -4823,3 +4828,55 @@ three, and mykronos's portfolio decision carries `Handles confidential data
 **Two rankings on one estate still disagree about which inputs exist, and that
 now says so out loud.** The queue is a threat-intel ranking presenting itself
 honestly, rather than a risk ranking presenting itself as one.
+
+---
+
+## D-117 — Coverage is collected on the free runner, and D-113's number came from the wrong machine
+
+**2026-09-05.** D-113 put `--cov` on both mykronos unit lanes and recorded that
+it cost nothing measurable. The Concourse lane then ran it and the figure was
+2.5x:
+
+| lane | build | suite |
+|---|---|---|
+| Concourse `unit` #223 | no coverage | 238.16s |
+| Concourse `unit` #224 | no coverage | 218.61s |
+| Concourse `unit` #226 | `--cov --cov-branch` | **540.81s** |
+
+**+322s on the gating path.** `unit` carries `trigger: true` on `main` and seven
+jobs carry `passed: [unit, ...]`, so that is five and a half minutes added to
+every commit, in front of everything that gates on the suite.
+
+**Coverage moves to the Actions lane only.** `ToddGBenson/mykronos` is a public
+repository, so Actions minutes are free, and that lane gates nothing. Concourse's
+`unit` command is back to what it was. The `dev` extra keeps `pytest-cov`,
+because that is what the Actions lane installs.
+
+**D-113's measurement was not wrong, it was from the wrong machine, and the
+caveat it carried turned out to be the whole finding.** That entry recorded
+179.07s clean against 173.90s with coverage on the development host and said in
+as many words that this was neither runner. The Concourse worker prints its own
+explanation on every build — `Performance budgets scaled x3 for this worker` —
+and coverage tracing is CPU-bound, so a cost that vanishes into fixture setup on
+a fast host does not vanish on a worker three times slower running `-n 6`.
+
+**The general form is worth keeping.** A performance measurement taken somewhere
+other than where the work runs is a hypothesis, and this platform already knows
+that: D-053 holds ZAP's posture until somebody replaces it with a reading taken
+on a runner, and D-016 keeps a latency budget as an enforced test rather than a
+remembered number. D-113 recorded a local figure and drew a conclusion from it,
+which is the thing those two decisions exist to prevent. The rule this adds is
+that the conclusion waits for the lane, even when the local delta looks decisive
+— *especially* then, because a decisive local number is what stops anybody
+checking.
+
+**What `--cov-branch` cost is now unmeasured, and that is fine.** It was added
+under D-113 because Cobertura writes `branch-rate="0"` whether or not branch data
+was collected, so `--cov` alone would have published a measured 0% for something
+nobody measured. On the free runner the flag's cost stops being a question worth
+a build to answer.
+
+**Still true from D-113:** the plumbing was already complete and no platform code
+moved for any of this. The lane's two files merge into one result carrying
+`line_coverage=0.883` and `branch_coverage=0.799` — verified from the real
+Concourse artifacts before this decision took the flag back off that lane.

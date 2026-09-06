@@ -92,6 +92,11 @@ jobs:
           # `line-rate`, so dropping coverage.xml beside unit.xml is the whole
           # of the change — no platform code moved for this.
           #
+          # This is the only lane that collects it (D-117). The Concourse unit
+          # lane measured the same suite at 218s clean against 541s with
+          # coverage, and it gates seven jobs; this repository is public, so
+          # these minutes are free and this lane gates nothing.
+          #
           # `--cov-branch` is not optional. Without it Cobertura still writes
           # branch-rate="0", the adapter reads 0.0 rather than None, and the
           # Harness tab shows a measured 0% branch coverage for a measurement
