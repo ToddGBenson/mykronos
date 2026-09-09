@@ -42,6 +42,7 @@ from sqlalchemy import select
 from mykronos import inventory, netassess
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
+from mykronos.api.refusals import CapabilityRefusedError
 from mykronos.atlas import evidence_id as atlas_evidence_id
 from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
@@ -168,15 +169,12 @@ TokenDep = Annotated[Resolution, Depends(require_token)]
 
 
 def _require_capability(token: Resolution, capability: str) -> None:
+    # Raised rather than returned as a plain 403: the refusal is a security
+    # event -- findings were produced and are about to be discarded -- and
+    # `refusals.install` turns it into a notification as well as the same
+    # 403 body this always sent (B-062).
     if not token.permits(capability):
-        granted = ", ".join(sorted(token.granted_capabilities)) or "none"
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"'{capability}' is not enabled for {token.repo_full_name}. "
-                f"Currently granted: {granted}."
-            ),
-        )
+        raise CapabilityRefusedError(token.repo_full_name, capability, token.granted_capabilities)
 
 
 def _require_repo(token: Resolution, repo_full_name: str) -> None:

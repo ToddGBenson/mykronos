@@ -176,6 +176,21 @@ class CapabilityUpdate(BaseModel):
             "entry are identical either way."
         ),
     )
+    revoke_unlisted: bool = Field(
+        default=False,
+        description=(
+            "Allow this call to revoke an ingestion grant that the dashboard "
+            "never showed you.\n\n"
+            "The grant table and the enabled-capabilities ledger can drift: "
+            "`mykronos grant` writes one, a merged install PR the other. When "
+            "they have, a PATCH built from the list the dashboard shows "
+            "revokes whatever the ledger did not list -- five of TheHub's "
+            "grants went that way on 2026-09-05, four lanes stayed green, and "
+            "their findings were refused at the door (B-062). By default such "
+            "a call is refused with a 409 naming the grants it would revoke. "
+            "Set true to say you meant it."
+        ),
+    )
 
 
 class RepoSummary(BaseModel):
@@ -557,6 +572,31 @@ async def update_capabilities(
                 ),
             )
 
+        registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
+
+        # Refuse to narrow ingestion silently (B-062, D-119). The ledger plus
+        # whatever is pending is everything a caller could have seen; a grant
+        # outside that set is one the dashboard never showed them, and a
+        # request that omits it is far more likely to be built from the
+        # dashboard than to be a decision about the grant. Say what would go,
+        # and go only when told to.
+        known = set(row.enabled_capabilities or []) | set(row.pending_capabilities or [])
+        unlisted = registry.granted_capabilities(row.github_repo_full_name) - known
+        would_revoke = sorted(unlisted - requested)
+        if would_revoke and not body.revoke_unlisted:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"This would revoke {', '.join(would_revoke)} for "
+                    f"{row.github_repo_full_name}: granted and uploading, and not "
+                    "in the enabled set this request was built from. Include "
+                    "them in `capabilities` to keep them, or send "
+                    "`revoke_unlisted: true` to revoke them deliberately. "
+                    "`mykronos reconcile-grants` lists every repository where "
+                    "the two disagree."
+                ),
+            )
+
         for capability, raw_config in body.config.items():
             if capability not in requested:
                 raise HTTPException(
@@ -604,7 +644,6 @@ async def update_capabilities(
         # repository whose Actions were deliberately removed.
         installs_workflows = body.install_workflows and row.scanned_by == "github_actions"
         if not installs_workflows:
-            registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
             previous = set(row.enabled_capabilities or [])
             grants_added, grants_removed = registry.sync_grants(
                 row.github_repo_full_name, requested
@@ -667,7 +706,6 @@ async def update_capabilities(
             package_spec=settings.mykronos_package_spec,
             token_overlap_hours=settings.token_overlap_hours,
         )
-        registry = TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
 
         try:
             plan = await installer.plan(row, requested, configs=capability_configs(session, row))

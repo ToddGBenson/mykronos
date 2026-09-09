@@ -158,7 +158,9 @@ which is true; a fabricated zero would be worse than a blank.
          -d @coverage-patch.json
 
    Read the current set first with `GET /api/repos/{repo_id}` so nothing is
-   dropped.
+   dropped. Since D-119 a set that would revoke a grant the dashboard never
+   showed is refused with a 409 naming it; `mykronos reconcile-grants` lists
+   every repository where the ledger and the grant table disagree.
 
 3. Merge the workflow-install PR that the PATCH opens.
 
