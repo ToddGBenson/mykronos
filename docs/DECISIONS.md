@@ -4647,6 +4647,15 @@ truthfully today, and a green that is known to be partial is a different object
 from a green nobody has questioned. Shell analysis is B-051's work, not this
 decision's.
 
+**Executed 2026-09-05, undone 2026-09-07, redone 2026-09-08.** The grant landed
+the day this was written, with `iac` and `oracle` on top of the three named
+here; every lane scanned. Two days later an admin PATCH sent the set without
+`secrets` and binnacle #7 removed it, with nothing recorded as to why — the
+audit row says `removed: ["secrets"]`, which is B-062's fix reporting
+correctly on a call nobody explained. Re-enabled with the full set as
+binnacle #8, and the pull-request trigger uploaded a `secrets` run (200 OK)
+before the merge. B-052 has the detail.
+
 ---
 
 ## D-112 — The platform pushes
@@ -4770,6 +4779,16 @@ and the reason this is not merely cosmetic.
 
 **Still pinned, either way.** `:2.16.1` was a deliberate pin and that part was
 right; `:2.17.x` resolves to an exact tag rather than floating.
+
+**Measured 2026-09-09, on the runner.** The pin is `2.17.0` (52bc141), and
+`demo-and-dast.yml` now samples every demo container for the length of the
+run and writes peaks into the job summary, so every future run carries the
+reading rather than this one alone. First reading, passive only: ZAP peaked at
+312% CPU (p95 230%, mean 84%) and 0.76 GiB over 101s, the backend at 113% and
+0.16 GiB, on a 4-vCPU hosted runner, with the job done in 3m08s. Not a
+before-and-after — no 2.16.1 reading was ever taken on a runner — but it is
+the baseline spec 32 §11.4 was waiting for, and the two `ZAP-10116` findings
+left the report on the first run (27 findings became 25). Recorded in B-053.
 
 ---
 

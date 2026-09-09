@@ -45,30 +45,29 @@ already shipped.
 
 ## Open
 
-Twenty-two, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Twenty, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
 **The nine that needed the operator rather than code were decided on
-2026-09-05, as D-108 to D-116.** Seven stay open as execution and each carries
+2026-09-05, as D-108 to D-116.** Five stay open as execution and each carries
 its decision inline: `cloud` is disabled and recorded as unavailable
 (B-018, D-108); the registry is closed by network scope rather than by binding
 (B-054, D-109); two of three branch-protection controls are required and commit
-signing is deliberately deferred (B-060, D-110); binnacle is granted with its
-partial coverage recorded rather than withheld (B-052, D-111); the notifier gets
-a webhook, now that ownership is real (B-035, D-112); coverage goes on the free
-Actions lane with its CI cost measured on the runner rather than assumed
-(B-042, D-113 corrected by D-117);
-ZAP moves to 2.17.x with a resource read taken first (B-053, D-114); and the
-ranking queue's disclosure is derived from its terms while the rank itself waits
-for a separate decision (B-049, D-116 — built the same day, and in Closed).
-The ninth, B-043, closed as a decision: free-text Consult stays deferred and
-D-104's position stands (D-115).
+signing is deliberately deferred (B-060, D-110); the notifier gets
+a webhook, now that ownership is real (B-035, D-112); and coverage goes on the
+free Actions lane with its CI cost measured on the runner rather than assumed
+(B-042, D-113 corrected by D-117). Four are in Closed: the ranking queue's
+disclosure derived from its terms (B-049, D-116, built the same day); B-043,
+closed as a decision because free-text Consult stays deferred (D-115); binnacle
+granted with its partial coverage recorded (B-052, D-111 — executed on the
+5th, undone on the 7th, redone on the 8th); and ZAP on 2.17.0 with the
+resource read taken on the runner (B-053, D-114, 2026-09-08).
 
-**None of the seven is blocked any longer, and none of them was a defect in this
-platform's code.** Six are a setting, a credential or a rule outside this
-repository; the seventh is a call about this deployment's CI budget. Writing
+**None of the five is blocked any longer, and none of them was a defect in this
+platform's code.** Four are a setting, a credential or a rule outside this
+repository; the fifth is a call about this deployment's CI budget. Writing
 code against any of them before the decision would have been guessing, which is
 why they waited.
 
@@ -87,7 +86,7 @@ lanes at different path bases, each supplying the other's absence evidence).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
-scanner too old to know what to look for. B-056, no branch dimension on a lane,
+scanner too old to know what to look for, now closed. B-056, no branch dimension on a lane,
 which is why B-045 was forced rather than chosen. B-058, a status nothing sets,
 so a repository is failed for lacking what it cannot have. B-061, `event_driven`
 calling a capability fine without checking anything runs it. B-063, `--no-resolve`
@@ -845,104 +844,6 @@ that will not run again.**
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from the
 question "what about the other repositories" — which the platform could not
 answer because it only knows the ones it was told about.
-
----
-
-### B-052 — binnacle is onboarded and one repository grant short of being scanned
-
-**Size:** XS **State:** open **Verified:** 2026-09-03
-
-`ToddGBenson/binnacle` was registered on 2026-09-03 (`POST /api/repos`, id
-`8a597725`) and sits at **`pending_install` with zero capabilities**, because the
-install PR cannot be opened:
-
-    GitHub rejected the change: GET /repos/ToddGBenson/binnacle/pulls
-    -> 404: {"message":"Not Found"}
-
-**A 404 rather than a 403 is the diagnosis.** GitHub hides a repository's
-existence from a token that has no grant for it. Checked directly with a minted
-installation token:
-
-| request | result |
-|---|---|
-| `GET /repos/ToddGBenson/keel` | 200 |
-| `GET /repos/ToddGBenson/mykronos` | 200 |
-| `GET /repos/ToddGBenson/binnacle` | **404** |
-| `GET /installation/repositories` | 4 repos: TheHub, mykronos, keel, personal-soc |
-
-Installation 152755402 is scoped to *selected repositories* and binnacle is not
-among them. Nothing is misconfigured in this platform and no code is missing —
-the App simply cannot see the repository.
-
-**This is B-044's shape a second time**: a built-and-waiting capability held shut
-by one setting in GitHub's UI. Add `binnacle` to the App installation's
-repository list, then re-run the capability PATCH; the registration is
-idempotent and already in place.
-
-Worth doing because binnacle is the largest coverage gap in the estate (B-051):
-private, pushed 2026-08-31, 30 shell scripts, 46 workflow YAMLs and 9 Python
-files, with no scanning of any kind. `atlas`, `sast` and `secrets` — matching
-`keel`, which it is a fork of — is the starting set.
-
-**Decided 2026-09-05 — D-111: grant, then `atlas`/`sast`/`secrets`.** The
-qualification below is recorded with the grant rather than blocking it: `atlas`
-and `secrets` are language-blind and report truthfully today, and shell analysis
-is B-051's work.
-
-**Acceptance criteria**
-
-- `binnacle` appears in `GET /installation/repositories`.
-- `PATCH /api/repos/8a597725-.../capabilities` with
-  `["atlas","sast","secrets"]` opens an install PR.
-- The repo reaches `active` and records its first scan run.
-- Note B-051: CodeQL cannot read 67% of binnacle, so `sast` alone will report
-  green over its shell. The grant is necessary and not sufficient.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Registration was
-attempted and the blocker found rather than predicted; the `pending_install` row
-is deliberate and accurate — it records intent and disappears when the PR merges.
-
----
-
-### B-053 — The DAST scanner is seventeen months old and says so itself
-
-**Size:** XS **State:** open **Verified:** 2026-09-03
-
-`ZAP-10116-CWE-1104` — "ZAP is Out of Date" — is open twice against `mykronos`,
-and it is the scanner reporting on itself rather than on the application. It is
-right. `deploy/demo/docker-compose.yml:124` pins
-`ghcr.io/zaproxy/zaproxy:2.16.1`, published **2025-03-25**. The current stable
-release is **v2.17.0**, published **2025-12-15**.
-
-So the passive DAST lane has been running roughly nine months behind the current
-detection rules, and a scanner that cannot see a class of defect reports the same
-green as one that looked and found nothing. That is B-051's shape in a third
-form: after a lane pinned to a stale commit and a lane pointed at a language its
-tool cannot read, a lane running a tool too old to know what to look for.
-
-**Not a one-line bump, which is why this is an entry rather than a fix.** D-053
-paused ZAP's active scanning after it measured 548% CPU and 7 GiB and took
-production down; spec 32 §11 holds that posture until somebody replaces it with
-a measurement taken on a runner. Changing the version of the tool that caused
-that outage deserves the same care — the passive lane is what is running today,
-and a major-minor bump can change its resource profile.
-
-**Decided 2026-09-05 — D-114: move the pin to 2.17.x with the resource read
-taken.** Not chained to the wider DAST posture revisit, because that would leave
-the passive lane on nine-month-old detection rules for as long as that takes.
-
-**Acceptance criteria**
-
-- Either the pin moves to 2.17.x with the demo lane's CPU and memory observed
-  across a run, or a decision is recorded that it stays where it is and why.
-- If it moves, the two `ZAP-10116` findings close on their own.
-- Whatever is decided, the version is pinned rather than floating — `:2.16.1` is
-  a deliberate pin and that part is right.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). Left open rather
-than dispositioned during the sweep because it names a real gap; quantified here
-because "out of date" without a version and a date is not something anybody can
-act on.
 
 ---
 
@@ -1857,14 +1758,31 @@ into entries here:
   Worth keeping because the mechanism worked and the input did not: all four of
   this estate's critical findings were false positives, which is what a critical
   count has to survive to mean anything.
+- **The `sast` template's CodeQL pin loses to dependabot on every resync.**
+  `workflow-templates/sast.yml.j2` pins `codeql-action` at v3.37.6; dependabot
+  raised binnacle's generated copy to v3.37.9 on 2026-09-07 (binnacle #6), and
+  the next install PR (binnacle #8, 2026-09-08) put it back, because a
+  generated file is overwritten on resync by design (spec 03 §6). Two writers
+  own one line, so it cannot hold. Harmless today — a patch version either
+  way — and it will recur on every repository with dependabot and a Mykronos
+  workflow. The fix is the template following upstream, on a cadence, rather
+  than dependabot being told to ignore generated files; not filed until the
+  drift is more than a patch version.
 
 ---
 
 ## Closed
 
-Thirty-seven entries. The count below was stale at "nineteen": it covered
+Thirty-nine entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
+
+**2026-09-08 — two.** The two XS entries, both decided on the 5th. B-053: ZAP
+2.17.0 in the demo compose, with the first resource reading ever taken on a
+runner (ZAP peaked at 312% CPU and 0.76 GiB, passive), and the two "ZAP is out
+of date" findings gone from the report. B-052: binnacle's `secrets` lane, which
+had been granted on the 5th and switched off again on the 7th with nothing
+recorded as to why, re-enabled and uploading before the install PR was merged.
 
 **2026-09-06 — one.** B-066, the only outage in this set rather than a gap: a
 stale copy of the tunnel's own ingress had stopped `keel` and `binnacle`
@@ -1897,6 +1815,105 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-053 — The DAST scanner is seventeen months old and says so itself — **done**
+
+**Size:** XS **Verified:** 2026-09-03 **Closed:** 2026-09-08 (52bc141, run 34303749573)
+
+`deploy/demo/docker-compose.yml` pins `ghcr.io/zaproxy/zaproxy:2.17.0`, still
+exact. 2.17.0 is the current stable on the day of the change; the weekly
+`w2026-09-08` tag is newer and floats, which D-114 ruled out.
+
+**The measurement, taken on the runner as D-114 asked.** `demo-and-dast.yml`
+now samples `docker stats` for every demo container from `up -d` to teardown
+and writes peaks into the job summary; this is the first reading, from a
+dispatched run on the branch with active scanning off:
+
+| container | peak CPU | p95 CPU | mean CPU | peak memory |
+|---|---:|---:|---:|---:|
+| `zap` (2.17.0, passive) | 312% | 230% | 84% | 0.76 GiB |
+| `backend` | 113% | 111% | 62% | 0.16 GiB |
+| `frontend` | 39% | 35% | 11% | 0.15 GiB |
+
+69 samples over 101s, on a 4-vCPU hosted runner. The whole job ran in 3m08s;
+the functional suite passed 26 of 26 through the proxy and the spider reached
+134 URLs from 29 seeded, inside its budget. D-053's figure was 548% and 7 GiB
+for ZAP alone, on the shared host, with active scanning on — so this is not a
+before-and-after on the same lane, and nobody took a 2.16.1 reading on a runner
+to compare against. What it does establish is that the passive lane on 2.17.0
+peaks at three cores for seconds and stays under a gigabyte, on a machine that
+exists for ninety seconds and shares nothing. The posture question — whether
+active scanning can come back *on the runner* — now has a baseline to be
+answered against and is spec 32 §11.4's, not this entry's.
+
+**The two findings closed themselves, as the acceptance criteria said they
+would.** The previous `main` run uploaded 27 DAST findings; this one uploaded
+25. `ZAP-10116-CWE-1104` is the difference. Two remain open in the lake against
+`mykronos` until two consecutive successful scans record the absence
+(`reconcile.REQUIRED_ABSENCES`), which the next two `main` deliveries provide.
+
+**Two more are open against TheHub, and this did not touch them.**
+`deploy/concourse/pipelines/thehub.yml` pins `2.16.1` twice — the
+`dast-staging` image and a `ZAP_VERSION` — and that lane runs on the Concourse
+worker on the LAN host, which is exactly the machine D-053 measured. Moving
+that pin needs its own reading, taken there, and the runner figure above is
+not it. Left in place deliberately; it is B-055's neighbour rather than this
+entry's remainder.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); decided as
+D-114 on 2026-09-05; built and measured 2026-09-08.
+
+---
+
+### B-052 — binnacle is onboarded and one repository grant short of being scanned — **done**
+
+**Size:** XS **Verified:** 2026-09-03 **Closed:** 2026-09-08 (binnacle #8)
+
+The grant happened on 2026-09-05, the day D-111 was recorded, and went one
+capability further than the decision asked for: `atlas`, `iac`, `sast` and
+`secrets` (binnacle #4, 01:10Z), then `oracle` (binnacle #5, 03:45Z). Both
+merged within the hour, and every one of the five scanned and reported.
+binnacle was `active` by 04:10Z on the 5th.
+
+**Then `secrets` was switched off again, and nothing recorded why.** On
+2026-09-07 at 22:43Z an admin PATCH sent the set without it — binnacle #7,
+"Disable `secrets`", merged three minutes later. The audit row is honest
+(`removed: ["secrets"]`, which is B-062's fix doing its job), but there is no
+commit, retro or decision from that day that mentions binnacle, and the lane it
+removed had scanned successfully thirteen hours earlier. The likeliest cause is
+a PATCH built from a list that did not include it — the same routine call that
+sprung B-062 on TheHub — and that reading is a guess. D-111 stands: `secrets`
+is language-blind, it is one of the two capabilities that report truthfully
+over a repository CodeQL cannot read, and keel, which binnacle is a fork of,
+has it.
+
+Re-enabled 2026-09-08 with the full current set (`atlas`, `iac`, `oracle`,
+`sast`, `secrets`), read from the record first so nothing else was dropped.
+That opened binnacle #8. The ingestion grant was live from the PATCH and the
+pull-request trigger proved it before anybody merged anything:
+
+    secrets/gitleaks: 0 finding(s) from 1 file(s)
+    POST /api/ingest/findings  200 OK
+    Uploaded 0 finding(s) for scan run d8ab488e (success)
+
+**What #8 also does, which is worth knowing before the next one.** The
+resync it carries moves binnacle's `mykronos-sast.yml` CodeQL pin from
+v3.37.9 back to v3.37.6, because the `sast` template pins v3.37.6 and
+dependabot had raised the generated file past it on 2026-09-07 (binnacle #6).
+A generated file is overwritten on resync by design (spec 03 §6), so this
+will happen on every install PR until the template's pin moves. It is a
+three-line template bump and the same shape as B-057's "a comment cannot fail
+a build": here it is a pin that cannot hold, because two writers own it.
+Not fixed here; filed in Watching.
+
+**Still true, and now visible:** CodeQL reads 33% of binnacle. `atlas` and
+`secrets` cover the rest truthfully, and shell analysis is B-051's work. The
+green is qualified, as D-111 said it had to be.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); decided as
+D-111 on 2026-09-05; executed on the 5th, undone on the 7th, redone on the 8th.
+
+---
 
 ### B-066 — The tunnel's service copy is stale, so two repositories cannot report at all — **done**
 
