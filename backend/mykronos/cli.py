@@ -964,7 +964,14 @@ def main(argv: list[str] | None = None) -> int:
             # open however well the defect was fixed — and nothing else in
             # the platform says so. On 2026-09-01 that was 115 DAST findings
             # against headers that had already shipped and were being served.
-            report = briefing_report.build(catalog)
+            with db.session() as session:
+                default_branches = {
+                    str(name): str(branch or "")
+                    for name, branch in session.execute(
+                        select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
+                    ).all()
+                }
+            report = briefing_report.build(catalog, default_branches=default_branches)
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
             else:

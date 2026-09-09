@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Fourteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Thirteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -76,9 +76,10 @@ why they waited.
 scan covered anything.** It began as the second 2026-09-03 sweep's four —
 B-045 the instance (TheHub scanned on `main` while every commit landed on
 `develop`, now closed), B-046 the reason nobody saw it (the stalled-lane
-detector measures silence, not coverage), B-047 the missing exit for findings a
-disabled capability strands, B-048 the same blind spot from the other side (two
-lanes at different path bases, each supplying the other's absence evidence).
+detector measured silence, not coverage — now closed), B-047 the missing exit
+for findings a disabled capability strands (closed), B-048 the same blind spot
+from the other side (two lanes at different path bases, each supplying the
+other's absence evidence).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
@@ -330,47 +331,6 @@ argument.
   way D-053 recorded paused DAST, so it stops reading as an oversight.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-046 — A lane pinned to a stale commit reports as healthy
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-The briefing leads with lanes that cannot close findings, which is the right
-thing to lead with. It measures **wall-clock silence** — how long since this
-capability last reported. It does not measure whether the scan covered anything
-new.
-
-A pipeline pinned to a branch that has stopped moving produces a successful run
-on schedule, forever, against an unchanging commit. It never appears in that
-section. TheHub's lanes surfaced only because they *also* went quiet for two
-days (B-045); had the pipeline held its ten-hour cadence, 330 findings would
-have been frozen against a stale tree with every indicator green.
-
-Mykronos already holds both halves — `repo_onboarding.default_branch` and
-`scan_runs.branch` / `scan_runs.commit_sha`. Nothing compares them.
-
-Two checks, and the second is the one missing everywhere:
-
-1. **Branch drift** — the branch a lane scans is not the repository's default
-   branch.
-2. **Commit staleness** — consecutive successful runs carrying the same
-   `commit_sha`. A lane re-scanning ground it has already covered is not
-   watching, whatever its cadence says.
-
-The second also catches what the first cannot: a lane on the *right* branch
-whose checkout is pinned or cached.
-
-**Acceptance criteria**
-
-- The briefing and `/api/dashboard/repos/{repo_id}/scan-health` report a lane
-  whose recent successful runs share one `commit_sha`, naming the commit and
-  the date it stuck.
-- Branch drift against `default_branch` is surfaced per repository.
-- TheHub reproduces both today, and stops reproducing them when B-045 lands.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
 ---
 
@@ -1451,11 +1411,16 @@ into entries here:
 
 ## Closed
 
-Forty-five entries. The count below was stale at "nineteen": it covered
+Forty-six entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — six.** B-061 and B-047, both filed against instances that had
+**2026-09-09 — seven.** B-046, the entry the whole coverage theme is named
+after: the briefing measured silence and nothing measured whether a scan
+covered anything, so a lane pinned to a stale tree stayed green forever. Two
+of its bugs were found by the tests rather than by reading — a pinned lane
+nominating itself as the repository's head, and a cadence-scaled grace that
+made the worst lanes unreportable. Then B-061 and B-047, both filed against instances that had
 quietly resolved themselves while the defect behind them stayed: oracle now has
 a lane in all three pipelines and TheHub's `dast` was re-granted, so what was
 built is the mechanism rather than the repair. `event_driven` now checks that a
@@ -1514,6 +1479,85 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-046 — A lane pinned to a stale commit reports as healthy — **done**
+
+**Size:** M **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+The briefing led with lanes that cannot close findings, and measured
+wall-clock silence to find them. A lane pinned to a branch that has stopped
+moving succeeds on schedule forever and never appears there at all. TheHub's
+lanes surfaced only because they *also* went quiet for two days; at their
+ten-hour cadence, 330 findings would have been frozen against a stale tree
+with every indicator green.
+
+`briefing.stale_lanes` is the second question, and it has its own section in
+the terminal briefing, its own list on the briefing API, `not_covering` on
+each capability in `scan-health`, and its own block on the Remediate page.
+
+**The check is not "consecutive runs share a commit", and writing it that way
+would have been worse than the gap.** A lane scanning a repository nobody has
+pushed to shares a commit with itself forever and is covering it correctly.
+Every quiet repository in the estate would have lit up, and the section would
+have stopped being read by the second week. What is wrong is a lane whose
+commit *the repository has already moved off* — established from the lake, by
+the newest commit any lane on that repository has reported.
+
+**Two things the tests caught that reading the code did not.**
+
+The first: the repository's newest commit cannot be read off the most recent
+run. A pinned lane re-scanning an old tree today *is* the most recent run, so
+that definition let the stale lane nominate itself as current and the check
+could never fire. It is now the commit that **appeared** most recently, by
+first-seen time, which is the one case where the two differ and the only case
+that matters.
+
+The second: the first version scaled the grace period by the lane's own
+cadence, copying `SILENCE_MULTIPLE` from the silence check next to it. That is
+right for silence — a weekly lane quiet for five days is fine — and wrong
+here. Once a lane has actually run, how often it usually runs says nothing
+about whether it should have picked up the newer commit; scaling by cadence
+made a lane that runs every nine days unreportable until the new commit was
+nine days old, which is the lane most worth reporting. `STALE_FLOOR_DAYS` is
+now a flat day, and its only job is absorbing the build race where a slow lane
+on commit N finishes after a fast lane on N+1 started.
+
+**Branch drift reads the ledger, not the lake.** `default_branch` comes from
+the onboarding record, because the lake only knows what a lane happened to
+scan — and a lane on the wrong branch would otherwise define the branch it is
+wrong about as correct. A repository with no default branch recorded produces
+no claim rather than a guess.
+
+**No re-run button, and that is the point.** Every other lane row on the
+Remediate page offers a dispatch, because for a stalled lane that is the fix.
+This lane is already running and already succeeding, so a re-run produces one
+more clean scan of the same stale tree and closes nothing. The row links to
+the lane's CI view and names what to change.
+
+**The estate is clean today, and the check was verified against it rather
+than assumed.** Run over the live lake — 759 scan-run files, five
+repositories, 103 commits on TheHub and 340 on mykronos — it reports **0
+stale lanes**. Six lanes are behind their repository's head and every one of
+them last ran *before* that commit existed, which is a lane waiting its turn
+and not a lane that stopped following. That distinction is the whole check,
+and reading it against real data is what showed it working rather than merely
+returning an empty list.
+
+- ~~The briefing and `scan-health` report a lane whose successful runs share
+  one commit, naming the commit and the date it stuck.~~ Both, with `since`
+  and `runs`.
+- ~~Branch drift against `default_branch` is surfaced per repository.~~
+- ~~TheHub reproduces both today.~~ **No longer true, and that is B-045
+  landing rather than this entry being wrong.** TheHub scans `develop`, which
+  is its recorded default, and its lanes follow the commits. The check was
+  proved against fourteen synthetic cases instead — six that must fire and
+  eight that must not, including the quiet repository, the build race, the
+  lane simply waiting its turn, and the repository with a single lane.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); built
+2026-09-09.
+
+---
 
 ### B-061 — `event_driven` says a capability is fine without checking that anything runs it — **done**
 
