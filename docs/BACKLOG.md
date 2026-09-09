@@ -613,6 +613,37 @@ Every row's gap now has a tool that closes it, measured rather than assumed:
 `codeql` + `shellcheck` leaves keel and binnacle at nothing, `codeql` +
 `psscriptanalyzer` leaves personal-soc and mykronos at nothing.
 
+**Run against the live lake on 2026-09-09, and the estate corrected the table
+in two ways.**
+
+`mykronos` and `TheHub` do not run CodeQL alone — the lake holds successful
+`sast` runs from **`codeql` and `semgrep`** for both, which is why the tool set
+is read from what has reported rather than from the one name in the config.
+With semgrep counted, `TheHub` is 2.7% unread rather than 0%, and what is left
+is the finding worth having:
+
+| repository | analysers reporting | unread | what |
+|---|---|---:|---|
+| `TheHub` | codeql + semgrep | 2.7% | **664 KB of PLpgSQL**, 49 KB of PowerShell |
+| `mykronos` | codeql + semgrep | 4.4% | 197 KB of PowerShell |
+
+**664 KB of stored procedures on the only internet-facing repository in the
+estate, read by nothing.** Neither analyser configured here implements
+PLpgSQL. That is a bigger unread surface than anything the entry started
+with — keel's 219 KB of shell was the headline — and it was invisible until
+something measured it. It needs its own answer and is not covered by either
+analyser added today; `SAST_LANGUAGES` has no tool for it to name.
+
+`mykronos`'s 197 KB of PowerShell is its own operations scripts, and the
+`sast-powershell` lane built today closes it the moment it is enabled here.
+
+**And the first live run found a false positive in the check itself.** 7 KB of
+`Rich Text Format` counted against TheHub as unread source. `NOT_SOURCE` now
+excludes documents and markup alongside the configuration languages other
+capabilities own — the two have different reasons and the same consequence.
+Reporting a document as unanalysed code is exactly the page-of-gaps failure
+this was written to avoid, arriving on its first day.
+
 **mykronos's own 4% was not in this entry**, and it is the same defect: its
 PowerShell operations scripts are read by nothing. Small, real, and found by
 the check rather than by a person.
