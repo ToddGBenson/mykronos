@@ -765,7 +765,33 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
 
+            # Said before the reassuring sentence, and it changes the answer
+            # rather than decorating it. `parity` compares whether a
+            # capability reports, never what it reaches: the Concourse `dast`
+            # lane scans a deployment on this LAN and the Actions one an
+            # ephemeral stack inside a hosted runner, which cannot reach an
+            # RFC1918 address at all. Retiring Concourse on the strength of
+            # "improved" would not consolidate a duplicate, it would remove
+            # the only path to scanning an internal deployment (B-048).
+            incomparable = [r for r in parity_rows if not r.comparable]
+            if incomparable:
+                print()
+                print("Not comparable, and not a reason to retire anything:")
+                for row in incomparable:
+                    print(f"  {row.capability}: {row.why_not_comparable}")
+                print(
+                    "\nThese two lanes answer different questions. Whichever "
+                    "reports more, the other is not redundant."
+                )
+
+            print()
             print("No capability is worse under Actions.")
+            if incomparable:
+                print(
+                    "That is not permission to retire the pipeline: "
+                    + ", ".join(r.capability for r in incomparable)
+                    + " reach different targets under each system."
+                )
             return 0
 
         if args.command in {"workflows", "enable-workflow", "disable-workflow"}:
