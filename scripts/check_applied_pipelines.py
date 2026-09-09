@@ -24,6 +24,14 @@ Three differences are expected and are not drift:
   literal here is exactly what PS-9 is about: `fly get-pipeline` hands it to
   anyone on the team.
 
+  A literal that is an **empty string** is reported separately and is not a
+  warning. The first version of this asked only whether a variable resolved
+  from Vault, which is the right question for configuration and the wrong one
+  for exposure: on 2026-09-05 it named six credentials inline, of which three
+  held nothing, one was deliberate, and two were real (B-065). A warning that
+  overstates gets discounted, and the parts of it that matter get discounted
+  with it.
+
 No value from the applied config is ever printed. It contains resolved secrets
 for anything not yet in Vault, and a drift report that leaks them would be a
 worse problem than the drift.
@@ -79,9 +87,41 @@ ADDED_BY_CONCOURSE = (".image_resource.name",)
 SECRET_SUFFIXES = ("-token", "-key", "-secret", "-password", "-webhook", "-webhook-url")
 
 
+#: Credentials that are inline on purpose, and why. Named here so the one
+#: deliberate case does not read like the accidental ones (B-065).
+#:
+#: A warning that overstates gets discounted, and the parts of it that matter
+#: get discounted with it. On 2026-09-05 this check reported six credentials
+#: inline: three were empty strings, one was this, and two were real.
+DELIBERATE: dict[str, str] = {
+    "github-token": (
+        "a GitHub App installation token, minted fresh per run and dead in an "
+        "hour (CNC-2). A stale secret resolving in place of a live one is "
+        "worse than a config holding something already expiring"
+    ),
+}
+
+
 def is_secret(name: str) -> bool:
     """Does this variable name look like a credential rather than a setting?"""
     return any(name.strip("()").endswith(suffix) for suffix in SECRET_SUFFIXES)
+
+
+def _substituted(disk: str, live: Any, name: str) -> str | None:
+    """What the applied config holds where the file holds `((name))`.
+
+    Only answered when the file's value is exactly the reference, which is the
+    ordinary case. A variable interpolated into a longer string cannot be
+    isolated from the rest of it, and guessing there would be the same
+    overstatement in the other direction.
+    """
+    # `name` arrives from `VAR.findall`, which captures the parentheses, so it
+    # is already `((thing))` and must not be wrapped again.
+    if disk.strip() != name:
+        return None
+    if live is None:
+        return ""
+    return live if isinstance(live, str) else None
 
 
 def fetch(pipeline: str) -> dict[str, Any] | None:
@@ -109,6 +149,10 @@ class Report:
         self.drift: list[str] = []
         self.from_vault: list[str] = []
         self.in_config: list[str] = []
+        #: Supplied through the vars file and holding nothing. Not an
+        #: exposure, and reporting it as one is what made a six-credential
+        #: warning mean three (B-065).
+        self.empty: list[str] = []
 
 
 def compare(live: Any, disk: Any, report: Report, path: str = "", key: str = "") -> None:
@@ -116,7 +160,15 @@ def compare(live: Any, disk: Any, report: Report, path: str = "", key: str = "")
     # form the applied config holds is the thing worth knowing.
     if isinstance(disk, str) and VAR.search(disk):
         for name in VAR.findall(disk):
-            target = report.from_vault if isinstance(live, str) and name in live else report.in_config
+            if isinstance(live, str) and name in live:
+                target = report.from_vault
+            else:
+                # An inline *value* and an inline empty string are different
+                # facts, and this could not tell them apart: it asked whether
+                # the variable resolved from Vault, which is the right
+                # question for configuration and the wrong one for exposure.
+                applied = _substituted(disk, live, name)
+                target = report.empty if applied is not None and not applied.strip() else report.in_config
             if name not in target:
                 target.append(name)
         return
@@ -203,11 +255,24 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 70)
         if report.from_vault:
             print(f"  resolved from Vault : {', '.join(sorted(report.from_vault))}")
+        if report.empty:
+            # Said, because "this variable is empty" explains a paused lane —
+            # and not warned about, because an empty string is not a secret.
+            print(f"  supplied but empty  : {', '.join(sorted(report.empty))}")
         if report.in_config:
             plain = sorted(n for n in report.in_config if not is_secret(n))
-            secrets = sorted(n for n in report.in_config if is_secret(n))
+            secrets = sorted(
+                n for n in report.in_config if is_secret(n) and n.strip("()") not in DELIBERATE
+            )
+            deliberate = sorted(
+                n for n in report.in_config if is_secret(n) and n.strip("()") in DELIBERATE
+            )
             if plain:
                 print(f"  supplied inline     : {', '.join(plain)}")
+            if deliberate:
+                for name in deliberate:
+                    print(f"  inline on purpose   : {name}")
+                    print(f"                        {DELIBERATE[name.strip('()')]}")
             if secrets:
                 print(f"  CREDENTIALS INLINE  : {', '.join(secrets)}")
                 print("                        readable by anyone who can run `fly get-pipeline` (PS-9)")
