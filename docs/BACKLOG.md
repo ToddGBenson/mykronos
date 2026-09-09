@@ -729,7 +729,7 @@ declared surface on `mykronos` with the catalog response as its evidence.
 
 ---
 
-### B-056 — A lane is a repository and a capability, with no room for a branch
+### B-056 — A lane is a repository and a capability, with no room for a branch — **half done**
 
 **Size:** M **State:** open **Verified:** 2026-09-04
 
@@ -764,16 +764,55 @@ The cost is the one the directive named — `deploy-demo` now auto-deploys
 `develop` to the demo environment and can race `deploy.sh`. Production is
 unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
 
+**The closure rule is branch-aware as of 2026-09-09, and it was closing
+findings on evidence from trees they were never in.** Measured before the
+change, not predicted:
+
+| repository | shape |
+|---|---|
+| `ToddGBenson/TheHub` | 404 runs on `develop` and 86 on `main`, both across nine capabilities, both current |
+| `TheHub` `dast` | 61 findings last seen on `main`, 109 fixed and 37 open last seen on `develop` |
+| every repository | runs from the `mykronos/enable-workflows-*` branches the installer itself opens |
+
+So two consecutive `main` scans could confirm the absence of a finding that
+only ever existed on `develop`, and the next `develop` scan reopened it — the
+exact flapping the two-scan rule exists to prevent, arriving through the
+dimension the rule did not have. The install pull requests make this true of
+all four repositories rather than only the one scanned on two branches.
+
+`reconcile_absences` now partitions recent runs by `(repo, capability,
+branch)` and matches each finding to the branch of the run that last saw it.
+That is the only honest answer to "which branch is this finding on": where the
+platform observed it, not where somebody expected it. A run recording no
+branch is its own lane rather than joining whichever lane comes first.
+
+**A second change came out of testing it.** "This lane has not looked enough
+times to close anything" is now reported only when *no* branch of the lane has
+looked enough. Reporting it per branch meant a lane closing findings on
+`develop` also announced itself as short of history because a pull-request
+branch was scanned once — true, useless, and how a report stops being read.
+
 **Acceptance criteria**
 
-- Lane health, and the two-consecutive-scans closure rule, are evaluated per
-  `(repo, capability, branch)` rather than per `(repo, capability)`.
-- A repository can declare which branch a capability's lane is *expected* on, so
-  a scan of another branch is recorded without disturbing that lane's health.
-- With that in place, TheHub can scan `develop` and gate `main` at once, and the
-  either/or above stops being one.
-- B-048 is re-read against this: mykronos's duplicate IaC findings are the same
-  defect with two CIs instead of two branches.
+- ~~The two-consecutive-scans closure rule is evaluated per
+  `(repo, capability, branch)`.~~ Done 2026-09-09, with eight tests: another
+  branch's scans closing nothing, its own branch's still closing, an install
+  pull request closing nothing on the default branch, interleaved branches
+  keeping separate histories, the same defect on two branches closing
+  separately, and the failed-scan rule still independent.
+- **Lane health is still evaluated per `(repo, capability)`.** `scan_health`
+  groups by capability alone, so freshness, failure rate and the coverage
+  figure still mix branches. Nothing closes wrongly because of it now, but a
+  lane can still look fresh on the strength of a pull-request scan.
+- A repository can declare which branch a capability's lane is *expected* on,
+  so a scan of another branch is recorded without disturbing that lane's
+  health. Not built. `default_branch` is the obvious default and B-046 already
+  reads it for branch drift, so the shape exists; what is missing is the
+  per-capability override and the health surfaces honouring it.
+- With that in place, TheHub can scan `develop` and gate `main` at once.
+- ~~B-048 is re-read against this.~~ Closed 2026-09-09. It was the same defect
+  with two CIs instead of two branches, and its own fix was to stop the two
+  producers disagreeing about paths.
 
 **Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
 implement "scan develop, deploy from main" and discovering the platform cannot
