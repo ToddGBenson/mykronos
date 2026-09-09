@@ -975,7 +975,7 @@ politely — it hides it completely.
 
 ---
 
-### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done**
 
 **Size:** S **State:** open **Verified:** 2026-09-05
 
@@ -1042,18 +1042,50 @@ principal is unset from `deploy/concourse/.env`; the applied pipeline agrees —
 all four Azure variables are empty strings in the running config. `cloud` could
 not have reported no matter what was enabled.
 
+**The check stopped overstating, 2026-09-09.** It asked whether a variable
+resolved from Vault, which is the right question for configuration and the
+wrong one for exposure. It now reads what the applied config actually holds
+where the file holds a reference, and reports an empty string as its own
+answer. `github-token` is named with its reason rather than listed beside the
+accidental ones.
+
+Only when the file's value is *exactly* the reference: a variable interpolated
+into a longer string cannot be isolated from the text around it, and guessing
+there would be the same overstatement in the other direction.
+
+**Re-read against the live pipelines on 2026-09-09, and the estate had moved
+since the entry was written:**
+
+| pipeline | resolved from Vault | supplied but empty | inline on purpose | real exposure |
+|---|---:|---|---|---|
+| `mykronos` | 6 | — | — | **none** |
+| `thehub` | 8 | `anthropic-api-key`, four `azure-*` | `github-token` | **none** |
+| `personal-soc` | 5 | `anthropic-api-key`, `hibp-api-key`, `monitor-emails` | — | **`personal-soc-ingestion-token`** |
+
+So the six-credential warning is one credential, and it is the one this entry
+said was genuinely absent from Vault. `thehub`'s Anthropic key is no longer a
+76-character literal — it is an empty string, so the exposure is gone and the
+key is *not* resolving from Vault either. **Worth a look rather than an
+alarm:** TheHub's `ai` lane has succeeded four times since 2026-09-01, most
+recently 16:10 today, so whatever it needs it is getting; that a lane can
+succeed with an empty model key is a question this entry is not the place to
+answer.
+
 **Acceptance criteria**
 
-- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied config.
+- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied
+  config. **Half:** the literal is gone, and it resolves to an empty string
+  rather than from Vault.
 - `personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
-  three `MYKRONOS_TOKEN` assignments reading as placeholders.
-- `check_applied_pipelines.py` distinguishes an inline credential with a value
-  from an inline empty string, and says which. Empty is not an exposure and must
-  stop being reported as one.
-- `github-token`'s exclusion is recorded where the check reports it, so the one
-  deliberate case does not read as the two accidental ones.
-- The two keys that were inline are treated as exposed and rotated, because
-  every apply since they landed has stored them somewhere readable.
+  three `MYKRONOS_TOKEN` assignments reading as placeholders. **Not done**, and
+  it is now the estate's only inline credential with a value in it.
+- ~~`check_applied_pipelines.py` distinguishes an inline credential with a
+  value from an inline empty string, and says which.~~
+- ~~`github-token`'s exclusion is recorded where the check reports it.~~
+- The two keys that were inline are treated as exposed and rotated. **Not
+  done.** Every apply between 2026-09-05 and whenever `thehub` was re-applied
+  stored the Anthropic key somewhere readable, and the ingestion token is
+  still there now.
 
 **Provenance:** found on 2026-09-05 while verifying that D-113's coverage flag
 had reached the running `mykronos` pipeline. `check_applied_pipelines.py`
