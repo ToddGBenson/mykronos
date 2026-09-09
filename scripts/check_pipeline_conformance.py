@@ -30,9 +30,10 @@ in the standard is where the answer is written down.
     python scripts/check_pipeline_conformance.py          # report + exit code
     python scripts/check_pipeline_conformance.py --quiet  # exit code only
 
-`tests/test_pipeline_conformance.py` runs this over both pipelines, so the
-`unit` lane is what actually enforces it — which means a pipeline change that
-breaks the standard fails the quality gate before it can reach a scanner.
+`tests/test_pipeline_conformance.py` runs this over every pipeline in
+`deploy/concourse/pipelines/`, so the `unit` lane is what actually enforces
+it — which means a pipeline change that breaks the standard fails the quality
+gate before it can reach a scanner.
 """
 
 from __future__ import annotations
@@ -46,14 +47,75 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: `personal-soc` is deliberately absent: it scans a network on a timer rather
-#: than a commit through a delivery pipeline, so the quality-gate and
-#: scan-then-upload rules do not describe it. Add it here the day it grows a
-#: commit-triggered lane.
-PIPELINES = (
-    "deploy/concourse/pipelines/mykronos.yml",
-    "deploy/concourse/pipelines/thehub.yml",
-)
+PIPELINE_DIR = REPO_ROOT / "deploy/concourse/pipelines"
+
+
+def pipelines() -> list[Path]:
+    """Every pipeline in the repository, found rather than listed (B-059).
+
+    This was a two-entry tuple, and `personal-soc.yml` was not in it. The
+    exemption was recorded as a comment saying the quality-gate and
+    scan-then-upload rules do not describe a timer-driven pipeline -- which
+    was true of some of its jobs and not of others, and in the meantime every
+    one of its twelve tasks ran uncapped against the estate's single shared
+    worker. PS-7's own rationale is that "a hook that hangs holds the single
+    worker exactly as a scan does", so that was an availability property of
+    the platform being carried as a tidiness exemption for one repository.
+
+    A list also means a new pipeline is exempt until somebody remembers to add
+    it, which is the failure mode that produced this one. Discovery makes
+    coverage the default and exemption the thing you have to write down.
+    """
+    return sorted(PIPELINE_DIR.glob("*.yml"))
+
+
+#: Violations that are known, recorded and not yet fixed, as
+#: `pipeline:job RULE` -> why. Anything not in here fails the check.
+#:
+#: This is a baseline, not a pardon. Adding a pipeline to the standard the day
+#: it conforms means never adding it; recording exactly what does not conform
+#: means a *new* violation of the same rule in a new job still fails, which is
+#: the property the check exists for. Each line is work, and B-059 carries the
+#: order.
+KNOWN_GAPS: dict[str, str] = {
+    "personal-soc.yml:secrets PS-2": (
+        "reports without a preflight probe; the lane predates PS-2 and the fix "
+        "is the same three lines the other pipelines carry"
+    ),
+    "personal-soc.yml:iac PS-2": (
+        "reports without a preflight probe. Added 2026-09-04 and written to "
+        "match the lanes beside it, which is how a gap reproduces itself"
+    ),
+    "personal-soc.yml:oracle PS-2": (
+        "asks Oracle for a decision without probing first, so an unreachable "
+        "platform reads as a risk verdict rather than as an outage"
+    ),
+    "personal-soc.yml:secrets PS-3": (
+        "a failing gitleaks would skip its own upload, so a broken scan reports "
+        "nothing rather than reporting that it broke"
+    ),
+    "personal-soc.yml:iac PS-3": (
+        "a failing checkov would skip its own upload, so the lane reports a "
+        "clean infrastructure scan by not reporting at all"
+    ),
+    "personal-soc.yml:doc-drift PS-4": (
+        "commit-triggered with no quality gate. The gate this pipeline has runs "
+        "on the same commit, so this is an ordering fix rather than a new job"
+    ),
+    "personal-soc.yml PS-6": (
+        "`--branch main` is named literally in one task. Harmless while the "
+        "repository has one branch, and exactly the assumption B-045 cost "
+        "sixteen days of scanning"
+    ),
+    "personal-soc.yml PS-8": (
+        "five downloads with no checksum. PS-8's point is that a fetched binary "
+        "is code, and this pipeline fetches five"
+    ),
+    "personal-soc.yml jobs": (
+        "every one of its thirteen jobs is in no group, so Concourse hides the "
+        "whole pipeline from its own UI"
+    ),
+}
 
 #: Steps that are hooks rather than work. They carry their timeout on the
 #: shared anchor, so looking for one on the step would report every use of the
@@ -107,6 +169,17 @@ def _uncommented(raw: str) -> str:
     explained next to the code is a rule the next person deletes.
     """
     return "\n".join(line for line in raw.split("\n") if not line.lstrip().startswith("#"))
+
+
+def _gap_key(problem: str) -> str:
+    """`personal-soc.yml:secrets PS-2 reports ...` -> `personal-soc.yml:secrets PS-2`.
+
+    Keyed on the pipeline, the job and the rule, and deliberately not on the
+    message: the wording of a failure should be free to improve without
+    silently un-recording the gap it describes.
+    """
+    parts = problem.split()
+    return f"{parts[0]} {parts[1]}" if len(parts) > 1 else problem
 
 
 def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
@@ -211,10 +284,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     all_problems: list[str] = []
-    for relative in PIPELINES:
-        path = REPO_ROOT / relative
+    recorded: list[str] = []
+    for path in pipelines():
+        relative = path.relative_to(REPO_ROOT).as_posix()
         problems, rows = check_pipeline(path)
-        all_problems.extend(problems)
+        for problem in problems:
+            if _gap_key(problem) in KNOWN_GAPS:
+                recorded.append(problem)
+            else:
+                all_problems.append(problem)
         if args.quiet:
             continue
         print("=" * 78)
@@ -227,13 +305,37 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{row[0]:<18}{row[1]:<6}{row[2]:<8}{row[3]:<6}{row[4][:23]:<24}{row[5]}")
         print()
 
+    if recorded and not args.quiet:
+        # Printed even when the check passes. A baseline nobody sees is a
+        # baseline that grows.
+        print(f"Known and not yet fixed ({len(recorded)}), tracked in B-059:")
+        for problem in recorded:
+            print(f"  - {problem}")
+            print(f"      {KNOWN_GAPS[_gap_key(problem)]}")
+        print()
+
+    stale = sorted(set(KNOWN_GAPS) - {_gap_key(p) for p in recorded})
+    if stale:
+        # A recorded gap that no longer reproduces is a line that will outlive
+        # the problem and start excusing a future one.
+        print("These recorded gaps no longer reproduce. Delete them from KNOWN_GAPS:")
+        for key in stale:
+            print(f"  - {key}")
+        return 1
+
     if all_problems:
         print("The pipelines do not follow docs/pipeline-standard.md:")
         for problem in all_problems:
             print(f"  - {problem}")
         return 1
 
-    print("Both pipelines follow docs/pipeline-standard.md.")
+    if recorded:
+        print(
+            f"All {len(pipelines())} pipelines follow docs/pipeline-standard.md, "
+            f"apart from the {len(recorded)} gap(s) recorded above."
+        )
+    else:
+        print(f"All {len(pipelines())} pipelines follow docs/pipeline-standard.md.")
     return 0
 
 

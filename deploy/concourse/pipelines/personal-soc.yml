@@ -210,6 +210,8 @@ jobs:
         trigger: true
       - get: pwsh
       - task: no-personal-data
+        # PS-7. 10m from 6 observed run(s): median 101s, slowest 146s.
+        timeout: 10m
         image: pwsh
         config:
           platform: linux
@@ -319,6 +321,8 @@ jobs:
         passed: [guard]
       - get: python
       - task: gitleaks
+        # PS-7. 10m from 6 observed run(s): median 78s, slowest 169s.
+        timeout: 10m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))
@@ -690,6 +694,8 @@ jobs:
         passed: [guard]
       - get: pwsh
       - task: psscriptanalyzer
+        # PS-7. 10m from 5 observed run(s): median 35s, slowest 48s.
+        timeout: 10m
         image: pwsh
         config:
           platform: linux
@@ -779,6 +785,8 @@ jobs:
         passed: [guard]
       - get: pwsh
       - task: run-tests
+        # PS-7. 10m from 5 observed run(s): median 69s, slowest 86s.
+        timeout: 10m
         image: pwsh
         config:
           platform: linux
@@ -993,6 +1001,8 @@ jobs:
         passed: [guard]
       - get: python
       - task: check-skills
+        # PS-7. 10m from 6 observed run(s): median 36s, slowest 56s.
+        timeout: 10m
         image: python
         params:
           ANTHROPIC_API_KEY: ((anthropic-api-key))
@@ -1222,6 +1232,10 @@ jobs:
         passed: [guard, secrets, lint, functional, skill-integrity]
       - get: pwsh
       - task: bundle-and-publish
+        # PS-7. 30m from 5 observed run(s): median 212s, slowest 504s.
+        # 30m rather than 10m: this one polls for the host's install acknowledgement,
+        # and B-017 records that budget as eight minutes on its own.
+        timeout: 30m
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -1326,6 +1340,8 @@ jobs:
         trigger: true
       - get: pwsh
       - task: find-doc-drift
+        # PS-7. 10m from 5 observed run(s): median 57s, slowest 136s.
+        timeout: 10m
         image: pwsh
         config:
           platform: linux
@@ -1406,6 +1422,8 @@ jobs:
       - get: source
       - get: pwsh
       - task: shodan-internetdb
+        # PS-7. 15m from 4 observed run(s): median 95s, slowest 207s.
+        timeout: 15m
         image: pwsh
         config:
           platform: linux
@@ -1476,6 +1494,9 @@ jobs:
       - get: source
       - get: pwsh
       - task: verify-and-diff
+        # PS-7. 15m from 1 observed run(s): median 33s, slowest 33s.
+        # One sample only, so the headroom is deliberately wide.
+        timeout: 15m
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -1666,6 +1687,8 @@ jobs:
         trigger: true
       - get: pwsh
       - task: check-age
+        # PS-7. 15m from 4 observed run(s): median 95s, slowest 228s.
+        timeout: 15m
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
@@ -1756,6 +1779,10 @@ jobs:
       - get: source
       - get: pwsh
       - task: hibp
+        # PS-7.
+        # No observed durations: `breach-check` is paused, so this is the estate's
+        # default for a lane that calls one external API rather than a measurement.
+        timeout: 15m
         image: pwsh
         params:
           HIBP_API_KEY: ((hibp-api-key))

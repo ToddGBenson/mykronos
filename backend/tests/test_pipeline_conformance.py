@@ -45,11 +45,62 @@ def _load_checker():
 checker = _load_checker()
 
 
-@pytest.mark.parametrize("relative", checker.PIPELINES)
-def test_pipeline_follows_the_standard(relative: str) -> None:
-    problems, rows = checker.check_pipeline(REPO_ROOT / relative)
-    assert rows, f"{relative} parsed to no jobs at all"
-    assert not problems, "\n".join([f"{relative} breaks docs/pipeline-standard.md:", *problems])
+@pytest.mark.parametrize("path", checker.pipelines(), ids=lambda p: p.name)
+def test_pipeline_follows_the_standard(path: Path) -> None:
+    """Every pipeline in the repository, found rather than listed (B-059).
+
+    A hand-maintained list meant a new pipeline was exempt until somebody
+    remembered to add it, and `personal-soc.yml` was exempt for long enough
+    that all twelve of its tasks ran uncapped against the estate's single
+    shared worker.
+    """
+    problems, rows = checker.check_pipeline(path)
+    unrecorded = [p for p in problems if checker._gap_key(p) not in checker.KNOWN_GAPS]
+    assert rows, f"{path.name} parsed to no jobs at all"
+    assert not unrecorded, "\n".join(
+        [f"{path.name} breaks docs/pipeline-standard.md:", *unrecorded]
+    )
+
+
+def test_every_recorded_gap_still_reproduces() -> None:
+    """A baseline entry that no longer fires is a line that will outlive the
+    problem it describes and start excusing a future one."""
+    live = set()
+    for path in checker.pipelines():
+        problems, _ = checker.check_pipeline(path)
+        live.update(checker._gap_key(p) for p in problems)
+
+    stale = sorted(set(checker.KNOWN_GAPS) - live)
+
+    assert not stale, "Fixed, so delete from KNOWN_GAPS: " + ", ".join(stale)
+
+
+def test_every_recorded_gap_says_why() -> None:
+    """`KNOWN_GAPS` is a baseline, not a pardon. An entry with no reason is
+    an exemption by absence wearing a dictionary."""
+    for key, reason in checker.KNOWN_GAPS.items():
+        assert len(reason.split()) >= 6, f"{key} needs a reason, not a label"
+
+
+def test_a_new_pipeline_is_covered_without_being_listed(tmp_path: Path) -> None:
+    """The property the old shape did not have: coverage by default."""
+    found = {path.name for path in checker.pipelines()}
+
+    assert "personal-soc.yml" in found
+    assert found == {path.name for path in checker.PIPELINE_DIR.glob("*.yml")}
+
+
+def test_no_task_anywhere_runs_uncapped() -> None:
+    """PS-7 across every pipeline, stated as its own test because it is an
+    availability property of the estate rather than of one repository: there
+    is one Concourse worker, and a hung task in any pipeline holds the others
+    behind it."""
+    uncapped: list[str] = []
+    for path in checker.pipelines():
+        problems, _ = checker.check_pipeline(path)
+        uncapped.extend(p for p in problems if " PS-7 " in p)
+
+    assert not uncapped, "\n".join(["Uncapped tasks share one worker:", *uncapped])
 
 
 def test_every_reporting_job_is_cross_checked() -> None:
@@ -63,8 +114,9 @@ def test_every_reporting_job_is_cross_checked() -> None:
     from mykronos.ci import CAPABILITY_BY_JOB
 
     missing: list[str] = []
-    for relative in checker.PIPELINES:
-        document = yaml.safe_load((REPO_ROOT / relative).read_text(encoding="utf-8"))
+    for path in checker.pipelines():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
         for job in document["jobs"]:
             body = checker._scripts(job)
             if "--capability" not in body:
@@ -80,7 +132,7 @@ def test_every_reporting_job_is_cross_checked() -> None:
 
 def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     """Strip a timeout and a preflight; the checker must object to both."""
-    source = REPO_ROOT / checker.PIPELINES[0]
+    source = checker.PIPELINE_DIR / "mykronos.yml"
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
 
     for job in document["jobs"]:
