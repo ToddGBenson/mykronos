@@ -5048,3 +5048,36 @@ narrow silently, and a red light on the dashboard are the three things that
 make the seam safe to keep.
 
 ---
+
+## D-120 — A declared floor is labelled, not discounted
+
+**2026-09-09.** `osv-scanner` runs with `--no-resolve` on every dependency
+lane in this estate, so a finding against an open-bounded requirement
+describes the oldest version the repository permits rather than the one it
+runs. TheHub carried four HIGH advisories against `cryptography@42.0.0` while
+every container ran 50.0.1, which has none (B-063). Those findings now carry
+`version_basis`, and the Oracle continues to weight them exactly as it weights
+resolved ones.
+
+**Weighting them lower would be the wrong correction.** A floor is a real
+thing to assess: it is what the repository promises to accept, and a rebuild
+that resolves differently — a warm layer cache, a pinned internal index, an
+offline mirror — installs it. Discounting the finding would say the risk is
+smaller, and it is not; what was wrong was the *claim*, which read as a
+statement about running software. The fix for a mislabelled fact is the label.
+
+**Why not suppress them either.** They are unfixable as stated — nothing
+closes a floor finding except raising the floor, and raising the floor changes
+no running byte — which is an argument for making the action legible, not for
+hiding the finding. Both sweeps that followed raised the floors and closed
+them: mykronos went to 0 of 20 open-bounded dependencies carrying an advisory,
+and TheHub to zero in TheHub#290.
+
+**What would change this.** A lock file. `--no-resolve` exists because
+transitive resolution calls deps.dev, which returns an internal error for any
+`requirements.txt` containing sqlalchemy, and an extractor error fails the
+whole lane. Resolving locally with `pip-compile` or `uv` and scanning the lock
+would make every finding a resolved one and retire this distinction; that is
+the real fix and it is not this decision.
+
+---

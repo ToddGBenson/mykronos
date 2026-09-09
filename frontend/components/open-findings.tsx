@@ -752,6 +752,20 @@ function GroupDetail({
                     : location.finding_id.slice(0, 12))}
                 {location.line_start ? `:${location.line_start}` : ""}
               </Link>
+              {/* A floor is what the repository permits, not what it runs
+                  (B-063). Said next to the version, because the version is
+                  the thing being misread: four HIGH advisories were reported
+                  against a package no container had installed for months, and
+                  the finding named a number that appears nowhere but a lower
+                  bound. */}
+              {location.version_basis === "declared_floor" ? (
+                <span
+                  className="ml-1.5 text-[11px] uppercase tracking-wider text-warn"
+                  title="The version a requirement permits at its lower bound, not one this repository is known to run. Raising the floor closes it; it changes no running byte."
+                >
+                  declared floor
+                </span>
+              ) : null}
               <span className="ml-1.5 text-ink-3">
                 {location.capability} ·{" "}
                 <RelativeTime value={location.first_seen_at ?? null} />

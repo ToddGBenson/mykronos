@@ -266,6 +266,11 @@ class TriageItem(BaseModel):
     line_start: int | None = None
     package_name: str | None = None
     package_version: str | None = None
+    #: What `package_version` describes (B-063). `declared_floor` means the
+    #: version a requirement permits at its lower bound, which is very likely
+    #: not the version running -- reading one as the other reported four HIGH
+    #: advisories against a package no container had installed for months.
+    version_basis: str | None = None
     triage: str = Field(
         default="needs_human_judgment",
         description=(
@@ -394,6 +399,11 @@ class FindingOut(BaseModel):
     symbol: str | None = None
     package_name: str | None = None
     package_version: str | None = None
+    #: What `package_version` describes (B-063). `declared_floor` means the
+    #: version a requirement permits at its lower bound, which is very likely
+    #: not the version running -- reading one as the other reported four HIGH
+    #: advisories against a package no container had installed for months.
+    version_basis: str | None = None
     status: str
     #: Who this is addressed to, and where that answer came from (spec 24 §1).
     #: `owner_source` is codeowners | profile | manual | unresolved — the four
@@ -440,6 +450,10 @@ class FindingLocationOut(BaseModel):
     file_path: str | None = None
     line_start: int | None = None
     package_version: str | None = None
+    #: What that version describes (B-063). A `declared_floor` names what the
+    #: repository permits rather than what it runs, and the two were the same
+    #: row until this told them apart.
+    version_basis: str | None = None
     first_seen_at: datetime | None = None
 
 

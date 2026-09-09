@@ -71,6 +71,10 @@ _UPDATE_SETS: dict[str, str] = {
         description            = i.description,
         cvss_score             = i.cvss_score,
         package_version        = i.package_version,
+        -- Refreshed with the version it describes: a lane that switches from
+        -- a manifest to a lockfile is new information about what the version
+        -- means, not a decision somebody made.
+        version_basis          = i.version_basis,
         raw_finding_json       = i.raw_finding_json,
         -- A finding that was marked fixed and has come back reopens
         -- (spec 05 §5). Human dispositions -- false_positive, accepted_risk,

@@ -3556,6 +3556,8 @@ export interface components {
             line_start?: number | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
         };
@@ -3602,6 +3604,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /** Status */
             status: string;
             /** Owner */
@@ -3692,6 +3696,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: ("resolved" | "declared_floor" | "declared_pin") | null;
             /** Address */
             address?: string | null;
             /** Port */
@@ -5767,6 +5773,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /**
              * Triage
              * @description What the classifier concluded about this row, and why. Carried on every row rather than only when filtered, so a queue can show it without a second request (B-019).
