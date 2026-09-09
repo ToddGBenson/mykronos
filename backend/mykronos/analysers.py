@@ -58,6 +58,9 @@ SAST_LANGUAGES: dict[str, frozenset[str]] = {
     # worth running *beside* CodeQL rather than instead of it: on `keel` the
     # two together read everything, and either alone reads about a third.
     "shellcheck": frozenset({"Shell"}),
+    # PSScriptAnalyzer reads PowerShell and nothing else, which is the whole
+    # of `personal-soc`.
+    "psscriptanalyzer": frozenset({"PowerShell"}),
     # Semgrep's registry is broader and does cover bash. Named for the day a
     # repository is pointed at it, not because anything uses it here.
     "semgrep": frozenset(

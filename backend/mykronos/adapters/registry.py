@@ -55,6 +55,7 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         cloud_generic,
         containers_trivy,
         dast_zap,
+        sast_psscriptanalyzer,
         sast_shellcheck,
         secrets_gitleaks,
     )
@@ -77,6 +78,15 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
             sast_shellcheck.normalize,
             "*.json",
             "ShellCheck (shell, which CodeQL cannot read)",
+        ),
+        # And PowerShell, which CodeQL cannot read either. `personal-soc` is
+        # 100% PowerShell and had nothing examining it for a defect (B-051).
+        AdapterSpec(
+            "sast",
+            "psscriptanalyzer",
+            sast_psscriptanalyzer.normalize,
+            "*.json",
+            "PSScriptAnalyzer (PowerShell, which CodeQL cannot read)",
         ),
         # Atlas scores supply-chain trust from counts (spec 07 §5), but the
         # vulnerabilities behind those counts are findings like any other and

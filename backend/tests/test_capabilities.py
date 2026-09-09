@@ -157,6 +157,8 @@ class TestSchemaExposure:
         """So a form can never offer a tool the platform cannot parse."""
         assert config_schema("sast")["properties"]["enabled_tool"]["enum"] == [
             "codeql",
+            # PowerShell, which CodeQL cannot read either (B-051).
+            "psscriptanalyzer",
             "semgrep",
             # Joined 2026-09-09 (B-051): CodeQL implements no shell language,
             # so a shell-heavy repository runs ShellCheck as a second lane.

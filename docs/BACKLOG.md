@@ -601,13 +601,17 @@ the briefing has a section for source no analyser here can read — beside the
 stalled lanes, because it is the same failure with the alarm removed. Computed
 against the live estate rather than quoted from this entry:
 
-| repository | analyser | unread | what it cannot read |
-|---|---|---:|---|
-| `personal-soc` | codeql | **100%** | PowerShell |
-| `keel` | codeql | **70%** | Shell |
-| `binnacle` | codeql | **68%** | Shell |
-| `mykronos` | codeql | 4% | PowerShell |
-| `TheHub` | codeql | 0% | — |
+| repository | analyser | unread | what it cannot read | closed by |
+|---|---|---:|---|---|
+| `personal-soc` | codeql | **100%** | PowerShell | `psscriptanalyzer` |
+| `keel` | codeql | **70%** | Shell | `shellcheck` |
+| `binnacle` | codeql | **68%** | Shell | `shellcheck` |
+| `mykronos` | codeql | 4% | PowerShell | `psscriptanalyzer` |
+| `TheHub` | codeql | 0% | — | — |
+
+Every row's gap now has a tool that closes it, measured rather than assumed:
+`codeql` + `shellcheck` leaves keel and binnacle at nothing, `codeql` +
+`psscriptanalyzer` leaves personal-soc and mykronos at nothing.
 
 **mykronos's own 4% was not in this entry**, and it is the same defect: its
 PowerShell operations scripts are read by nothing. Small, real, and found by
@@ -672,10 +676,29 @@ now, and it reads the rendered workflow instead.
   findings, none above `info`, and that is the baseline this lane should
   reproduce — on every push rather than once an afternoon.
 
-  **`personal-soc` still has nothing that reads PowerShell.** PSScriptAnalyzer
-  is the same three pieces again and is not built, so enabling `sast` there
-  would still be a green lane over unread code — and the check now says so out
-  loud rather than leaving it to be rediscovered.
+  **`personal-soc` gained one that reads PowerShell**, also 2026-09-09 and
+  also not yet enabled. PSScriptAnalyzer is a registered `sast` tool with its
+  own adapter and a `sast-powershell` template, and it takes that repository
+  from **100% unread to nothing**. It runs on the runner's own `pwsh` rather
+  than in a container, with the module version pinned: an analyser that
+  silently changes its rule set changes what "clean" means without anybody
+  deciding to.
+
+  **Its severity is an integer, and that was the trap worth writing down.**
+  `Invoke-ScriptAnalyzer | ConvertTo-Json` serialises the .NET enum as its
+  ordinal — `0` Information, `1` Warning, `2` Error, `3` ParseError — so a
+  reader expecting `"Warning"` gets `1`. A mapping that only understood the
+  names would have filed every finding at the default severity while looking
+  like it worked. Both forms are read, because `-EnumsAsStrings` exists.
+
+  Two more shapes that would have been quiet failures: `ConvertTo-Json`
+  unwraps a single-element array into a bare object, so a repository with
+  exactly one problem would have reported a clean scan; and `ScriptPath` is
+  absolute on the runner, so without the workspace strip every finding's
+  identity would move with the checkout layout.
+
+  Neither analyser is enabled anywhere yet. Enabling them is a capability
+  change per repository, and the numbers above say what each would close.
 - ~~`binnacle` is onboarded, or a decision is recorded that it will not be.~~
   Onboarded 2026-09-04, granted on the 5th, and `secrets` restored on the 8th
   (B-052, D-111). It is `active` with `sast` enabled — over a repository
