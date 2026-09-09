@@ -4678,6 +4678,40 @@ rather than an obstacle, and it is worth going in knowing it.
 **Nothing was changed.** Branch protection is outward-facing and this needed a
 person; the reading above is what that person should have in front of them.
 
+**Decided and executed 2026-09-09: reviews on, admin enforcement off, all
+five.** The operator took the second of the three choices and applied it
+estate-wide. Every repository now requires one approving review on its default
+branch with `enforce_admins` off, which is the posture TheHub already had — so
+the review requirement is real for anybody else and advisory for the account
+that owns the estate. This platform scores that `partial` rather than `on`,
+and that reading is the honest one: one approval on a repository with no
+CODEOWNERS is one rubber stamp from a self-merge.
+
+`binnacle` had no branch protection at all and gained the rest of the estate's
+shape with it — linear history, force-push and deletion blocked, conversation
+resolution and stale-review dismissal.
+
+**The scores fell on three repositories, which is the trade being visible
+rather than a regression.**
+
+| repository | before | after | why |
+|---|---:|---:|---|
+| `binnacle` | 8 | **48** | had no protection at all |
+| `keel` | 53 | 48 | traded 1.1.14 for 1.1.3 `partial` |
+| `mykronos` | 49 | 43 | as above |
+| `personal-soc` | 49 | 43 | as above |
+| `TheHub` | 30 | 30 | already in this state |
+
+Turning `enforced_for_admins` off is a control that was passing and now is
+not, and CIS scores it the same weight as the one gained. The trade was made
+knowing that: a review requirement nobody can satisfy is worth less than one
+that is advisory and recorded, and the alternative on a single-operator estate
+was a deadlock. Said out loud here because a governance number that moved
+down deserves the same explanation as one that moved up.
+
+**`required_status_checks` was not part of this** and stays open. It is
+executable on `keel` and `binnacle` only, for the reasons above.
+
 ---
 
 ## D-111 — binnacle is scanned with the tools that can read it, and its green is qualified

@@ -968,14 +968,40 @@ binnacle-and-keel first, then mykronos, then personal-soc, then TheHub.
 single-operator estate an unsigned commit from a forgotten path becomes an
 unmergeable one, which fails at the moment somebody is shipping a fix.
 
+**Executed 2026-09-09 (D-110, amended).** Every repository now requires one
+approving review with admin enforcement off, and `binnacle` gained branch
+protection for the first time. Read back from GitHub afterwards rather than
+assumed:
+
+| repository | admins before | admins after | reviews before | reviews after | score |
+|---|---|---|---:|---:|---|
+| `binnacle` | unprotected | off | — | 1 | 8 → **48** |
+| `keel` | on | off | 0 | 1 | 53 → 48 |
+| `mykronos` | on | off | 0 | 1 | 49 → 43 |
+| `personal-soc` | on | off | 0 | 1 | 49 → 43 |
+| `TheHub` | off | off | 1 | 1 | 30 → 30 |
+
+Three scores fell, because `enforced_for_admins` was passing and is not any
+more, and CIS weighs it the same as the control gained. That trade was made
+deliberately: a review requirement nobody can satisfy is worth less than one
+that is advisory and recorded, and on a single-operator estate the alternative
+was a deadlock — GitHub refuses a self-approval, and admin enforcement removes
+the bypass. The platform scores the new state `partial`, which is the honest
+reading.
+
 **Acceptance criteria**
 
-- `approving_reviews_required`, `required_status_checks` and
-  `signed_commits_required` are `on` for every repository, or a decision is
-  recorded per repository for why not — `partial` is an answer, an absence is
-  not.
-- `enforced_for_admins` and `force_push_blocked` are `on` for TheHub and
-  binnacle.
+- ~~`approving_reviews_required` is `on` for every repository, or a decision is
+  recorded per repository for why not.~~ `partial` everywhere, with D-110
+  carrying why. `required_status_checks` and `signed_commits_required` remain
+  open: signing is deferred by D-110, and checks are executable on `keel` and
+  `binnacle` only because nothing reports on a `mykronos` or `personal-soc`
+  pull request.
+- `force_push_blocked` is now `on` for `binnacle`, along with linear history,
+  deletion blocking and conversation resolution, which it had none of.
+  `enforced_for_admins` is now `off` estate-wide by decision rather than by
+  omission — the opposite of what this criterion asked for, and the trade
+  recorded above.
 - A CODEOWNERS file exists where `codeowners_coverage` reads `unknown`, so
   `codeowner_review_required` becomes meaningful rather than decorative.
 - 1.1.13 and 1.1.17 are read and reported, closing two of the nine gaps for the
