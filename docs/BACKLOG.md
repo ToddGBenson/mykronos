@@ -91,8 +91,9 @@ assessing the declared floor, so a finding names a version nobody runs.
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
 deploy path pulls from taking anonymous writes from any host on the LAN, which
-no scanner in this platform could have found; the rule that closes it is
-written and needs one elevated run. B-050 — eight live TheHub findings, read by
+no scanner in this platform could have found it; the rule is applied and the
+build verified through it, and one reading from another device would close it.
+B-050 — eight live TheHub findings, read by
 hand because B-045 meant no scanner had looked at that code in sixteen days.
 
 **The one that was the platform mis-recording its own state is closed.**
@@ -837,16 +838,34 @@ arrived from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
 filter loopback at all, so `localhost:5000` pulls are untouched either way.
 `-WhatIf` runs unelevated and prints the plan; `-Remove` undoes it.
 
-**What is left is one elevated command and two readings.** A firewall rule
-needs an administrator prompt this session does not have, and the acceptance
-criteria are deliberately both-or-nothing:
+**Applied 2026-09-09, and the half that could break the build is verified.**
+The operator ran it elevated. The rule reads back as one inbound TCP block on
+port 5000 scoped to `192.168.0.0/255.255.255.0`, enabled on every profile.
 
-    .\deploy\concourse\Set-RegistryScope.ps1 -WhatIf   # read the plan
-    .\deploy\concourse\Set-RegistryScope.ps1           # elevated
+The build path was then checked three ways, in increasing order of how much
+they prove:
 
-then `curl http://192.168.0.14:5000/v2/_catalog` from another LAN host must
-fail, **and** a Concourse `build` job must still push. Either alone is a false
-pass: a registry nobody can reach is not the goal.
+| check | result |
+|---|---|
+| `localhost:5000/v2/_catalog` from the host | 200 |
+| a container on the Concourse network, to `192.168.0.14:5000` | 200, from `172.19.0.1` |
+| **`thehub/build` #44, triggered and watched** | **succeeded** |
+
+The third is the acceptance criterion rather than a proxy for it: build 44
+pushed two blobs and `PUT /v2/thehub/manifests/7197a028...`, all from
+`172.19.0.1` — the same Concourse bridge gateway every previous push came
+from, which is what the rule was scoped around. Triggering `build` cascades
+only into `containers`, a scan job, so this cost nothing beyond a build.
+
+**What is left is one reading from a second device**, and it is the half this
+machine cannot perform: Windows routes host-to-its-own-address traffic through
+loopback, so `curl http://192.168.0.14:5000/v2/_catalog` *from here* does not
+exercise the rule no matter which interface it is aimed at. From another host
+on the LAN it must fail or time out. Until somebody runs that, what is proved
+is that the rule did not break anything — not yet that it closed anything.
+
+Undo, if the build ever turns out to need the LAN after all:
+`.\deploy\concourse\Set-RegistryScope.ps1 -Remove`.
 
 The compose comment no longer claims the exposure is required, which was the
 third criterion, and it now records why the obvious rule shape is wrong.
@@ -854,8 +873,10 @@ third criterion, and it now records why the obvious rule shape is wrong.
 **Acceptance criteria**
 
 - `GET /v2/_catalog` from another host on the network fails, **and** a `build`
-  job still pushes successfully. Both, or the change is not done. **Waiting on
-  the elevated run.**
+  job still pushes successfully. Both, or the change is not done. The build
+  half is done — `thehub/build` #44 pushed a manifest through the rule on
+  2026-09-09. The LAN half needs a second device and is the only thing this
+  entry is still open for.
 - ~~Whichever route is taken, the compose comment stops saying the exposure is
   required.~~ Done 2026-09-09: it names the bridge gateway every push has
   actually come from, and why "block everything else" is the wrong rule.
