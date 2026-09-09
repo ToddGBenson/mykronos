@@ -4460,6 +4460,8 @@ export interface components {
             how_to_evidence: string;
             /** Nist 800 53 */
             nist_800_53: string[];
+            /** Not Applicable Because */
+            not_applicable_because?: string[];
         };
         /**
          * ProfileProposalOut

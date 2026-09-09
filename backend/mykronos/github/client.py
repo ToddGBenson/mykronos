@@ -214,6 +214,14 @@ class GitHubClient(Protocol):
     ) -> str:
         """Commit staged changes to a branch. Returns the commit SHA."""
 
+    async def list_tree(self, repo_full_name: str, ref: str) -> list[str] | None:
+        """Every file path on `ref`, or None when the answer is not knowable.
+
+        None means "could not look", and a caller must never read it as
+        absence (B-058).
+        """
+        ...
+
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str
     ) -> PullRequest | None: ...
@@ -545,6 +553,15 @@ class FakeGitHubClient:
                 assert change.content is not None
                 tree[change.path] = change.content
         return f"sha-{abs(hash((branch, len(tree), message))) % 10**7:07d}"
+
+    async def list_tree(self, repo_full_name: str, ref: str) -> list[str] | None:
+        self.calls.append(("list_tree", repo_full_name))
+        if repo_full_name not in self.repos:
+            # The real client answers None for a repository it cannot read,
+            # and a fake that answered [] instead would let a test prove
+            # "nothing applies here" from a repository that does not exist.
+            return None
+        return sorted(self._repo(repo_full_name).files)
 
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str
@@ -1044,6 +1061,36 @@ class RestGitHubClient:
             json={"sha": new_commit["sha"], "force": True},
         )
         return str(new_commit["sha"])
+
+    async def list_tree(self, repo_full_name: str, ref: str) -> list[str] | None:
+        """Every file path on `ref`, or None when the answer is not knowable.
+
+        Used to decide whether an SSDF practice is *inapplicable* to a
+        repository rather than merely unevidenced (B-058), which makes the
+        failure mode specific and dangerous: a partial listing would say "no
+        Dockerfile here" about a repository that has one, and on a compliance
+        view that converts "we did not look" into "this does not apply to us".
+
+        So None for anything short of a complete answer, and callers treat
+        None as unknown and claim nothing. GitHub truncates this response
+        above roughly 100k entries and says so in `truncated`, which is one of
+        the cases that must read as unknown rather than as absence.
+        """
+        try:
+            payload = await self._json(
+                "GET",
+                f"/repos/{repo_full_name}/git/trees/{ref}",
+                params={"recursive": "1"},
+            )
+        except GitHubError:
+            return None
+        if payload.get("truncated"):
+            return None
+        return [
+            str(entry["path"])
+            for entry in payload.get("tree") or []
+            if entry.get("type") == "blob" and entry.get("path")
+        ]
 
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str

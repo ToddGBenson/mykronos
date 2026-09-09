@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Thirteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Twelve, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -84,11 +84,11 @@ Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
 scanner too old to know what to look for, now closed. B-056, no branch dimension
-on a lane, which is why B-045 was forced rather than chosen. B-058, a status
-nothing sets, so a repository is failed for lacking what it cannot have. B-063,
+on a lane, which is why B-045 was forced rather than chosen. B-063,
 `--no-resolve` assessing the declared floor, so a finding names a version nobody
-runs. Two of them are closed: B-061, `event_driven` calling a capability fine
-without checking anything runs it, and B-047, the missing exit itself.
+runs. Three are closed: B-061, `event_driven` calling a capability fine without
+checking anything runs it; B-047, the missing exit itself; and B-058, a status
+nothing set, so a repository was failed for lacking what it cannot have.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
@@ -851,65 +851,6 @@ express it.
 
 ---
 
-### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-`ssdf.summarise` counts four statuses — `met`, `partial`, `not_evidenced`,
-`not_applicable` — and across all five onboarded repositories the fourth is
-**zero**. Nothing sets it. A practice a repository cannot possibly evidence and
-one it simply has not done are the same row.
-
-That understates two repositories badly, and on a compliance view an
-understatement is not the safe direction to be wrong in — it is the one that
-gets somebody told to build what they do not need.
-
-| repo | met | measured contents |
-|---|---|---|
-| `keel` | 2/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 10 workflows |
-| `personal-soc` | 0/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 0 tests, 2 workflows |
-
-So `keel` is marked down on **PW.4** ("run the dependency and container lanes")
-for having no containers, on **PW.8** ("run the test lanes") for having almost
-no tests, and on **RV.1** for not running `dast` on a schedule against an
-application that does not exist. `personal-soc` is 100% PowerShell with no
-build artifact at all. Neither is failing; neither has the thing.
-
-**The pressure this creates is the actual risk.** The obvious way to move those
-numbers is to enable `containers`, `dast` and `unit` anyway. Each would produce
-a lane that runs, finds nothing because there is nothing, and reports
-`success` — a green lane over an empty target, which is exactly what the
-maturity model refuses when it separates `reporting_capabilities` from
-`enabled_capabilities` so a repository cannot "claim coverage by flipping a
-toggle". The SSDF view has no such guard: a practice moves to `met` on a lane
-reporting, and a lane over nothing reports.
-
-**What was done instead, 2026-09-04.** Only `iac` was enabled on either, because
-it is the one that genuinely applies — checkov reads GitHub Actions workflows
-(`CKV_GHA_*`, which is where mykronos's own IaC findings come from), and keel
-has ten and personal-soc two. Install PRs: keel #77, personal-soc #6. Nothing
-else was enabled, so their scores stay low and honest rather than rising on
-lanes scanning nothing.
-
-**Acceptance criteria**
-
-- A practice whose capabilities have nothing to act on in this repository
-  reports `not_applicable`, with the reason — "no container image is built
-  here" reads differently from "the container lane has never run".
-- The determination is evidenced rather than declared: the SBOM, the presence
-  of a Dockerfile, a build artifact — something observable — not a per-repo
-  checkbox, which is a toggle again wearing a different hat.
-- `keel` and `personal-soc` stop being marked down for PW.4, PW.8 and RV.1.
-- The counts distinguish "12 of 13, one not applicable" from "12 of 13, one
-  outstanding". They are different sentences.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
-scoring repositories and finding most of their gaps were not gaps. Related to
-B-051: the same two repositories are also the ones whose languages no
-configured analyser can read.
-
----
-
 ### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it
 
 **Size:** M **State:** open **Verified:** 2026-09-04
@@ -1390,11 +1331,15 @@ into entries here:
 
 ## Closed
 
-Forty-six entries. The count below was stale at "nineteen": it covered
+Forty-seven entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — seven.** B-046, the entry the whole coverage theme is named
+**2026-09-09 — eight.** B-058, which was making two repositories look
+negligent for lacking things they have no reason to have: applicability is now
+read from the repository's own file listing, and `keel` gains three met
+practices while `personal-soc` gains three that do not apply. Then B-046, the
+entry the whole coverage theme is named
 after: the briefing measured silence and nothing measured whether a scan
 covered anything, so a lane pinned to a stale tree stayed green forever. Two
 of its bugs were found by the tests rather than by reading — a pinned lane
@@ -1458,6 +1403,87 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+`ssdf.summarise` counted four statuses and the fourth was zero across all five
+repositories, because nothing set it. A practice a repository cannot possibly
+evidence and one it simply has not done were the same row.
+
+**The determination is read from the repository, never declared.**
+`composition.py` takes the file listing from `GitHubClient.list_tree` and
+answers what has nothing to act on here: no Dockerfile means no container
+image is built, no manifest means no dependencies are declared, no test file
+means no test suite. `ssdf.assess` takes that map, and a capability in it
+contributes neither evidence nor a gap — so a practice covered by two lanes
+where one reports and the other cannot apply is **met**, and one whose every
+lane cannot apply is **not_applicable** with the observation attached.
+
+**Every inference runs one way only.** An absence of Dockerfiles is strong
+evidence that no image is built; their presence proves nothing about anything
+else. A tree that could not be read, or that GitHub truncated, is `unknown`
+and yields nothing at all — so a failed listing understates adherence rather
+than inflating it. That direction is deliberate: on a compliance view a wrong
+`not_applicable` converts "we did not look" into "this does not apply to us",
+which is the one transformation `ssdf.py`'s own header refuses to make. A lane
+that is actually reporting also beats the inference, because an observation
+outranks a guess about a file listing.
+
+**Measured against both repositories, with the same inputs run twice so the
+change is isolated from everything else on the page:**
+
+| repository | before | after |
+|---|---|---|
+| `keel` | 5 met, 4 partial, 4 not evidenced | **8 met**, 1 partial, 4 not evidenced |
+| `personal-soc` | 3 met, 3 partial, 7 not evidenced | 3 met, 3 partial, 4 not evidenced, **3 not applicable** |
+
+Exactly six practices moved and no others. `keel`: PO.3, PW.4 and RV.1 go
+partial to met, each of whose shortfall named containers it does not build or
+DAST against an application that does not exist. `personal-soc`: PS.3, PW.4
+and PW.8 become not applicable rather than unmet.
+
+**`keel` keeps PW.8, and that is the check working rather than a miss.** The
+entry expected it to stop being marked down there for having "almost no
+tests". It has two — `test/dashboard.test.py` and
+`test/selfreview-check.test.js` — so the practice applies and the repository
+is under-tested, which is a real finding. "Almost none" is not none, and the
+generous test matcher is deliberate: claiming a repository has no tests is the
+inference most likely to be wrong, and being wrong tells a team their tests do
+not count.
+
+**The pressure this removes is the point.** The obvious way to move those
+numbers was to enable `containers`, `dast` and `unit` anyway — each producing
+a lane that runs, finds nothing because there is nothing, and reports success.
+A green lane over an empty target is what the maturity model refuses when it
+separates `reporting_capabilities` from `enabled_capabilities`, and the SSDF
+view had no such guard.
+
+- ~~A practice whose capabilities have nothing to act on reports
+  `not_applicable`, with the reason.~~ `not_applicable_because`, its own field
+  and its own tone on the Adherence tab, because "we observed something that
+  meets this" and "we observed that this cannot apply" are different claims.
+  `how_to_evidence` is now hidden on an inapplicable practice too — it was
+  advice to build something the repository has no reason to have.
+- ~~Evidenced rather than declared.~~ The file listing, not a per-repo
+  checkbox, which would be a toggle wearing a different hat.
+- ~~`keel` and `personal-soc` stop being marked down for PW.4, PW.8 and
+  RV.1.~~ All but `keel`'s PW.8, which is genuinely applicable.
+- ~~The counts distinguish the two sentences.~~ `not_applicable` is reported
+  beside the rest rather than removed from the denominator.
+
+**Checked:** 2674 backend tests pass, eighteen new — the one-way inferences,
+the generous test matcher, unknown claiming nothing, a reporting lane beating
+the inference, a merely-not-enabled lane still being a gap, and the two
+end-to-end shapes from `keel` and `personal-soc`.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
+scoring repositories and finding most of their gaps were not gaps; built
+2026-09-09. Related to B-051: the same two repositories are also the ones
+whose languages no configured analyser can read.
+
+---
 
 ### B-046 — A lane pinned to a stale commit reports as healthy — **done**
 
