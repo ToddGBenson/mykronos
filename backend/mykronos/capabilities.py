@@ -114,6 +114,17 @@ class BaseCapabilityConfig(BaseModel):
     paths_exclude: list[str] = Field(default_factory=list, max_length=200)
     schedule_cron: str | None = Field(default=None, max_length=120)
     timeout_minutes: int = Field(default=30, ge=1, le=360)
+    lane_branch: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "The branch this capability's lane is expected to scan. Defaults "
+            "to the repository's default branch. Runs on any other branch are "
+            "still ingested and their findings still close on their own "
+            "evidence — they simply do not count toward this lane's health "
+            "(B-056), so a pull-request scan cannot make a lane look fresh."
+        ),
+    )
 
     @field_validator("schedule_cron")
     @classmethod
@@ -124,6 +135,27 @@ class BaseCapabilityConfig(BaseModel):
                 "e.g. '17 3 * * 1' for 03:17 every Monday."
             )
         return value
+
+    @field_validator("lane_branch")
+    @classmethod
+    def _lane_branch_is_a_ref(cls, value: str | None) -> str | None:
+        """A branch name, not a pattern.
+
+        Deliberately not a glob: "the lane is expected on `release/*`" would
+        make lane health a question with several answers, and the whole point
+        of this field is that a lane has one.
+        """
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if any(ch.isspace() for ch in cleaned) or "*" in cleaned or "?" in cleaned:
+            raise ValueError(
+                f"{value!r} is not a branch name. One branch, not a pattern — a "
+                "lane expected on several branches has no single health."
+            )
+        return cleaned
 
     @field_validator("tool_version")
     @classmethod

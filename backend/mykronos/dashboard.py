@@ -2201,38 +2201,95 @@ class DashboardQueries:
 
         return latest
 
-    def scan_health(self, repo_full_name: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Per-capability run history and failure rate (spec 10 §2.2)."""
+    def scan_health(
+        self,
+        repo_full_name: str,
+        limit: int = 50,
+        lane_branches: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Per-capability run history and failure rate (spec 10 §2.2).
+
+        `lane_branches` maps a capability to the branch its lane is expected
+        on. Where one is given, only runs on that branch count toward this
+        lane's health, and runs elsewhere are counted separately rather than
+        dropped (B-056).
+
+        **A lane is a repository, a capability and a branch.** Grouping by
+        capability alone let any branch's run answer for the lane: every
+        repository in this estate collects scans from the
+        `mykronos/enable-workflows-*` branches the installer opens, and TheHub
+        is scanned on `develop` and `main` at once. A pull-request scan could
+        therefore make a lane look fresh, and its failures counted against a
+        branch nobody deploys.
+
+        Called without the map, this behaves exactly as it always did — which
+        is what an unonboarded repository and the estate-wide callers need.
+        """
+        # Computed once in a CTE, not inlined into each aggregate. The CASE
+        # carries placeholders, and repeating it across seven FILTER clauses
+        # would need its parameters seven times over -- which DuckDB says out
+        # loud, and only at query time.
+        params: list[Any] = []
+        if lane_branches:
+            # A CASE rather than a WHERE, so a capability with no declared
+            # branch keeps every run and one with a declared branch keeps
+            # only its own. Filtering would silently empty the second kind.
+            whens = " ".join(
+                "WHEN capability = ? THEN coalesce(branch, '') = ?" for _ in lane_branches
+            )
+            on_lane_expr = f"CASE {whens} ELSE true END"
+            for capability, branch in lane_branches.items():
+                params.extend([capability, branch])
+        else:
+            on_lane_expr = "true"
+        params.append(repo_full_name)
+        on_lane = "on_lane"
+
         rows = self.catalog.query(
-            """
+            f"""
+            WITH runs AS (
+                SELECT *, {on_lane_expr} AS on_lane
+                FROM scan_runs
+                WHERE repo_full_name = ?
+            )
             SELECT capability,
-                   count(*)                                                AS runs,
-                   sum(CASE WHEN scan_status = 'success' THEN 1 ELSE 0 END) AS succeeded,
+                   count(*) FILTER (WHERE {on_lane})                       AS runs,
+                   sum(CASE WHEN scan_status = 'success' THEN 1 ELSE 0 END)
+                       FILTER (WHERE {on_lane})                             AS succeeded,
                    sum(CASE WHEN scan_status IN ('failure', 'partial_failure')
-                            THEN 1 ELSE 0 END)                              AS failed,
+                            THEN 1 ELSE 0 END)
+                       FILTER (WHERE {on_lane})                             AS failed,
                    sum(CASE WHEN scan_status = 'no_applicable_targets'
-                            THEN 1 ELSE 0 END)                              AS no_targets,
-                   max(coalesce(completed_at, started_at))                  AS last_run_at,
-                   max(finding_count)                                       AS peak_findings,
+                            THEN 1 ELSE 0 END)
+                       FILTER (WHERE {on_lane})                             AS no_targets,
+                   max(coalesce(completed_at, started_at))
+                       FILTER (WHERE {on_lane})                             AS last_run_at,
+                   max(finding_count) FILTER (WHERE {on_lane})              AS peak_findings,
+                   -- Recorded, not dropped. A run on another branch is a real
+                   -- scan of a real tree and its findings close on their own
+                   -- evidence; it simply does not answer for this lane.
+                   count(*) FILTER (WHERE NOT ({on_lane}))                  AS off_lane_runs,
                    -- The most recent run that *reported* coverage, not the
                    -- most recent run (spec 31 §4). A pipeline that writes a
                    -- coverage report on scheduled runs and not on every push
                    -- would otherwise show a number one day and a blank the
                    -- next, which reads as coverage having been lost.
                    arg_max(line_coverage, coalesce(completed_at, started_at))
-                       FILTER (WHERE line_coverage IS NOT NULL)             AS line_coverage,
-                   arg_max(branch_coverage, coalesce(completed_at, started_at))
-                       FILTER (WHERE branch_coverage IS NOT NULL)           AS branch_coverage,
-                   max(coalesce(completed_at, started_at))
                        FILTER (WHERE line_coverage IS NOT NULL
-                                  OR branch_coverage IS NOT NULL)           AS coverage_at
-            FROM scan_runs
-            WHERE repo_full_name = ?
+                                 AND {on_lane})                             AS line_coverage,
+                   arg_max(branch_coverage, coalesce(completed_at, started_at))
+                       FILTER (WHERE branch_coverage IS NOT NULL
+                                 AND {on_lane})                             AS branch_coverage,
+                   max(coalesce(completed_at, started_at))
+                       FILTER (WHERE (line_coverage IS NOT NULL
+                                  OR branch_coverage IS NOT NULL)
+                                 AND {on_lane})                             AS coverage_at
+            FROM runs
             GROUP BY capability
             ORDER BY capability
             LIMIT ?
             """,
-            [repo_full_name, limit],
+            [*params, limit],
         )
         recent = self._recent_scan_runs(repo_full_name)
         health = []
@@ -2244,11 +2301,16 @@ class DashboardQueries:
             no_targets,
             last_run_at,
             peak,
+            off_lane_runs,
             line_coverage,
             branch_coverage,
             coverage_at,
         ) in rows:
             total = int(runs) or 1
+            if not int(runs or 0) and not int(off_lane_runs or 0):
+                # Neither on nor off the lane: nothing ran at all, and the
+                # row exists only because DuckDB grouped an empty filter.
+                continue
             health.append(
                 {
                     "capability": str(capability),
@@ -2259,6 +2321,13 @@ class DashboardQueries:
                     "failure_rate": round(int(failed or 0) / total, 3),
                     "last_run_at": last_run_at,
                     "peak_findings": int(peak or 0),
+                    #: Scans of this capability on some other branch. Zero
+                    #: unless a lane branch is declared, and worth showing
+                    #: when it is not: a capability whose only runs are on a
+                    #: pull-request branch has never scanned the branch this
+                    #: lane is about (B-056).
+                    "off_lane_runs": int(off_lane_runs or 0),
+                    "lane_branch": (lane_branches or {}).get(str(capability)),
                     # The last run's own detail text (spec 19 §1.2) — the
                     # aggregate above has no room for one run's message, and
                     # a box showing "70% succeeded" says nothing about what

@@ -48,6 +48,7 @@ from mykronos.api.ingest import (
     profile_owner_for_repo,
 )
 from mykronos.ci import (
+    ALL_STAGES,
     ActionsClient,
     ConcourseClient,
     PipelineStatus,
@@ -3031,6 +3032,44 @@ async def repo_open_findings(
     return OpenFindingsPage.model_validate(page)
 
 
+def _lane_branches(request: Request, repo_full_name: str) -> dict[str, str]:
+    """The branch each capability's lane is expected on (B-056).
+
+    The repository's default branch, per capability, unless that capability's
+    config names another. The default is what makes this useful without
+    anybody configuring anything: every repository in this estate collects
+    scans from the `mykronos/enable-workflows-*` branches the installer
+    opens, and none of those is the branch a lane is about.
+
+    Empty when the repository has no default branch recorded — an unknown
+    expected branch must not silently exclude every run, which would report a
+    working lane as never having scanned.
+    """
+    with request.app.state.db.session() as session:
+        row = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None or not row.default_branch:
+            return {}
+        default = str(row.default_branch)
+        out = {
+            capability: str(
+                capability_config_for(session, repo_full_name, capability).get(
+                    "lane_branch"
+                )
+                or default
+            )
+            for capability in ALL_STAGES
+        }
+    return out
+
+
 def _default_branches(request: Request) -> dict[str, str]:
     """What each repository says its default branch is.
 
@@ -3072,7 +3111,9 @@ async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -
         )
         if lane.repo_full_name == repo_full_name
     }
-    capabilities = _queries(request).scan_health(repo_full_name)
+    capabilities = _queries(request).scan_health(
+        repo_full_name, lane_branches=_lane_branches(request, repo_full_name)
+    )
     for row in capabilities:
         row["not_covering"] = stale.get(str(row.get("capability", "")))
     return {
@@ -4424,9 +4465,15 @@ async def repo_ssdf(request: Request, repo_id: str, principal: PrincipalDep) -> 
     queries = _queries(request)
 
     # Reporting, not enabled: a lane with successful runs behind it.
+    # The same lane the CI page reports on (B-056). A capability whose only
+    # successful runs are on a pull-request branch has not scanned the branch
+    # this repository is assessed on, and counting it here would evidence a
+    # practice from a tree nobody ships.
     reporting = {
         str(lane["capability"])
-        for lane in queries.scan_health(repo_full_name)
+        for lane in queries.scan_health(
+            repo_full_name, lane_branches=_lane_branches(request, repo_full_name)
+        )
         if int(lane.get("runs") or 0) > int(lane.get("failed") or 0)
     }
 

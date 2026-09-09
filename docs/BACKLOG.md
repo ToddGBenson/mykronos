@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Ten, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Nine, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -83,11 +83,11 @@ other's absence evidence (closed).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
-scanner too old to know what to look for, now closed. B-056, no branch dimension
-on a lane, which is why B-045 was forced rather than chosen. Three are closed: B-061, `event_driven` calling a capability fine without
+scanner too old to know what to look for, now closed. Three are closed: B-061, `event_driven` calling a capability fine without
 checking anything runs it; B-047, the missing exit itself; B-058, a status
-nothing set, so a repository was failed for lacking what it cannot have; and
-B-063, `--no-resolve` assessing the declared floor.
+nothing set, so a repository was failed for lacking what it cannot have;
+B-063, `--no-resolve` assessing the declared floor; and B-056, no branch
+dimension on a lane, which is why B-045 was forced rather than chosen.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
@@ -729,97 +729,6 @@ declared surface on `mykronos` with the catalog response as its evidence.
 
 ---
 
-### B-056 — A lane is a repository and a capability, with no room for a branch — **half done**
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-Lane health groups by capability alone (`dashboard.py:2124`):
-
-    SELECT capability, max(coalesce(completed_at, started_at))
-    FROM scan_runs
-    WHERE repo_full_name = ?  GROUP BY capability
-
-`scan_runs` carries a `branch` column and nothing reads it here. So a
-repository cannot have two branches scanned under one capability: both write to
-the same lane, and since closure requires two consecutive successful scans that
-no longer observe a finding (spec 05 §5), alternating branches flip findings
-between open and fixed depending on which tree ran last. That is B-048's defect
-— two producers, one lane — arrived from a different direction.
-
-**It forces an either/or that is not a real one.** TheHub's pipeline both
-*scans* and *gates*: `deploy-demo` requires
-`passed: [secrets, sast, dependencies, containers, prompt-evals, iac]`, and
-Concourse's `passed:` constrains versions of the resource being fetched, so a
-job cannot be gated on `unit`-of-main while fetching `develop`. Scanning
-therefore follows whichever branch the deploy path follows.
-
-The right answer — **scan `develop` because that is where the code is, gate
-deploys on `main` because that is what ships** — needs a second scan lane, and a
-second scan lane on the same capability is the collision above. So the 2026-08-18
-directive was not a preference; it was the only expressible option.
-
-**What was chosen instead, on 2026-09-04:** point the whole pipeline at
-`develop`. One producer per lane, no collision, and scanning follows the code.
-The cost is the one the directive named — `deploy-demo` now auto-deploys
-`develop` to the demo environment and can race `deploy.sh`. Production is
-unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
-
-**The closure rule is branch-aware as of 2026-09-09, and it was closing
-findings on evidence from trees they were never in.** Measured before the
-change, not predicted:
-
-| repository | shape |
-|---|---|
-| `ToddGBenson/TheHub` | 404 runs on `develop` and 86 on `main`, both across nine capabilities, both current |
-| `TheHub` `dast` | 61 findings last seen on `main`, 109 fixed and 37 open last seen on `develop` |
-| every repository | runs from the `mykronos/enable-workflows-*` branches the installer itself opens |
-
-So two consecutive `main` scans could confirm the absence of a finding that
-only ever existed on `develop`, and the next `develop` scan reopened it — the
-exact flapping the two-scan rule exists to prevent, arriving through the
-dimension the rule did not have. The install pull requests make this true of
-all four repositories rather than only the one scanned on two branches.
-
-`reconcile_absences` now partitions recent runs by `(repo, capability,
-branch)` and matches each finding to the branch of the run that last saw it.
-That is the only honest answer to "which branch is this finding on": where the
-platform observed it, not where somebody expected it. A run recording no
-branch is its own lane rather than joining whichever lane comes first.
-
-**A second change came out of testing it.** "This lane has not looked enough
-times to close anything" is now reported only when *no* branch of the lane has
-looked enough. Reporting it per branch meant a lane closing findings on
-`develop` also announced itself as short of history because a pull-request
-branch was scanned once — true, useless, and how a report stops being read.
-
-**Acceptance criteria**
-
-- ~~The two-consecutive-scans closure rule is evaluated per
-  `(repo, capability, branch)`.~~ Done 2026-09-09, with eight tests: another
-  branch's scans closing nothing, its own branch's still closing, an install
-  pull request closing nothing on the default branch, interleaved branches
-  keeping separate histories, the same defect on two branches closing
-  separately, and the failed-scan rule still independent.
-- **Lane health is still evaluated per `(repo, capability)`.** `scan_health`
-  groups by capability alone, so freshness, failure rate and the coverage
-  figure still mix branches. Nothing closes wrongly because of it now, but a
-  lane can still look fresh on the strength of a pull-request scan.
-- A repository can declare which branch a capability's lane is *expected* on,
-  so a scan of another branch is recorded without disturbing that lane's
-  health. Not built. `default_branch` is the obvious default and B-046 already
-  reads it for branch drift, so the shape exists; what is missing is the
-  per-capability override and the health surfaces honouring it.
-- With that in place, TheHub can scan `develop` and gate `main` at once.
-- ~~B-048 is re-read against this.~~ Closed 2026-09-09. It was the same defect
-  with two CIs instead of two branches, and its own fix was to stop the two
-  producers disagreeing about paths.
-
-**Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
-implement "scan develop, deploy from main" and discovering the platform cannot
-express it.
-
----
-
 ### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it
 
 **Size:** M **State:** open **Verified:** 2026-09-04
@@ -1204,11 +1113,14 @@ into entries here:
 
 ## Closed
 
-Forty-nine entries. The count below was stale at "nineteen": it covered
+Fifty entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — ten.** B-063, so a finding says whether its version is one
+**2026-09-09 — eleven.** B-056, which had no room for a branch in a lane: a
+finding now closes on evidence from the tree it was found in, and lane health
+comes from the branch the lane is about rather than from whichever scan ran
+last. Then B-063, so a finding says whether its version is one
 this repository runs: a lock file names what is installed, an open-bounded
 requirement names what is permitted, and the two were the same row until now.
 Labelled rather than discounted (D-120), because a floor is a real thing to
@@ -1284,6 +1196,83 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-056 — A lane is a repository and a capability, with no room for a branch — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+A lane is a repository, a capability **and a branch**. `scan_runs` has always
+carried the branch; nothing read it, so every branch of a repository wrote to
+one lane.
+
+**Measured before anything was changed, not predicted.**
+
+| repository | shape |
+|---|---|
+| `ToddGBenson/TheHub` | 404 runs on `develop` and 86 on `main`, both across nine capabilities, both current |
+| `TheHub` `dast` | 61 findings last seen on `main`, 109 fixed and 37 open last seen on `develop` |
+| every repository | runs from the `mykronos/enable-workflows-*` branches the installer itself opens |
+
+**Closure, first.** `reconcile_absences` partitions recent runs by `(repo,
+capability, branch)` and matches each finding to the branch of the run that
+last saw it — where the platform observed it, not where somebody expected it.
+Before this, two consecutive `main` scans could confirm the absence of a
+finding that only ever existed on `develop`, and the next `develop` scan
+reopened it: the exact flapping the two-scan rule exists to prevent, arriving
+through the dimension the rule did not have. The install pull requests make
+that true of all four repositories, not only the one scanned on two branches.
+
+**Then health.** `scan_health` takes the branch each capability's lane is
+expected on. Runs elsewhere are counted as `off_lane_runs` rather than
+dropped — a scan of another branch is a real scan of a real tree whose
+findings close on their own evidence; it simply does not answer for this lane.
+Freshness, failure rate and the coverage figure all come from the lane now, so
+a pull-request scan can no longer make a lane look fresh, and its failures no
+longer count against a branch nobody deploys. The SSDF `reporting` set reads
+the same lane, because evidencing a practice from a tree nobody ships is the
+same error one surface further on.
+
+**The expected branch defaults to the repository's, which is what makes it
+useful with nothing configured.** `lane_branch` in a capability's config names
+another where one is wanted, and it refuses a glob: a lane expected on several
+branches has no single health, which is the thing the field exists to give it.
+A repository with no default branch recorded declares nothing rather than
+excluding every run, because an unknown expected branch must not report a
+working lane as never having scanned.
+
+**With that, "scan `develop`, gate `main`" is expressible**, and the either/or
+the 2026-08-18 directive faced stops being one. Whether TheHub is rearranged
+that way is a pipeline decision and not this entry's.
+
+**Two things the tests caught.** The waiting-lane report fired per branch, so a
+lane closing findings on `develop` also announced itself short of history
+because a pull-request branch was scanned once — true, useless, and how a
+report stops being read; it now fires only when no branch has looked enough.
+And the branch filter was inlined into seven aggregates while its parameters
+were supplied once, which DuckDB reports only at query time; it is computed
+once in a CTE.
+
+- ~~Lane health, and the two-consecutive-scans closure rule, are evaluated per
+  `(repo, capability, branch)`.~~
+- ~~A repository can declare which branch a capability's lane is expected on,
+  so a scan of another branch is recorded without disturbing that lane's
+  health.~~ `lane_branch`, defaulting to the repository's default branch.
+- ~~TheHub can scan `develop` and gate `main` at once.~~ Expressible now.
+- ~~B-048 is re-read against this.~~ Closed 2026-09-09; it was the same defect
+  with two CIs instead of two branches.
+
+**Checked:** 2722 backend tests pass, eighteen new — eight on closure
+(another branch closing nothing, its own branch still closing, an install
+pull request closing nothing on the default, interleaved branches keeping
+separate histories, the same defect on two branches closing separately, the
+failed-scan rule still independent) and ten on health, including that a
+capability declaring a branch does not narrow one that did not.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, found while trying to
+implement "scan develop, deploy from main" and discovering the platform could
+not express it. Closure landed 2026-09-09; health the same day.
+
+---
 
 ### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs — **done**
 
