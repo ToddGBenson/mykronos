@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from mykronos import (
     briefing,
+    composition,
     consult,
     controls,
     cvss,
@@ -4152,6 +4153,10 @@ class PracticeOut(BaseModel):
     missing: list[str]
     how_to_evidence: str
     nist_800_53: list[str]
+    #: Why this practice does not apply to this repository, when it does not.
+    #: Separate from `evidence` because "observed something that meets this"
+    #: and "observed that this cannot apply" are different claims (B-058).
+    not_applicable_because: list[str] = Field(default_factory=list)
 
 
 class SsdfOut(BaseModel):
@@ -4223,12 +4228,26 @@ async def _ssdf_assess(
             scrub(repo_full_name),
         )
 
+    # Read from the repository's own file listing, so "this does not apply
+    # here" is an observation rather than a checkbox somebody ticked (B-058).
+    # A tree that cannot be read claims nothing: `composition.read(None)` is
+    # unknown, and unknown yields no inapplicable capabilities at all, so a
+    # failed listing understates adherence rather than inflating it.
+    paths: list[str] | None = None
+    try:
+        paths = await request.app.state.github_factory.for_installation(
+            installation_id
+        ).list_tree(repo_full_name, default_branch)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not list %s for SSDF applicability", scrub(repo_full_name))
+
     return ssdf.assess(
         reporting_capabilities=reporting,
         enabled_capabilities=enabled,
         confirmed_controls=confirmed,
         known_controls=known,
         functions=_ssdf_functions(request, repo_full_name),
+        inapplicable_capabilities=composition.inapplicable(composition.read(paths)),
     )
 
 

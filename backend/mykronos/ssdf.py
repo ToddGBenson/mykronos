@@ -196,6 +196,11 @@ class PracticeResult:
     evidence: list[str] = field(default_factory=list)
     #: What is missing, when something is.
     missing: list[str] = field(default_factory=list)
+    #: Why this practice does not apply here, when it does not (B-058). Its
+    #: own list rather than folded into `evidence`, because "we observed
+    #: something that meets this" and "we observed that this cannot apply" are
+    #: different claims and a reader has to be able to tell them apart.
+    not_applicable_because: list[str] = field(default_factory=list)
     how_to_evidence: str = ""
     nist_800_53: list[str] = field(default_factory=list)
 
@@ -207,6 +212,7 @@ def assess(
     confirmed_controls: set[str],
     known_controls: set[str],
     functions: Mapping[str, FunctionState] | None = None,
+    inapplicable_capabilities: Mapping[str, str] | None = None,
 ) -> list[PracticeResult]:
     """Which practices this repository can evidence right now.
 
@@ -221,6 +227,15 @@ def assess(
     not absent, and reporting it as a failure would be as wrong as reporting it
     as a pass.
 
+    `inapplicable_capabilities` maps a capability to the observation that says
+    it has nothing to act on here -- read from the repository's file listing,
+    never declared (`composition`). Such a capability contributes neither
+    evidence nor a gap: a practice covered by two lanes where one reports and
+    the other cannot apply is *met*, not partial, and a practice all of whose
+    lanes cannot apply is `not_applicable` rather than unmet. Both were
+    reported as shortfalls before, which is how `keel` came to be marked down
+    for not scanning containers it does not build.
+
     `functions` carries the platform's own records — decisions written, fixes
     attempted, dismissals reasoned. They are not lanes and have no scan runs,
     so a practice that depends on one is unevidenced forever if it is asked of
@@ -230,13 +245,21 @@ def assess(
     """
     results: list[PracticeResult] = []
 
+    cannot_apply = dict(inapplicable_capabilities or {})
+
     for practice in PRACTICES:
         evidence: list[str] = []
         missing: list[str] = []
+        not_applicable_because: list[str] = []
 
         for capability in practice.capabilities:
             if capability in reporting_capabilities:
+                # Reporting wins over inapplicable, and the order matters: a
+                # lane that is actually producing scans has disproved the
+                # inference, whatever the file listing suggested.
                 evidence.append(f"{capability} lane is reporting successful scans")
+            elif capability in cannot_apply:
+                not_applicable_because.append(f"{capability}: {cannot_apply[capability]}")
             elif capability in enabled_capabilities:
                 missing.append(f"{capability} is enabled but has never reported")
             else:
@@ -268,6 +291,12 @@ def assess(
             status = "met"
         elif evidence:
             status = "partial"
+        elif not_applicable_because and not missing:
+            # Every way this practice could have been evidenced is a lane with
+            # nothing here to scan. Not a shortfall, and reporting it as one is
+            # what puts pressure on a team to enable a lane over an empty
+            # target just to move a number (B-058).
+            status = "not_applicable"
         else:
             status = "not_evidenced"
 
@@ -279,6 +308,7 @@ def assess(
                 status=status,
                 evidence=evidence,
                 missing=missing,
+                not_applicable_because=not_applicable_because,
                 how_to_evidence=practice.how_to_evidence,
                 nist_800_53=list(practice.nist_800_53),
             )
@@ -288,7 +318,13 @@ def assess(
 
 
 def summarise(results: list[PracticeResult]) -> dict[str, int]:
-    """Counts by status. No percentage — see the note in the API."""
+    """Counts by status. No percentage — see the note in the API.
+
+    `not_applicable` is reported beside the rest rather than removed from the
+    denominator, so "12 of 13, one not applicable" and "12 of 13, one
+    outstanding" stay different sentences. They describe different
+    repositories and only one of them has work to do.
+    """
     counts = {"met": 0, "partial": 0, "not_evidenced": 0, "not_applicable": 0}
     for result in results:
         counts[result.status] += 1
