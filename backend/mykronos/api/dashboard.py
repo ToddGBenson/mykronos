@@ -2237,6 +2237,23 @@ class BriefingActionOut(BaseModel):
     effect: str
 
 
+class StaleLaneOut(BaseModel):
+    """A lane that is reporting and not covering (B-046)."""
+
+    repo_full_name: str
+    capability: str
+    #: "same_commit" or "wrong_branch". Both mean the lane is not watching
+    #: what it is supposed to watch, and they need different fixes.
+    reason: str
+    commit_sha: str
+    branch: str
+    default_branch: str
+    since: datetime | None
+    runs: int
+    open_findings: int
+    action: BriefingActionOut
+
+
 class StalledLaneOut(BaseModel):
     repo_full_name: str
     capability: str
@@ -2321,6 +2338,10 @@ class BriefingOut(BaseModel):
     closing_soon: int
     auto_fixable: int
     stalled: list[StalledLaneOut]
+    #: Lanes that ARE producing successful scans, of a tree that is not
+    #: moving (B-046). Separate from `stalled` because the sentence, the
+    #: number and the fix are all different: these are green everywhere else.
+    stale: list[StaleLaneOut] = Field(default_factory=list)
     classes: list[BriefingClassOut]
     awaiting: list[AwaitingClosureOut]
     #: What each scanner said to do, grouped by rule (B-026).
@@ -2363,7 +2384,11 @@ async def post_deployment_briefing(
     them.
     """
     asset_id = _resolve_repo(request, repo_id) if repo_id else None
-    report = briefing.build(request.app.state.catalog, asset_id=asset_id)
+    report = briefing.build(
+        request.app.state.catalog,
+        asset_id=asset_id,
+        default_branches=_default_branches(request),
+    )
     return BriefingOut(
         generated_at=report.generated_at,
         total_open=report.total_open,
@@ -2373,6 +2398,7 @@ async def post_deployment_briefing(
         stalled=[
             StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled
         ],
+        stale=[StaleLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stale],
         classes=[
             BriefingClassOut.model_validate(dataclasses.asdict(entry))
             for entry in report.classes
@@ -2990,6 +3016,21 @@ async def repo_open_findings(
     return OpenFindingsPage.model_validate(page)
 
 
+def _default_branches(request: Request) -> dict[str, str]:
+    """What each repository says its default branch is.
+
+    Read from the onboarding ledger rather than from the lake, because the
+    lake only knows what a lane happened to scan -- which is the very thing
+    B-046 is checking. A lane on the wrong branch would otherwise define the
+    branch it is wrong about as correct.
+    """
+    with request.app.state.db.session() as session:
+        rows = session.execute(
+            select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
+        ).all()
+    return {str(name): str(branch or "") for name, branch in rows}
+
+
 @router.get("/repos/{repo_id}/scan-health")
 async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -> dict[str, Any]:
     """Per-capability run history and freshness (spec 10 §2.2).
@@ -2998,9 +3039,30 @@ async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -
     every run including the ones that found nothing (spec 04 §7).
     """
     repo_full_name = _resolve_repo(request, repo_id)
+    # The same reading the briefing leads with, on the page somebody opens to
+    # ask whether a lane is healthy (B-046). Freshness alone answers "did it
+    # run"; this answers "did it look at anything new", and a lane can pass
+    # the first and fail the second forever.
+    stale = {
+        lane.capability: {
+            "reason": lane.reason,
+            "commit_sha": lane.commit_sha,
+            "branch": lane.branch,
+            "default_branch": lane.default_branch,
+            "since": lane.since,
+            "runs": lane.runs,
+        }
+        for lane in briefing.stale_lanes(
+            request.app.state.catalog, default_branches=_default_branches(request)
+        )
+        if lane.repo_full_name == repo_full_name
+    }
+    capabilities = _queries(request).scan_health(repo_full_name)
+    for row in capabilities:
+        row["not_covering"] = stale.get(str(row.get("capability", "")))
     return {
         "repo_full_name": repo_full_name,
-        "capabilities": _queries(request).scan_health(repo_full_name),
+        "capabilities": capabilities,
     }
 
 

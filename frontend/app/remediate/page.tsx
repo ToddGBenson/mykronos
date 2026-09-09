@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { EmptyState, ErrorPanel, Label, Pill } from "@/components/primitives";
+import { StaleLanes } from "@/components/stale-lanes";
 import { StalledLanes } from "@/components/stalled-lanes";
 import { getBriefing } from "@/lib/server";
 
@@ -58,6 +59,7 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
     closing_soon,
     auto_fixable,
     stalled,
+    stale = [],
     awaiting,
     guidance,
     fixes,
@@ -140,6 +142,22 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
             <StalledLanes lanes={stalled} />
           </>
         )}
+
+        {/* A lane can be green, on time, and covering nothing. Rendered
+            inside this step rather than as its own because the consequence
+            is identical -- findings that cannot close -- and splitting it
+            out would ask somebody to read two lists to answer one
+            question (B-046). */}
+        {stale.length ? (
+          <>
+            <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
+              These lanes <em>are</em> producing successful scans, of a tree that
+              has stopped moving. Nothing else on this page marks them, because
+              by every other measure they are healthy.
+            </p>
+            <StaleLanes lanes={stale} />
+          </>
+        ) : null}
       </section>
 
       {/* 3 — one level above the rule: the change itself. Two ZAP plugins

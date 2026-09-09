@@ -45,6 +45,9 @@ export type PortfolioSummary = Portfolio["summary"];
 export type Briefing =
   paths["/api/dashboard/briefing"]["get"]["responses"]["200"]["content"]["application/json"];
 export type StalledLane = Briefing["stalled"][number];
+// Reporting, and not covering (B-046) -- green everywhere else, which is
+// why it needs a row of its own rather than a fourth `reason`.
+export type StaleLane = NonNullable<Briefing["stale"]>[number];
 /** Vulnerable packages for one repository, with what can be upgraded (B-027). */
 export type SupplyChainPackages =
   paths["/api/dashboard/repos/{repo_id}/sscs/packages"]["get"]["responses"]["200"]["content"]["application/json"];

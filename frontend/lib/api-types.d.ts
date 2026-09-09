@@ -2709,6 +2709,8 @@ export interface components {
             auto_fixable: number;
             /** Stalled */
             stalled: components["schemas"]["StalledLaneOut"][];
+            /** Stale */
+            stale?: components["schemas"]["StaleLaneOut"][];
             /** Classes */
             classes: components["schemas"]["BriefingClassOut"][];
             /** Awaiting */
@@ -5355,6 +5357,31 @@ export interface components {
             state: string;
             /** Problem */
             problem: boolean;
+        };
+        /**
+         * StaleLaneOut
+         * @description A lane that is reporting and not covering (B-046).
+         */
+        StaleLaneOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Reason */
+            reason: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Branch */
+            branch: string;
+            /** Default Branch */
+            default_branch: string;
+            /** Since */
+            since: string | null;
+            /** Runs */
+            runs: number;
+            /** Open Findings */
+            open_findings: number;
+            action: components["schemas"]["BriefingActionOut"];
         };
         /** StalledLaneOut */
         StalledLaneOut: {
