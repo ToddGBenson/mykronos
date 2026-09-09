@@ -4992,6 +4992,22 @@ only thing keeping keel and binnacle from reporting.
 
 ---
 
+**Amended 2026-09-09: Concourse is retained for internal-target scanning, and
+`parity` now says so itself (B-048).** This decision retired eleven duplicated
+Actions lanes and kept the Concourse pipeline, and the reason it kept it was
+never written down where the next reader would look. `mykronos parity` compares
+whether each capability *reports* and has never compared what it *reaches*: the
+Concourse `dast` and `functional` lanes target a deployment on this LAN, and
+their Actions counterparts an ephemeral stack inside a GitHub-hosted runner
+that cannot reach an RFC1918 address at all. Read literally, `parity` called
+Actions "improved" on both and therefore said the pipeline could be deleted --
+which would have removed the only path to scanning an internal deployment,
+including TheHub's production. Those two capabilities now report `not
+comparable` and the command says, in its verdict rather than in a footnote,
+that this is not permission to retire anything.
+
+---
+
 ## D-119 — The ledger is authoritative for what a repository may report, and nothing narrows it silently
 
 **2026-09-09.** Two tables answered "what may this repository report":

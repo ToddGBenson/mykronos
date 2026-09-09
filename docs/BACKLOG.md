@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Twelve, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Eleven, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -78,8 +78,8 @@ B-045 the instance (TheHub scanned on `main` while every commit landed on
 `develop`, now closed), B-046 the reason nobody saw it (the stalled-lane
 detector measured silence, not coverage — now closed), B-047 the missing exit
 for findings a disabled capability strands (closed), B-048 the same blind spot
-from the other side (two lanes at different path bases, each supplying the
-other's absence evidence).
+from the other side — two lanes at different path bases, each supplying the
+other's absence evidence (closed).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
@@ -331,75 +331,6 @@ argument.
   way D-053 recorded paused DAST, so it stops reading as an oversight.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`mykronos` is scanned by both CIs during the migration, and the two lanes
-disagree about paths. Concourse checks out into `repo/`, Actions at the root, so
-checkov's identical output lands as two separate findings:
-
-    CKV_GHA_7  repo/.github/workflows/promote.yml:34   first seen 2026-08-30
-    CKV_GHA_7  .github/workflows/promote.yml:34        first seen 2026-09-01
-
-On 2026-09-03 the two alternated all day about eight minutes apart, same tool
-and version (checkov 3.2.334), one reporting five findings and the other two —
-different counts because they also cover different trees.
-
-Three effects. Open IaC counts are inflated. A finding has to be dispositioned
-twice, and was on 2026-09-03. And the lanes supply each other's absence
-evidence, so which findings close is decided by which lane ran last.
-
-**The obvious fix is the wrong one, and `parity` recommends it.**
-`mykronos parity ToddGBenson/mykronos` reports Actions at least as good on every
-capability and better on two — `dast` and `functional` are `failed` under
-Concourse and `reporting` under Actions, verdict `improved`. Read literally,
-that says retire Concourse.
-
-It is not comparing like with like. `parity` compares whether each capability
-**reports**, never what it **reaches**:
-
-| | Concourse `dast` | Actions `dast` |
-|---|---|---|
-| Runner | worker on this LAN | `runs-on: ubuntu-latest`, GitHub-hosted |
-| Target | `((demo-host))` — an internal address | `localhost` inside the runner |
-| Stack | a deployment that outlives the build | ephemeral, built and seeded per run |
-
-A GitHub-hosted runner cannot reach an RFC1918 address on this network. So the
-Actions lane is not a better version of the Concourse one — it is the only one
-that can run *without* the LAN, and the Concourse one is the only one that can
-scan anything actually deployed on it. Retiring Concourse would not consolidate
-a duplicate; it would permanently remove the only path to scanning an internal
-deployment, including TheHub's own prod, and would foreclose the network
-capability the README already describes as having an authorization model and an
-ingest path but no scanner.
-
-This is the same caveat the README states about DAST — "reached a deployment,
-which is not the same as internet-facing — that lane runs inside CI against an
-ephemeral stack" — arriving as a decision rather than a disclosure. The honest
-verdict for a capability whose two lanes reach different things is not
-`improved`; it is that they are not comparable.
-
-The Concourse `dast` and `functional` lanes being `failed` is therefore a bug to
-fix, not evidence for retirement.
-
-**Acceptance criteria**
-
-- The path base is normalised so both lanes produce one finding, and no
-  rule/line pair appears under two `file_path` values for one repository.
-- `parity` distinguishes a capability whose lanes reach different targets from
-  one where a lane is simply better, and does not return `improved` for the
-  first. Reaching an internal target is stated where the verdict is.
-- A decision recorded that Concourse is retained for internal-target scanning,
-  so the next reader of `parity` does not re-derive the wrong conclusion.
-- The Concourse `dast` and `functional` failures are diagnosed on their merits.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). The retirement
-recommendation was corrected by the operator the same day; the original entry
-had repeated `parity`'s verdict without checking what either lane reached.
 
 ---
 
@@ -1352,11 +1283,15 @@ into entries here:
 
 ## Closed
 
-Forty-seven entries. The count below was stale at "nineteen": it covered
+Forty-eight entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — eight.** B-058, which was making two repositories look
+**2026-09-09 — nine.** B-048, whose duplicate had already stopped when D-118
+retired the second CI, leaving the defect that caused it: checkov was being
+pointed at a mount whose basename it prefixed onto every path, so two live
+repositories carried open findings naming files that do not exist. Then B-058,
+which was making two repositories look
 negligent for lacking things they have no reason to have: applicability is now
 read from the repository's own file listing, and `keel` gains three met
 practices while `personal-soc` gains three that do not apply. Then B-046, the
@@ -1424,6 +1359,77 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+**The path base was fixed at its source, and the source was ours.** Checkov
+prefixes every SARIF path with the basename of the directory it is pointed at,
+so `iac.yml.j2` running `--directory /repo` emitted
+`repo/.github/workflows/release.yml` — a path that exists nowhere in the
+repository. Verified rather than reasoned about: checkov 3.2.334 run both ways
+against the same tree emits `repo/.github/workflows/promote.yml` with
+`--directory /repo` and `.github/workflows/promote.yml` with `-w /repo
+--directory .`. The template now does the second, at version 1.3.0.
+
+That makes the Actions lane agree with the Concourse one, which already
+emitted repo-root-relative paths, so the duplicate cannot recur — and it fixes
+a live defect the entry did not mention. Read on 2026-09-09:
+
+| repository | scanned by | IaC path base | status |
+|---|---|---|---|
+| `keel` | Actions | `repo/...` | **open** |
+| `binnacle` | Actions | `repo/...` | **open** |
+| `mykronos` | Concourse | root-relative | current |
+| `mykronos` | Actions, retired | `repo/...` | stale, dispositioned |
+
+The two open findings name files that cannot be opened from the finding and
+match nothing anybody greps for. A finding's identity derives from its path
+(spec 05 §5), so correcting it means the next scan files the same defect under
+a new id and the old one closes after two absences. That churn is unavoidable
+in either direction — normalising at ingest would change the same input to the
+hash — and it is one-time and self-healing, which the alternative of leaving
+unusable paths in place is not.
+
+**The duplication itself had already stopped, for a different reason.** D-118
+retired mykronos's eleven Actions lanes on 2026-09-05, so only one CI writes
+`iac` there now. What was left was the defect that produced it.
+
+**`parity` no longer recommends the wrong retirement.** `NOT_COMPARABLE` names
+`dast` and `functional` with the sentence that says why, `Parity.verdict`
+returns `not comparable` *before* it can return `improved`, and `mykronos
+parity` prints the reason in its verdict rather than a footnote — including
+after "No capability is worse under Actions", which was the line that read as
+permission. Only those two are marked: `sast`, `secrets` and `iac` read a
+checkout, and a checkout is the same everywhere, so marking them would make the
+check refuse to answer anything.
+
+**The `dast` and `functional` "failures" are explained rather than fixed, and
+that is the honest disposition.** The Concourse `demo-and-dast` job is paused
+under D-053 and its work is done by the hand-written `demo-and-dast.yml`, which
+D-118 kept for exactly that reason. A paused job reads as `failed` to a check
+that asks whether a lane reported; that is the same conflation B-061 fixed for
+gates, arriving in the parity table, and it is now covered by the verdict
+rather than by a diagnosis of a job nobody intends to run.
+
+- ~~The path base is normalised so both lanes produce one finding.~~
+- ~~`parity` distinguishes a capability whose lanes reach different targets.~~
+- ~~A decision recorded that Concourse is retained for internal-target
+  scanning.~~ D-118, amended.
+- ~~The Concourse `dast` and `functional` failures are diagnosed.~~ Paused
+  under D-053, replaced by `demo-and-dast.yml`.
+
+**Checked:** 2682 backend tests pass, eight new — the 2026-09-03 reading
+refused, an ordinary capability still improving, a regression still outranking
+everything, and only the two deployment-reaching capabilities marked.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); the
+retirement recommendation was corrected by the operator the same day. Built
+2026-09-09, and the template defect behind it was found by running the scanner
+rather than by reading the template.
+
+---
 
 ### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have — **done**
 

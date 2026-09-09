@@ -841,6 +841,41 @@ def _covers(state: str) -> bool:
     return state in _COVERED
 
 
+#: Capabilities whose two lanes do not reach the same thing, and the sentence
+#: that says why (B-048).
+#:
+#: `parity` compares whether each capability *reports*. It has never compared
+#: what each one *reaches*, and for most capabilities those are the same
+#: question: `sast` reads the same tree wherever it runs. For these two they
+#: are not.
+#:
+#: The Concourse `dast` lane targets `((demo-host))`, an address on this LAN,
+#: against a deployment that outlives the build. The Actions lane targets
+#: `localhost` inside a GitHub-hosted runner, against an ephemeral stack built
+#: and seeded per run. A hosted runner cannot reach an RFC1918 address on this
+#: network, so the Actions lane is not a better version of the Concourse one --
+#: it is the only one that can run without the LAN, and the Concourse one is
+#: the only one that can scan anything actually deployed on it, including
+#: TheHub's own production.
+#:
+#: Read literally, `parity` said Actions was `improved` on both and therefore
+#: that Concourse could be retired. Doing that would not have consolidated a
+#: duplicate; it would have permanently removed the only path to scanning an
+#: internal deployment. The honest verdict for a capability whose two lanes
+#: reach different things is not "improved" -- it is that they are not
+#: comparable, and a person has to decide.
+NOT_COMPARABLE: dict[str, str] = {
+    "dast": (
+        "the two lanes reach different targets: Concourse scans a deployment on "
+        "this network, Actions an ephemeral stack inside a hosted runner"
+    ),
+    "functional": (
+        "the two lanes exercise different environments: Concourse a deployment on "
+        "this network, Actions an ephemeral stack inside a hosted runner"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class Parity:
     """One capability, as each CI system reports it (spec 32 §9).
@@ -856,6 +891,15 @@ class Parity:
     after: str
 
     @property
+    def comparable(self) -> bool:
+        """Do the two lanes reach the same thing at all (B-048)."""
+        return self.capability not in NOT_COMPARABLE
+
+    @property
+    def why_not_comparable(self) -> str:
+        return NOT_COMPARABLE.get(self.capability, "")
+
+    @property
     def regressed(self) -> bool:
         """Did this capability lose coverage in the move."""
         return _covers(self.before) and not _covers(self.after)
@@ -866,6 +910,12 @@ class Parity:
             return "REGRESSED"
         if self.before == self.after:
             return "same"
+        if not self.comparable:
+            # Before "improved", deliberately. This is the case where the
+            # cheerful answer is the dangerous one: both lanes report, the
+            # new one reports more, and the conclusion a reader draws is
+            # "retire the old pipeline" (B-048).
+            return "not comparable"
         if _covers(self.after) and not _covers(self.before):
             return "improved"
         # Different states, same tier. Named rather than folded into "same",
