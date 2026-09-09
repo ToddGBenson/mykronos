@@ -503,7 +503,7 @@ for it.
 
 ---
 
-### B-051 — SAST is language-blind, and two repositories are green because nothing can read them
+### B-051 — SAST is language-blind, and two repositories are green because nothing can read them — **half done**
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -595,19 +595,66 @@ repositories are watched, two of the four are watched by a tool that cannot read
 them, and the only reason anyone knows the difference today is a manual pass
 that will not run again.**
 
+**The detection is built, 2026-09-09.** `analysers.py` declares what each
+static analyser implements, `GitHubClient.languages` reads the byte counts, and
+the briefing has a section for source no analyser here can read — beside the
+stalled lanes, because it is the same failure with the alarm removed. Computed
+against the live estate rather than quoted from this entry:
+
+| repository | analyser | unread | what it cannot read |
+|---|---|---:|---|
+| `personal-soc` | codeql | **100%** | PowerShell |
+| `keel` | codeql | **70%** | Shell |
+| `binnacle` | codeql | **68%** | Shell |
+| `mykronos` | codeql | 4% | PowerShell |
+| `TheHub` | codeql | 0% | — |
+
+**mykronos's own 4% was not in this entry**, and it is the same defect: its
+PowerShell operations scripts are read by nothing. Small, real, and found by
+the check rather than by a person.
+
+**Four judgements are in the code rather than in this file**, because each one
+decides whether the section is worth reading. Configuration languages —
+Dockerfile, HCL, Jinja, CSS — are not counted as unread source: they are read
+by `containers` and `iac`, and reporting them would produce a page of gaps
+nobody should act on. Only `sast` is asked the question, because `secrets`
+greps content, `atlas` reads manifests and `containers` reads an image. *Any*
+unread source is reported rather than a threshold, since a percentage invites
+an argument about where the line goes. And an unknown tool reads nothing:
+a tool with no language list here says so rather than being assumed
+comprehensive.
+
+**No re-run button, deliberately.** Running the lane again reads the same
+bytes with the same tool and reports success again. The action names the
+languages and points at the lane's CI view; choosing a second analyser is a
+decision about the repository, not a request this platform can make.
+
 **Acceptance criteria**
 
-- A repository's languages are compared against what its configured capabilities
-  can analyse, and a gap is reported where the briefing already reports silent
-  lanes — naming the share of the codebase nothing reads.
+- ~~A repository's languages are compared against what its configured
+  capabilities can analyse, and a gap is reported where the briefing already
+  reports silent lanes — naming the share of the codebase nothing reads.~~
 - `keel` and `binnacle` gain a shell analyser (ShellCheck, or semgrep's bash
   rules) alongside CodeQL; `personal-soc` gains one that reads PowerShell
-  (PSScriptAnalyzer). CodeQL supports neither language, so enabling `sast` on
-  `personal-soc` as it stands would add a second green lane over unread code
-  rather than coverage.
-- `binnacle` is onboarded, or a decision is recorded that it will not be.
+  (PSScriptAnalyzer). **Not built.** It needs an adapter, a template and a
+  registry entry per tool, and `SAST_LANGUAGES` already carries semgrep's list
+  so the platform can say the gap would close. Enabling `sast` on
+  `personal-soc` as it stands would still add a second green lane over unread
+  code rather than coverage, and the check now says so out loud instead of
+  leaving it to be rediscovered.
+- ~~`binnacle` is onboarded, or a decision is recorded that it will not be.~~
+  Onboarded 2026-09-04, granted on the 5th, and `secrets` restored on the 8th
+  (B-052, D-111). It is `active` with `sast` enabled — over a repository
+  CodeQL reads 32% of, which D-111 recorded at the time as a qualified green
+  and which this check now measures on every render.
 - The estate view states how many repositories exist versus how many are
-  watched. Four of eleven was not visible anywhere before this entry.
+  watched. **Not built, and it needs a decision first.** The platform sees
+  what its App installation is granted, which is five repositories, all
+  onboarded. "Eleven exist" came from a person reading the account. Reporting
+  five of five would be true and useless; reporting five of eleven means
+  granting the App a wider scope or holding a second credential, and that is a
+  choice about what this platform is allowed to see rather than a query to
+  write.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from the
 question "what about the other repositories" — which the platform could not

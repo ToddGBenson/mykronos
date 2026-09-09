@@ -222,6 +222,10 @@ class GitHubClient(Protocol):
         """
         ...
 
+    async def languages(self, repo_full_name: str) -> dict[str, int] | None:
+        """Bytes per language, or None when it could not be read (B-051)."""
+        ...
+
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str
     ) -> PullRequest | None: ...
@@ -440,6 +444,9 @@ class FakeRepo:
     secrets: dict[str, str] = field(default_factory=dict)
     pull_requests: list[PullRequest] = field(default_factory=list)
     check_runs: list[dict[str, Any]] = field(default_factory=list)
+    #: Bytes per language, as GitHub reports them (B-051). Empty by default,
+    #: which reads as "nothing measured" rather than as "nothing analysable".
+    languages: dict[str, int] = field(default_factory=dict)
     dispatched_workflows: list[dict[str, Any]] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
     #: Spec 30 §1. `None` is the default and means *unprotected*, which is the
@@ -562,6 +569,12 @@ class FakeGitHubClient:
             # "nothing applies here" from a repository that does not exist.
             return None
         return sorted(self._repo(repo_full_name).files)
+
+    async def languages(self, repo_full_name: str) -> dict[str, int] | None:
+        self.calls.append(("languages", repo_full_name))
+        if repo_full_name not in self.repos:
+            return None
+        return dict(self._repo(repo_full_name).languages)
 
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str
@@ -1091,6 +1104,21 @@ class RestGitHubClient:
             for entry in payload.get("tree") or []
             if entry.get("type") == "blob" and entry.get("path")
         ]
+
+    async def languages(self, repo_full_name: str) -> dict[str, int] | None:
+        """Bytes per language, or None when it could not be read (B-051).
+
+        None rather than an empty dict on failure, and the difference decides
+        what a caller may say: an empty result means GitHub had nothing to
+        report for a new or empty repository, while None means nobody looked.
+        Reporting the second as the first would call every unreadable
+        repository fully analysed.
+        """
+        try:
+            payload = await self._json("GET", f"/repos/{repo_full_name}/languages")
+        except GitHubError:
+            return None
+        return {str(name): int(count) for name, count in (payload or {}).items()}
 
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str

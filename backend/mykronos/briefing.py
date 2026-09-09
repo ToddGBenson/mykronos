@@ -351,6 +351,52 @@ class StaleLane:
 
 
 @dataclass
+class UnreadCode:
+    """Source in a repository that no configured analyser implements (B-051).
+
+    `keel` recorded 47 successful SAST runs and zero findings, ever, which
+    reads as a well-kept repository. Its analyser is CodeQL, CodeQL implements
+    no shell language at all, and 69% of keel is shell -- so 219 KB has never
+    been read by anything and every run over it reported success.
+
+    That is the section above's failure with the alarm removed. A stalled lane
+    at least stops reporting; this one reports `success` while reading nothing,
+    so it appears in no gap anywhere and looks exactly like a clean
+    repository.
+    """
+
+    repo_full_name: str
+    tool: str
+    #: 0.0 to 1.0 of application source the analyser cannot read.
+    share_unread: float
+    #: The languages it cannot read, largest first, as (name, bytes).
+    unread: list[tuple[str, int]]
+    action: Action = field(init=False)
+
+    def __post_init__(self) -> None:
+        """No dispatch button, and that is the point.
+
+        Every other lane row on this page offers a re-run because for those
+        the lane can produce the missing answer. Running this one again reads
+        the same bytes with the same tool and reports success again. The fix
+        is a second analyser, which is a decision about the repository rather
+        than a request this platform can make.
+        """
+        languages = ", ".join(name for name, _ in self.unread[:3])
+        self.action = Action(
+            label=f"Choose an analyser for {languages} on {self.repo_full_name}",
+            method="GET",
+            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
+            effect=(
+                f"{self.share_unread:.0%} of this repository is {languages}, which "
+                f"{self.tool} does not implement. Re-running the lane reads the same "
+                "bytes and reports success again; the gap closes when a tool that "
+                "reads those languages runs beside it."
+            ),
+        )
+
+
+@dataclass
 class AwaitingClosure:
     """Findings already gone, waiting only for scans to say so.
 
@@ -398,6 +444,10 @@ class Briefing:
     #: producing successful scans and these are, so the sentence, the number
     #: and the fix are all different.
     stale: list[StaleLane] = field(default_factory=list)
+    #: Repositories whose analyser cannot read part of them (B-051). Its own
+    #: list because the fix is a tool choice rather than a lane repair, and
+    #: because these lanes are green everywhere else in the platform.
+    unread: list[UnreadCode] = field(default_factory=list)
     classes: list[ClassSummary] = field(default_factory=list)
     auto_fixable: int = 0
     #: Already fixed, waiting only for scans to confirm. Needs no work.
@@ -720,6 +770,44 @@ def stale_lanes(
     return stale
 
 
+def unread_code(
+    languages: dict[str, dict[str, int]] | None,
+    sast_tools: dict[str, str] | None = None,
+) -> list[UnreadCode]:
+    """Repositories with source no configured analyser implements (B-051).
+
+    `languages` is GitHub's byte count per language per repository, and
+    `sast_tools` the analyser each one runs. Both are read from outside the
+    lake, so a caller with no GitHub client passes nothing and this reports
+    nothing -- which is the honest degradation: not knowing what a repository
+    is made of is different from knowing it is fully analysed.
+    """
+    from mykronos.analysers import readability
+
+    if not languages:
+        return []
+
+    tools = sast_tools or {}
+    out: list[UnreadCode] = []
+    for repo, byte_counts in languages.items():
+        reading = readability(repo, byte_counts, tools.get(repo, "codeql"))
+        if not reading.blind:
+            continue
+        out.append(
+            UnreadCode(
+                repo_full_name=repo,
+                tool=reading.tool,
+                share_unread=reading.share_unread,
+                unread=reading.unread,
+            )
+        )
+
+    # Most unread first. A repository that is 4% unread and one that is 100%
+    # are the same defect and very much not the same problem.
+    out.sort(key=lambda row: -row.share_unread)
+    return out
+
+
 def _usual_gap_days(runs: list[tuple[str, str, Any]]) -> float:
     """How often this lane normally runs, from its own history.
 
@@ -824,6 +912,8 @@ def build(
     now: datetime | None = None,
     asset_id: str | None = None,
     default_branches: dict[str, str] | None = None,
+    languages: dict[str, dict[str, int]] | None = None,
+    sast_tools: dict[str, str] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -880,6 +970,7 @@ def build(
         stale=_only(
             stale_lanes(catalog, now=stamp, default_branches=default_branches), asset_id
         ),
+        unread=_only(unread_code(languages, sast_tools), asset_id),
         awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
@@ -997,6 +1088,23 @@ def render(briefing: Briefing) -> str:
             if uncovered.open_findings:
                 lines.append(f"      holding {uncovered.open_findings} finding(s) open")
             lines.append(f"      → {uncovered.action.effect}")
+        lines.append("")
+
+    if briefing.unread:
+        lines += [
+            "CODE NO ANALYSER HERE CAN READ",
+            "  These lanes report success over source their tool does not",
+            "  implement. They are not silent and not failing, so nothing else",
+            "  on this page marks them.",
+            "",
+        ]
+        for blind in briefing.unread:
+            languages = ", ".join(f"{name}" for name, _ in blind.unread[:3])
+            lines.append(
+                f"  {blind.repo_full_name}  — {blind.share_unread:.0%} unread "
+                f"({languages}), analyser {blind.tool}"
+            )
+            lines.append(f"      → {blind.action.effect}")
         lines.append("")
 
     lines += ["OPEN FINDINGS, BY WHAT WOULD FIX THEM", ""]
