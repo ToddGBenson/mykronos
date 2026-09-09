@@ -3091,7 +3091,9 @@ def _lane_branches(request: Request, repo_full_name: str) -> dict[str, str]:
     return out
 
 
-async def _languages(request: Request) -> tuple[dict[str, dict[str, int]], dict[str, str]]:
+async def _languages(
+    request: Request,
+) -> tuple[dict[str, dict[str, int]], dict[str, str | list[str]]]:
     """What each onboarded repository is made of, and what analyses it (B-051).
 
     Read live from GitHub rather than stored, for the reason the governance
@@ -3112,13 +3114,32 @@ async def _languages(request: Request) -> tuple[dict[str, dict[str, int]], dict[
             .scalars()
             .all()
         ]
-        tools = {
+        configured = {
             name: str(
                 capability_config_for(session, name, "sast").get("enabled_tool")
                 or default_tool("sast")
             )
             for name, _ in rows
         }
+
+    # What has actually reported, not what is configured. A repository running
+    # a shell analyser beside CodeQL has two lanes on one capability, and the
+    # config field holds one name — so reading it would report `keel` as 70%
+    # unread on the day it stopped being (B-051). Evidence over intent, the
+    # same rule the SSDF view holds itself to.
+    reported: dict[str, list[str]] = {}
+    catalog = request.app.state.catalog
+    if catalog.all_files("scan_runs"):
+        for repo, tool in catalog.query(
+            "SELECT DISTINCT repo_full_name, tool_name FROM scan_runs "
+            "WHERE capability = 'sast' AND scan_status = 'success' "
+            "AND tool_name IS NOT NULL AND tool_name <> ''"
+        ):
+            reported.setdefault(str(repo), []).append(str(tool))
+    tools: dict[str, str | list[str]] = {
+        name: sorted(reported[name]) if name in reported else configured[name]
+        for name in configured
+    }
 
     languages: dict[str, dict[str, int]] = {}
     for name, installation_id in rows:

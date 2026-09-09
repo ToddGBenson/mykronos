@@ -629,19 +629,53 @@ bytes with the same tool and reports success again. The action names the
 languages and points at the lane's CI view; choosing a second analyser is a
 decision about the repository, not a request this platform can make.
 
+**The readability question is asked of every analyser reporting, not of the
+configured one.** A repository running two lanes has two tool names in its
+scan runs and one `enabled_tool` in its config, so reading the config would
+report keel as 70% unread on the day it stopped being. It reads the distinct
+`tool_name` of successful `sast` runs from the lake instead — evidence over
+intent, the rule the SSDF view already holds itself to.
+
+**Three things the tests caught, all of them mine.** The workflow blanket-
+ignored ShellCheck's exit code, which the pipeline standard forbids and which
+would have reported a clean scan for a scan that broke. Registering the
+Actions workflow's filename stem in `CAPABILITY_BY_JOB` put it in
+`jobs_for_capability("sast")`, where the "scan now" button tried to trigger a
+Concourse job that does not exist. And `test_every_uploading_template_has_an_
+adapter` assumed a template's key is the capability it reports — true until
+now, and it reads the rendered workflow instead.
+
 **Acceptance criteria**
 
 - ~~A repository's languages are compared against what its configured
   capabilities can analyse, and a gap is reported where the briefing already
   reports silent lanes — naming the share of the codebase nothing reads.~~
-- `keel` and `binnacle` gain a shell analyser (ShellCheck, or semgrep's bash
-  rules) alongside CodeQL; `personal-soc` gains one that reads PowerShell
-  (PSScriptAnalyzer). **Not built.** It needs an adapter, a template and a
-  registry entry per tool, and `SAST_LANGUAGES` already carries semgrep's list
-  so the platform can say the gap would close. Enabling `sast` on
-  `personal-soc` as it stands would still add a second green lane over unread
-  code rather than coverage, and the check now says so out loud instead of
-  leaving it to be rediscovered.
+- `keel` and `binnacle` gain a shell analyser alongside CodeQL. **Built
+  2026-09-09 and not yet enabled on either.** ShellCheck is a registered
+  `sast` tool with its own adapter, and `sast-shell` is a workflow template
+  that runs it. Measured: `codeql` alone leaves keel 70% unread, `shellcheck`
+  alone leaves it 30%, and the two together leave **nothing** — which is why
+  this is *alongside* rather than *instead of*, and why swapping the tool
+  would have traded one blind spot for another.
+
+  **Two lanes on one capability**, which is how "alongside" is expressed here.
+  Both upload `sast`; `_base.yml.j2` gained an `upload_capability` block so a
+  template's own name can stay distinct — the workflow, job and concurrency
+  group must not collide — while what it *reports* is shared. A repository
+  does not gain a new thing to enable by adding an analyser.
+
+  **ShellCheck's levels are about correctness, so nothing maps above
+  `medium`.** `error` means the shell will not do what the author wrote, which
+  is not a statement that an attacker can do anything; a linter that can reach
+  `high` competes with the dependency scanner for the top of a queue it has no
+  business being at the top of. The 2026-09-03 hand pass over keel found 27
+  findings, none above `info`, and that is the baseline this lane should
+  reproduce — on every push rather than once an afternoon.
+
+  **`personal-soc` still has nothing that reads PowerShell.** PSScriptAnalyzer
+  is the same three pieces again and is not built, so enabling `sast` there
+  would still be a green lane over unread code — and the check now says so out
+  loud rather than leaving it to be rediscovered.
 - ~~`binnacle` is onboarded, or a decision is recorded that it will not be.~~
   Onboarded 2026-09-04, granted on the 5th, and `secrets` restored on the 8th
   (B-052, D-111). It is `active` with `sast` enabled — over a repository

@@ -100,7 +100,15 @@ jobs:
         if: always()
         uses: << upload_action_ref >>
         with:
-          capability: << capability >>
+          # The capability this lane *reports*, which is usually the template's
+          # own name and is not always. A repository can run two analysers on
+          # one capability -- ShellCheck beside CodeQL, because CodeQL
+          # implements no shell language (B-051) -- and those are two
+          # workflows with two names uploading one capability. The template's
+          # name stays distinct so the workflow, the job and the concurrency
+          # group do not collide; only what it reports is shared.
+          capability: {% block upload_capability %}<< capability >>{% endblock %}
+
           tool: {% block tool_name %}<< config.enabled_tool | default(default_tool) >>{% endblock %}
 
           results-path: {% block results_path %}${{ runner.temp }}/mykronos-results{% endblock %}

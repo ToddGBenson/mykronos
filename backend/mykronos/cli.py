@@ -1002,7 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
             # there, which is the honest degradation: not knowing what a
             # repository is made of is different from knowing it is analysed.
             languages: dict[str, dict[str, int]] = {}
-            sast_tools: dict[str, str] = {}
+            sast_tools: dict[str, str | list[str]] = {}
             try:
                 factory = _github_factory(settings)
                 with db.session() as session:

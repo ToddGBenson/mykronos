@@ -55,6 +55,7 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         cloud_generic,
         containers_trivy,
         dast_zap,
+        sast_shellcheck,
         secrets_gitleaks,
     )
 
@@ -66,6 +67,17 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
             "containers", "trivy", containers_trivy.normalize, "*.sarif", "Trivy"
         ),
         AdapterSpec("iac", "checkov", _sarif, "*.sarif", "Checkov"),
+        # ShellCheck emits no SARIF, so it carries its own parser. It is here
+        # because CodeQL implements no shell language at all and `keel` is 69%
+        # shell -- 47 successful SAST runs read 30% of that repository and
+        # reported success over the rest (B-051).
+        AdapterSpec(
+            "sast",
+            "shellcheck",
+            sast_shellcheck.normalize,
+            "*.json",
+            "ShellCheck (shell, which CodeQL cannot read)",
+        ),
         # Atlas scores supply-chain trust from counts (spec 07 §5), but the
         # vulnerabilities behind those counts are findings like any other and
         # have to reach the lake through the same path. Without this entry the
