@@ -84,14 +84,25 @@ SAST_LANGUAGES: dict[str, frozenset[str]] = {
 }
 
 #: Languages that are not application source, so their absence from an
-#: analyser is not a coverage gap. A Dockerfile is read by `containers`,
-#: HCL by `iac`, and reporting them as unanalysed source would be the
-#: page-of-gaps failure the module docstring warns about.
+#: analyser is not a coverage gap. Two different reasons, kept in one set
+#: because the consequence is the same.
+#:
+#: **Read by another capability.** A Dockerfile is `containers`' job and HCL is
+#: `iac`'s, so counting them here would report a gap that is covered
+#: elsewhere.
+#:
+#: **Not code at all.** Documents and markup that no static analyser has an
+#: opinion about. `Rich Text Format` is in this list because the first live
+#: run over the estate counted 7 KB of it against TheHub as unread source,
+#: which is the page-of-gaps failure the module docstring warns about arriving
+#: on the first day.
 NOT_SOURCE: frozenset[str] = frozenset(
     {
+        # Covered by another capability.
         "Dockerfile",
         "HCL",
         "Jinja",
+        # Markup and documents, which no analyser reads and none should.
         "CSS",
         "SCSS",
         "HTML",
@@ -99,6 +110,9 @@ NOT_SOURCE: frozenset[str] = frozenset(
         "Batchfile",
         "Roff",
         "Vim Script",
+        "Rich Text Format",
+        "TeX",
+        "Markdown",
     }
 )
 
