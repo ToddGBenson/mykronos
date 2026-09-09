@@ -522,6 +522,7 @@ async def ingest_findings(
                 "port": finding.port,
                 "package_name": finding.package_name,
                 "package_version": finding.package_version,
+                "version_basis": finding.version_basis,
                 # Provisional: compaction keeps the stored first_seen_* when
                 # this finding_id turns out to already exist.
                 "status": FindingStatus.OPEN.value,

@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Eleven, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Ten, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -84,11 +84,10 @@ Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
 scanner too old to know what to look for, now closed. B-056, no branch dimension
-on a lane, which is why B-045 was forced rather than chosen. B-063,
-`--no-resolve` assessing the declared floor, so a finding names a version nobody
-runs. Three are closed: B-061, `event_driven` calling a capability fine without
-checking anything runs it; B-047, the missing exit itself; and B-058, a status
-nothing set, so a repository was failed for lacking what it cannot have.
+on a lane, which is why B-045 was forced rather than chosen. Three are closed: B-061, `event_driven` calling a capability fine without
+checking anything runs it; B-047, the missing exit itself; B-058, a status
+nothing set, so a repository was failed for lacking what it cannot have; and
+B-063, `--no-resolve` assessing the declared floor.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
@@ -982,102 +981,6 @@ enforced" including the ones that were on.
 
 ---
 
-### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs
-
-**Size:** M **State:** open **Verified:** 2026-09-05
-
-TheHub's `dependencies` lane runs:
-
-```
-osv-scanner scan source --recursive --no-resolve ...
-```
-
-With `--no-resolve`, osv-scanner does not work out what a requirement actually
-resolves to. For `cryptography>=42.0.0` it assesses **42.0.0** — the floor. It
-then reported 15 advisories, four of them HIGH, against a repository running
-`cryptography 50.0.1`, which has none:
-
-```
-thehub-backend         50.0.1
-thehub-demo-backend    50.0.1
-```
-
-Every one of those findings is true about the floor and false about the
-deployment. A reader of the Findings tab cannot tell which, because the
-finding names a version (`cryptography@42.0.0`) that appears nowhere except in
-the requirement's lower bound.
-
-**`--no-resolve` is not a mistake and should stay.** The pipeline comment says
-why: transitive resolution calls deps.dev, which returns an internal error for
-any `requirements.txt` containing sqlalchemy — TheHub's does — and an extractor
-error is exit 127, which fails the whole lane. The choice was between a lane
-that reports floors and a lane that reports nothing, and floors won. What is
-missing is that the platform never says which of the two it is looking at.
-
-**Why this cuts both ways.** A floor is a real thing to assess: it is what the
-repository promises to accept, and a rebuild that resolves differently — a warm
-layer cache, a pinned internal index, an offline mirror — installs it. So these
-findings are not noise to be suppressed. But they are also not statements about
-running software, and the platform presents them as though they were: they
-carry a severity, they age, they count toward the Oracle score, and TheHub's
-score is the estate's worst.
-
-**They are also unfixable as stated.** Nothing can close a floor finding except
-raising the floor, and raising the floor changes no running byte. Until
-TheHub#290 there was no way to act on them at all, and no explanation in the
-platform of why the version in the finding did not match the version in the
-image.
-
-**Acceptance criteria**
-
-- A finding derived from an unresolved requirement says so, in the finding
-  itself: assessed at the declared floor, not at a resolved version.
-- The dashboard can tell the two apart, so "vulnerable dependency" and
-  "dependency floor permits a vulnerable version" are not the same row shape.
-- Either the Oracle weights floor findings differently from resolved ones, or
-  the decision to weight them identically is recorded with a reason. Today it
-  is neither — they are identical by accident of the scanner's flag.
-- The estate is swept for the same shape. Every repository with open-bounded
-  requirements and no lock file has this, not just TheHub.
-
-  **Swept on 2026-09-05, and mykronos had it too.** Its `pyproject.toml` uses
-  `>=` bounds and both its Concourse and Actions atlas lanes pass
-  `--no-resolve`, so the same reading applies. Four of twenty open-bounded
-  dependencies declared a floor carrying a known advisory:
-
-  | package | floor was | advisories at floor | raised to |
-  |---|---|---|---|
-  | `pyjwt[crypto]` | 2.9 | **13, two HIGH** | 2.13.0 |
-  | `jinja2` | 3.1 | 10 | 3.1.6 |
-  | `pynacl` | 1.5 | 2 | 1.6.2 |
-  | `pytest` | 8.3 | 2 | 9.0.3 |
-
-  As with TheHub, nothing was running the floor: the container reports `pyjwt
-  2.13.0`, `pynacl 1.6.2` and `jinja2 3.1.6` — precisely the versions the
-  advisories require. The floors were describing versions this project had
-  stopped running some time ago. Raised to what is installed, so the
-  declaration matches the deployment; mykronos now has **0 of 20** floors
-  carrying an advisory, and neither does TheHub after TheHub#290.
-- Revisit `--no-resolve` if the deps.dev sqlalchemy failure is fixed upstream,
-  or resolve locally with `pip-compile`/`uv` and scan the lock. A lock file
-  would answer this properly, and its absence is the actual root cause.
-
-**Fixed separately, and not a fix for this:** TheHub#290 raises the floor to
-50.0.1 and sweeps all 50 open-bounded requirements — zero now carry an advisory
-at their floor. That clears today's findings. It does not stop the next
-requirement whose floor drifts behind from being reported as though it were
-deployed.
-
-**Provenance:** DevSecOps assessment, 2026-09-05, immediately after repairing
-the lane in [[B-062]]'s commit. Worth recording that the first reading of these
-findings was wrong: they were reported here and in mykronos#216 as four live
-HIGH vulnerabilities on the internet-facing application, and corrected only
-after checking `cryptography.__version__` inside the running containers rather
-than trusting the finding. A finding that names a version is very easy to
-believe about the thing it is attached to.
-
----
-
 ### B-064 — TheHub encrypts its most sensitive table with unauthenticated CBC
 
 **Size:** M **State:** open **Verified:** 2026-09-05
@@ -1283,11 +1186,15 @@ into entries here:
 
 ## Closed
 
-Forty-eight entries. The count below was stale at "nineteen": it covered
+Forty-nine entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — nine.** B-048, whose duplicate had already stopped when D-118
+**2026-09-09 — ten.** B-063, so a finding says whether its version is one
+this repository runs: a lock file names what is installed, an open-bounded
+requirement names what is permitted, and the two were the same row until now.
+Labelled rather than discounted (D-120), because a floor is a real thing to
+assess. Then B-048, whose duplicate had already stopped when D-118
 retired the second CI, leaving the defect that caused it: checkov was being
 pointed at a mount whose basename it prefixed onto every path, so two live
 repositories carried open findings naming files that do not exist. Then B-058,
@@ -1359,6 +1266,71 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs — **done**
+
+**Size:** M **Verified:** 2026-09-05 **Closed:** 2026-09-09 (D-120)
+
+A finding now carries `version_basis`, and the three answers are different
+claims: `resolved` came from a lock file and names what gets installed;
+`declared_floor` came from an open-bounded requirement and names the oldest
+version the repository permits; `declared_pin` came from an exact requirement,
+which is a resolved version by another route. `None` is its own answer and the
+most important one — nothing established it, so nothing is inferred.
+
+**Read from the scanner's own output rather than from a flag.** The source
+file settles it: a lock file pins by definition, so that answer needs neither
+the package name nor the checkout. A manifest is a declaration, and the
+adapter reads the requirement line out of the workspace to tell a pin from a
+floor. It declines wherever the answer is not established — an unrecognised
+file, a manifest with no source on disk, a package whose line is not found —
+because a wrong `resolved` would say a finding describes running software when
+it does not, which is the reading the entry exists to prevent.
+
+**The npm case was wrong first, and the test is why it is not.** The first
+version scanned the requirement *line* for an exact version, which is correct
+for `requirements.txt` and wrong for `package.json`: a one-line manifest let
+`left-pad`'s exact pin decide `lodash`'s answer. It now reads the value for
+that package's own key.
+
+**The scan says it too, not just the finding.** A dependency scan that
+produced floor findings warns with the count and the sentence that matters —
+raising the floor closes them and changes no running byte. The first reading of
+these was wrong in exactly the way a per-finding label does not prevent: they
+were reported here and in mykronos#216 as four live HIGH vulnerabilities on an
+internet-facing application, and corrected only after somebody read
+`cryptography.__version__` inside the running containers.
+
+**The estate has none today, which is the sweep working rather than the check
+failing.** All four open `atlas` findings are from `frontend/package-lock.json`
+and read `resolved`. mykronos's floors were raised on 2026-09-05 (0 of 20 now
+carry an advisory) and TheHub's in TheHub#290. What is built here is what makes
+the next one legible.
+
+- ~~A finding derived from an unresolved requirement says so.~~
+- ~~The dashboard can tell the two apart.~~ `version_basis` on the finding
+  models and a `declared floor` marker beside the version on the Findings tab,
+  where the version is the thing being misread.
+- ~~Either the Oracle weights floor findings differently, or the decision to
+  weight them identically is recorded with a reason.~~ **D-120: labelled, not
+  discounted.** A floor is a real thing to assess and a rebuild can install
+  it, so the risk is not smaller — what was wrong was the claim, and the fix
+  for a mislabelled fact is the label.
+- ~~The estate is swept for the same shape.~~ Done 2026-09-05, both
+  repositories.
+- Revisiting `--no-resolve` is still the real fix and is still open: a lock
+  file would make every finding resolved and retire the distinction. D-120
+  records why that is not this change.
+
+**Checked:** 2704 backend tests pass, twenty-two new — every ecosystem's lock
+file, an open bound, an extras marker, a bare requirement, an exact pin, a
+commented-out line, the npm neighbour bug, and each of the five ways the
+answer is declined.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, immediately after repairing
+the lane in B-062's commit; built 2026-09-09.
+
+---
 
 ### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one — **done**
 

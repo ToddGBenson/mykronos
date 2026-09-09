@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -216,6 +216,27 @@ class FindingSubmission(BaseModel):
 
     package_name: str | None = Field(default=None, max_length=500)
     package_version: str | None = Field(default=None, max_length=200)
+    #: What `package_version` is a statement about (B-063).
+    #:
+    #: `resolved` -- read from a lockfile, so it is the version that gets
+    #: installed. `declared_floor` -- read from a manifest whose requirement is
+    #: open-bounded, so it is the oldest version the repository permits and
+    #: very likely not the one running. `declared_pin` -- a manifest with an
+    #: exact requirement, which is a resolved version by another route.
+    #: `None` means nothing established it, and nothing should be inferred.
+    #:
+    #: The distinction exists because `--no-resolve` is deliberate and
+    #: permanent here: transitive resolution calls deps.dev, which fails for
+    #: any requirements.txt containing sqlalchemy, and an extractor error
+    #: fails the whole lane. So the scanner assesses what the manifest
+    #: declares. That is a real thing to assess -- a rebuild that resolves
+    #: differently installs it -- but it is not a statement about running
+    #: software, and the platform presented it as though it were: TheHub
+    #: carried four HIGH advisories against `cryptography@42.0.0` while every
+    #: container ran 50.0.1, which has none.
+    version_basis: Literal["resolved", "declared_floor", "declared_pin"] | None = Field(
+        default=None
+    )
 
     #: Where a network finding is, since it has no file (spec 14 §5). Part of
     #: the fingerprint: address and port rather than hostname, which is often
