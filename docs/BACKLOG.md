@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Nine, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Eight, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -729,63 +729,6 @@ declared surface on `mykronos` with the catalog response as its evidence.
 
 ---
 
-### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-`scripts/check_pipeline_conformance.py` enforces the pipeline standard, and its
-own list is two entries long:
-
-    PIPELINES = (
-        "deploy/concourse/pipelines/mykronos.yml",
-        "deploy/concourse/pipelines/thehub.yml",
-    )
-
-`personal-soc.yml` and `keel` are not in it. That is not a small exemption:
-
-| pipeline | work tasks | **without a timeout** |
-|---|---|---|
-| `mykronos.yml` | 28 | **0** |
-| `personal-soc.yml` | 12 | **12** |
-
-**Every task in personal-soc's pipeline is uncapped, and the worker is
-shared.** PS-7's own rationale, written on the `hub_report` anchor, is that "a
-hook that hangs holds the single worker exactly as a scan does". There is one
-worker for the whole estate. A hung task in personal-soc holds `mykronos` and
-`thehub` behind it — so this is an availability property of the platform, not a
-tidiness property of one repository.
-
-The standard is also what asserts a reporting job is cross-checked, which is how
-`silent` and `never_reported` become detectable at all (spec 15 §4a.1). Two
-pipelines are outside that guarantee.
-
-**Adding them to `PIPELINES` fails immediately**, which is presumably why it was
-not done — twelve violations arrive at once and the check goes red on work
-nobody scheduled. That is an argument for a migration order, not for the
-exemption: the check that would have caught this is the check that was scoped
-around it.
-
-**Found by adding a job to it.** `iac` was enabled on `personal-soc` on
-2026-09-04 and the new job was written with a `timeout: 15m` — noticed only
-because the conformance test was run by hand against a pipeline it does not
-cover. Nothing would have objected to a thirteenth uncapped task.
-
-**Acceptance criteria**
-
-- `personal-soc.yml` and keel's pipeline are in `PIPELINES`, or an entry records
-  which rules they are exempt from and why, per pipeline rather than by absence.
-- Every work task in every listed pipeline carries a timeout. Twelve tasks need
-  a measured cap, the way D-051 set the others from observed durations rather
-  than from a round number.
-- A pipeline added to the repository is covered by the standard by default —
-  the current shape means a new pipeline is exempt until somebody remembers.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, while adding the `iac` lane to
-`personal-soc`. Related to B-058: the same repository was also the one whose
-SSDF gaps were mostly practices it cannot apply.
-
----
-
 ### B-060 — Branch protection, read for the first time, against CIS §1.1
 
 **Size:** M **State:** open **Verified:** 2026-09-04
@@ -1113,11 +1056,15 @@ into entries here:
 
 ## Closed
 
-Fifty entries. The count below was stale at "nineteen": it covered
+Fifty-one entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — eleven.** B-056, which had no room for a branch in a lane: a
+**2026-09-09 — twelve.** B-059, which had eleven uncapped tasks sharing the
+estate's single worker and a conformance check scoped around the pipeline that
+needed it most: coverage is discovered now, every cap is measured, and the
+remaining gaps are recorded with reasons rather than excused by absence. Then
+B-056, which had no room for a branch in a lane: a
 finding now closes on evidence from the tree it was found in, and lane health
 comes from the branch the lane is about rather than from whichever scan ran
 last. Then B-063, so a finding says whether its version is one
@@ -1196,6 +1143,86 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-059 — The pipeline standard covers two pipelines of four, and the two it skips would fail it — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+**Coverage is now the default and exemption is the thing you have to write
+down.** `check_pipeline_conformance.py` discovers every pipeline in
+`deploy/concourse/pipelines/` instead of reading a two-entry tuple, so a
+pipeline added to this repository is covered without anybody remembering — the
+failure mode that produced this entry in the first place.
+
+**Every uncapped task now carries a measured cap.** Eleven tasks in
+`personal-soc.yml` had no timeout, on an estate with one Concourse worker,
+where PS-7's own rationale is that "a hook that hangs holds the single worker
+exactly as a scan does". Each cap is read off that job's own observed
+durations rather than picked as a round number, and the evidence is written
+beside it in the pipeline:
+
+| job | runs observed | median | slowest | cap |
+|---|---:|---:|---:|---|
+| `lint` | 5 | 35s | 48s | 10m |
+| `skill-integrity` | 6 | 36s | 56s | 10m |
+| `doc-drift` | 5 | 57s | 136s | 10m |
+| `functional` | 5 | 69s | 86s | 10m |
+| `secrets` | 6 | 78s | 169s | 10m |
+| `guard` | 6 | 101s | 146s | 10m |
+| `netassess-ingest` | 1 | 33s | 33s | 15m |
+| `external-exposure` | 4 | 95s | 207s | 15m |
+| `netassess-freshness` | 4 | 95s | 228s | 15m |
+| `package` | 5 | 212s | 504s | 30m |
+| `breach-check` | 0 | — | — | 15m |
+
+`package` gets 30m because it polls for the host's install acknowledgement and
+B-017 records that budget as eight minutes on its own; `netassess-ingest` has
+one sample, so its headroom is deliberately wide; `breach-check` is paused, so
+its cap is the estate's default for a lane calling one external API rather
+than a measurement. Saying which of the three is which is the point.
+
+**The other nine violations are recorded rather than fixed or excused.**
+`KNOWN_GAPS` maps `pipeline:job RULE` to why it is still there, and anything
+not in it fails the check — so a *new* violation of the same rule in a new job
+still fails, which is the property the check exists for. The report prints them
+on every run, because a baseline nobody sees is a baseline that grows, and a
+test asserts every recorded gap still reproduces: an entry that no longer fires
+is a line that will outlive the problem and start excusing a future one.
+
+What is recorded: three lanes reporting to Mykronos with no preflight probe
+(PS-2), two whose upload is skipped by their own scanner's exit code (PS-3),
+one commit-triggered job with no quality gate (PS-4), one task naming `main`
+literally (PS-6) — the assumption B-045 cost sixteen days of scanning — five
+downloads with no checksum (PS-8), and all thirteen jobs in no group, so
+Concourse hides the whole pipeline from its own UI.
+
+**A test caught the first draft of that baseline being a pardon.** Three of the
+nine reasons read "as above", so `test_every_recorded_gap_says_why` — written
+in the same commit — failed until they said something. An exemption with no
+reason is exemption by absence wearing a dictionary.
+
+- ~~`personal-soc.yml` and keel's pipeline are in `PIPELINES`, or an entry
+  records which rules they are exempt from and why, per pipeline rather than
+  by absence.~~ Discovered, not listed, with nine reasoned entries. **keel has
+  no pipeline in this repository** — it is Actions-scanned, so there was
+  nothing to add; the entry assumed one.
+- ~~Every work task in every listed pipeline carries a timeout.~~ Eleven caps,
+  each from that job's own runs.
+- ~~A pipeline added to the repository is covered by the standard by
+  default.~~
+
+**Checked:** 2727 backend tests pass, five new — every pipeline conforming,
+every recorded gap still reproducing, every recorded gap carrying a reason, a
+new pipeline covered without being listed, and no task anywhere running
+uncapped, which is stated as its own test because it is an availability
+property of the estate rather than of one repository.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while adding the `iac` lane
+to `personal-soc` — noticed only because the conformance test was run by hand
+against a pipeline it did not cover. Related to B-058: the same repository was
+also the one whose SSDF gaps were mostly practices it cannot apply.
+
+---
 
 ### B-056 — A lane is a repository and a capability, with no room for a branch — **done**
 
