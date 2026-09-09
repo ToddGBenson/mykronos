@@ -33,7 +33,7 @@
 # is in none, and a hidden lane is a lane nobody notices has gone red.
 groups:
   - name: quality
-    jobs: [pin-check, unit, lint-and-types, qa-spec-links, frontend]
+    jobs: [pin-check, unit, coverage, lint-and-types, qa-spec-links, frontend]
   - name: security
     jobs: [secrets, dependencies, sast, ai, iac, insider, containers]
   - name: gate
@@ -49,6 +49,22 @@ resource_types:
     source: { repository: concourse/registry-image-resource, tag: "1.10" }
 
 resources:
+  # The clock for `coverage`, which runs off the critical path (D-121). Same
+  # shape as personal-soc's `weekly`: a window rather than an instant, so a
+  # worker that is busy at 03:00 still picks it up.
+  - name: weekly
+    type: time
+    icon: clock-outline
+    source:
+      # No `location`, so UTC. personal-soc and thehub pass
+      # `((scan-timezone))` from their own set-pipeline scripts and this
+      # pipeline's does not — using a variable nobody supplies here would
+      # apply an unresolved reference and the resource would never fire.
+      # A weekly job has no reason to care which hour it is locally.
+      days: [Sunday]
+      start: 4:00 AM
+      stop: 5:00 AM
+
   - name: source
     type: git
     icon: github
@@ -444,6 +460,84 @@ jobs:
                 # stages cross-check reported unit as never_reported, which
                 # is how this was found.
                 python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+
+                exit "$rc"
+
+  # Coverage, deliberately not on the lane that gates seven jobs (D-121).
+  #
+  # D-117 measured the cost of putting `--cov` on `unit` itself: 540.81s
+  # against 218.61s clean, +322s and about 2.5x, on a job carrying
+  # `trigger: true` with seven others waiting behind `passed: [unit, ...]`.
+  # That was rejected, and retiring the Actions lane that carried it (D-118)
+  # left coverage with nowhere to live at all — a figure measured once and
+  # then never again.
+  #
+  # A weekly job pays the same 322s where nothing waits for it. The number is
+  # up to seven days old, which is the trade: a stale coverage figure is a
+  # far smaller problem than a slow gate, and "never measured" was the
+  # alternative.
+  #
+  # `trigger: true` on the clock and NOT on `source`: this must not run on a
+  # push, or it becomes the thing it was written to avoid.
+  - name: coverage
+    public: true
+    serial_groups: [worker-a]
+    on_failure: *slack_alert
+    on_error: *slack_alert
+    plan:
+      - get: weekly
+        trigger: true
+      - get: source
+      - get: python
+      - *preflight
+      - task: pytest-cov
+        # 120m, the same as `unit`, which it is: the suite plus coverage
+        # tracing, measured at 541s on this worker.
+        timeout: 120m
+        image: python
+        params:
+          <<: *mykronos_env
+          PIP_CACHE_DIR: /pipcache
+          MYKRONOS_PERF_MULTIPLIER: "3"
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          caches: [{ path: /pipcache }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                cd source/backend
+                pip install --quiet -e ".[dev]"
+
+                mkdir -p ../../results
+                rc=0
+                # `--cov-branch` is not optional here. Cobertura writes
+                # `branch-rate="0"` whether or not branch data was collected,
+                # and the dashboard reads that as a measured 0% — publishing a
+                # number nobody measured, which is the failure B-042 spent a
+                # paragraph on.
+                python -m pytest -q -n 6 \
+                  --cov=mykronos --cov-branch \
+                  --cov-report=xml:../../results/coverage.xml \
+                  --junitxml=../../results/unit.xml || rc=$?
+
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                # Uploaded as `unit`, because that is the capability whose
+                # coverage this is. The adapter rglobs the results directory
+                # and merges both files into one run (spec 31 §4), so the
+                # figure lands on the lane a person reads it against.
+                python -m mykronos.upload \
+                  --capability unit --tool junit \
+                  --results-path ../../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git -C .. rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false || true
 
                 exit "$rc"
 

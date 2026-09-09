@@ -854,7 +854,7 @@ async def verify_merged_fixes(
         pipeline = pipeline_name_for(repo_full_name)
         return any(
             concourse.trigger_job(pipeline, job, token=settings.concourse_api_token)
-            for job in sorted(jobs_for_capability(capability))
+            for job in jobs_for_capability(capability)
         )
 
     result = await dispatch_pending(catalog, buffer, dispatch=dispatch)

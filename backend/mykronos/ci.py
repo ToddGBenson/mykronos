@@ -79,8 +79,8 @@ def pipeline_name_for(repo_full_name: str) -> str:
 #: exactly the case Aegis exists to notice. Cross-checking it reported every
 #: green insider job as a silent failure, which was this check being wrong
 #: about what the job is for.
-def jobs_for_capability(capability: str) -> set[str]:
-    """Which Concourse job(s) plausibly produce this capability.
+def jobs_for_capability(capability: str) -> list[str]:
+    """Which Concourse job(s) plausibly produce this capability, best first.
 
     The reverse of `CAPABILITY_BY_JOB`, and a heuristic in the same spirit and
     for the same reason as the mapping it derives from: a pipeline that names
@@ -91,8 +91,17 @@ def jobs_for_capability(capability: str) -> set[str]:
     "scan now" button (spec 17 §2.5) and fix verification (spec 25 §1). A
     second private copy would be a second thing to update when a job is
     renamed, and the first one to be forgotten.
+
+    **Ordered, and the order is load-bearing.** Both callers trigger the first
+    job that answers, so a capability produced by several jobs has to name the
+    obvious one first. `unit` is produced by `unit` and by `coverage`, the
+    weekly lane that runs the same suite with tracing on (D-121); sorting
+    alphabetically would make "re-run unit" start the slow one. The
+    capability's own name goes first where it is a job, then the rest in a
+    stable order.
     """
-    return _JOBS_BY_CAPABILITY.get(capability, {capability})
+    jobs = _JOBS_BY_CAPABILITY.get(capability, {capability})
+    return sorted(jobs, key=lambda job: (job != capability, job))
 
 
 CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
@@ -121,6 +130,12 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # cross-check is the only thing that can tell whether they reported at
     # all - there is no finding count to notice the absence of.
     "unit": "unit",
+    # The weekly coverage lane runs the same suite with tracing on and uploads
+    # as `unit`, because the coverage belongs to the lane a person reads it
+    # against (D-121). Registered so the cross-check can see it; ordered after
+    # `unit` by `jobs_for_capability`, so "re-run unit" does not start the
+    # slow one.
+    "coverage": "unit",
     "qa": "qa",
     "qa-spec-links": "qa",
     "ai": "ai",
