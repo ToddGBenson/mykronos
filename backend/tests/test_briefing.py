@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from mykronos import briefing
 from mykronos.schemas import utcnow as _utcnow
-from tests.conftest import REPO, finding_payload, post_findings, post_scan
+from tests.conftest import REPO, finding_payload, issue_token, post_findings, post_scan
 
 
 def _scan(client, auth, run_id: str, findings: list[dict], *, status: str = "success") -> None:
@@ -348,3 +348,136 @@ class TestScopedToOneRepository:
         assert scoped.total_open == 0
         assert scoped.stalled == []
         assert scoped.classes == []
+
+
+class TestBlockedLanes:
+    """Quiet because it cannot start is not quiet because it stopped (B-055).
+
+    Every scan lane on a Concourse-scanned repository carries
+    `passed: [unit, ...]`, so a red unit suite means Concourse never schedules
+    any of them. TheHub's `develop` received zero security scanning for as
+    long as its suite was red, and the briefing called every one of those
+    lanes silent -- offering a re-run button for a job Concourse will not run.
+    """
+
+    def _at(self, client, token, capability, when, status="success", findings=None):
+        """One scan run for one capability at one moment."""
+        headers = {"Authorization": f"Bearer {token}"}
+        run_id = f"{capability}-{when:%Y%m%d%H%M%S}-{status}"
+        post_scan(
+            client,
+            headers,
+            scan_run_id=run_id,
+            capability=capability,
+            scan_status=status,
+            started_at=when.replace(tzinfo=None).isoformat(),
+        )
+        if findings:
+            post_findings(client, headers, findings, scan_run_id=run_id, capability=capability)
+
+    def _token(self, client):
+        return issue_token(client, REPO, "sast", "unit")
+
+    def test_a_lane_quiet_behind_a_red_upstream_is_blocked(
+        self, client, catalog, run_compaction
+    ) -> None:
+        token = self._token(client)
+        old = _utcnow() - timedelta(days=40)
+        self._at(client, token, "sast", old, findings=[finding_payload()])
+        self._at(client, token, "unit", old)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=1), status="failure")
+        run_compaction()
+
+        lanes = {lane.capability: lane for lane in briefing.build(catalog).stalled}
+
+        assert lanes["sast"].reason == "blocked"
+        assert lanes["sast"].blocked_by == "unit"
+        assert lanes["sast"].open_findings == 1
+        # The lane that is actually broken still reads as broken.
+        assert lanes["unit"].reason == "failing"
+
+    def test_the_button_points_at_the_upstream(self, client, catalog, run_compaction) -> None:
+        """Dispatching a blocked lane does nothing: Concourse will not
+        schedule a job whose `passed:` constraint is unmet."""
+        token = self._token(client)
+        old = _utcnow() - timedelta(days=40)
+        self._at(client, token, "sast", old, findings=[finding_payload()])
+        self._at(client, token, "unit", old)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=1), status="failure")
+        run_compaction()
+
+        lane = next(
+            lane for lane in briefing.build(catalog).stalled if lane.capability == "sast"
+        )
+
+        assert lane.action.path.endswith("capabilities=unit")
+        assert "Nothing here can start until unit is green" in lane.action.effect
+        assert "was working when it stopped" not in lane.action.effect
+
+    def test_a_green_upstream_leaves_a_quiet_lane_silent(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """The distinction has to cut both ways or it is just a relabelling."""
+        token = self._token(client)
+        old = _utcnow() - timedelta(days=40)
+        self._at(client, token, "sast", old, findings=[finding_payload()])
+        self._at(client, token, "unit", _utcnow() - timedelta(days=1))
+        run_compaction()
+
+        lane = next(
+            lane for lane in briefing.build(catalog).stalled if lane.capability == "sast"
+        )
+
+        assert lane.reason == "silent"
+        assert lane.blocked_by == ""
+
+    def test_an_upstream_that_broke_before_this_lane_last_ran_does_not_block_it(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """This lane ran *after* the failure, so the failure did not stop it.
+        Reading the upstream's status without reading when it happened would
+        blame a red unit suite for silence it could not have caused."""
+        token = self._token(client)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=50), status="failure")
+        self._at(
+            client,
+            token,
+            "sast",
+            _utcnow() - timedelta(days=40),
+            findings=[finding_payload()],
+        )
+        run_compaction()
+
+        lane = next(
+            lane for lane in briefing.build(catalog).stalled if lane.capability == "sast"
+        )
+
+        assert lane.reason == "silent"
+
+    def test_the_upstream_lane_never_blocks_itself(
+        self, client, catalog, run_compaction
+    ) -> None:
+        token = self._token(client)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=40), status="failure")
+        run_compaction()
+
+        lane = next(
+            lane for lane in briefing.build(catalog).stalled if lane.capability == "unit"
+        )
+
+        assert lane.reason == "failing"
+        assert lane.blocked_by == ""
+
+    def test_the_briefing_says_which_lane_is_holding_it(
+        self, client, catalog, run_compaction
+    ) -> None:
+        token = self._token(client)
+        old = _utcnow() - timedelta(days=40)
+        self._at(client, token, "sast", old, findings=[finding_payload()])
+        self._at(client, token, "unit", old)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=1), status="failure")
+        run_compaction()
+
+        rendered = briefing.render(briefing.build(catalog))
+
+        assert "unit is red, so this lane cannot start" in rendered

@@ -5364,6 +5364,11 @@ export interface components {
             capability: string;
             /** Reason */
             reason: string;
+            /**
+             * Blocked By
+             * @default
+             */
+            blocked_by: string;
             /** Consecutive Failures */
             consecutive_failures: number;
             /** Streak Capped */

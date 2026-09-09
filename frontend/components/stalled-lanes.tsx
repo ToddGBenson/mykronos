@@ -69,9 +69,14 @@ function Lane({ lane }: { lane: StalledLane }) {
           ? `last success ${lane.last_success.slice(0, 10)}`
           : "no successful run on record"
       }`
-    : `silent for ${Math.round(lane.days_since_run)} days (usually every ${cadence(
-        lane.usual_gap_days,
-      )})`;
+    : lane.reason === "blocked"
+      ? // Quiet because it cannot start (B-055): the upstream lane it gates on
+        // is red, so Concourse never schedules it. Re-running this lane does
+        // nothing, and the action the backend hands us is the upstream's.
+        `blocked for ${Math.round(lane.days_since_run)} days — ${lane.blocked_by} is red, so this lane cannot start`
+      : `silent for ${Math.round(lane.days_since_run)} days (usually every ${cadence(
+          lane.usual_gap_days,
+        )})`;
 
   async function dispatch() {
     setMessage("");

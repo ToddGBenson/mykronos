@@ -2238,9 +2238,11 @@ class BriefingActionOut(BaseModel):
 class StalledLaneOut(BaseModel):
     repo_full_name: str
     capability: str
-    #: "failing" or "silent". Both freeze findings and they need different
-    #: fixes, so the UI must not render them the same.
+    #: "failing", "silent" or "blocked". All three freeze findings and they
+    #: need different fixes, so the UI must not render them the same.
     reason: str
+    #: The upstream capability holding a blocked lane; empty otherwise.
+    blocked_by: str = ""
     consecutive_failures: int
     streak_capped: bool
     last_success: datetime | None

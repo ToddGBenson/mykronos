@@ -157,15 +157,27 @@ SILENCE_MULTIPLE = 3.0
 #: report as silent an hour after a quiet afternoon.
 SILENCE_FLOOR_DAYS = 2.0
 
+#: Lanes that every scan lane on a Concourse-scanned repository gates on
+#: (`passed: [unit, ...]`). When the newest run of one of these failed, the
+#: lanes behind it are not silent -- they were never allowed to start -- and
+#: telling somebody to re-run a lane that Concourse will not schedule is a
+#: button that does nothing. B-055 named this: TheHub's `develop` received
+#: zero security scanning for as long as its unit suite was red, and the
+#: briefing read every one of those lanes as merely quiet.
+BLOCKING_UPSTREAM: tuple[str, ...] = ("unit",)
+
 
 @dataclass
 class StalledLane:
     """A capability that cannot close findings, and what it is holding open.
 
-    Two shapes, one consequence. A lane can be **failing** — running and
-    erroring, which is what mykronos DAST did seventeen times. Or it can be
+    Three shapes, one consequence. A lane can be **failing** — running and
+    erroring, which is what mykronos DAST did seventeen times. It can be
     **silent** — succeeding, and then simply never running again, which is
-    what every one of TheHub's lanes did after 2026-08-27.
+    what every one of TheHub's lanes did after 2026-08-27. Or it can be
+    **blocked** — quiet because an upstream lane it gates on is red, so
+    Concourse never schedules it; the fix is upstream, and re-running this
+    lane does nothing at all.
 
     Silence is the worse of the two and was nearly missed here, because a
     check that reads `scan_status` sees nothing wrong with a lane whose last
@@ -175,8 +187,9 @@ class StalledLane:
 
     repo_full_name: str
     capability: str
-    #: "failing" or "silent" — see the class docstring. Both freeze findings;
-    #: they need different fixes, so the briefing must not conflate them.
+    #: "failing", "silent" or "blocked" — see the class docstring. All three
+    #: freeze findings; they need different fixes, so the briefing must not
+    #: conflate them.
     reason: str
     consecutive_failures: int
     #: True when the streak filled the whole read window, so the real streak
@@ -192,6 +205,9 @@ class StalledLane:
     #: lane and unremarkable for a weekly one.
     days_since_run: float = 0.0
     usual_gap_days: float = 0.0
+    #: For a **blocked** lane, the upstream capability whose failure is
+    #: holding it; empty otherwise.
+    blocked_by: str = ""
     #: Set in `__post_init__` rather than exposed as a property, because
     #: `--json` serialises with `dataclasses.asdict` and a property is
     #: silently absent from it. The action is the part a pipeline step wants.
@@ -210,6 +226,22 @@ class StalledLane:
         stopped, so dispatching it is the whole fix. A **failing** lane will
         fail again — re-running it closes nothing and looks like action.
         """
+        if self.reason == "blocked":
+            # The button is the upstream lane's, not this one's: Concourse
+            # will not schedule a job whose `passed:` constraint is unmet, so
+            # dispatching this lane produces nothing to wait on.
+            self.action = Action(
+                label=f"Fix {self.blocked_by} for {self.repo_full_name}",
+                method="POST",
+                path=f"/api/repos/{self.repo_full_name}/scan?capabilities={self.blocked_by}",
+                effect=(
+                    f"Re-runs the upstream lane this one gates on. Nothing here "
+                    f"can start until {self.blocked_by} is green; once it is, two "
+                    f"successful runs of {self.capability} close up to "
+                    f"{self.open_findings} finding(s)."
+                ),
+            )
+            return
         caveat = (
             "The lane was working when it stopped, so this is the fix."
             if self.reason == "silent"
@@ -421,13 +453,32 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
         if failures == 0 and not silent:
             continue
 
+        # Quiet because it cannot start, or quiet because it stopped? A lane
+        # that is silent while an upstream it gates on has failed *since* this
+        # lane last ran was never scheduled, and the honest word for that is
+        # blocked (B-055). Failing wins over both: a lane that ran and failed
+        # has its own job for somebody to go and read.
+        blocked_by = ""
+        if not failures:
+            for upstream in BLOCKING_UPSTREAM:
+                if upstream == capability:
+                    continue
+                upstream_runs = by_lane.get((repo, upstream))
+                if not upstream_runs:
+                    continue
+                newest_status, _, newest_at = upstream_runs[0]
+                if newest_status != "success" and newest_at >= runs[0][2]:
+                    blocked_by = upstream
+                    break
+
         stalled.append(
             StalledLane(
                 repo_full_name=repo,
                 capability=capability,
                 # A lane can be both; failing is the more actionable label,
                 # because it names a job somebody has to go and read.
-                reason="failing" if failures else "silent",
+                reason="failing" if failures else ("blocked" if blocked_by else "silent"),
+                blocked_by=blocked_by,
                 consecutive_failures=failures,
                 streak_capped=bool(failures) and failures >= min(RECENT_RUNS, len(runs)),
                 last_success=_last_success(catalog, repo, capability),
@@ -651,6 +702,11 @@ def render(briefing: Briefing) -> str:
                     lane.consecutive_failures
                 )
                 state = f"{streak} consecutive failures, {since}"
+            elif lane.reason == "blocked":
+                state = (
+                    f"blocked for {lane.days_since_run:.0f} days — "
+                    f"{lane.blocked_by} is red, so this lane cannot start"
+                )
             else:
                 # Silence needs the cadence beside it or the number means
                 # nothing: five days is an outage for a daily lane and
