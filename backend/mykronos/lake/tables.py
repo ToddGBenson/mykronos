@@ -48,6 +48,12 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     ("fingerprint_version", "VARCHAR"),
     ("package_name", "VARCHAR"),
     ("package_version", "VARCHAR"),
+    # What `package_version` is a statement about: resolved | declared_floor |
+    # declared_pin, or NULL where nothing established it (B-063). A floor is
+    # what the repository permits, not what it runs, and reading one as the
+    # other is how four HIGH advisories were reported against a version no
+    # container had installed for months.
+    ("version_basis", "VARCHAR"),
     # Network findings (spec 14 §5). Null for everything with a file.
     ("address", "VARCHAR"),
     ("port", "INTEGER"),

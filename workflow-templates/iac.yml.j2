@@ -21,11 +21,22 @@
         continue-on-error: true
         run: |
           mkdir -p "${{ runner.temp }}/mykronos-results"
+          # `-w /repo` with `--directory .`, not `--directory /repo`, and the
+          # difference is the whole of B-048. Checkov prefixes every SARIF
+          # path with the basename of the directory it was pointed at, so
+          # `--directory /repo` emitted `repo/.github/workflows/release.yml` --
+          # a path that exists nowhere in the repository. It is not clickable
+          # from a finding, it matches nothing a person greps for, and because
+          # a finding's identity derives from its path (spec 05 §5) it also
+          # made the same defect a different finding under each CI. Running
+          # from inside the mount makes the paths repo-root-relative, which is
+          # what the Concourse lane already produced.
           docker run --rm \
+            -w /repo \
             -v "${{ github.workspace }}:/repo" \
             -v "${{ runner.temp }}/mykronos-results:/out" \
             bridgecrew/checkov:<< config.tool_version | default('3.2.334') >> \
-            --directory /repo \
+            --directory . \
             --output sarif \
             --output-file-path /out \
             --soft-fail \

@@ -838,6 +838,7 @@ class DashboardQueries:
             "symbol",
             "package_name",
             "package_version",
+            "version_basis",
             "status",
             "fingerprint_version",
             # A `superseded` finding names its replacement (spec 05 §5a); this
@@ -937,6 +938,7 @@ class DashboardQueries:
             "line_start",
             "package_name",
             "package_version",
+            "version_basis",
             "status",
             "first_seen_at",
             "last_seen_at",
@@ -1119,6 +1121,7 @@ class DashboardQueries:
             "line_start",
             "package_name",
             "package_version",
+            "version_basis",
             "status",
             "first_seen_at",
             "last_seen_at",
@@ -1437,6 +1440,7 @@ class DashboardQueries:
                     "file_path": finding.get("file_path"),
                     "line_start": finding.get("line_start"),
                     "package_version": finding.get("package_version"),
+                    "version_basis": finding.get("version_basis"),
                     "first_seen_at": finding.get("first_seen_at"),
                 }
             )
@@ -1646,6 +1650,7 @@ class DashboardQueries:
             "line_start",
             "package_name",
             "package_version",
+            "version_basis",
             "first_seen_at",
             "due_at",
             "due_source",
@@ -2407,6 +2412,7 @@ class DashboardQueries:
             "symbol",
             "package_name",
             "package_version",
+            "version_basis",
             "fingerprint_version",
             "first_seen_at",
             "last_seen_at",

@@ -16,6 +16,8 @@ import pytest
 
 from mykronos.ci import (
     ALL_STAGES,
+    CAPABILITY_BY_JOB,
+    GATE_JOBS,
     ConcourseClient,
     JobStatus,
     coverage,
@@ -438,17 +440,55 @@ class TestStageCoverage:
         assert dast.state == "no_job"
         assert dast.problem is True
 
-    def test_an_event_driven_capability_is_not_a_gap(self) -> None:
-        """Aegis is fed by webhooks, Oracle writes decisions, Patchwork opens
-        pull requests. None of them has a pipeline lane or a ScanRun, so the
-        job-versus-scan cross-check has nothing to compare - "no_job" was
-        reporting three working capabilities as permanent problems."""
-        rows = coverage({"aegis", "oracle", "patchwork"}, [])
+    def test_a_capability_driven_from_inside_mykronos_is_not_a_gap(self) -> None:
+        """Aegis is fed by webhooks as reviews arrive and Patchwork opens fix
+        pull requests on a timer. Neither has a pipeline lane or a ScanRun, so
+        the job-versus-scan cross-check has nothing to compare - "no_job" was
+        reporting two working capabilities as permanent problems."""
+        rows = coverage({"aegis", "patchwork"}, [])
 
-        for stage in ("aegis", "oracle", "patchwork"):
+        for stage in ("aegis", "patchwork"):
             row = next(r for r in rows if r.stage == stage)
             assert row.state == "event_driven"
             assert row.problem is False
+
+    def test_a_gate_that_exists_is_not_a_gap_even_with_no_scan_run(self) -> None:
+        """Oracle produces decisions rather than scan runs, so it is exempt
+        from needing a run - but not from needing a lane. A gate that ran and
+        blocked nothing is still a gate that ran (B-061)."""
+        rows = coverage({"oracle"}, [], frozenset({"oracle-gate", "unit"}))
+        oracle = next(r for r in rows if r.stage == "oracle")
+
+        assert oracle.state == "event_driven"
+        assert oracle.problem is False
+
+    def test_the_personal_soc_shape_is_a_problem(self) -> None:
+        """The defect this was filed for. `personal-soc` had oracle granted on
+        2026-09-04, no oracle job was ever written, and the exemption reported
+        the stage as healthy for as long as that was true - the same failure
+        the cross-check exists to catch, inside the branch that opted out of
+        it."""
+        rows = coverage({"oracle"}, [], frozenset({"unit", "secrets", "iac"}))
+        oracle = next(r for r in rows if r.stage == "oracle")
+
+        assert oracle.state == "no_job"
+        assert oracle.problem is True
+
+    def test_either_oracle_job_name_counts(self) -> None:
+        """`oracle-gate` on mykronos and TheHub, `oracle` on personal-soc, and
+        the installer's `mykronos-oracle.yml`, which the template registry
+        already resolves to `oracle`."""
+        for name in ("oracle", "oracle-gate"):
+            rows = coverage({"oracle"}, [], frozenset({name}))
+
+            assert next(r for r in rows if r.stage == "oracle").state == "event_driven"
+
+    def test_the_gate_jobs_are_not_expected_to_upload(self) -> None:
+        """Registering these in `CAPABILITY_BY_JOB` would fix the reading by
+        telling a lie in the other direction: the lane would be expected to
+        produce scan runs, and read as `never_reported` forever."""
+        for name in GATE_JOBS["oracle"]:
+            assert name not in CAPABILITY_BY_JOB
 
     def test_enabled_and_silent_is_a_problem(self) -> None:
         rows = coverage({"sast"}, self._reporting(sast="silent"))

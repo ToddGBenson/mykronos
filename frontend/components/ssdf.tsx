@@ -61,9 +61,26 @@ function PracticeRow({ practice }: { practice: Practice }) {
         </ul>
       ) : null}
 
+      {/* Why it does not apply, when it does not. Its own list and its own
+          tone: this is not evidence that the practice is met and it is not a
+          gap either, and rendering it as either one is the conflation B-058
+          is about. */}
+      {(practice.not_applicable_because ?? []).length > 0 ? (
+        <ul className="mt-0.5 flex flex-col gap-0.5">
+          {(practice.not_applicable_because ?? []).map((line) => (
+            <li key={line} className="text-[12px] text-ink-3">
+              <span aria-hidden="true">— </span>
+              {line}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {/* Shown only when it is the answer to something. On a met practice it
-          would be advice about a problem the reader does not have. */}
-      {practice.status !== "met" && practice.how_to_evidence ? (
+          would be advice about a problem the reader does not have — and on an
+          inapplicable one it would be advice to build something this
+          repository has no reason to have. */}
+      {practice.status !== "met" && practice.status !== "not_applicable" && practice.how_to_evidence ? (
         <p className="mt-1.5 max-w-prose text-[12px] text-ink-2">
           <span className="text-ink-3">To evidence it: </span>
           {practice.how_to_evidence}

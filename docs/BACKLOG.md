@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Sixteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Ten, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -76,17 +76,18 @@ why they waited.
 scan covered anything.** It began as the second 2026-09-03 sweep's four —
 B-045 the instance (TheHub scanned on `main` while every commit landed on
 `develop`, now closed), B-046 the reason nobody saw it (the stalled-lane
-detector measures silence, not coverage), B-047 the missing exit for findings a
-disabled capability strands, B-048 the same blind spot from the other side (two
-lanes at different path bases, each supplying the other's absence evidence).
+detector measured silence, not coverage — now closed), B-047 the missing exit
+for findings a disabled capability strands (closed), B-048 the same blind spot
+from the other side — two lanes at different path bases, each supplying the
+other's absence evidence (closed).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
-scanner too old to know what to look for, now closed. B-056, no branch dimension on a lane,
-which is why B-045 was forced rather than chosen. B-058, a status nothing sets,
-so a repository is failed for lacking what it cannot have. B-061, `event_driven`
-calling a capability fine without checking anything runs it. B-063, `--no-resolve`
-assessing the declared floor, so a finding names a version nobody runs.
+scanner too old to know what to look for, now closed. B-056, no branch dimension
+on a lane, which is why B-045 was forced rather than chosen. Three are closed: B-061, `event_driven` calling a capability fine without
+checking anything runs it; B-047, the missing exit itself; B-058, a status
+nothing set, so a repository was failed for lacking what it cannot have; and
+B-063, `--no-resolve` assessing the declared floor.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
@@ -328,146 +329,6 @@ argument.
   way D-053 recorded paused DAST, so it stops reading as an oversight.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
-
----
-
-### B-046 — A lane pinned to a stale commit reports as healthy
-
-**Size:** M **State:** open **Verified:** 2026-09-03
-
-The briefing leads with lanes that cannot close findings, which is the right
-thing to lead with. It measures **wall-clock silence** — how long since this
-capability last reported. It does not measure whether the scan covered anything
-new.
-
-A pipeline pinned to a branch that has stopped moving produces a successful run
-on schedule, forever, against an unchanging commit. It never appears in that
-section. TheHub's lanes surfaced only because they *also* went quiet for two
-days (B-045); had the pipeline held its ten-hour cadence, 330 findings would
-have been frozen against a stale tree with every indicator green.
-
-Mykronos already holds both halves — `repo_onboarding.default_branch` and
-`scan_runs.branch` / `scan_runs.commit_sha`. Nothing compares them.
-
-Two checks, and the second is the one missing everywhere:
-
-1. **Branch drift** — the branch a lane scans is not the repository's default
-   branch.
-2. **Commit staleness** — consecutive successful runs carrying the same
-   `commit_sha`. A lane re-scanning ground it has already covered is not
-   watching, whatever its cadence says.
-
-The second also catches what the first cannot: a lane on the *right* branch
-whose checkout is pinned or cached.
-
-**Acceptance criteria**
-
-- The briefing and `/api/dashboard/repos/{repo_id}/scan-health` report a lane
-  whose recent successful runs share one `commit_sha`, naming the commit and
-  the date it stuck.
-- Branch drift against `default_branch` is surfaced per repository.
-- TheHub reproduces both today, and stops reproducing them when B-045 lands.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
-
----
-
-### B-047 — Disabling a capability strands its findings open forever
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`ToddGBenson/TheHub` has `enabled_capabilities: aegis, atlas, containers, sast,
-secrets`. `dast` is not among them. It holds **32 open findings**, and the
-briefing reports that lane silent for fifteen days.
-
-Those 32 cannot close by any path the platform offers. Closure requires two
-consecutive *successful* scans that no longer observe the finding (spec 05 §5).
-A capability that is switched off will never produce one, so absence can never
-be established. They are not open because anything is unfixed — they are open
-because the only mechanism that could close them has been removed.
-
-This is the closure rule working exactly as designed and arriving somewhere it
-has no exit from. The rule is right; the fix is not to relax it, but to make
-removing a capability an explicit decision about what it was holding.
-
-**Acceptance criteria**
-
-- Disabling a capability requires a disposition for its open findings, or
-  records one automatically with a written reason naming the removal.
-- Findings stranded this way are distinguishable from merely stale ones, in the
-  briefing and in the vulnerability-management view.
-- TheHub's 32 `dast` findings reach a recorded state.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
-
----
-
-### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`mykronos` is scanned by both CIs during the migration, and the two lanes
-disagree about paths. Concourse checks out into `repo/`, Actions at the root, so
-checkov's identical output lands as two separate findings:
-
-    CKV_GHA_7  repo/.github/workflows/promote.yml:34   first seen 2026-08-30
-    CKV_GHA_7  .github/workflows/promote.yml:34        first seen 2026-09-01
-
-On 2026-09-03 the two alternated all day about eight minutes apart, same tool
-and version (checkov 3.2.334), one reporting five findings and the other two —
-different counts because they also cover different trees.
-
-Three effects. Open IaC counts are inflated. A finding has to be dispositioned
-twice, and was on 2026-09-03. And the lanes supply each other's absence
-evidence, so which findings close is decided by which lane ran last.
-
-**The obvious fix is the wrong one, and `parity` recommends it.**
-`mykronos parity ToddGBenson/mykronos` reports Actions at least as good on every
-capability and better on two — `dast` and `functional` are `failed` under
-Concourse and `reporting` under Actions, verdict `improved`. Read literally,
-that says retire Concourse.
-
-It is not comparing like with like. `parity` compares whether each capability
-**reports**, never what it **reaches**:
-
-| | Concourse `dast` | Actions `dast` |
-|---|---|---|
-| Runner | worker on this LAN | `runs-on: ubuntu-latest`, GitHub-hosted |
-| Target | `((demo-host))` — an internal address | `localhost` inside the runner |
-| Stack | a deployment that outlives the build | ephemeral, built and seeded per run |
-
-A GitHub-hosted runner cannot reach an RFC1918 address on this network. So the
-Actions lane is not a better version of the Concourse one — it is the only one
-that can run *without* the LAN, and the Concourse one is the only one that can
-scan anything actually deployed on it. Retiring Concourse would not consolidate
-a duplicate; it would permanently remove the only path to scanning an internal
-deployment, including TheHub's own prod, and would foreclose the network
-capability the README already describes as having an authorization model and an
-ingest path but no scanner.
-
-This is the same caveat the README states about DAST — "reached a deployment,
-which is not the same as internet-facing — that lane runs inside CI against an
-ephemeral stack" — arriving as a decision rather than a disclosure. The honest
-verdict for a capability whose two lanes reach different things is not
-`improved`; it is that they are not comparable.
-
-The Concourse `dast` and `functional` lanes being `failed` is therefore a bug to
-fix, not evidence for retirement.
-
-**Acceptance criteria**
-
-- The path base is normalised so both lanes produce one finding, and no
-  rule/line pair appears under two `file_path` values for one repository.
-- `parity` distinguishes a capability whose lanes reach different targets from
-  one where a lane is simply better, and does not return `improved` for the
-  first. Reaching an internal target is stated where the verdict is.
-- A decision recorded that Concourse is retained for internal-target scanning,
-  so the next reader of `parity` does not re-derive the wrong conclusion.
-- The Concourse `dast` and `functional` failures are diagnosed on their merits.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep). The retirement
-recommendation was corrected by the operator the same day; the original entry
-had repeated `parity`'s verdict without checking what either lane reached.
 
 ---
 
@@ -868,7 +729,7 @@ declared surface on `mykronos` with the catalog response as its evidence.
 
 ---
 
-### B-056 — A lane is a repository and a capability, with no room for a branch
+### B-056 — A lane is a repository and a capability, with no room for a branch — **half done**
 
 **Size:** M **State:** open **Verified:** 2026-09-04
 
@@ -903,79 +764,59 @@ The cost is the one the directive named — `deploy-demo` now auto-deploys
 `develop` to the demo environment and can race `deploy.sh`. Production is
 unaffected: `deploy-prod` carries no `trigger:` and still waits for a person.
 
+**The closure rule is branch-aware as of 2026-09-09, and it was closing
+findings on evidence from trees they were never in.** Measured before the
+change, not predicted:
+
+| repository | shape |
+|---|---|
+| `ToddGBenson/TheHub` | 404 runs on `develop` and 86 on `main`, both across nine capabilities, both current |
+| `TheHub` `dast` | 61 findings last seen on `main`, 109 fixed and 37 open last seen on `develop` |
+| every repository | runs from the `mykronos/enable-workflows-*` branches the installer itself opens |
+
+So two consecutive `main` scans could confirm the absence of a finding that
+only ever existed on `develop`, and the next `develop` scan reopened it — the
+exact flapping the two-scan rule exists to prevent, arriving through the
+dimension the rule did not have. The install pull requests make this true of
+all four repositories rather than only the one scanned on two branches.
+
+`reconcile_absences` now partitions recent runs by `(repo, capability,
+branch)` and matches each finding to the branch of the run that last saw it.
+That is the only honest answer to "which branch is this finding on": where the
+platform observed it, not where somebody expected it. A run recording no
+branch is its own lane rather than joining whichever lane comes first.
+
+**A second change came out of testing it.** "This lane has not looked enough
+times to close anything" is now reported only when *no* branch of the lane has
+looked enough. Reporting it per branch meant a lane closing findings on
+`develop` also announced itself as short of history because a pull-request
+branch was scanned once — true, useless, and how a report stops being read.
+
 **Acceptance criteria**
 
-- Lane health, and the two-consecutive-scans closure rule, are evaluated per
-  `(repo, capability, branch)` rather than per `(repo, capability)`.
-- A repository can declare which branch a capability's lane is *expected* on, so
-  a scan of another branch is recorded without disturbing that lane's health.
-- With that in place, TheHub can scan `develop` and gate `main` at once, and the
-  either/or above stops being one.
-- B-048 is re-read against this: mykronos's duplicate IaC findings are the same
-  defect with two CIs instead of two branches.
+- ~~The two-consecutive-scans closure rule is evaluated per
+  `(repo, capability, branch)`.~~ Done 2026-09-09, with eight tests: another
+  branch's scans closing nothing, its own branch's still closing, an install
+  pull request closing nothing on the default branch, interleaved branches
+  keeping separate histories, the same defect on two branches closing
+  separately, and the failed-scan rule still independent.
+- **Lane health is still evaluated per `(repo, capability)`.** `scan_health`
+  groups by capability alone, so freshness, failure rate and the coverage
+  figure still mix branches. Nothing closes wrongly because of it now, but a
+  lane can still look fresh on the strength of a pull-request scan.
+- A repository can declare which branch a capability's lane is *expected* on,
+  so a scan of another branch is recorded without disturbing that lane's
+  health. Not built. `default_branch` is the obvious default and B-046 already
+  reads it for branch drift, so the shape exists; what is missing is the
+  per-capability override and the health surfaces honouring it.
+- With that in place, TheHub can scan `develop` and gate `main` at once.
+- ~~B-048 is re-read against this.~~ Closed 2026-09-09. It was the same defect
+  with two CIs instead of two branches, and its own fix was to stop the two
+  producers disagreeing about paths.
 
 **Provenance:** DevSecOps assessment, 2026-09-04. Found while trying to
 implement "scan develop, deploy from main" and discovering the platform cannot
 express it.
-
----
-
-### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-`ssdf.summarise` counts four statuses — `met`, `partial`, `not_evidenced`,
-`not_applicable` — and across all five onboarded repositories the fourth is
-**zero**. Nothing sets it. A practice a repository cannot possibly evidence and
-one it simply has not done are the same row.
-
-That understates two repositories badly, and on a compliance view an
-understatement is not the safe direction to be wrong in — it is the one that
-gets somebody told to build what they do not need.
-
-| repo | met | measured contents |
-|---|---|---|
-| `keel` | 2/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 10 workflows |
-| `personal-soc` | 0/13 | 0 Dockerfiles, 0 `.tf`, 0 web entrypoints, 0 tests, 2 workflows |
-
-So `keel` is marked down on **PW.4** ("run the dependency and container lanes")
-for having no containers, on **PW.8** ("run the test lanes") for having almost
-no tests, and on **RV.1** for not running `dast` on a schedule against an
-application that does not exist. `personal-soc` is 100% PowerShell with no
-build artifact at all. Neither is failing; neither has the thing.
-
-**The pressure this creates is the actual risk.** The obvious way to move those
-numbers is to enable `containers`, `dast` and `unit` anyway. Each would produce
-a lane that runs, finds nothing because there is nothing, and reports
-`success` — a green lane over an empty target, which is exactly what the
-maturity model refuses when it separates `reporting_capabilities` from
-`enabled_capabilities` so a repository cannot "claim coverage by flipping a
-toggle". The SSDF view has no such guard: a practice moves to `met` on a lane
-reporting, and a lane over nothing reports.
-
-**What was done instead, 2026-09-04.** Only `iac` was enabled on either, because
-it is the one that genuinely applies — checkov reads GitHub Actions workflows
-(`CKV_GHA_*`, which is where mykronos's own IaC findings come from), and keel
-has ten and personal-soc two. Install PRs: keel #77, personal-soc #6. Nothing
-else was enabled, so their scores stay low and honest rather than rising on
-lanes scanning nothing.
-
-**Acceptance criteria**
-
-- A practice whose capabilities have nothing to act on in this repository
-  reports `not_applicable`, with the reason — "no container image is built
-  here" reads differently from "the container lane has never run".
-- The determination is evidenced rather than declared: the SBOM, the presence
-  of a Dockerfile, a build artifact — something observable — not a per-repo
-  checkbox, which is a toggle again wearing a different hat.
-- `keel` and `personal-soc` stop being marked down for PW.4, PW.8 and RV.1.
-- The counts distinguish "12 of 13, one not applicable" from "12 of 13, one
-  outstanding". They are different sentences.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
-scoring repositories and finding most of their gaps were not gaps. Related to
-B-051: the same two repositories are also the ones whose languages no
-configured analyser can read.
 
 ---
 
@@ -1155,165 +996,6 @@ governance pass after B-044. The read also exposed the defect that had hidden
 this: the SSDF assessment compared `state == "pass"` against a module that
 emits `on`/`off`/`partial`/`unknown`, so every readable control reported as "not
 enforced" including the ones that were on.
-
----
-
-### B-061 — `event_driven` says a capability is fine without checking that anything runs it
-
-**Size:** S **State:** open **Verified:** 2026-09-04
-
-`ci.coverage()` exempts three capabilities from the pipeline/scan-run
-cross-check, because they produce decisions and pull requests rather than scan
-runs and so have neither side of the comparison:
-
-```python
-NON_SCANNING = frozenset({"aegis", "oracle", "patchwork"})
-...
-if stage in NON_SCANNING:
-    out.append(StageCoverage(stage, enabled=True, state="event_driven"))
-```
-
-The exemption is unconditional. It does not ask whether a job exists, only
-whether the capability is enabled. So `personal-soc` reported:
-
-```json
-{"stage": "oracle", "enabled": true, "state": "event_driven", "problem": false}
-```
-
-while its Concourse pipeline contained no oracle job of any kind. The
-capability was granted on 2026-09-04, no lane was ever written, and the
-platform reported the stage as healthy — `problem: false` — for as long as that
-was true. This is the same failure the coverage cross-check exists to catch,
-inside the branch that opts out of it.
-
-**Why this one is not simply "delete the exemption".** Remove it and every
-repository's oracle reads `no_job`, including TheHub and mykronos, which both
-*do* have a working gate. The check compares jobs against scan runs, and an
-oracle gate legitimately produces no scan run, so the honest answer needs a
-third thing to look at: whether a *job* exists, independent of whether it
-uploaded. `CAPABILITY_BY_JOB` is not that thing either — it maps jobs to the
-capability whose runs they produce, and oracle produces none, so registering
-`"oracle": "oracle"` there would be a lie in the other direction.
-
-**Aegis and patchwork are genuinely event-driven and should stay exempt.**
-Aegis is fed by webhooks as reviews happen; patchwork opens fix PRs on a timer
-inside Mykronos. Neither needs a pipeline job for the capability to be working.
-Oracle is different in this estate: it is *gate*-driven, run by a named job in
-a pipeline (`oracle-gate` on TheHub, `oracle` on personal-soc, a workflow on
-mykronos), and its absence is exactly the kind of gap worth reporting.
-
-**Acceptance criteria**
-
-- `oracle` reports `no_job` where no pipeline job or workflow runs it, and
-  `event_driven` is reserved for capabilities driven from inside Mykronos.
-- The check reads job existence, not scan-run existence, for this class — a
-  gate that ran and blocked nothing is still a gate that ran.
-- `aegis` and `patchwork` keep the current behaviour, with the reason recorded
-  in the code rather than only here.
-- A test asserts the personal-soc shape: capability enabled, no job, and the
-  stage reads as a problem.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, while enabling oracle across
-the estate. Found by checking the pipeline against the dashboard rather than
-trusting the dashboard — the same method that caught the `personal-soc`
-Actions-disabled workflow, and the second time in two days that a green
-capability state has meant "not measured" rather than "measured and fine".
-
----
-
-### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs
-
-**Size:** M **State:** open **Verified:** 2026-09-05
-
-TheHub's `dependencies` lane runs:
-
-```
-osv-scanner scan source --recursive --no-resolve ...
-```
-
-With `--no-resolve`, osv-scanner does not work out what a requirement actually
-resolves to. For `cryptography>=42.0.0` it assesses **42.0.0** — the floor. It
-then reported 15 advisories, four of them HIGH, against a repository running
-`cryptography 50.0.1`, which has none:
-
-```
-thehub-backend         50.0.1
-thehub-demo-backend    50.0.1
-```
-
-Every one of those findings is true about the floor and false about the
-deployment. A reader of the Findings tab cannot tell which, because the
-finding names a version (`cryptography@42.0.0`) that appears nowhere except in
-the requirement's lower bound.
-
-**`--no-resolve` is not a mistake and should stay.** The pipeline comment says
-why: transitive resolution calls deps.dev, which returns an internal error for
-any `requirements.txt` containing sqlalchemy — TheHub's does — and an extractor
-error is exit 127, which fails the whole lane. The choice was between a lane
-that reports floors and a lane that reports nothing, and floors won. What is
-missing is that the platform never says which of the two it is looking at.
-
-**Why this cuts both ways.** A floor is a real thing to assess: it is what the
-repository promises to accept, and a rebuild that resolves differently — a warm
-layer cache, a pinned internal index, an offline mirror — installs it. So these
-findings are not noise to be suppressed. But they are also not statements about
-running software, and the platform presents them as though they were: they
-carry a severity, they age, they count toward the Oracle score, and TheHub's
-score is the estate's worst.
-
-**They are also unfixable as stated.** Nothing can close a floor finding except
-raising the floor, and raising the floor changes no running byte. Until
-TheHub#290 there was no way to act on them at all, and no explanation in the
-platform of why the version in the finding did not match the version in the
-image.
-
-**Acceptance criteria**
-
-- A finding derived from an unresolved requirement says so, in the finding
-  itself: assessed at the declared floor, not at a resolved version.
-- The dashboard can tell the two apart, so "vulnerable dependency" and
-  "dependency floor permits a vulnerable version" are not the same row shape.
-- Either the Oracle weights floor findings differently from resolved ones, or
-  the decision to weight them identically is recorded with a reason. Today it
-  is neither — they are identical by accident of the scanner's flag.
-- The estate is swept for the same shape. Every repository with open-bounded
-  requirements and no lock file has this, not just TheHub.
-
-  **Swept on 2026-09-05, and mykronos had it too.** Its `pyproject.toml` uses
-  `>=` bounds and both its Concourse and Actions atlas lanes pass
-  `--no-resolve`, so the same reading applies. Four of twenty open-bounded
-  dependencies declared a floor carrying a known advisory:
-
-  | package | floor was | advisories at floor | raised to |
-  |---|---|---|---|
-  | `pyjwt[crypto]` | 2.9 | **13, two HIGH** | 2.13.0 |
-  | `jinja2` | 3.1 | 10 | 3.1.6 |
-  | `pynacl` | 1.5 | 2 | 1.6.2 |
-  | `pytest` | 8.3 | 2 | 9.0.3 |
-
-  As with TheHub, nothing was running the floor: the container reports `pyjwt
-  2.13.0`, `pynacl 1.6.2` and `jinja2 3.1.6` — precisely the versions the
-  advisories require. The floors were describing versions this project had
-  stopped running some time ago. Raised to what is installed, so the
-  declaration matches the deployment; mykronos now has **0 of 20** floors
-  carrying an advisory, and neither does TheHub after TheHub#290.
-- Revisit `--no-resolve` if the deps.dev sqlalchemy failure is fixed upstream,
-  or resolve locally with `pip-compile`/`uv` and scan the lock. A lock file
-  would answer this properly, and its absence is the actual root cause.
-
-**Fixed separately, and not a fix for this:** TheHub#290 raises the floor to
-50.0.1 and sweeps all 50 open-bounded requirements — zero now carry an advisory
-at their floor. That clears today's findings. It does not stop the next
-requirement whose floor drifts behind from being reported as though it were
-deployed.
-
-**Provenance:** DevSecOps assessment, 2026-09-05, immediately after repairing
-the lane in [[B-062]]'s commit. Worth recording that the first reading of these
-findings was wrong: they were reported here and in mykronos#216 as four live
-HIGH vulnerabilities on the internet-facing application, and corrected only
-after checking `cryptography.__version__` inside the running containers rather
-than trusting the finding. A finding that names a version is very easy to
-believe about the thing it is attached to.
 
 ---
 
@@ -1522,11 +1204,34 @@ into entries here:
 
 ## Closed
 
-Forty-three entries. The count below was stale at "nineteen": it covered
+Forty-nine entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — four.** B-055, whose last three criteria closed together:
+**2026-09-09 — ten.** B-063, so a finding says whether its version is one
+this repository runs: a lock file names what is installed, an open-bounded
+requirement names what is permitted, and the two were the same row until now.
+Labelled rather than discounted (D-120), because a floor is a real thing to
+assess. Then B-048, whose duplicate had already stopped when D-118
+retired the second CI, leaving the defect that caused it: checkov was being
+pointed at a mount whose basename it prefixed onto every path, so two live
+repositories carried open findings naming files that do not exist. Then B-058,
+which was making two repositories look
+negligent for lacking things they have no reason to have: applicability is now
+read from the repository's own file listing, and `keel` gains three met
+practices while `personal-soc` gains three that do not apply. Then B-046, the
+entry the whole coverage theme is named
+after: the briefing measured silence and nothing measured whether a scan
+covered anything, so a lane pinned to a stale tree stayed green forever. Two
+of its bugs were found by the tests rather than by reading — a pinned lane
+nominating itself as the repository's head, and a cadence-scaled grace that
+made the worst lanes unreportable. Then B-061 and B-047, both filed against instances that had
+quietly resolved themselves while the defect behind them stayed: oracle now has
+a lane in all three pipelines and TheHub's `dast` was re-granted, so what was
+built is the mechanism rather than the repair. `event_driven` now checks that a
+lane exists before calling a gate healthy, and a capability that loses its
+grant records what that did to its findings instead of leaving them open
+forever. Then B-055, whose last three criteria closed together:
 TheHub's `develop` already agreed about the gate and its suite had been green
 since the 6th, neither of which anybody had written down; a check now compares
 the owning repository's copy to ours, which is the direction that let a fix
@@ -1579,6 +1284,402 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs — **done**
+
+**Size:** M **Verified:** 2026-09-05 **Closed:** 2026-09-09 (D-120)
+
+A finding now carries `version_basis`, and the three answers are different
+claims: `resolved` came from a lock file and names what gets installed;
+`declared_floor` came from an open-bounded requirement and names the oldest
+version the repository permits; `declared_pin` came from an exact requirement,
+which is a resolved version by another route. `None` is its own answer and the
+most important one — nothing established it, so nothing is inferred.
+
+**Read from the scanner's own output rather than from a flag.** The source
+file settles it: a lock file pins by definition, so that answer needs neither
+the package name nor the checkout. A manifest is a declaration, and the
+adapter reads the requirement line out of the workspace to tell a pin from a
+floor. It declines wherever the answer is not established — an unrecognised
+file, a manifest with no source on disk, a package whose line is not found —
+because a wrong `resolved` would say a finding describes running software when
+it does not, which is the reading the entry exists to prevent.
+
+**The npm case was wrong first, and the test is why it is not.** The first
+version scanned the requirement *line* for an exact version, which is correct
+for `requirements.txt` and wrong for `package.json`: a one-line manifest let
+`left-pad`'s exact pin decide `lodash`'s answer. It now reads the value for
+that package's own key.
+
+**The scan says it too, not just the finding.** A dependency scan that
+produced floor findings warns with the count and the sentence that matters —
+raising the floor closes them and changes no running byte. The first reading of
+these was wrong in exactly the way a per-finding label does not prevent: they
+were reported here and in mykronos#216 as four live HIGH vulnerabilities on an
+internet-facing application, and corrected only after somebody read
+`cryptography.__version__` inside the running containers.
+
+**The estate has none today, which is the sweep working rather than the check
+failing.** All four open `atlas` findings are from `frontend/package-lock.json`
+and read `resolved`. mykronos's floors were raised on 2026-09-05 (0 of 20 now
+carry an advisory) and TheHub's in TheHub#290. What is built here is what makes
+the next one legible.
+
+- ~~A finding derived from an unresolved requirement says so.~~
+- ~~The dashboard can tell the two apart.~~ `version_basis` on the finding
+  models and a `declared floor` marker beside the version on the Findings tab,
+  where the version is the thing being misread.
+- ~~Either the Oracle weights floor findings differently, or the decision to
+  weight them identically is recorded with a reason.~~ **D-120: labelled, not
+  discounted.** A floor is a real thing to assess and a rebuild can install
+  it, so the risk is not smaller — what was wrong was the claim, and the fix
+  for a mislabelled fact is the label.
+- ~~The estate is swept for the same shape.~~ Done 2026-09-05, both
+  repositories.
+- Revisiting `--no-resolve` is still the real fix and is still open: a lock
+  file would make every finding resolved and retire the distinction. D-120
+  records why that is not this change.
+
+**Checked:** 2704 backend tests pass, twenty-two new — every ecosystem's lock
+file, an open bound, an extras marker, a bare requirement, an exact pin, a
+commented-out line, the npm neighbour bug, and each of the five ways the
+answer is declined.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, immediately after repairing
+the lane in B-062's commit; built 2026-09-09.
+
+---
+
+### B-048 — Two lanes record every IaC finding twice, and `parity` says retire the wrong one — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+**The path base was fixed at its source, and the source was ours.** Checkov
+prefixes every SARIF path with the basename of the directory it is pointed at,
+so `iac.yml.j2` running `--directory /repo` emitted
+`repo/.github/workflows/release.yml` — a path that exists nowhere in the
+repository. Verified rather than reasoned about: checkov 3.2.334 run both ways
+against the same tree emits `repo/.github/workflows/promote.yml` with
+`--directory /repo` and `.github/workflows/promote.yml` with `-w /repo
+--directory .`. The template now does the second, at version 1.3.0.
+
+That makes the Actions lane agree with the Concourse one, which already
+emitted repo-root-relative paths, so the duplicate cannot recur — and it fixes
+a live defect the entry did not mention. Read on 2026-09-09:
+
+| repository | scanned by | IaC path base | status |
+|---|---|---|---|
+| `keel` | Actions | `repo/...` | **open** |
+| `binnacle` | Actions | `repo/...` | **open** |
+| `mykronos` | Concourse | root-relative | current |
+| `mykronos` | Actions, retired | `repo/...` | stale, dispositioned |
+
+The two open findings name files that cannot be opened from the finding and
+match nothing anybody greps for. A finding's identity derives from its path
+(spec 05 §5), so correcting it means the next scan files the same defect under
+a new id and the old one closes after two absences. That churn is unavoidable
+in either direction — normalising at ingest would change the same input to the
+hash — and it is one-time and self-healing, which the alternative of leaving
+unusable paths in place is not.
+
+**The duplication itself had already stopped, for a different reason.** D-118
+retired mykronos's eleven Actions lanes on 2026-09-05, so only one CI writes
+`iac` there now. What was left was the defect that produced it.
+
+**`parity` no longer recommends the wrong retirement.** `NOT_COMPARABLE` names
+`dast` and `functional` with the sentence that says why, `Parity.verdict`
+returns `not comparable` *before* it can return `improved`, and `mykronos
+parity` prints the reason in its verdict rather than a footnote — including
+after "No capability is worse under Actions", which was the line that read as
+permission. Only those two are marked: `sast`, `secrets` and `iac` read a
+checkout, and a checkout is the same everywhere, so marking them would make the
+check refuse to answer anything.
+
+**The `dast` and `functional` "failures" are explained rather than fixed, and
+that is the honest disposition.** The Concourse `demo-and-dast` job is paused
+under D-053 and its work is done by the hand-written `demo-and-dast.yml`, which
+D-118 kept for exactly that reason. A paused job reads as `failed` to a check
+that asks whether a lane reported; that is the same conflation B-061 fixed for
+gates, arriving in the parity table, and it is now covered by the verdict
+rather than by a diagnosis of a job nobody intends to run.
+
+- ~~The path base is normalised so both lanes produce one finding.~~
+- ~~`parity` distinguishes a capability whose lanes reach different targets.~~
+- ~~A decision recorded that Concourse is retained for internal-target
+  scanning.~~ D-118, amended.
+- ~~The Concourse `dast` and `functional` failures are diagnosed.~~ Paused
+  under D-053, replaced by `demo-and-dast.yml`.
+
+**Checked:** 2682 backend tests pass, eight new — the 2026-09-03 reading
+refused, an ordinary capability still improving, a regression still outranking
+everything, and only the two deployment-reaching capabilities marked.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); the
+retirement recommendation was corrected by the operator the same day. Built
+2026-09-09, and the template defect behind it was found by running the scanner
+rather than by reading the template.
+
+---
+
+### B-058 — `not_applicable` is a status nothing ever sets, so a repo is failed for lacking what it does not have — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+`ssdf.summarise` counted four statuses and the fourth was zero across all five
+repositories, because nothing set it. A practice a repository cannot possibly
+evidence and one it simply has not done were the same row.
+
+**The determination is read from the repository, never declared.**
+`composition.py` takes the file listing from `GitHubClient.list_tree` and
+answers what has nothing to act on here: no Dockerfile means no container
+image is built, no manifest means no dependencies are declared, no test file
+means no test suite. `ssdf.assess` takes that map, and a capability in it
+contributes neither evidence nor a gap — so a practice covered by two lanes
+where one reports and the other cannot apply is **met**, and one whose every
+lane cannot apply is **not_applicable** with the observation attached.
+
+**Every inference runs one way only.** An absence of Dockerfiles is strong
+evidence that no image is built; their presence proves nothing about anything
+else. A tree that could not be read, or that GitHub truncated, is `unknown`
+and yields nothing at all — so a failed listing understates adherence rather
+than inflating it. That direction is deliberate: on a compliance view a wrong
+`not_applicable` converts "we did not look" into "this does not apply to us",
+which is the one transformation `ssdf.py`'s own header refuses to make. A lane
+that is actually reporting also beats the inference, because an observation
+outranks a guess about a file listing.
+
+**Measured against both repositories, with the same inputs run twice so the
+change is isolated from everything else on the page:**
+
+| repository | before | after |
+|---|---|---|
+| `keel` | 5 met, 4 partial, 4 not evidenced | **8 met**, 1 partial, 4 not evidenced |
+| `personal-soc` | 3 met, 3 partial, 7 not evidenced | 3 met, 3 partial, 4 not evidenced, **3 not applicable** |
+
+Exactly six practices moved and no others. `keel`: PO.3, PW.4 and RV.1 go
+partial to met, each of whose shortfall named containers it does not build or
+DAST against an application that does not exist. `personal-soc`: PS.3, PW.4
+and PW.8 become not applicable rather than unmet.
+
+**`keel` keeps PW.8, and that is the check working rather than a miss.** The
+entry expected it to stop being marked down there for having "almost no
+tests". It has two — `test/dashboard.test.py` and
+`test/selfreview-check.test.js` — so the practice applies and the repository
+is under-tested, which is a real finding. "Almost none" is not none, and the
+generous test matcher is deliberate: claiming a repository has no tests is the
+inference most likely to be wrong, and being wrong tells a team their tests do
+not count.
+
+**The pressure this removes is the point.** The obvious way to move those
+numbers was to enable `containers`, `dast` and `unit` anyway — each producing
+a lane that runs, finds nothing because there is nothing, and reports success.
+A green lane over an empty target is what the maturity model refuses when it
+separates `reporting_capabilities` from `enabled_capabilities`, and the SSDF
+view had no such guard.
+
+- ~~A practice whose capabilities have nothing to act on reports
+  `not_applicable`, with the reason.~~ `not_applicable_because`, its own field
+  and its own tone on the Adherence tab, because "we observed something that
+  meets this" and "we observed that this cannot apply" are different claims.
+  `how_to_evidence` is now hidden on an inapplicable practice too — it was
+  advice to build something the repository has no reason to have.
+- ~~Evidenced rather than declared.~~ The file listing, not a per-repo
+  checkbox, which would be a toggle wearing a different hat.
+- ~~`keel` and `personal-soc` stop being marked down for PW.4, PW.8 and
+  RV.1.~~ All but `keel`'s PW.8, which is genuinely applicable.
+- ~~The counts distinguish the two sentences.~~ `not_applicable` is reported
+  beside the rest rather than removed from the denominator.
+
+**Checked:** 2674 backend tests pass, eighteen new — the one-way inferences,
+the generous test matcher, unknown claiming nothing, a reporting lane beating
+the inference, a merely-not-enabled lane still being a gap, and the two
+end-to-end shapes from `keel` and `personal-soc`.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, from working the two lowest
+scoring repositories and finding most of their gaps were not gaps; built
+2026-09-09. Related to B-051: the same two repositories are also the ones
+whose languages no configured analyser can read.
+
+---
+
+### B-046 — A lane pinned to a stale commit reports as healthy — **done**
+
+**Size:** M **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+The briefing led with lanes that cannot close findings, and measured
+wall-clock silence to find them. A lane pinned to a branch that has stopped
+moving succeeds on schedule forever and never appears there at all. TheHub's
+lanes surfaced only because they *also* went quiet for two days; at their
+ten-hour cadence, 330 findings would have been frozen against a stale tree
+with every indicator green.
+
+`briefing.stale_lanes` is the second question, and it has its own section in
+the terminal briefing, its own list on the briefing API, `not_covering` on
+each capability in `scan-health`, and its own block on the Remediate page.
+
+**The check is not "consecutive runs share a commit", and writing it that way
+would have been worse than the gap.** A lane scanning a repository nobody has
+pushed to shares a commit with itself forever and is covering it correctly.
+Every quiet repository in the estate would have lit up, and the section would
+have stopped being read by the second week. What is wrong is a lane whose
+commit *the repository has already moved off* — established from the lake, by
+the newest commit any lane on that repository has reported.
+
+**Two things the tests caught that reading the code did not.**
+
+The first: the repository's newest commit cannot be read off the most recent
+run. A pinned lane re-scanning an old tree today *is* the most recent run, so
+that definition let the stale lane nominate itself as current and the check
+could never fire. It is now the commit that **appeared** most recently, by
+first-seen time, which is the one case where the two differ and the only case
+that matters.
+
+The second: the first version scaled the grace period by the lane's own
+cadence, copying `SILENCE_MULTIPLE` from the silence check next to it. That is
+right for silence — a weekly lane quiet for five days is fine — and wrong
+here. Once a lane has actually run, how often it usually runs says nothing
+about whether it should have picked up the newer commit; scaling by cadence
+made a lane that runs every nine days unreportable until the new commit was
+nine days old, which is the lane most worth reporting. `STALE_FLOOR_DAYS` is
+now a flat day, and its only job is absorbing the build race where a slow lane
+on commit N finishes after a fast lane on N+1 started.
+
+**Branch drift reads the ledger, not the lake.** `default_branch` comes from
+the onboarding record, because the lake only knows what a lane happened to
+scan — and a lane on the wrong branch would otherwise define the branch it is
+wrong about as correct. A repository with no default branch recorded produces
+no claim rather than a guess.
+
+**No re-run button, and that is the point.** Every other lane row on the
+Remediate page offers a dispatch, because for a stalled lane that is the fix.
+This lane is already running and already succeeding, so a re-run produces one
+more clean scan of the same stale tree and closes nothing. The row links to
+the lane's CI view and names what to change.
+
+**The estate is clean today, and the check was verified against it rather
+than assumed.** Run over the live lake — 759 scan-run files, five
+repositories, 103 commits on TheHub and 340 on mykronos — it reports **0
+stale lanes**. Six lanes are behind their repository's head and every one of
+them last ran *before* that commit existed, which is a lane waiting its turn
+and not a lane that stopped following. That distinction is the whole check,
+and reading it against real data is what showed it working rather than merely
+returning an empty list.
+
+- ~~The briefing and `scan-health` report a lane whose successful runs share
+  one commit, naming the commit and the date it stuck.~~ Both, with `since`
+  and `runs`.
+- ~~Branch drift against `default_branch` is surfaced per repository.~~
+- ~~TheHub reproduces both today.~~ **No longer true, and that is B-045
+  landing rather than this entry being wrong.** TheHub scans `develop`, which
+  is its recorded default, and its lanes follow the commits. The check was
+  proved against fourteen synthetic cases instead — six that must fire and
+  eight that must not, including the quiet repository, the build race, the
+  lane simply waiting its turn, and the repository with a single lane.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); built
+2026-09-09.
+
+---
+
+### B-061 — `event_driven` says a capability is fine without checking that anything runs it — **done**
+
+**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+`NON_SCANNING` conflated two different claims — "produces no scan run" and
+"needs no job" — and the exemption was unconditional, so a capability nobody
+had written a lane for reported `event_driven, problem: false`.
+
+The split is now explicit. `GATE_JOBS` names the jobs that run a gate-driven
+capability, and `coverage()` takes the CI system's job names so it can ask
+whether a *lane* exists rather than whether a *run* exists. Oracle with a lane
+stays `event_driven`; oracle with no lane is `no_job` and a problem. Aegis and
+patchwork keep the unconditional exemption, and the reason is in the code
+rather than only here: both are driven from inside Mykronos — aegis by webhooks
+as reviews arrive, patchwork by a timer — so neither needs a pipeline job for
+the capability to be working.
+
+**Why the job names live in their own table rather than in
+`CAPABILITY_BY_JOB`.** That table maps a job to the capability whose *scan
+runs* it produces, and an oracle gate produces none. Registering it there would
+fix this reading by telling a lie in the other direction: the lane would then
+be expected to upload, and read as `never_reported` forever. A test asserts the
+two tables stay disjoint.
+
+**The instance had been fixed and the class had not.** This entry was filed
+because `personal-soc` had oracle granted with no oracle job. Read on
+2026-09-09, all three applied pipelines now have one — `oracle` on
+`personal-soc`, `oracle-gate` on `mykronos` and `thehub` — so somebody wrote
+the lane at some point in the five days since, and nothing recorded that
+either. Checked against the applied configs rather than the files, which is
+B-055's lesson:
+
+| pipeline | oracle reads | with its oracle lane removed |
+|---|---|---|
+| `personal-soc` | `event_driven` | `no_job`, problem |
+| `thehub` | `event_driven` | `no_job`, problem |
+| `mykronos` | `event_driven` | `no_job`, problem |
+
+The right answer today, and a red light the day any of them loses it. That is
+the difference between a green that was checked and a green that was exempt.
+
+**Checked:** five new tests — a capability driven from inside Mykronos is still
+not a gap, a gate with a lane is fine with no scan run, the personal-soc shape
+is a problem, either job name counts, and the two tables stay disjoint.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while enabling oracle across
+the estate; built 2026-09-09.
+
+---
+
+### B-047 — Disabling a capability strands its findings open forever — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+A finding closes only after two consecutive successful scans no longer observe
+it (spec 05 §5). A capability that cannot upload will never produce one, so
+its open findings could never close by any path the platform offered — not
+because anything was unfixed, but because the only mechanism that could close
+them had been removed.
+
+**The closure rule is right and is not relaxed.** What changes is that the
+removal says what it did. `FindingStatus.STRANDED` is platform-owned, absent
+from `HUMAN_DISPOSITIONS`, and deliberately not `fixed`: it is a statement
+about the pipeline, not a judgement about the risk, which may well still be
+live. It sits in `TERMINAL_STATUSES` beside `superseded` — nothing can act on
+it, and it is not a resolution either — so a disabled lane stops being reported
+as holding N findings open, and the findings are still there to be found under
+their own filter on the Findings tab.
+
+**Restoring the grant reopens them**, back to `open` rather than to `fixed`,
+because nothing has observed their absence and the next two successful scans
+are what decide. Without that, re-enabling a capability would leave its history
+in a state no scan can revisit, which is the same defect one step later.
+
+**Keyed on the grant, not the ledger.** The grant is what ingestion enforces
+(D-119), and `installer.apply` syncs grants immediately, decoupled from the
+install pull request (spec 03 §5) — so for an Actions repository the uploads
+stop before the PR merges, and the findings follow the moment they stop. A
+finding somebody has already dispositioned is left alone: stranding is about
+findings with no exit, and one that has been judged has an exit.
+
+**The instance resolved itself, and the class did not.** This was filed
+against TheHub's 32 `dast` findings with `dast` switched off. `dast` was
+re-granted on 2026-09-05 inside B-062's restore, and that lane has been
+reporting since — 156 fixed and 40 open today, which is what a working lane
+looks like. So the 32 reached a recorded state by the capability coming back
+rather than by anything here. The mechanism is what stops the next one.
+
+**Checked:** twelve new tests, including the end-to-end shape — a capability
+switched off while holding open findings, the response saying so, the audit
+carrying the counts, re-enabling reopening them, and an ordinary capability
+change saying nothing about findings at all, because a sentence reporting "0
+stranded" every time is what gets the message skipped on the day it is not
+zero.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); built
+2026-09-09.
+
+---
 
 ### B-055 — The promotion gate was fixed in one repository and applied from another — **done**
 

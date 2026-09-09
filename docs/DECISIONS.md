@@ -4992,6 +4992,22 @@ only thing keeping keel and binnacle from reporting.
 
 ---
 
+**Amended 2026-09-09: Concourse is retained for internal-target scanning, and
+`parity` now says so itself (B-048).** This decision retired eleven duplicated
+Actions lanes and kept the Concourse pipeline, and the reason it kept it was
+never written down where the next reader would look. `mykronos parity` compares
+whether each capability *reports* and has never compared what it *reaches*: the
+Concourse `dast` and `functional` lanes target a deployment on this LAN, and
+their Actions counterparts an ephemeral stack inside a GitHub-hosted runner
+that cannot reach an RFC1918 address at all. Read literally, `parity` called
+Actions "improved" on both and therefore said the pipeline could be deleted --
+which would have removed the only path to scanning an internal deployment,
+including TheHub's production. Those two capabilities now report `not
+comparable` and the command says, in its verdict rather than in a footnote,
+that this is not permission to retire anything.
+
+---
+
 ## D-119 — The ledger is authoritative for what a repository may report, and nothing narrows it silently
 
 **2026-09-09.** Two tables answered "what may this repository report":
@@ -5030,5 +5046,38 @@ acts — and spec 03 §3.6 keeps the dashboard from claiming coverage that has n
 shipped by holding the ledger back. Reconciliation on demand, a refusal to
 narrow silently, and a red light on the dashboard are the three things that
 make the seam safe to keep.
+
+---
+
+## D-120 — A declared floor is labelled, not discounted
+
+**2026-09-09.** `osv-scanner` runs with `--no-resolve` on every dependency
+lane in this estate, so a finding against an open-bounded requirement
+describes the oldest version the repository permits rather than the one it
+runs. TheHub carried four HIGH advisories against `cryptography@42.0.0` while
+every container ran 50.0.1, which has none (B-063). Those findings now carry
+`version_basis`, and the Oracle continues to weight them exactly as it weights
+resolved ones.
+
+**Weighting them lower would be the wrong correction.** A floor is a real
+thing to assess: it is what the repository promises to accept, and a rebuild
+that resolves differently — a warm layer cache, a pinned internal index, an
+offline mirror — installs it. Discounting the finding would say the risk is
+smaller, and it is not; what was wrong was the *claim*, which read as a
+statement about running software. The fix for a mislabelled fact is the label.
+
+**Why not suppress them either.** They are unfixable as stated — nothing
+closes a floor finding except raising the floor, and raising the floor changes
+no running byte — which is an argument for making the action legible, not for
+hiding the finding. Both sweeps that followed raised the floors and closed
+them: mykronos went to 0 of 20 open-bounded dependencies carrying an advisory,
+and TheHub to zero in TheHub#290.
+
+**What would change this.** A lock file. `--no-resolve` exists because
+transitive resolution calls deps.dev, which returns an internal error for any
+`requirements.txt` containing sqlalchemy, and an extractor error fails the
+whole lane. Resolving locally with `pip-compile` or `uv` and scanning the lock
+would make every finding a resolved one and retire this distinction; that is
+the real fix and it is not this decision.
 
 ---

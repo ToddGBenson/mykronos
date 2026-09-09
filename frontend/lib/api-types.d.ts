@@ -2709,6 +2709,8 @@ export interface components {
             auto_fixable: number;
             /** Stalled */
             stalled: components["schemas"]["StalledLaneOut"][];
+            /** Stale */
+            stale?: components["schemas"]["StaleLaneOut"][];
             /** Classes */
             classes: components["schemas"]["BriefingClassOut"][];
             /** Awaiting */
@@ -3554,6 +3556,8 @@ export interface components {
             line_start?: number | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
         };
@@ -3600,6 +3604,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /** Status */
             status: string;
             /** Owner */
@@ -3648,7 +3654,7 @@ export interface components {
          * FindingStatus
          * @enum {string}
          */
-        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed" | "superseded";
+        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed" | "superseded" | "stranded";
         /**
          * FindingSubmission
          * @description One normalized finding as produced by an adapter (spec 04 §4).
@@ -3690,6 +3696,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: ("resolved" | "declared_floor" | "declared_pin") | null;
             /** Address */
             address?: string | null;
             /** Port */
@@ -4458,6 +4466,8 @@ export interface components {
             how_to_evidence: string;
             /** Nist 800 53 */
             nist_800_53: string[];
+            /** Not Applicable Because */
+            not_applicable_because?: string[];
         };
         /**
          * ProfileProposalOut
@@ -5356,6 +5366,31 @@ export interface components {
             /** Problem */
             problem: boolean;
         };
+        /**
+         * StaleLaneOut
+         * @description A lane that is reporting and not covering (B-046).
+         */
+        StaleLaneOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Reason */
+            reason: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Branch */
+            branch: string;
+            /** Default Branch */
+            default_branch: string;
+            /** Since */
+            since: string | null;
+            /** Runs */
+            runs: number;
+            /** Open Findings */
+            open_findings: number;
+            action: components["schemas"]["BriefingActionOut"];
+        };
         /** StalledLaneOut */
         StalledLaneOut: {
             /** Repo Full Name */
@@ -5738,6 +5773,8 @@ export interface components {
             package_name?: string | null;
             /** Package Version */
             package_version?: string | null;
+            /** Version Basis */
+            version_basis?: string | null;
             /**
              * Triage
              * @description What the classifier concluded about this row, and why. Carried on every row rather than only when filtered, so a queue can show it without a second request (B-019).

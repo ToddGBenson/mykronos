@@ -166,6 +166,20 @@ SILENCE_FLOOR_DAYS = 2.0
 #: briefing read every one of those lanes as merely quiet.
 BLOCKING_UPSTREAM: tuple[str, ...] = ("unit",)
 
+#: How long a newer commit must have been visible to this platform before a
+#: lane still scanning an older one is called pinned. Guards the one false
+#: positive this check can produce: two lanes triggered by the same push race,
+#: and a slow lane on commit N can finish after a fast lane on N+1 started.
+#:
+#: Deliberately NOT scaled by the lane's own cadence, which the first version
+#: of this did. Cadence is the right guard for silence -- a weekly lane that
+#: has not run for five days is fine -- and the wrong one here: once a lane
+#: has actually *run*, how often it usually runs says nothing about whether it
+#: should have picked up the newer commit. Scaling by it made a lane that runs
+#: every nine days unreportable until the new commit was nine days old, which
+#: is exactly the lane most worth reporting.
+STALE_FLOOR_DAYS = 1.0
+
 
 @dataclass
 class StalledLane:
@@ -260,6 +274,83 @@ class StalledLane:
 
 
 @dataclass
+class StaleLane:
+    """A lane that is reporting, and not covering (B-046).
+
+    `stalled_lanes` measures wall-clock silence: how long since this
+    capability last reported. That is the right question and it is not the
+    only one. A pipeline pinned to a branch that has stopped moving, or to a
+    cached checkout, produces a successful run on schedule forever against an
+    unchanging tree -- and never appears in that section at all. TheHub's
+    lanes surfaced only because they *also* went quiet for two days; had the
+    pipeline held its ten-hour cadence, 330 findings would have been frozen
+    against a stale tree with every indicator green.
+
+    Two shapes, both "the repository moved and this lane did not":
+
+    **`same_commit`** -- the lane's newest successful run carries a commit the
+    repository has already moved off, and it ran well after the newer commit
+    was visible here. Not simply "two runs share a commit": a lane scanning a
+    repository nobody has pushed to is covering it correctly, and calling that
+    a fault would flag every quiet repository in the estate.
+
+    **`wrong_branch`** -- the lane scans a branch that is not the
+    repository's default. B-045's instance, which cost TheHub sixteen days of
+    scanning `main` while every commit landed on `develop`.
+    """
+
+    repo_full_name: str
+    capability: str
+    #: "same_commit" or "wrong_branch". Both mean the lane is not watching
+    #: what it is supposed to watch; they need different fixes.
+    reason: str
+    #: The commit this lane keeps scanning, short form.
+    commit_sha: str
+    #: The branch it scanned, and what the repository says is default.
+    branch: str
+    default_branch: str
+    #: When this lane's coverage stopped moving -- the first of its runs to
+    #: carry this commit -- and how many successful runs have carried it.
+    since: datetime | None
+    runs: int
+    #: What is frozen behind it. A lane covering a stale tree cannot close a
+    #: finding fixed on the tree it is not reading.
+    open_findings: int
+    action: Action = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Re-running is not the fix here, and saying so is the point.
+
+        A stalled lane's button dispatches it and the findings close. This
+        lane is already running and already succeeding: dispatching it again
+        produces one more successful scan of the same stale tree. The fix is
+        in the pipeline definition, so the action names the file rather than
+        offering a request that would change nothing.
+        """
+        if self.reason == "wrong_branch":
+            effect = (
+                f"This lane scans `{self.branch}` and the repository's default is "
+                f"`{self.default_branch}`. Nothing on the default branch has been "
+                f"scanned by it. Point the resource at `{self.default_branch}` and "
+                "re-apply; a re-run changes nothing."
+            )
+        else:
+            effect = (
+                f"This lane has scanned `{self.commit_sha}` for its last "
+                f"{self.runs} successful run(s) while the repository moved on. "
+                "A pinned ref or a cached checkout is the usual cause. A re-run "
+                f"produces one more clean scan of the same tree and closes none "
+                f"of the {self.open_findings} finding(s) behind it."
+            )
+        self.action = Action(
+            label=f"Repair the {self.capability} lane for {self.repo_full_name}",
+            method="GET",
+            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
+            effect=effect,
+        )
+
+
+@dataclass
 class AwaitingClosure:
     """Findings already gone, waiting only for scans to say so.
 
@@ -302,6 +393,11 @@ class Briefing:
     generated_at: datetime
     total_open: int
     stalled: list[StalledLane] = field(default_factory=list)
+    #: Lanes that are reporting and not covering (B-046). Deliberately its own
+    #: list rather than another `reason` on `StalledLane`: those lanes are not
+    #: producing successful scans and these are, so the sentence, the number
+    #: and the fix are all different.
+    stale: list[StaleLane] = field(default_factory=list)
     classes: list[ClassSummary] = field(default_factory=list)
     auto_fixable: int = 0
     #: Already fixed, waiting only for scans to confirm. Needs no work.
@@ -495,6 +591,135 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
     return stalled
 
 
+def stale_lanes(
+    catalog: Catalog,
+    *,
+    now: datetime | None = None,
+    default_branches: dict[str, str] | None = None,
+) -> list[StaleLane]:
+    """Lanes that are succeeding without covering anything new (B-046).
+
+    Mykronos already held both halves of this -- `repo_onboarding.
+    default_branch` and `scan_runs.branch` / `scan_runs.commit_sha` -- and
+    nothing compared them.
+
+    **The check is not "consecutive runs share a commit".** A lane scanning a
+    repository nobody has pushed to shares a commit with itself forever and is
+    covering it correctly; flagging that would light up every quiet repository
+    in the estate and the section would stop being read. What is wrong is a
+    lane whose commit the *repository has already moved off* -- established
+    from the lake itself, by the newest commit any lane on that repository has
+    reported -- while the lane kept succeeding.
+
+    So a repository with one lane is never reported: there is nothing to
+    establish movement from, and guessing would be worse than the gap.
+    """
+    from mykronos.schemas import utcnow
+
+    if not catalog.all_files("scan_runs"):
+        return []
+
+    stamp = now or utcnow()
+    branches = default_branches or {}
+
+    rows = catalog.query(
+        """
+        SELECT repo_full_name, capability, scan_status,
+               coalesce(branch, '') AS branch,
+               coalesce(commit_sha, '') AS commit_sha,
+               coalesce(completed_at, started_at) AS ran_at
+        FROM scan_runs
+        WHERE commit_sha IS NOT NULL AND commit_sha <> ''
+        ORDER BY repo_full_name, ran_at DESC
+        """
+    )
+
+    #: Every run of a repository, newest first, and the same rows grouped by
+    #: lane. One pass, because the two questions are asked of the same rows.
+    by_repo: dict[str, list[tuple[str, str, str, Any]]] = {}
+    by_lane: dict[tuple[str, str], list[tuple[str, str, str, Any]]] = {}
+    for repo, capability, scan_status, branch, commit_sha, ran_at in rows:
+        record = (str(scan_status), str(branch), str(commit_sha), ran_at)
+        by_repo.setdefault(str(repo), []).append(record)
+        by_lane.setdefault((str(repo), str(capability)), []).append(record)
+
+    open_counts = _open_by_capability(catalog)
+    stale: list[StaleLane] = []
+
+    for (repo, capability), runs in by_lane.items():
+        successes = [run for run in runs if run[0] == "success"]
+        if not successes:
+            continue
+        _, branch, commit_sha, last_ran = successes[0]
+
+        # How long this lane has been on this commit, and over how many runs.
+        # The leading block only: an older run of the same commit with a
+        # different one in between is not a lane that stopped moving.
+        block = []
+        for run in successes:
+            if run[2] != commit_sha:
+                break
+            block.append(run)
+        since = block[-1][3]
+
+        default_branch = branches.get(repo, "")
+        if default_branch and branch and branch != default_branch:
+            stale.append(
+                StaleLane(
+                    repo_full_name=repo,
+                    capability=capability,
+                    reason="wrong_branch",
+                    commit_sha=_short(commit_sha),
+                    branch=branch,
+                    default_branch=default_branch,
+                    since=since,
+                    runs=len(block),
+                    open_findings=open_counts.get((repo, capability), 0),
+                )
+            )
+            continue
+
+        # Did the repository move, and had it moved long enough before this
+        # lane last ran that a race cannot explain it?
+        #
+        # "Newest" is the commit that APPEARED most recently, not the commit
+        # on the most recent run. Those differ precisely in the case being
+        # looked for: a pinned lane re-scanning an old tree today is the most
+        # recent run, so reading the head off it would let the stale lane
+        # define itself as current and this check would never fire.
+        first_seen: dict[str, Any] = {}
+        for _, _, sha, ran in by_repo.get(repo, []):
+            if sha not in first_seen or ran < first_seen[sha]:
+                first_seen[sha] = ran
+        if len(first_seen) < 2:
+            continue
+        newest_commit = max(first_seen, key=lambda sha: first_seen[sha])
+        if newest_commit == commit_sha:
+            continue
+        known_for = (last_ran - first_seen[newest_commit]).total_seconds() / 86400
+        if known_for <= STALE_FLOOR_DAYS:
+            continue
+
+        stale.append(
+            StaleLane(
+                repo_full_name=repo,
+                capability=capability,
+                reason="same_commit",
+                commit_sha=_short(commit_sha),
+                branch=branch,
+                default_branch=default_branch,
+                since=since,
+                runs=len(block),
+                open_findings=open_counts.get((repo, capability), 0),
+            )
+        )
+
+    # Worst first, the same ordering rule the stalled section uses: what is
+    # holding the most, then how long it has been stuck.
+    stale.sort(key=lambda lane: (-lane.open_findings, lane.since or stamp))
+    return stale
+
+
 def _usual_gap_days(runs: list[tuple[str, str, Any]]) -> float:
     """How often this lane normally runs, from its own history.
 
@@ -594,7 +819,11 @@ def _only(rows: list[_T], asset_id: str | None) -> list[_T]:
 
 
 def build(
-    catalog: Catalog, *, now: datetime | None = None, asset_id: str | None = None
+    catalog: Catalog,
+    *,
+    now: datetime | None = None,
+    asset_id: str | None = None,
+    default_branches: dict[str, str] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -648,6 +877,9 @@ def build(
         generated_at=stamp,
         total_open=sum(totals.values()),
         stalled=_only(stalled_lanes(catalog, now=stamp), asset_id),
+        stale=_only(
+            stale_lanes(catalog, now=stamp, default_branches=default_branches), asset_id
+        ),
         awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
@@ -733,6 +965,39 @@ def render(briefing: Briefing) -> str:
         lines.append("")
     else:
         lines += ["Every lane is reporting. Findings can close.", ""]
+
+    if briefing.stale:
+        lines += [
+            "LANES THAT ARE REPORTING AND NOT COVERING",
+            "  These succeed on schedule against a tree that is not moving, so",
+            "  they never appear above. A green lane over a stale checkout",
+            "  closes nothing and looks exactly like one that is working.",
+            "",
+        ]
+        # `uncovered`, not `lane`: the stalled loop above binds that name to a
+        # StalledLane in the same scope, and reusing it makes every attribute
+        # here read as an error against the wrong type.
+        for uncovered in briefing.stale:
+            if uncovered.reason == "wrong_branch":
+                state = (
+                    f"scanning {uncovered.branch}, and the default branch is "
+                    f"{uncovered.default_branch}"
+                )
+            else:
+                stuck = (
+                    f"{uncovered.since:%Y-%m-%d}" if uncovered.since else "an unknown date"
+                )
+                state = (
+                    f"{uncovered.runs} successful run(s) all on "
+                    f"{uncovered.commit_sha}, since {stuck}"
+                )
+            lines.append(
+                f"  {uncovered.capability:<11} {uncovered.repo_full_name}  — {state}"
+            )
+            if uncovered.open_findings:
+                lines.append(f"      holding {uncovered.open_findings} finding(s) open")
+            lines.append(f"      → {uncovered.action.effect}")
+        lines.append("")
 
     lines += ["OPEN FINDINGS, BY WHAT WOULD FIX THEM", ""]
     for entry in briefing.classes:

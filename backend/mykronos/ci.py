@@ -716,9 +716,50 @@ class StageCoverage:
 #: as "no_job" flagged working capabilities as permanent gaps.
 NON_SCANNING: frozenset[str] = frozenset({"aegis", "oracle", "patchwork"})
 
+#: ...but "produces no scan run" and "needs no job" are two different claims,
+#: and treating them as one said a capability was fine without checking that
+#: anything ran it (B-061). `personal-soc` reported oracle as
+#: `event_driven, problem: false` while its pipeline contained no oracle job
+#: of any kind: the capability was granted, no lane was ever written, and the
+#: exemption meant from the check reported it as healthy.
+#:
+#: Oracle is *gate*-driven in this estate rather than event-driven. It is run
+#: by a named job -- `oracle-gate` on mykronos and TheHub, `oracle` on
+#: personal-soc, and the `mykronos-oracle.yml` workflow, which the template
+#: registry already resolves to `oracle`. Its absence is exactly the gap the
+#: cross-check exists to report.
+#:
+#: Aegis and patchwork stay unconditionally exempt, and the distinction is the
+#: whole point: both are driven from inside Mykronos -- aegis by webhooks as
+#: reviews arrive, patchwork by a timer -- so neither needs a pipeline job for
+#: the capability to be working, and demanding one would report two working
+#: capabilities as gaps.
+#:
+#: The job names rather than the capability, because these jobs are NOT in
+#: `CAPABILITY_BY_JOB` and must not be: that table maps a job to the
+#: capability whose *scan runs* it produces, and an oracle gate produces none.
+#: Registering it there would fix this reading by telling a lie in the other
+#: direction -- the lane would then be expected to upload, and read as
+#: `never_reported` forever.
+GATE_JOBS: dict[str, frozenset[str]] = {
+    "oracle": frozenset({"oracle", "oracle-gate"}),
+}
 
-def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list[StageCoverage]:
-    """Every stage against what this repository actually has (PIP-6)."""
+
+def coverage(
+    enabled_capabilities: set[str],
+    reporting: list[Reporting],
+    job_names: frozenset[str] = frozenset(),
+) -> list[StageCoverage]:
+    """Every stage against what this repository actually has (PIP-6).
+
+    `job_names` is every job the CI system reports, whether or not it produces
+    scan runs. It is what lets a gate-driven capability be checked for job
+    *existence* rather than for scan-run existence -- a gate that ran and
+    blocked nothing is still a gate that ran, and has no run to point at.
+    An empty set reads as "no jobs seen", which is what an unreachable CI
+    already produces for every scanning capability too.
+    """
     by_capability = {row.capability: row for row in reporting}
 
     out: list[StageCoverage] = []
@@ -740,6 +781,13 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
             continue
 
         if stage in NON_SCANNING:
+            # Gate-driven: exempt from needing a scan run, not from needing a
+            # lane. Anything else here is driven from inside Mykronos and
+            # needs neither (B-061).
+            runs_it = GATE_JOBS.get(stage)
+            if runs_it is not None and not (runs_it & job_names):
+                out.append(StageCoverage(stage, enabled=True, state="no_job"))
+                continue
             out.append(StageCoverage(stage, enabled=True, state="event_driven"))
             continue
 
@@ -793,6 +841,41 @@ def _covers(state: str) -> bool:
     return state in _COVERED
 
 
+#: Capabilities whose two lanes do not reach the same thing, and the sentence
+#: that says why (B-048).
+#:
+#: `parity` compares whether each capability *reports*. It has never compared
+#: what each one *reaches*, and for most capabilities those are the same
+#: question: `sast` reads the same tree wherever it runs. For these two they
+#: are not.
+#:
+#: The Concourse `dast` lane targets `((demo-host))`, an address on this LAN,
+#: against a deployment that outlives the build. The Actions lane targets
+#: `localhost` inside a GitHub-hosted runner, against an ephemeral stack built
+#: and seeded per run. A hosted runner cannot reach an RFC1918 address on this
+#: network, so the Actions lane is not a better version of the Concourse one --
+#: it is the only one that can run without the LAN, and the Concourse one is
+#: the only one that can scan anything actually deployed on it, including
+#: TheHub's own production.
+#:
+#: Read literally, `parity` said Actions was `improved` on both and therefore
+#: that Concourse could be retired. Doing that would not have consolidated a
+#: duplicate; it would have permanently removed the only path to scanning an
+#: internal deployment. The honest verdict for a capability whose two lanes
+#: reach different things is not "improved" -- it is that they are not
+#: comparable, and a person has to decide.
+NOT_COMPARABLE: dict[str, str] = {
+    "dast": (
+        "the two lanes reach different targets: Concourse scans a deployment on "
+        "this network, Actions an ephemeral stack inside a hosted runner"
+    ),
+    "functional": (
+        "the two lanes exercise different environments: Concourse a deployment on "
+        "this network, Actions an ephemeral stack inside a hosted runner"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class Parity:
     """One capability, as each CI system reports it (spec 32 §9).
@@ -808,6 +891,15 @@ class Parity:
     after: str
 
     @property
+    def comparable(self) -> bool:
+        """Do the two lanes reach the same thing at all (B-048)."""
+        return self.capability not in NOT_COMPARABLE
+
+    @property
+    def why_not_comparable(self) -> str:
+        return NOT_COMPARABLE.get(self.capability, "")
+
+    @property
     def regressed(self) -> bool:
         """Did this capability lose coverage in the move."""
         return _covers(self.before) and not _covers(self.after)
@@ -818,6 +910,12 @@ class Parity:
             return "REGRESSED"
         if self.before == self.after:
             return "same"
+        if not self.comparable:
+            # Before "improved", deliberately. This is the case where the
+            # cheerful answer is the dangerous one: both lanes report, the
+            # new one reports more, and the conclusion a reader draws is
+            # "retire the old pipeline" (B-048).
+            return "not comparable"
         if _covers(self.after) and not _covers(self.before):
             return "improved"
         # Different states, same tier. Named rather than folded into "same",
