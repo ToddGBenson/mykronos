@@ -31,6 +31,9 @@ from sqlalchemy.orm import Session
 
 from mykronos.auth import TokenRegistry
 from mykronos.db.models import RepoOnboarding
+from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import locate_findings, update_findings
+from mykronos.schemas import FindingStatus, utcnow
 
 
 @dataclass(frozen=True)
@@ -107,3 +110,69 @@ def reconcile(session: Session, registry: TokenRegistry) -> list[GrantDrift]:
                 set(row.enabled_capabilities or []) | set(item.grant_only)
             )
     return before
+
+
+def _open_finding_ids(catalog: Catalog, repo_full_name: str, capabilities: set[str],
+                      status: str) -> list[str]:
+    if not capabilities or not catalog.all_files("findings"):
+        return []
+    placeholders = ", ".join(["?"] * len(capabilities))
+    rows = catalog.query(
+        f"SELECT finding_id FROM findings WHERE repo_full_name = ? "
+        f"AND capability IN ({placeholders}) AND status = ?",
+        [repo_full_name, *sorted(capabilities), status],
+    )
+    return [str(row[0]) for row in rows]
+
+
+def strand_findings(catalog: Catalog, repo_full_name: str, capabilities: set[str]) -> int:
+    """Record what disabling a capability did to its open findings (B-047).
+
+    TheHub held 32 open `dast` findings with `dast` switched off, and the
+    briefing reported that lane silent for fifteen days. Not one of them could
+    close by any path the platform offered: closure needs two consecutive
+    successful scans that no longer observe the finding, and a capability that
+    cannot upload will never produce one.
+
+    That is the closure rule working exactly as designed and arriving
+    somewhere it has no exit from. The rule is right, so this does not relax
+    it — it makes the removal say what it did. `stranded` is a statement
+    about the pipeline, not a judgement about the risk, and `restore_stranded`
+    puts them back the moment a scan can decide again.
+
+    Returns how many were stranded.
+    """
+    ids = _open_finding_ids(catalog, repo_full_name, capabilities, FindingStatus.OPEN.value)
+    if not ids:
+        return 0
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, ids),
+        "status = ?, resolved_at = ?",
+        [FindingStatus.STRANDED.value, utcnow()],
+        only_if_status=FindingStatus.OPEN.value,
+    )
+    return outcome.count
+
+
+def restore_stranded(catalog: Catalog, repo_full_name: str, capabilities: set[str]) -> int:
+    """Put stranded findings back to `open` when the grant returns.
+
+    Without this, re-enabling a capability would leave its history in a state
+    no scan can revisit — which is the same defect as stranding them, one
+    step later. Back to `open` rather than to `fixed`: nothing has observed
+    their absence, and the next two successful scans are what decide.
+
+    Returns how many were restored.
+    """
+    ids = _open_finding_ids(catalog, repo_full_name, capabilities, FindingStatus.STRANDED.value)
+    if not ids:
+        return 0
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, ids),
+        "status = ?, resolved_at = ?",
+        [FindingStatus.OPEN.value, None],
+        only_if_status=FindingStatus.STRANDED.value,
+    )
+    return outcome.count

@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Sixteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Fourteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -82,11 +82,12 @@ lanes at different path bases, each supplying the other's absence evidence).
 Every sweep since has added a form of it: B-051, a lane pointed at a language
 its analyser cannot read, and the widest gap here — four of the account's eleven
 repositories watched at all, two of the four green for that reason. B-053, a
-scanner too old to know what to look for, now closed. B-056, no branch dimension on a lane,
-which is why B-045 was forced rather than chosen. B-058, a status nothing sets,
-so a repository is failed for lacking what it cannot have. B-061, `event_driven`
-calling a capability fine without checking anything runs it. B-063, `--no-resolve`
-assessing the declared floor, so a finding names a version nobody runs.
+scanner too old to know what to look for, now closed. B-056, no branch dimension
+on a lane, which is why B-045 was forced rather than chosen. B-058, a status
+nothing sets, so a repository is failed for lacking what it cannot have. B-063,
+`--no-resolve` assessing the declared floor, so a finding names a version nobody
+runs. Two of them are closed: B-061, `event_driven` calling a capability fine
+without checking anything runs it, and B-047, the missing exit itself.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
@@ -367,36 +368,6 @@ whose checkout is pinned or cached.
   the date it stuck.
 - Branch drift against `default_branch` is surfaced per repository.
 - TheHub reproduces both today, and stops reproducing them when B-045 lands.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
-
----
-
-### B-047 — Disabling a capability strands its findings open forever
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`ToddGBenson/TheHub` has `enabled_capabilities: aegis, atlas, containers, sast,
-secrets`. `dast` is not among them. It holds **32 open findings**, and the
-briefing reports that lane silent for fifteen days.
-
-Those 32 cannot close by any path the platform offers. Closure requires two
-consecutive *successful* scans that no longer observe the finding (spec 05 §5).
-A capability that is switched off will never produce one, so absence can never
-be established. They are not open because anything is unfixed — they are open
-because the only mechanism that could close them has been removed.
-
-This is the closure rule working exactly as designed and arriving somewhere it
-has no exit from. The rule is right; the fix is not to relax it, but to make
-removing a capability an explicit decision about what it was holding.
-
-**Acceptance criteria**
-
-- Disabling a capability requires a disposition for its open findings, or
-  records one automatically with a written reason naming the removal.
-- Findings stranded this way are distinguishable from merely stale ones, in the
-  briefing and in the vulnerability-management view.
-- TheHub's 32 `dast` findings reach a recorded state.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep).
 
@@ -1158,69 +1129,6 @@ enforced" including the ones that were on.
 
 ---
 
-### B-061 — `event_driven` says a capability is fine without checking that anything runs it
-
-**Size:** S **State:** open **Verified:** 2026-09-04
-
-`ci.coverage()` exempts three capabilities from the pipeline/scan-run
-cross-check, because they produce decisions and pull requests rather than scan
-runs and so have neither side of the comparison:
-
-```python
-NON_SCANNING = frozenset({"aegis", "oracle", "patchwork"})
-...
-if stage in NON_SCANNING:
-    out.append(StageCoverage(stage, enabled=True, state="event_driven"))
-```
-
-The exemption is unconditional. It does not ask whether a job exists, only
-whether the capability is enabled. So `personal-soc` reported:
-
-```json
-{"stage": "oracle", "enabled": true, "state": "event_driven", "problem": false}
-```
-
-while its Concourse pipeline contained no oracle job of any kind. The
-capability was granted on 2026-09-04, no lane was ever written, and the
-platform reported the stage as healthy — `problem: false` — for as long as that
-was true. This is the same failure the coverage cross-check exists to catch,
-inside the branch that opts out of it.
-
-**Why this one is not simply "delete the exemption".** Remove it and every
-repository's oracle reads `no_job`, including TheHub and mykronos, which both
-*do* have a working gate. The check compares jobs against scan runs, and an
-oracle gate legitimately produces no scan run, so the honest answer needs a
-third thing to look at: whether a *job* exists, independent of whether it
-uploaded. `CAPABILITY_BY_JOB` is not that thing either — it maps jobs to the
-capability whose runs they produce, and oracle produces none, so registering
-`"oracle": "oracle"` there would be a lie in the other direction.
-
-**Aegis and patchwork are genuinely event-driven and should stay exempt.**
-Aegis is fed by webhooks as reviews happen; patchwork opens fix PRs on a timer
-inside Mykronos. Neither needs a pipeline job for the capability to be working.
-Oracle is different in this estate: it is *gate*-driven, run by a named job in
-a pipeline (`oracle-gate` on TheHub, `oracle` on personal-soc, a workflow on
-mykronos), and its absence is exactly the kind of gap worth reporting.
-
-**Acceptance criteria**
-
-- `oracle` reports `no_job` where no pipeline job or workflow runs it, and
-  `event_driven` is reserved for capabilities driven from inside Mykronos.
-- The check reads job existence, not scan-run existence, for this class — a
-  gate that ran and blocked nothing is still a gate that ran.
-- `aegis` and `patchwork` keep the current behaviour, with the reason recorded
-  in the code rather than only here.
-- A test asserts the personal-soc shape: capability enabled, no job, and the
-  stage reads as a problem.
-
-**Provenance:** DevSecOps assessment, 2026-09-04, while enabling oracle across
-the estate. Found by checking the pipeline against the dashboard rather than
-trusting the dashboard — the same method that caught the `personal-soc`
-Actions-disabled workflow, and the second time in two days that a green
-capability state has meant "not measured" rather than "measured and fine".
-
----
-
 ### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs
 
 **Size:** M **State:** open **Verified:** 2026-09-05
@@ -1522,11 +1430,17 @@ into entries here:
 
 ## Closed
 
-Forty-three entries. The count below was stale at "nineteen": it covered
+Forty-five entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — four.** B-055, whose last three criteria closed together:
+**2026-09-09 — six.** B-061 and B-047, both filed against instances that had
+quietly resolved themselves while the defect behind them stayed: oracle now has
+a lane in all three pipelines and TheHub's `dast` was re-granted, so what was
+built is the mechanism rather than the repair. `event_driven` now checks that a
+lane exists before calling a gate healthy, and a capability that loses its
+grant records what that did to its findings instead of leaving them open
+forever. Then B-055, whose last three criteria closed together:
 TheHub's `develop` already agreed about the gate and its suite had been green
 since the 6th, neither of which anybody had written down; a check now compares
 the owning repository's copy to ours, which is the direction that let a fix
@@ -1579,6 +1493,106 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-061 — `event_driven` says a capability is fine without checking that anything runs it — **done**
+
+**Size:** S **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+`NON_SCANNING` conflated two different claims — "produces no scan run" and
+"needs no job" — and the exemption was unconditional, so a capability nobody
+had written a lane for reported `event_driven, problem: false`.
+
+The split is now explicit. `GATE_JOBS` names the jobs that run a gate-driven
+capability, and `coverage()` takes the CI system's job names so it can ask
+whether a *lane* exists rather than whether a *run* exists. Oracle with a lane
+stays `event_driven`; oracle with no lane is `no_job` and a problem. Aegis and
+patchwork keep the unconditional exemption, and the reason is in the code
+rather than only here: both are driven from inside Mykronos — aegis by webhooks
+as reviews arrive, patchwork by a timer — so neither needs a pipeline job for
+the capability to be working.
+
+**Why the job names live in their own table rather than in
+`CAPABILITY_BY_JOB`.** That table maps a job to the capability whose *scan
+runs* it produces, and an oracle gate produces none. Registering it there would
+fix this reading by telling a lie in the other direction: the lane would then
+be expected to upload, and read as `never_reported` forever. A test asserts the
+two tables stay disjoint.
+
+**The instance had been fixed and the class had not.** This entry was filed
+because `personal-soc` had oracle granted with no oracle job. Read on
+2026-09-09, all three applied pipelines now have one — `oracle` on
+`personal-soc`, `oracle-gate` on `mykronos` and `thehub` — so somebody wrote
+the lane at some point in the five days since, and nothing recorded that
+either. Checked against the applied configs rather than the files, which is
+B-055's lesson:
+
+| pipeline | oracle reads | with its oracle lane removed |
+|---|---|---|
+| `personal-soc` | `event_driven` | `no_job`, problem |
+| `thehub` | `event_driven` | `no_job`, problem |
+| `mykronos` | `event_driven` | `no_job`, problem |
+
+The right answer today, and a red light the day any of them loses it. That is
+the difference between a green that was checked and a green that was exempt.
+
+**Checked:** five new tests — a capability driven from inside Mykronos is still
+not a gap, a gate with a lane is fine with no scan run, the personal-soc shape
+is a problem, either job name counts, and the two tables stay disjoint.
+
+**Provenance:** DevSecOps assessment, 2026-09-04, while enabling oracle across
+the estate; built 2026-09-09.
+
+---
+
+### B-047 — Disabling a capability strands its findings open forever — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09
+
+A finding closes only after two consecutive successful scans no longer observe
+it (spec 05 §5). A capability that cannot upload will never produce one, so
+its open findings could never close by any path the platform offered — not
+because anything was unfixed, but because the only mechanism that could close
+them had been removed.
+
+**The closure rule is right and is not relaxed.** What changes is that the
+removal says what it did. `FindingStatus.STRANDED` is platform-owned, absent
+from `HUMAN_DISPOSITIONS`, and deliberately not `fixed`: it is a statement
+about the pipeline, not a judgement about the risk, which may well still be
+live. It sits in `TERMINAL_STATUSES` beside `superseded` — nothing can act on
+it, and it is not a resolution either — so a disabled lane stops being reported
+as holding N findings open, and the findings are still there to be found under
+their own filter on the Findings tab.
+
+**Restoring the grant reopens them**, back to `open` rather than to `fixed`,
+because nothing has observed their absence and the next two successful scans
+are what decide. Without that, re-enabling a capability would leave its history
+in a state no scan can revisit, which is the same defect one step later.
+
+**Keyed on the grant, not the ledger.** The grant is what ingestion enforces
+(D-119), and `installer.apply` syncs grants immediately, decoupled from the
+install pull request (spec 03 §5) — so for an Actions repository the uploads
+stop before the PR merges, and the findings follow the moment they stop. A
+finding somebody has already dispositioned is left alone: stranding is about
+findings with no exit, and one that has been judged has an exit.
+
+**The instance resolved itself, and the class did not.** This was filed
+against TheHub's 32 `dast` findings with `dast` switched off. `dast` was
+re-granted on 2026-09-05 inside B-062's restore, and that lane has been
+reporting since — 156 fixed and 40 open today, which is what a working lane
+looks like. So the 32 reached a recorded state by the capability coming back
+rather than by anything here. The mechanism is what stops the next one.
+
+**Checked:** twelve new tests, including the end-to-end shape — a capability
+switched off while holding open findings, the response saying so, the audit
+carrying the counts, re-enabling reopening them, and an ordinary capability
+change saying nothing about findings at all, because a sentence reporting "0
+stranded" every time is what gets the message skipped on the day it is not
+zero.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); built
+2026-09-09.
+
+---
 
 ### B-055 — The promotion gate was fixed in one repository and applied from another — **done**
 

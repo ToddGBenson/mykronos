@@ -1710,7 +1710,9 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         failing=status.failing,
         stages=[
             StageCoverageOut(stage=c.stage, enabled=c.enabled, state=c.state, problem=c.problem)
-            for c in coverage(enabled, reported)
+            # Every job, not only the ones that produce scan runs: a gate
+            # capability is checked for a lane rather than for a run (B-061).
+            for c in coverage(enabled, reported, frozenset(job.name for job in status.jobs))
         ],
         reporting=[
             CiReportingOut(
