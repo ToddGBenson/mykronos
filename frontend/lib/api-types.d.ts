@@ -3648,7 +3648,7 @@ export interface components {
          * FindingStatus
          * @enum {string}
          */
-        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed" | "superseded";
+        FindingStatus: "open" | "fixed" | "false_positive" | "accepted_risk" | "suppressed" | "superseded" | "stranded";
         /**
          * FindingSubmission
          * @description One normalized finding as produced by an adapter (spec 04 §4).

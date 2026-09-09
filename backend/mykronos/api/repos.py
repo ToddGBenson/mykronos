@@ -37,6 +37,7 @@ from mykronos.db.models import (
     get_or_create_organization,
 )
 from mykronos.github.client import GitHubError
+from mykronos.grants import restore_stranded, strand_findings
 from mykronos.installer import (
     InstallerError,
     PathCollisionError,
@@ -546,6 +547,24 @@ async def set_scanner(
         return _summary(row)
 
 
+def _stranding_note(stranded: int, restored: int) -> str:
+    """Say what happened to the findings, or say nothing.
+
+    Silence when both are zero: a sentence reporting "0 findings stranded" on
+    every ordinary capability change is noise, and noise is what gets a
+    message skipped on the day the number is not zero.
+    """
+    parts = []
+    if stranded:
+        parts.append(
+            f"{stranded} open finding(s) can no longer be closed by a scan and are "
+            "recorded as stranded"
+        )
+    if restored:
+        parts.append(f"{restored} stranded finding(s) are open again and can close normally")
+    return "; ".join(parts) + ". " if parts else ""
+
+
 @router.patch("/{repo_id}/capabilities", response_model=CapabilityUpdateResult)
 async def update_capabilities(
     request: Request, repo_id: str, body: CapabilityUpdate, actor: AdminDep
@@ -648,6 +667,16 @@ async def update_capabilities(
             grants_added, grants_removed = registry.sync_grants(
                 row.github_repo_full_name, requested
             )
+            # A capability that loses its grant can no longer upload, and a
+            # finding closes only after two successful scans observe it gone
+            # (spec 05 §5) -- so its open findings become uncloseable by any
+            # path the platform offers. Recorded rather than left looking like
+            # unfixed work, and restored the moment a scan can decide again
+            # (B-047). Keyed on the grant rather than the ledger because the
+            # grant is what ingestion enforces (D-119).
+            catalog = request.app.state.catalog
+            stranded = strand_findings(catalog, row.github_repo_full_name, grants_removed)
+            restored = restore_stranded(catalog, row.github_repo_full_name, grants_added)
             row.enabled_capabilities = sorted(requested)
             # Any PR left open by an earlier install is now describing a set
             # nobody is waiting for. Clearing the pointer is not the same as
@@ -682,6 +711,8 @@ async def update_capabilities(
                 ledger_added=sorted(requested - previous),
                 ledger_removed=sorted(previous - requested),
                 install_workflows=False,
+                findings_stranded=stranded,
+                findings_restored=restored,
             )
             session.commit()
 
@@ -693,7 +724,8 @@ async def update_capabilities(
                 detail=(
                     "Enabled without installing workflows. Grants are live and "
                     f"{len(grants_added)} added / {len(grants_removed)} removed. "
-                    "Nothing will scan this repository unless a pipeline "
+                    + _stranding_note(stranded, restored)
+                    + "Nothing will scan this repository unless a pipeline "
                     "Mykronos does not manage is already doing so."
                 ),
             )
@@ -710,6 +742,13 @@ async def update_capabilities(
         try:
             plan = await installer.plan(row, requested, configs=capability_configs(session, row))
             result = await installer.apply(session, row, plan, actor=actor, registry=registry)
+            # `installer.apply` syncs the grants immediately, decoupled from
+            # the pull request (spec 03 §5), so ingestion has already stopped
+            # for anything it revoked. The findings follow the grant, not the
+            # merge (B-047).
+            catalog = request.app.state.catalog
+            stranded = strand_findings(catalog, row.github_repo_full_name, result.grants_removed)
+            restored = restore_stranded(catalog, row.github_repo_full_name, result.grants_added)
         except PathCollisionError as exc:
             # spec 03 §8 — a human wrote a file where we would generate one.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -736,6 +775,8 @@ async def update_capabilities(
             added=plan.added,
             removed=plan.removed,
             pr_number=result.pull_request.number if result.pull_request else None,
+            findings_stranded=stranded,
+            findings_restored=restored,
         )
 
         if plan.already_pending:
@@ -748,8 +789,9 @@ async def update_capabilities(
         else:
             detail = (
                 f"Opened/updated a pull request to {plan.describe()}. Capabilities "
-                "become active when it merges; ingestion grants are already live."
-            )
+                "become active when it merges; ingestion grants are already live. "
+                + _stranding_note(stranded, restored)
+            ).strip()
 
         return CapabilityUpdateResult(
             repo=_summary(row),

@@ -61,6 +61,11 @@ const STATUSES = [
   { id: "fixed", label: "fixed" },
   { id: "suppressed", label: "suppressed" },
   { id: "superseded", label: "superseded" },
+  // Open when its capability lost the grant that lets it report (B-047).
+  // Not a judgement about the risk, which may well still be live -- a
+  // statement that no scan can close it while the lane is off. Re-enabling
+  // the capability puts these back to `open`.
+  { id: "stranded", label: "stranded" },
 ] as const;
 
 const TRIAGE: Record<string, { tone: "critical" | "warn" | "accent" | "muted"; label: string }> = {

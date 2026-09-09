@@ -84,11 +84,25 @@ class FindingStatus(StrEnum):
     #: so retiring mis-identified findings as fixed would report a mass
     #: remediation every time an adapter was corrected.
     SUPERSEDED = "superseded"
+    #: Open when its capability lost the grant that lets it report (B-047).
+    #: Closure needs two consecutive successful scans that no longer observe
+    #: the finding (spec 05 §5); a capability that cannot upload will never
+    #: produce one, so absence can never be established and the finding is
+    #: open forever — not because anything is unfixed, but because the only
+    #: mechanism that could close it was removed.
+    #:
+    #: Platform-owned, so absent from `HUMAN_DISPOSITIONS`: it is a statement
+    #: about the pipeline rather than a judgement about the risk, and the
+    #: risk it describes may well still be live. Restoring the grant restores
+    #: these to `open`, because then the scans can decide again.
+    STRANDED = "stranded"
 
 
 #: Statuses that mean the finding is no longer outstanding work. `superseded`
 #: is here and `open` is not, but note that `superseded` is *also* excluded
-#: from the resolved-work metrics — it is neither.
+#: from the resolved-work metrics — it is neither. `stranded` is the same
+#: shape: nothing can act on it while the capability is off, and it is not a
+#: resolution either.
 TERMINAL_STATUSES = frozenset(
     {
         FindingStatus.FIXED,
@@ -96,6 +110,7 @@ TERMINAL_STATUSES = frozenset(
         FindingStatus.ACCEPTED_RISK,
         FindingStatus.SUPPRESSED,
         FindingStatus.SUPERSEDED,
+        FindingStatus.STRANDED,
     }
 )
 

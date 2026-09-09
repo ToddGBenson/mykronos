@@ -333,12 +333,16 @@ class TestARefusedUploadReachesAPerson:
         client.app.state.notifier = recorder  # type: ignore[attr-defined]
         token = issue_token(client, REPO, "sast")
         client.post(
-            "/api/ingest/scan-run", json=scan_run_payload(capability="dast"), headers={"Authorization": f"Bearer {token}"}
+            "/api/ingest/scan-run",
+            json=scan_run_payload(capability="dast"),
+            headers={"Authorization": f"Bearer {token}"},
         )
         client.app.state.refusals_seen[(REPO, "dast")] -= REFUSAL_QUIET_SECONDS + 1  # type: ignore[attr-defined]
 
         client.post(
-            "/api/ingest/scan-run", json=scan_run_payload(capability="dast"), headers={"Authorization": f"Bearer {token}"}
+            "/api/ingest/scan-run",
+            json=scan_run_payload(capability="dast"),
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         assert len(recorder.sent) == 2

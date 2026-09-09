@@ -716,9 +716,50 @@ class StageCoverage:
 #: as "no_job" flagged working capabilities as permanent gaps.
 NON_SCANNING: frozenset[str] = frozenset({"aegis", "oracle", "patchwork"})
 
+#: ...but "produces no scan run" and "needs no job" are two different claims,
+#: and treating them as one said a capability was fine without checking that
+#: anything ran it (B-061). `personal-soc` reported oracle as
+#: `event_driven, problem: false` while its pipeline contained no oracle job
+#: of any kind: the capability was granted, no lane was ever written, and the
+#: exemption meant from the check reported it as healthy.
+#:
+#: Oracle is *gate*-driven in this estate rather than event-driven. It is run
+#: by a named job -- `oracle-gate` on mykronos and TheHub, `oracle` on
+#: personal-soc, and the `mykronos-oracle.yml` workflow, which the template
+#: registry already resolves to `oracle`. Its absence is exactly the gap the
+#: cross-check exists to report.
+#:
+#: Aegis and patchwork stay unconditionally exempt, and the distinction is the
+#: whole point: both are driven from inside Mykronos -- aegis by webhooks as
+#: reviews arrive, patchwork by a timer -- so neither needs a pipeline job for
+#: the capability to be working, and demanding one would report two working
+#: capabilities as gaps.
+#:
+#: The job names rather than the capability, because these jobs are NOT in
+#: `CAPABILITY_BY_JOB` and must not be: that table maps a job to the
+#: capability whose *scan runs* it produces, and an oracle gate produces none.
+#: Registering it there would fix this reading by telling a lie in the other
+#: direction -- the lane would then be expected to upload, and read as
+#: `never_reported` forever.
+GATE_JOBS: dict[str, frozenset[str]] = {
+    "oracle": frozenset({"oracle", "oracle-gate"}),
+}
 
-def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list[StageCoverage]:
-    """Every stage against what this repository actually has (PIP-6)."""
+
+def coverage(
+    enabled_capabilities: set[str],
+    reporting: list[Reporting],
+    job_names: frozenset[str] = frozenset(),
+) -> list[StageCoverage]:
+    """Every stage against what this repository actually has (PIP-6).
+
+    `job_names` is every job the CI system reports, whether or not it produces
+    scan runs. It is what lets a gate-driven capability be checked for job
+    *existence* rather than for scan-run existence -- a gate that ran and
+    blocked nothing is still a gate that ran, and has no run to point at.
+    An empty set reads as "no jobs seen", which is what an unreachable CI
+    already produces for every scanning capability too.
+    """
     by_capability = {row.capability: row for row in reporting}
 
     out: list[StageCoverage] = []
@@ -740,6 +781,13 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
             continue
 
         if stage in NON_SCANNING:
+            # Gate-driven: exempt from needing a scan run, not from needing a
+            # lane. Anything else here is driven from inside Mykronos and
+            # needs neither (B-061).
+            runs_it = GATE_JOBS.get(stage)
+            if runs_it is not None and not (runs_it & job_names):
+                out.append(StageCoverage(stage, enabled=True, state="no_job"))
+                continue
             out.append(StageCoverage(stage, enabled=True, state="event_driven"))
             continue
 
