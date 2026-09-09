@@ -400,8 +400,18 @@ class TestRegistry:
             assert match, f"{capability}: uploads results but declares no tool"
             tool = match.group(1)
 
-            get_adapter(capability, tool)  # raises LookupError if missing
-            checked.append((capability, tool))
+            # The capability it *reports*, read from the rendered workflow
+            # rather than assumed from the template's name. Those differ
+            # wherever one capability has two lanes: `sast-shell` runs
+            # ShellCheck and uploads `sast`, because CodeQL implements no
+            # shell language (B-051). Asking the template is the same
+            # discipline as the rest of this test — the pairing it passes is
+            # the pairing that has to resolve.
+            reports = re.search(r"^\s*capability:\s*(\S+)\s*$", rendered, re.MULTILINE)
+            assert reports, f"{capability}: uploads results but declares no capability"
+
+            get_adapter(reports.group(1), tool)  # raises LookupError if missing
+            checked.append((reports.group(1), tool))
 
         assert checked, "no scanner templates found — the discovery is broken"
 

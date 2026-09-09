@@ -97,6 +97,17 @@ def jobs_for_capability(capability: str) -> set[str]:
 
 CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "sast": "sast",
+    # A second `sast` lane, not a second capability (B-051). CodeQL implements
+    # no shell language, so a shell-heavy repository runs ShellCheck beside it
+    # and both upload `sast` — which the cross-check has always supported,
+    # since it maps jobs to capabilities rather than the reverse.
+    # `sast-shell`, not `mykronos-sast-shell`: `ActionsClient._job_name_for`
+    # resolves a workflow through the template registry first, so the Actions
+    # lane already arrives here under its registry key. Adding the filename
+    # stem as well would put it in `jobs_for_capability("sast")`, and the
+    # "scan now" button would try to trigger a Concourse job that does not
+    # exist before the one that does.
+    "sast-shell": "sast",
     "secrets": "secrets",
     "containers": "containers",
     "dast": "dast",

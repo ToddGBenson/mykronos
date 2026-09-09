@@ -772,7 +772,7 @@ def stale_lanes(
 
 def unread_code(
     languages: dict[str, dict[str, int]] | None,
-    sast_tools: dict[str, str] | None = None,
+    sast_tools: dict[str, str | list[str]] | None = None,
 ) -> list[UnreadCode]:
     """Repositories with source no configured analyser implements (B-051).
 
@@ -790,7 +790,7 @@ def unread_code(
     tools = sast_tools or {}
     out: list[UnreadCode] = []
     for repo, byte_counts in languages.items():
-        reading = readability(repo, byte_counts, tools.get(repo, "codeql"))
+        reading = readability(repo, byte_counts, tools.get(repo) or "codeql")
         if not reading.blind:
             continue
         out.append(
@@ -913,7 +913,7 @@ def build(
     asset_id: str | None = None,
     default_branches: dict[str, str] | None = None,
     languages: dict[str, dict[str, int]] | None = None,
-    sast_tools: dict[str, str] | None = None,
+    sast_tools: dict[str, str | list[str]] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 

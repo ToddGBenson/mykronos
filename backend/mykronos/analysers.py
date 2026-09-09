@@ -25,6 +25,7 @@ of gaps nobody should act on, which is how a real one stops being read.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 #: What each static analyser implements, in GitHub's own language names.
@@ -53,6 +54,10 @@ SAST_LANGUAGES: dict[str, frozenset[str]] = {
             "Swift",
         }
     ),
+    # ShellCheck reads shell and nothing else, which is exactly why it is
+    # worth running *beside* CodeQL rather than instead of it: on `keel` the
+    # two together read everything, and either alone reads about a third.
+    "shellcheck": frozenset({"Shell"}),
     # Semgrep's registry is broader and does cover bash. Named for the day a
     # repository is pointed at it, not because anything uses it here.
     "semgrep": frozenset(
@@ -112,8 +117,13 @@ class Readability:
     """How much of a repository its configured analyser can read."""
 
     repo_full_name: str
-    tool: str
-    #: Bytes of application source, and how many of them the tool implements.
+    #: Every analyser that reports for this repository, together. Two lanes on
+    #: one capability is how "a shell analyser alongside CodeQL" is expressed
+    #: here, so readability is a question about the set rather than about one
+    #: tool -- and asking it of one tool would report `keel` as 70% unread on
+    #: the day it stopped being.
+    tools: tuple[str, ...]
+    #: Bytes of application source, and how many of them the tools implement.
     source_bytes: int
     analysable_bytes: int
     #: Languages the tool cannot read, largest first, as (name, bytes).
@@ -129,6 +139,12 @@ class Readability:
         a coverage gap on its first day.
         """
         return self.source_bytes > 0
+
+    @property
+    def tool(self) -> str:
+        """The analysers, for a sentence. Kept so a caller reading one name
+        still gets a true one when there are several."""
+        return " + ".join(self.tools) if self.tools else "nothing"
 
     @property
     def share_unread(self) -> float:
@@ -149,15 +165,22 @@ class Readability:
 
 
 def readability(
-    repo_full_name: str, languages: dict[str, int], tool: str
+    repo_full_name: str, languages: dict[str, int], tools: str | Iterable[str]
 ) -> Readability:
-    """Measure one repository against one analyser.
+    """Measure one repository against everything analysing it.
 
-    `languages` is GitHub's byte count per language. An unknown tool reads
-    nothing, which is the safe direction: a tool this platform has no language
-    list for should say so rather than be assumed comprehensive.
+    `languages` is GitHub's byte count per language. `tools` is one analyser
+    or several: several is the answer B-051 asks for, since a shell analyser
+    beside CodeQL is two lanes on one capability rather than a replacement.
+
+    An unknown tool reads nothing, which is the safe direction: a tool this
+    platform has no language list for should say so rather than be assumed
+    comprehensive.
     """
-    implements = SAST_LANGUAGES.get(tool, frozenset())
+    names = (tools,) if isinstance(tools, str) else tuple(tools)
+    implements: set[str] = set()
+    for name in names:
+        implements |= SAST_LANGUAGES.get(name, frozenset())
 
     source = 0
     analysable = 0
@@ -174,7 +197,7 @@ def readability(
 
     return Readability(
         repo_full_name=repo_full_name,
-        tool=tool,
+        tools=names,
         source_bytes=source,
         analysable_bytes=analysable,
         unread=sorted(unread.items(), key=lambda item: -item[1]),

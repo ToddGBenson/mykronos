@@ -158,6 +158,9 @@ class TestSchemaExposure:
         assert config_schema("sast")["properties"]["enabled_tool"]["enum"] == [
             "codeql",
             "semgrep",
+            # Joined 2026-09-09 (B-051): CodeQL implements no shell language,
+            # so a shell-heavy repository runs ShellCheck as a second lane.
+            "shellcheck",
         ]
         assert config_schema("iac")["properties"]["enabled_tool"]["enum"] == ["checkov"]
 

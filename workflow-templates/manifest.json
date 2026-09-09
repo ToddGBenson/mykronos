@@ -96,6 +96,12 @@
       "target": ".github/workflows/mykronos-oracle.yml",
       "version": "1.1.0",
       "summary": "Risk decision gate — asks Oracle to judge a commit once the scanners have reported"
+    },
+    "sast-shell": {
+      "template": "sast-shell.yml.j2",
+      "target": ".github/workflows/mykronos-sast-shell.yml",
+      "version": "1.0.0",
+      "summary": "Shell static analysis with ShellCheck, beside CodeQL rather than instead of it"
     }
   }
 }
