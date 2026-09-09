@@ -45,36 +45,32 @@ already shipped.
 
 ## Open
 
-Twenty, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Sixteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
 **The nine that needed the operator rather than code were decided on
-2026-09-05, as D-108 to D-116.** Five stay open as execution and each carries
-its decision inline: `cloud` is disabled and recorded as unavailable
-(B-018, D-108); the registry is closed by network scope rather than by binding
-(B-054, D-109); two of three branch-protection controls are required and commit
-signing is deliberately deferred (B-060, D-110); the notifier gets
-a webhook, now that ownership is real (B-035, D-112); and coverage goes on the
-free Actions lane with its CI cost measured on the runner rather than assumed
-(B-042, D-113 corrected by D-117). Four are in Closed: the ranking queue's
+2026-09-05, as D-108 to D-116.** Four stay open as execution and each carries
+its decision inline: the registry is closed by network scope rather than by
+binding (B-054, D-109); two of three branch-protection controls are required
+and commit signing is deliberately deferred (B-060, D-110); the notifier gets a
+webhook, now that ownership is real (B-035, D-112); and coverage, whose lane
+was retired under it (B-042, D-113 corrected by D-117, then D-118) and which
+now needs a second decision. Five are in Closed: the ranking queue's
 disclosure derived from its terms (B-049, D-116, built the same day); B-043,
 closed as a decision because free-text Consult stays deferred (D-115); binnacle
 granted with its partial coverage recorded (B-052, D-111 — executed on the
-5th, undone on the 7th, redone on the 8th); and ZAP on 2.17.0 with the
-resource read taken on the runner (B-053, D-114, 2026-09-08).
+5th, undone on the 7th, redone on the 8th); ZAP on 2.17.0 with the resource
+read taken on the runner (B-053, D-114, 2026-09-08); and `cloud` disabled on
+TheHub (B-018, D-108, executed on the 5th inside B-062's restore and confirmed
+on the 9th).
 
-**None of the five is blocked any longer, and none of them was a defect in this
-platform's code.** Four are a setting, a credential or a rule outside this
-repository; the fifth is a call about this deployment's CI budget. Writing
+**None of the four is blocked any longer, and none of them was a defect in this
+platform's code.** Three are a setting, a credential or a rule outside this
+repository; the fourth is a call about this deployment's CI budget. Writing
 code against any of them before the decision would have been guessing, which is
 why they waited.
-
-**B-044 is done and not yet closed.** `administration: read` was granted on
-2026-09-04 and the estate's governance posture is readable — B-060 is the first
-pass over it. The entry's own text still reads as though nobody had granted it;
-what is left is confirming the SSDF count moved and closing it.
 
 **One story keeps arriving from different directions: nothing here checks that a
 scan covered anything.** It began as the second 2026-09-03 sweep's four —
@@ -95,13 +91,14 @@ assessing the declared floor, so a finding names a version nobody runs.
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
 deploy path pulls from taking anonymous writes from any host on the LAN, which
-no scanner in this platform could have found. B-050 — eight live TheHub
-findings, read by hand because B-045 meant no scanner had looked at that code in
-sixteen days.
+no scanner in this platform could have found; the rule that closes it is
+written and needs one elevated run. B-050 — eight live TheHub findings, read by
+hand because B-045 meant no scanner had looked at that code in sixteen days.
 
-**And one is the platform mis-recording its own state.** B-062: enabling one
-capability silently revoked five others and the audit said nothing was removed.
-Its sibling B-049 — filling in the four risk profiles turned an accurate
+**The one that was the platform mis-recording its own state is closed.**
+B-062 — enabling one capability silently revoked five others and the audit
+said nothing was removed — sprang a second time on binnacle on the 7th and
+was built out on the 9th as D-119. Its sibling B-049 — filling in the four risk profiles turned an accurate
 disclosure off without changing the rank behind it, found only because the
 operator half of B-033 was finally done — was built on 2026-09-05 and is in
 Closed.
@@ -192,63 +189,10 @@ CI loop works.
 30 by the composite gate D-083 retired — and the call belongs to whoever owns
 the consequence of a blocked release, not to this file.
 
-**B-018** is a decision, not a defect. Both answers are defensible and only the
-operator knows which is true — whether the Azure principal was lost with the
-rest of `.env` on 2026-08-23 or deliberately never set — so writing code before
-that choice would be guessing. It was deferred on 2026-09-01 with the capability
-left enabled and inert, which this entry itself calls the one indefensible
-state; that is a deliberate hold, not an oversight.
-
-### B-044 — One App permission is holding four features shut
-
-**Size:** S **State:** open **Verified:** 2026-09-03
-
-`repo_governance` holds **zero rows**. Not stale ones — none, ever. Every
-governance read on this deployment returns unreadable:
-
-    GitHub refused the read: Could not read branch protection for
-    ToddGBenson/mykronos: {"message":"Resource not accessible ..."}
-
-The GitHub App does not carry `administration: read`. D-097 decided that
-permission is *optional* rather than required, and that decision is right —
-making it required would fail the spec 02 §8 permission smoke test for every
-installation that already exists. It had not been granted here until
-2026-09-04, and the consequence was larger than the governance panel it was
-added for.
-
-**Four things are inert because of it, and none of them is broken.**
-
-1. The governance panel reports nine controls as `unknown`, correctly.
-2. **SSDF PS.1, PS.2 and part of PW.7** report "could not be read" — three of
-   the four practices `mykronos` cannot evidence, out of thirteen.
-3. **Oracle's governance term** is permanently `available: False`, so no
-   repository is scored on whether a bad change could get in.
-4. **Control drift** (D-105) will never fire. The sweep runs, finds nothing
-   readable, and records nothing — which is the correct behaviour and means
-   the feature sits waiting.
-
-**One click.** Granting `administration: read` on the App installation lights
-all four with no code change, which is also the proof that each was built
-right: none of them fabricated a value in its absence.
-
-**Granted 2026-09-04, and it did light them.** The estate's governance posture
-was readable for the first time that day and B-060 is the pass over it — every
-number in that entry is a live read of what this entry said was unreadable. The
-grant also exposed the defect that had been hiding the result: the SSDF
-assessment compared `state == "pass"` against a module emitting
-`on`/`off`/`partial`/`unknown`, so every readable control still reported as not
-enforced. This entry stays open only until the SSDF count is confirmed to have
-moved and the first drift sweep is recorded.
-
-**Acceptance criteria**
-
-- The permission is granted, or a decision is recorded that it will not be —
-  as D-053 did for DAST.
-- `repo_governance` carries a row per repository and the SSDF count moves.
-- The first drift sweep after the grant produces no drift, because a first
-  reading has nothing to compare against. That is expected, not a failure.
-
----
+**B-018** was a decision, not a defect, and it went the way of disabling
+(D-108). It was deferred on 2026-09-01 with the capability left enabled and
+inert, which the entry itself called the one indefensible state; that hold
+lasted four days and is in Closed.
 
 ### B-042 — Coverage is plumbed end to end and no pipeline writes it
 
@@ -357,43 +301,6 @@ without it (B-066).
 - A figure appears on the Harness tab without any platform change, which is
   the proof that the plumbing was always right.
 - The added CI time is measured and recorded, not assumed.
-
----
-
-### B-018 — `cloud` is enabled on a repository and its lane cannot run
-
-**Size:** S **State:** open **Verified:** 2026-09-01
-
-`cloud` is enabled on `ToddGBenson/TheHub` and has produced zero scan runs
-across the entire lake, ever. The reason is upstream of the platform:
-`thehub`'s `cloud-posture` job is paused because `deploy/concourse/.env` has no
-Azure service principal — `set-thehub-pipeline.ps1` refuses to apply without one
-unless `-AllowMissingAzure` is passed, and the applied pipeline's
-`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` and
-`AZURE_SUBSCRIPTION_ID` are all empty.
-
-So the capability reads as enabled on the dashboard and is structurally
-incapable of reporting. That is the same shape as spec 14's network claim
-(B-007, closed): a capability the platform presents as available and cannot
-perform.
-
-**This needs a decision before code.** Either the Azure principal is restored —
-only the operator knows whether it was lost with the rest of `.env` on
-2026-08-23 or deliberately never set — or `cloud` is disabled on TheHub and
-recorded as not available on this deployment. Both are defensible; leaving it
-enabled and inert is not.
-
-**Decided 2026-09-05 — D-108: disable and record.** `cloud` is not available
-on this deployment. Restoring the principal was the alternative and was rejected
-because it needs a credential that may not exist; disabling is reversible the day
-one does. What is left here is the toggle and the dashboard reading `cloud` as
-absent rather than as a real zero.
-
-**Acceptance criteria**
-
-- Either `cloud-posture` can run, or `cloud` is not presented as enabled.
-- Whichever way it goes is written down, as D-053 did for DAST.
-- Distinct from B-015: `cloud`'s zero is real, and must keep reading as real.
 
 ---
 
@@ -914,92 +821,50 @@ permitting 5000 from `172.16.0.0/12` and loopback, denying it elsewhere.
 first move, because scope is a property of where this machine sits and
 authentication survives it moving.
 
+**Written 2026-09-09 as `deploy/concourse/Set-RegistryScope.ps1`, and D-109's
+own wording would have taken the build down.** Implemented literally — allow
+`172.16/12` and loopback, block `Any` — the block wins: Windows Defender
+Firewall evaluates **block rules ahead of allow rules**, so a block on `Any`
+beats the allow beside it and kaniko's push dies along with the LAN access.
+That is the same trap the loopback correction above describes, one layer down,
+and it was caught by checking the precedence rather than by trying it.
+
+The intent has to be expressed as what is *denied*, so the script installs one
+inbound block rule scoped to this host's LAN prefix (`192.168.0.0/24`,
+computed from the host's own non-Docker addresses rather than hard-coded).
+Evidence that this leaves the build alone: every write in the registry's log
+arrived from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
+filter loopback at all, so `localhost:5000` pulls are untouched either way.
+`-WhatIf` runs unelevated and prints the plan; `-Remove` undoes it.
+
+**What is left is one elevated command and two readings.** A firewall rule
+needs an administrator prompt this session does not have, and the acceptance
+criteria are deliberately both-or-nothing:
+
+    .\deploy\concourse\Set-RegistryScope.ps1 -WhatIf   # read the plan
+    .\deploy\concourse\Set-RegistryScope.ps1           # elevated
+
+then `curl http://192.168.0.14:5000/v2/_catalog` from another LAN host must
+fail, **and** a Concourse `build` job must still push. Either alone is a false
+pass: a registry nobody can reach is not the goal.
+
+The compose comment no longer claims the exposure is required, which was the
+third criterion, and it now records why the obvious rule shape is wrong.
+
 **Acceptance criteria**
 
 - `GET /v2/_catalog` from another host on the network fails, **and** a `build`
-  job still pushes successfully. Both, or the change is not done.
-- Whichever route is taken, the compose comment stops saying the exposure is
-  required, because after the firewall rule it is required only from 172.16/12.
-- A decision is recorded either way: a registry deliberately open on a trusted
-  LAN is a defensible position, it is just not one anybody has stated.
+  job still pushes successfully. Both, or the change is not done. **Waiting on
+  the elevated run.**
+- ~~Whichever route is taken, the compose comment stops saying the exposure is
+  required.~~ Done 2026-09-09: it names the bridge gateway every push has
+  actually come from, and why "block everything else" is the wrong rule.
+- ~~A decision is recorded either way.~~ D-109, amended 2026-09-09 with the
+  block-precedence correction.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
 service scan of 192.168.0.14 run at the operator's request. Recorded as a
 declared surface on `mykronos` with the catalog response as its evidence.
-
----
-
-### B-055 — The promotion gate was fixed in one repository and applied from another — **half done**
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-**The applied pipeline let a failed security scan promote to production, and had
-done since #55167 was "fixed".**
-
-Three copies of TheHub's pipeline existed and two of them disagreed:
-
-| copy | `insider.passed` | gates prod on the scans? |
-|---|---|---|
-| TheHub `main` (`7197a028`) | `[api-inventory, dast-demo, oracle-gate]` | yes |
-| TheHub `develop` | `[oracle-gate]` | **no — regressed** |
-| **this repo's copy, which is what gets applied** | `[oracle-gate]` | **no** |
-| live, from `fly get-pipeline` | `[oracle-gate]` | **no** |
-
-So the #55167 fix landed in TheHub's repository and **never reached the pipeline
-that runs**. `api-inventory`, `dast-demo` and `functional-dast` hung off
-`deploy-demo` as siblings of the gate rather than parts of it, and a commit whose
-demo DAST failed stayed eligible for `deploy-prod`. That is the 2026-08-20 state
-the guard test names — api-inventory failed builds #14-#19 while oracle-gate #20
-went green — still live on 2026-09-04. This is D-081 with a security
-consequence: the applied pipeline is the one that governs, and nothing compared
-it to the repository that fixed it.
-
-**Fixed and applied 2026-09-04.** This repo's copy now reads
-`passed: [oracle-gate, api-inventory, dast-demo]`, verified live:
-
-    LIVE insider.passed = ['api-inventory', 'dast-demo', 'oracle-gate']
-    LIVE gate (13 jobs): api-inventory, build, containers, dast-demo,
-      dependencies, deploy-demo, iac, insider, oracle-gate, prompt-evals,
-      sast, secrets, unit
-
-`functional-dast` is deliberately excluded and the reason is now in the file, as
-the guard test requires: it is **paused** under D-053, and a `passed:` on a
-paused job can never be satisfied — listing it would close promotion
-permanently rather than tighten it.
-
-All six of `test_pipeline_promotion_gate.py`'s gate assertions were replayed
-against this copy and pass.
-
-**What is left, and it is not this repository's to fix.**
-
-1. **TheHub's `develop` still carries the regression.** Its twelve red tests are
-   the guard working exactly as designed — catching a regression before it
-   reaches `main`. The fix is the same one-line change in
-   `concourse/pipelines/thehub.yml` there.
-2. **Until those twelve are green, `develop` cannot be scanned at all**, because
-   every scan lane carries `passed: [unit]`. That half of this entry stands: a
-   branch with a red suite receives zero security scanning, silently, and it is
-   why the one-off `develop` scan on 2026-09-03 produced a single run — unit,
-   failed, 0 findings. B-045's fix therefore still waits on this.
-3. **Nothing reconciles the two copies.** `scripts/check_applied_pipelines.py`
-   (D-081) compares the applied pipeline to *this* repository's file; it cannot
-   see that TheHub's own copy has moved ahead. That gap is what let a fix exist
-   and not take effect for two weeks.
-
-**Acceptance criteria**
-
-- ~~`api-inventory` and `dast-demo` are upstream of `deploy-prod` in the applied
-  pipeline.~~ Done 2026-09-04.
-- TheHub's `develop` copy matches, and its twelve promotion-gate tests pass.
-- A check compares TheHub's copy against this repository's, not just the applied
-  pipeline against this one — the direction that was missing.
-- A scan lane that cannot run because an upstream job failed is distinguishable
-  in the briefing from one that is merely silent.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); corrected and
-half-closed 2026-09-04. The first version of this entry said the gate had never
-been wired; it had, on TheHub's `main`, and the real defect was that the applied
-copy never received it.
 
 ---
 
@@ -1356,122 +1221,6 @@ capability state has meant "not measured" rather than "measured and fine".
 
 ---
 
-### B-062 — Enabling one capability silently revoked five others, and the audit said nothing was removed
-
-**Size:** M **State:** open **Verified:** 2026-09-05
-
-`PATCH /repos/{id}/capabilities` writes the grant table from the request and
-writes the audit entry from the *ledger*. When those two disagree, it revokes
-grants and records that it revoked nothing.
-
-```python
-previous = set(row.enabled_capabilities or [])          # the ledger
-grants_added, grants_removed = registry.sync_grants(    # the grant table
-    row.github_repo_full_name, requested)
-...
-db.audit(... added=sorted(requested - previous),
-             removed=sorted(previous - requested))      # <- ledger diff
-```
-
-`sync_grants` makes `capability_grants` **exactly** `requested`, deleting every
-row outside it. `grants_removed` holds what it actually deleted — and is used
-only to build a sentence. The `removed` field written to the audit log is
-`previous - requested`, computed from a different source entirely.
-
-**This is not hypothetical; it happened here, and this assessment caused it.**
-On 2026-09-05 03:45:58, enabling `oracle` for TheHub sent the six capabilities
-the ledger listed. The grant table held eleven. Five were deleted:
-
-```
-detail: {"repo": "ToddGBenson/TheHub",
-         "requested": ["aegis","atlas","containers","oracle","sast","secrets"],
-         "added": ["oracle"], "removed": []}
-```
-
-`removed: []`. Twenty-two minutes later TheHub's `iac` lane failed:
-
-```
-HTTP 403: {"detail":"'iac' is not enabled for ToddGBenson/TheHub.
-  Currently granted: aegis, atlas, containers, oracle, sast, secrets."}
-```
-
-The evidence that these were live grants and not a pre-existing gap is that
-they were being used. `iac` uploaded successfully on 2026-09-01 (`200 OK`), and
-`dast-staging` uploaded **70 DAST findings** on 2026-09-04 at 02:00 (`200 OK`).
-Both capabilities were absent from the ledger the whole time. The grant table
-was the thing that worked, and the ledger was the thing the audit believed.
-
-| when | lane | result |
-|---|---|---|
-| 2026-09-01 20:12Z | `iac` | 200 OK, uploaded |
-| 2026-09-04 09:00Z | `dast-staging` | 200 OK, 70 findings |
-| **2026-09-05 03:45Z** | **capabilities PATCH** | **5 grants deleted, `removed: []`** |
-| 2026-09-05 04:07Z | `iac` | 403, refused |
-
-**Four of the five failed silently.** Only `iac` fails the build on a rejected
-upload. `dast`, `ai`, `qa` and `unit` end their upload step with
-`|| echo "upload failed - the scan verdict above still stands."`, so those
-lanes went **green** while their findings were refused at the door. On the only
-internet-facing repository in the estate, DAST was one of them.
-
-**Why nothing else caught it.** `ci.coverage()` walks the *enabled* set and
-asks whether each capability is reporting. A capability that is not enabled is
-`not_enabled`, and `not_enabled` is not a problem — so the case where a job
-exists, runs, and has nowhere to put its output is the one direction the
-cross-check cannot see. That is the inverse of [[B-061]], which is a capability
-enabled with no job. Two failures either side of one comparison means the
-comparison is drawn against the wrong axis.
-
-**Acceptance criteria**
-
-- The audit records what was **done**, not what was intended: `added` and
-  `removed` come from `sync_grants`' return values, which already carry exactly
-  this and are currently discarded into a message string.
-- The ledger and the grant table are reconciled, or one of them stops being
-  authoritative. Today `enabled_capabilities` drives the dashboard and
-  `capability_grants` drives ingestion, and this defect is what their drift
-  looks like from the outside.
-- A PATCH that would revoke a grant not present in the ledger says so before
-  doing it, or refuses. Silently narrowing a repository's ingestion because the
-  caller sent the set the dashboard showed them is a trap for exactly the
-  routine, well-intentioned call that sprung it here.
-- The coverage cross-check reports a capability a pipeline uploads that the
-  repository has not enabled.
-- A 403 from `/api/ingest/*` reaches somewhere a person looks. Findings were
-  produced and discarded; that is a security event, not a routine auth failure.
-
-**mykronos was carrying the same trap, unfired.** After restoring TheHub, the
-whole estate was swept for the same drift:
-
-```
-ToddGBenson/mykronos   grant_only=['dast', 'functional']   <-- DRIFT
-```
-
-Its grant table held `dast` and `functional`; its ledger did not list them.
-Both were actively uploading. Any routine capability change made from the set
-the dashboard shows — the same well-intentioned call that broke TheHub — would
-have silently revoked DAST on this platform too. Resolved by aligning the
-ledger to the grants (`added: ['dast','functional'], removed: []`), and the
-estate now reports **0 repositories with drift**. The alignment is a
-workaround: the two sources can drift again tomorrow, which is why the
-reconciliation is still an acceptance criterion above.
-
-**Restored on 2026-09-05 07:18:** `ai`, `dast`, `iac`, `qa` and `unit` were
-re-granted to TheHub. `iac` and `qa` were re-run and now upload (`200 OK`,
-`Uploaded 0 finding(s) ... (success)`). `cloud` and `functional` were left
-disabled on purpose — `cloud-posture` and `functional-dast` are both paused
-(D-053, single worker), so enabling them would create an enabled capability
-with no lane feeding it, which is B-061's failure rather than this one's.
-
-**Provenance:** DevSecOps assessment, 2026-09-05, found while working out why
-TheHub's `iac` lane was failing. Worth recording how it was found: the audit
-log said `removed: []` and was believed twice — first when the grants were
-deleted, and again an hour later when the deletion was ruled out as a cause on
-the strength of that same field. What settled it was reading `sync_grants`
-against the line that writes the audit entry, rather than reading either alone.
-
----
-
 ### B-063 — `--no-resolve` assesses the declared floor, so findings describe a version nobody runs
 
 **Size:** M **State:** open **Verified:** 2026-09-05
@@ -1645,6 +1394,95 @@ politely — it hides it completely.
 
 ---
 
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back
+
+**Size:** S **State:** open **Verified:** 2026-09-05
+
+PS-9 says a credential belongs in the credential manager rather than in a
+`((vars))` file, because Concourse stores pipeline configuration verbatim and
+anyone who can run `fly get-pipeline` reads it back. It was done for `mykronos`
+(D-079) and never for the other two. Read out of the live configs on 2026-09-05,
+after re-applying `mykronos`:
+
+| pipeline | credential | in the applied config |
+|---|---|---|
+| `thehub` | `anthropic-api-key` | **literal, 76 chars, twice** |
+| `thehub` | `github-token` | **literal, 383 chars** |
+| `personal-soc` | `personal-soc-ingestion-token` | **literal, 43 chars, three times** |
+| `mykronos` | everything | placeholder — resolves at egress |
+
+Only presence and length were read; no value was printed or copied anywhere.
+
+**The Anthropic key is a stale apply, not a missing secret, and that is the
+cheapest fix in this file.** `concourse/main/anthropic-api-key` is in Vault
+today, and `set-thehub-pipeline.ps1`'s own probe finds it — reproduced with the
+same `CONCOURSE_VAULT_TOKEN` the script uses:
+
+    absent : concourse/main/thehub/anthropic-api-key
+    PRESENT: concourse/main/anthropic-api-key
+
+Concourse looks up pipeline scope then team scope, `Test-VaultSecret` probes
+those two paths in that order, and the second hits. So a re-apply of `thehub`
+today removes two inline copies of a live model key with no other change. The
+config is carrying a literal because it has not been applied since the key
+reached Vault.
+
+**The ingestion token is genuinely absent from Vault** — neither
+`concourse/main/personal-soc/personal-soc-ingestion-token` nor
+`concourse/main/personal-soc-ingestion-token` exists — so that one needs
+`Import-EnvSecretsToVault.ps1 -Pipeline personal-soc` first, then a re-apply.
+It is the one credential here that is inline *and* current: `personal-soc` was
+applied on 2026-09-05.
+
+**`github-token` is deliberate and stays.** `set-thehub-pipeline.ps1:301` records
+why: it is a GitHub App installation token minted fresh per run and dead in an
+hour (CNC-2), and a stale secret resolving in place of a live one is worse than a
+config holding something already expiring. Worth naming here so the next reader
+does not "fix" it. The residual exposure is real but bounded — one hour, and only
+to somebody who can already reach this Concourse.
+
+**Three of the six the drift check flags have nothing in them, and the check
+cannot tell.** `check_applied_pipelines.py` classifies a var as `CREDENTIALS
+INLINE` when it is not resolved from Vault, which is the right question for
+configuration and the wrong one for exposure. Read back:
+
+- `thehub`: `azure-client-secret`, and `azure-client-id`, `azure-tenant-id`,
+  `azure-subscription-id` — **all four empty.**
+- `personal-soc`: `anthropic-api-key` and `hibp-api-key` — **both empty.**
+
+So the warning names six credentials where three are real, one of those three is
+a deliberate one-hour token, and two of the empties are empty for reasons already
+recorded (D-108 for Azure; the paused `breach-check` for HIBP). A warning that
+overstates gets discounted, and then the two entries in it that matter get
+discounted with it.
+
+**This independently confirms D-108.** B-018 concluded that TheHub's Azure
+principal is unset from `deploy/concourse/.env`; the applied pipeline agrees —
+all four Azure variables are empty strings in the running config. `cloud` could
+not have reported no matter what was enabled.
+
+**Acceptance criteria**
+
+- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied config.
+- `personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
+  three `MYKRONOS_TOKEN` assignments reading as placeholders.
+- `check_applied_pipelines.py` distinguishes an inline credential with a value
+  from an inline empty string, and says which. Empty is not an exposure and must
+  stop being reported as one.
+- `github-token`'s exclusion is recorded where the check reports it, so the one
+  deliberate case does not read as the two accidental ones.
+- The two keys that were inline are treated as exposed and rotated, because
+  every apply since they landed has stored them somewhere readable.
+
+**Provenance:** found on 2026-09-05 while verifying that D-113's coverage flag
+had reached the running `mykronos` pipeline. `check_applied_pipelines.py`
+reported no drift and, in the same output, three `CREDENTIALS INLINE` lines that
+nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
+empty-versus-real split was found by reading the applied configs rather than by
+trusting the label.
+
+---
+
 ## Watching, not filed
 
 Recorded so the next sweep does not rediscover them, and deliberately not turned
@@ -1684,9 +1522,24 @@ into entries here:
 
 ## Closed
 
-Thirty-nine entries. The count below was stale at "nineteen": it covered
+Forty-three entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
+
+**2026-09-09 — four.** B-055, whose last three criteria closed together:
+TheHub's `develop` already agreed about the gate and its suite had been green
+since the 6th, neither of which anybody had written down; a check now compares
+the owning repository's copy to ours, which is the direction that let a fix
+exist for two weeks without taking effect; and a lane quiet because an upstream
+it gates on is red reads `blocked` rather than `silent`, with the upstream's
+button instead of its own. Then B-062, the trap that sprang twice: the ledger is
+authoritative (D-119), a PATCH refuses to narrow ingestion it was not told
+about, `reconcile-grants` widens and never revokes, the cross-check sees a job
+for a capability nobody enabled, and a refused upload notifies. Then two on
+paper: B-044 and B-018 had both been done since the 4th and 5th — governance
+readable with five rows and the SSDF count at 11 of 13, and `cloud` off TheHub
+inside B-062's restore — and neither had been confirmed against its own
+criteria. Read, confirmed, closed.
 
 **2026-09-08 — two.** The two XS entries, both decided on the 5th. B-053: ZAP
 2.17.0 in the demo compose, with the first resource reading ever taken on a
@@ -1726,6 +1579,190 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-055 — The promotion gate was fixed in one repository and applied from another — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+Four acceptance criteria. The first closed on 2026-09-04; the other three are
+closed here, and two of them turned out to be already true.
+
+- ~~`api-inventory` and `dast-demo` upstream of `deploy-prod`.~~ 2026-09-04.
+- **TheHub's `develop` copy matches, and its tests pass.** Read on
+  2026-09-09: `insider` on `develop` carries
+  `passed: [oracle-gate, api-inventory, dast-demo]`, the same three this
+  repository applies. The twelve promotion-gate tests are part of TheHub's
+  `unit` suite, and that suite has been green on `develop` since 2026-09-06 —
+  three successful runs since, the most recent at 12:10Z. Neither fact was
+  recorded anywhere, which is the whole argument for the check below.
+- **A check compares TheHub's copy against ours.**
+  `scripts/check_pipeline_gates.py`, the direction `check_applied_pipelines.py`
+  (D-081) never looked in.
+- **A blocked lane is distinguishable from a silent one in the briefing.**
+  `reason="blocked"`, with the upstream named.
+
+**What the new check compares, and what it deliberately does not.** Every job
+name, and every `passed:` constraint on every `get:` in it, nested steps
+included. Not the whole file: ours is 4,100 lines and TheHub's `develop` is
+7,900, mostly inline task scripts, and a diff of that would report hundreds of
+differences nobody should act on — which is how a check stops being read. What
+must agree is what governs promotion, and that is exactly what regressed.
+
+**Only one branch fails it, and choosing which mattered.** `develop` decides,
+because every commit lands there and the pipeline is scanned there (B-045).
+`main` is read and reported and never fails the check: it lags `develop` by
+design — it is missing `dast-staging` today — and a check that goes red for an
+expected lag is one nobody reads. The first run found exactly that and nothing
+else, which is the right answer on an estate where the gate currently agrees.
+
+**The briefing half was a button that did nothing.** Every scan lane on a
+Concourse-scanned repository carries `passed: [unit, ...]`, so while TheHub's
+`develop` suite was red, Concourse scheduled none of them — and the briefing
+called all of them `silent` and offered "Re-run this lane", which Concourse
+would refuse. A lane that is quiet while an upstream it gates on has failed
+*since that lane last ran* now reads `blocked`, names the upstream, and offers
+the upstream's re-run instead. The ordering is load-bearing: an upstream that
+broke *before* this lane last ran did not stop it, and blaming a red suite for
+silence it could not have caused is the same overstatement B-065 complains
+about from the other direction.
+
+**Checked:** 2626 backend tests pass, thirteen new. Six on the briefing —
+blocked behind a red upstream, the button pointing upstream, a green upstream
+leaving silence as silence, an upstream that failed too early not blocking, the
+upstream never blocking itself, and the rendered line. Seven on the gate check
+— the constraint read flat, nested in `in_parallel` (both spellings) and in
+`do`, the 2026-08-20 regression caught, ours-stricter reported, and each
+missing-job direction named separately. mypy over 123 files, ruff, tsc and
+eslint clean.
+
+**What is not closed by this, and belongs to B-050.** TheHub's `develop`
+carried a red suite for days and the only reason anybody noticed was that
+somebody looked. The briefing now says `blocked` rather than `silent`, which
+makes the *reading* honest; it does not make anybody read it. That is B-035's
+webhook, which is still open.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); corrected and
+half-closed 2026-09-04; finished 2026-09-09.
+
+---
+
+### B-062 — Enabling one capability silently revoked five others, and the audit said nothing was removed — **done**
+
+**Size:** M **Verified:** 2026-09-05 **Closed:** 2026-09-09 (D-119)
+
+Five acceptance criteria, five changes, one decision.
+
+- **The audit records what was done.** Landed on 2026-09-05 inside the
+  restore: `added` and `removed` come from `sync_grants`' return values, and
+  the ledger diff is kept beside them as `ledger_added` / `ledger_removed`,
+  because the two disagreeing is the signal. The binnacle row on the 7th —
+  `removed: ["secrets"]` on a call that had never listed it — is this
+  criterion working before the rest existed.
+- **The ledger is authoritative, and the two are reconcilable (D-119).**
+  `mykronos reconcile-grants` reads both sides for every repository and says
+  where they differ; `--apply` widens each to their union and never revokes.
+  Run against the estate on 2026-09-09: **0 repositories with drift**, which
+  is the 2026-09-05 alignment still holding.
+- **A PATCH that would revoke a grant not in the ledger refuses.** 409,
+  naming the grants and both ways out: include them, or send
+  `revoke_unlisted: true`. The ledger plus `pending_capabilities` is what a
+  caller could have seen, so withdrawing a capability before its PR merges is
+  still one call. The frontend proxy passes the flag through, off by default,
+  and the button renders the 409's text.
+- **The coverage cross-check sees the other direction.** A `Reporting` row for
+  a capability outside the enabled set is `job_not_enabled` — `enabled:
+  false`, `problem: true`, red on the Harness tab and on the capability
+  button, with an explanation and an "enable it" action in place of "disable
+  anyway". `not_enabled` still means what it meant when no job exists.
+- **A 403 from ingestion reaches a person.** Every door — findings, raw, Aegis,
+  Oracle, Patchwork — raises `CapabilityRefusedError`, and one handler turns it
+  into the same 403 body as before plus a notification naming the repository,
+  the capability, what is granted, and the `mykronos grant` that fixes it.
+  Once per (repository, capability) per hour, so a scheduled lane that has
+  lost its grant does not become a channel somebody mutes.
+
+**What was checked rather than assumed.** 2607 backend tests pass, thirteen
+new: the 2026-09-05 call reproduced and refused; the same call with the flag,
+revoking and auditing `removed: ["dast"]` against `ledger_removed: []`; the
+Actions path guarded the same way; a pending capability withdrawn without a
+409; drift read in both directions and reconciled to the union with nothing
+revoked; the new coverage state, and Oracle never reading as a stray job; the
+refusal's 403 byte-for-byte as before, its notification, the quiet window
+holding for the same pair and not for a different one, and expiring. mypy over
+123 files, ruff, tsc and eslint clean; `api-types.d.ts` regenerated for the
+new request field.
+
+**Left where it was.** The two tables are not merged (D-119 says why), and the
+2026-09-05 restore's own numbers stand as the record of what the defect cost.
+
+**Provenance:** DevSecOps assessment, 2026-09-05, found while working out why
+TheHub's `iac` lane was failing; sprang a second time on binnacle on the 7th
+(B-052); built 2026-09-09.
+
+---
+
+### B-044 — One App permission is holding four features shut — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09 (confirmed; granted 2026-09-04)
+
+Granted on 2026-09-04 and closed here only because the confirmation was
+never written down. Read on 2026-09-09, against the acceptance criteria:
+
+- `repo_governance` carries a row per repository: five rows, thirteen
+  controls read on each. Four read from branch protection; binnacle reads
+  `none` with a score of 0, which is B-060's finding about that repository
+  and not a read failure.
+- The SSDF count moved. `mykronos` reads **11 of 13 met**, from 9 before the
+  grant. The two left are PS.2, not evidenced because signed commits are not
+  required — deferred deliberately in D-110 — and PW.7, partial because
+  approving and codeowner reviews are not enforced, which is D-110's
+  remaining execution under B-060.
+- The drift sweep runs and has recorded something: two rows, both on
+  2026-09-05 at 15:20Z, `codeowners_coverage` going `on -> unknown` on `keel`
+  and `binnacle`. The first sweep after the grant recorded nothing, as the
+  entry said it should; a later one saw a real transition. What that
+  transition was is B-060's question — `unknown` is a control the platform
+  could not read, and both repositories are the Actions-scanned pair that
+  lost the tunnel that day (B-066).
+
+The governance endpoint returns `readable: True` with fourteen controls. The
+defect the grant exposed — the SSDF assessment comparing `state == "pass"`
+against a module emitting `on`/`off`/`partial`/`unknown` — was fixed on
+2026-09-04 and is what the count above depends on.
+
+**Provenance:** DevSecOps assessment, 2026-09-03; granted 2026-09-04; the
+entry's own text said it stayed open "only until the SSDF count is confirmed
+to have moved and the first drift sweep is recorded", and both had happened
+by the 5th.
+
+---
+
+### B-018 — `cloud` is enabled on a repository and its lane cannot run — **done**
+
+**Size:** S **Verified:** 2026-09-01 **Closed:** 2026-09-09 (confirmed; executed 2026-09-05, D-108)
+
+`cloud` is disabled on `ToddGBenson/TheHub`. The dashboard reads it as
+`enabled: false`, never scanned, no findings — a capability that is absent
+rather than a green one that cannot report, which is the state D-108 asked
+for and the one this entry called the only defensible alternative to
+restoring the principal.
+
+The toggle happened inside B-062's restore on 2026-09-05 at 07:18Z: the
+PATCH that re-granted TheHub's five deleted capabilities sent the set without
+`cloud` (and without `functional`, for the same reason — `cloud-posture` and
+`functional-dast` are both paused, so enabling either would be an enabled
+capability with no lane feeding it, B-061's failure). D-108 records the
+decision and the reversibility: the day an Azure principal exists, the
+capability is one PATCH from being back.
+
+Distinct from B-015, and it stayed distinct: there is no zero to misread
+because there is no capability to read.
+
+**Provenance:** 2026-09-01 monitoring sweep; decided 2026-09-05 as D-108;
+executed the same morning as a side effect of B-062's restore, which is why
+nobody closed it.
+
+---
 
 ### B-053 — The DAST scanner is seventeen months old and says so itself — **done**
 

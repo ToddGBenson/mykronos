@@ -4591,6 +4591,19 @@ it; DAST scans applications, not a registry API. It took a port scan of the
 host — the capability the README records as not started. That is the argument
 for finishing that lane.
 
+**Amended 2026-09-09: "permit these, deny the rest" is not implementable as
+written, and implementing it literally would have taken the build down.**
+Windows Defender Firewall evaluates block rules ahead of allow rules, so a
+block on `-RemoteAddress Any` beats an allow for `172.16/12` sitting beside it
+and kills kaniko's push along with the LAN access. The rule
+`Set-RegistryScope.ps1` installs is therefore a single inbound block scoped to
+this host's LAN prefix, computed from its own non-Docker addresses. The intent
+is unchanged and the evidence supports it: every write in the registry's log
+came from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
+filter loopback at all. This is the second time this finding's obvious fix and
+the working pipeline were mutually exclusive — the first was binding to
+loopback — which is worth more than the finding itself.
+
 ---
 
 ## D-110 — Two branch-protection controls are required; signed commits are deliberately not
@@ -4976,3 +4989,46 @@ against `~/.cloudflared/config.yml`, so `mykronos.toddbenson.net` returns 502
 while `hub.toddbenson.net` answers 200 through the same tunnel.
 `scripts/install-tunnel-route.ps1`, run elevated, is the fix, and it is now the
 only thing keeping keel and binnacle from reporting.
+
+---
+
+## D-119 — The ledger is authoritative for what a repository may report, and nothing narrows it silently
+
+**2026-09-09.** Two tables answered "what may this repository report":
+`RepoOnboarding.enabled_capabilities`, the installer's ledger, drove the
+dashboard; `capability_grants` drove ingestion. They were written by different
+paths and had drifted on two repositories, and when a PATCH built from the
+ledger reached the grant table it deleted five of TheHub's grants and recorded
+`removed: []` (B-062). The same call removed binnacle's `secrets` two days
+later. The ledger, plus whatever an open install PR will add when it merges,
+is now the authority; grants are derived from it.
+
+**Four consequences, all built.** The capabilities PATCH refuses, with a 409
+naming them, to revoke a grant the ledger never listed, unless the caller
+sends `revoke_unlisted: true` — a request built from the dashboard is far
+more likely than a decision about a grant the dashboard never showed.
+`mykronos reconcile-grants` reads both sides for every repository and, with
+`--apply`, widens each to their union; it never revokes, because narrowing a
+repository's ingestion is a decision and not a tidy-up. The coverage
+cross-check reports `job_not_enabled` when a lane produces a capability the
+repository has not enabled — the inverse of `no_job`, and the one direction
+the check could not see, because it walked the enabled set. And a refused
+upload is a notification as well as a 403, once per repository and capability
+per hour, because findings that were produced and discarded are a security
+event and not an auth failure.
+
+**Why widen rather than pick a side and delete.** On 2026-09-05 the grant
+table was the side that was right: `dast` and `functional` were granted to
+mykronos, absent from its ledger, and uploading. Aligning grants to the ledger
+would have reproduced the outage the fix exists to prevent. The union loses
+nothing that was working, and anything it adds that should not be there shows
+up as `no_job` on the next coverage read, which is where a person decides.
+
+**What this does not do.** It does not merge the two tables. They answer at
+different moments — the ledger when a PR merges, the grants when an admin
+acts — and spec 03 §3.6 keeps the dashboard from claiming coverage that has not
+shipped by holding the ledger back. Reconciliation on demand, a refusal to
+narrow silently, and a red light on the dashboard are the three things that
+make the seam safe to keep.
+
+---

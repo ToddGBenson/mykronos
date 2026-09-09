@@ -270,7 +270,15 @@ class TestTheAuditRecordsWhatWasRevoked:
         # showed them, which is the ledger, and never mentions `iac` at all.
         response = client.patch(
             f"/api/repos/{repo_id}/capabilities",
-            json={"capabilities": ["sast", "secrets"], "install_workflows": False},
+            # `revoke_unlisted`: since D-119 the call this test reproduces is
+            # refused with a 409 unless the caller says so, which is the
+            # other half of the same fix. This test is about what the audit
+            # records once the revocation happens.
+            json={
+                "capabilities": ["sast", "secrets"],
+                "install_workflows": False,
+                "revoke_unlisted": True,
+            },
             headers=admin_auth,
         )
         assert response.status_code == 200
@@ -298,7 +306,15 @@ class TestTheAuditRecordsWhatWasRevoked:
         repo_id = self._drifted_grant(client, admin_auth)
         client.patch(
             f"/api/repos/{repo_id}/capabilities",
-            json={"capabilities": ["sast", "secrets"], "install_workflows": False},
+            # `revoke_unlisted`: since D-119 the call this test reproduces is
+            # refused with a 409 unless the caller says so, which is the
+            # other half of the same fix. This test is about what the audit
+            # records once the revocation happens.
+            json={
+                "capabilities": ["sast", "secrets"],
+                "install_workflows": False,
+                "revoke_unlisted": True,
+            },
             headers=admin_auth,
         )
 

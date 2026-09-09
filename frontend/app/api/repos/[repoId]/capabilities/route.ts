@@ -18,7 +18,7 @@ export async function PATCH(
 ) {
   const { repoId } = await context.params;
 
-  let body: { capabilities?: string[] };
+  let body: { capabilities?: string[]; revoke_unlisted?: boolean };
   try {
     body = await request.json();
   } catch {
@@ -40,6 +40,11 @@ export async function PATCH(
         body: {
           capabilities: body.capabilities as never,
           install_workflows: true,
+          // Off unless the caller said so: a set built from what the
+          // dashboard shows must not revoke a grant it never showed (B-062,
+          // D-119). The backend answers 409 naming the grants instead, and
+          // that detail is what the button renders.
+          revoke_unlisted: body.revoke_unlisted === true,
         },
       },
     );

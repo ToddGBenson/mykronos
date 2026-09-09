@@ -2778,6 +2778,14 @@ export interface components {
              * @default true
              */
             install_workflows: boolean;
+            /**
+             * Revoke Unlisted
+             * @description Allow this call to revoke an ingestion grant that the dashboard never showed you.
+             *
+             *     The grant table and the enabled-capabilities ledger can drift: `mykronos grant` writes one, a merged install PR the other. When they have, a PATCH built from the list the dashboard shows revokes whatever the ledger did not list -- five of TheHub's grants went that way on 2026-09-05, four lanes stayed green, and their findings were refused at the door (B-062). By default such a call is refused with a 409 naming the grants it would revoke. Set true to say you meant it.
+             * @default false
+             */
+            revoke_unlisted: boolean;
         };
         /** CapabilityUpdateResult */
         CapabilityUpdateResult: {
@@ -5356,6 +5364,11 @@ export interface components {
             capability: string;
             /** Reason */
             reason: string;
+            /**
+             * Blocked By
+             * @default
+             */
+            blocked_by: string;
             /** Consecutive Failures */
             consecutive_failures: number;
             /** Streak Capped */

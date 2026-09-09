@@ -105,6 +105,11 @@ export function stageTone(stage: CiStage): IndicatorTone {
   // event-driven capability was switched off. It is switched on and doing
   // exactly what it should.
   if (stage.state === "event_driven") return "ok";
+  // A job produces it and the repository has not enabled it: every upload is
+  // refused at the door, and the lane is green because the quality lanes
+  // tolerate a failed upload (B-062). The inverse of `no_job`, and the more
+  // dangerous one, so it reads as a fault rather than as "off".
+  if (stage.state === "job_not_enabled") return "bad";
   // Not enabled, which is not a fault.
   return "off";
 }
@@ -123,6 +128,8 @@ export function stageState(stage: CiStage): string {
       return "not run";
     case "event_driven":
       return "event-driven";
+    case "job_not_enabled":
+      return "job, not enabled";
     default:
       return "off";
   }

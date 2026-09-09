@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from mykronos.adminauth import AdminDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
+from mykronos.api.refusals import CapabilityRefusedError
 from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
@@ -165,14 +166,7 @@ async def evaluate(
 ) -> EvaluateResult:
     """Score a commit and publish the result (spec 09 §7, §8)."""
     if not token.permits("oracle"):
-        granted = ", ".join(sorted(token.granted_capabilities)) or "none"
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"'oracle' is not enabled for {token.repo_full_name}. "
-                f"Currently granted: {granted}."
-            ),
-        )
+        raise CapabilityRefusedError(token.repo_full_name, "oracle", token.granted_capabilities)
 
     blocking = _repo_blocking(request, token.repo_full_name)
     published = await _service(request).evaluate_and_publish(

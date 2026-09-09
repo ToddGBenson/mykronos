@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
+from mykronos import grants
 from mykronos.auth import TokenRegistry
 from mykronos.ci import (
     ActionsClient,
@@ -133,6 +134,19 @@ def _build_parser() -> argparse.ArgumentParser:
     revoke.add_argument("repo")
 
     sub.add_parser("list-tokens", help="List tokens and grants (hashes only, never plaintext)")
+
+    reconcile_grants = sub.add_parser(
+        "reconcile-grants",
+        help="Where the enabled-capabilities ledger and the grant table disagree (B-062)",
+    )
+    reconcile_grants.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Widen both sides to their union: grant what the ledger lists, list "
+            "what is granted. Never revokes (D-119); that is a capabilities PATCH."
+        ),
+    )
     sub.add_parser("purge-tokens", help="Drop superseded tokens past their overlap window")
     sub.add_parser("compact", help="Fold the write-ahead buffer into Parquet now")
     sub.add_parser(
@@ -403,6 +417,43 @@ def main(argv: list[str] | None = None) -> int:
                 f"wrote {result.partitions_written} partition file(s)."
             )
             return 0
+
+        if args.command == "reconcile-grants":
+            with db.session() as session:
+                reg = registry(session)
+                drift_rows: list[grants.GrantDrift] = (
+                    grants.reconcile(session, reg) if args.apply else grants.drift(session, reg)
+                )
+                drifted_rows = [d for d in drift_rows if d.drifted]
+                for d in drifted_rows:
+                    grant_only = ", ".join(sorted(d.grant_only)) or "-"
+                    ledger_only = ", ".join(sorted(d.ledger_only)) or "-"
+                    print(f"{d.repo_full_name}")
+                    print(f"  granted, not enabled : {grant_only}")
+                    print(f"  enabled, not granted : {ledger_only}")
+                if args.apply and drifted_rows:
+                    for d in drifted_rows:
+                        db.audit(
+                            session,
+                            actor="cli",
+                            action="repo.grants_reconciled",
+                            entity_type="repo_onboarding",
+                            entity_id=d.repo_full_name,
+                            repo=d.repo_full_name,
+                            granted=sorted(d.ledger_only),
+                            listed=sorted(d.grant_only),
+                        )
+                    session.commit()
+            if not drifted_rows:
+                print("0 repositories with drift.")
+            elif args.apply:
+                print(f"Reconciled {len(drifted_rows)} repositories: both sides now match.")
+            else:
+                print(
+                    f"{len(drifted_rows)} repositories with drift. "
+                    "Re-run with --apply to widen both sides; nothing is revoked."
+                )
+            return 1 if drifted_rows and not args.apply else 0
 
         if args.command == "reconcile-absences":
             outcome = reconcile_absences(catalog)

@@ -121,10 +121,15 @@ export function CapabilityManager({
           // Pending-install is its own state (an install PR not yet merged,
           // spec 10 §7) — not one of the five run-health tones, since nothing
           // has run yet to have a colour about.
+          // Off is not a fault -- unless a job is producing the capability
+          // anyway, in which case its uploads are being refused and the
+          // honest colour is red (B-062, ci.py `job_not_enabled`).
           const tone: IndicatorTone | null = isPendingInstall
             ? null
             : !isOn
-              ? "off"
+              ? stage?.state === "job_not_enabled"
+                ? "bad"
+                : "off"
               : stage
                 ? stageTone(stage)
                 : // ci fetch failed or hasn't resolved: fall back to the
@@ -148,7 +153,9 @@ export function CapabilityManager({
               disabled={working}
               title={
                 tone === "bad"
-                  ? `${meta.label} — enabled and not answering. Click to see why.`
+                  ? isOn
+                    ? `${meta.label} — enabled and not answering. Click to see why.`
+                    : `${meta.label} — a job produces it and it is not enabled. Click to see why.`
                   : `${meta.label} — click to ${isOn ? "disable" : "enable"}${
                       "note" in meta ? `. ${meta.note}` : ""
                     }`
@@ -202,6 +209,8 @@ export function CapabilityManager({
 const RED_REASON: Record<string, string> = {
   no_job: "This repository is enabled for it, and nothing in the pipeline produces it — the repository believes it is covered and no job disagrees, because no job exists.",
   never_reported: "The job runs and has never uploaded a scan to the lake.",
+  job_not_enabled:
+    "A job produces this and the repository has not enabled it, so every upload is refused at the door — and the lane stays green, because a failed upload does not fail a passing suite. Enable it if the lane is meant to report; stop the lane if it is not.",
 };
 
 function ExplainRedCapability({
@@ -228,7 +237,8 @@ function ExplainRedCapability({
         onClick={onDisableAnyway}
         className="mt-1.5 border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical"
       >
-        disable anyway
+        {/* The callback toggles, so for a capability that is off it enables. */}
+        {stage?.state === "job_not_enabled" ? "enable it" : "disable anyway"}
       </button>
     </div>
   );

@@ -706,7 +706,7 @@ class StageCoverage:
 
     @property
     def problem(self) -> bool:
-        return self.state in {"silent", "never_reported", "no_job"}
+        return self.state in {"silent", "never_reported", "no_job", "job_not_enabled"}
 
 
 #: Capabilities that never produce a ScanRun from a pipeline lane: Aegis is
@@ -724,6 +724,18 @@ def coverage(enabled_capabilities: set[str], reporting: list[Reporting]) -> list
     out: list[StageCoverage] = []
     for stage in ALL_STAGES:
         if stage not in enabled_capabilities:
+            # A job exists for a capability this repository has not enabled.
+            # The inverse of `no_job`, and the more dangerous one: the lane
+            # runs, its upload is refused at the door, and the quality lanes
+            # write that upload with `|| true`, so the build stays green while
+            # the lake stays empty. B-062 is what this looked like from the
+            # outside -- five of TheHub's grants deleted, four lanes green,
+            # their findings discarded -- and `not_enabled` reported all of
+            # it as "not a fault", because the check walked the enabled set
+            # and this is the one direction that set cannot see.
+            if stage in by_capability and stage not in NON_SCANNING:
+                out.append(StageCoverage(stage, enabled=False, state="job_not_enabled"))
+                continue
             out.append(StageCoverage(stage, enabled=False, state="not_enabled"))
             continue
 

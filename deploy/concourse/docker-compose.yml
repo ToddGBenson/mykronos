@@ -150,6 +150,17 @@ services:
   # host IP; they cannot resolve Docker service names. The host pulls via
   # localhost:5000, which Docker treats as insecure-by-default, so no daemon
   # configuration is required on this machine.
+  #
+  # "All interfaces" is required only from the Docker bridge subnets and
+  # loopback: every push this registry has served arrived from 172.19.0.1,
+  # the Concourse bridge gateway. It has never needed the LAN, and it has no
+  # `auth:` block, so on the LAN it took anonymous writes to tags the demo
+  # stack runs (B-054). Closed by scope rather than by bind address:
+  # `Set-RegistryScope.ps1` installs one host firewall rule denying port 5000
+  # from this machine's LAN prefix (D-109). Binding to 127.0.0.1 instead would
+  # take the build down, because the kaniko task pushes to the host's LAN
+  # address -- and denying "everything except the bridges" would too, because
+  # Windows evaluates block rules ahead of allow rules.
   registry:
     image: registry:2
     container_name: mykronos-registry

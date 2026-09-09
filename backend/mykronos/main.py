@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from mykronos import __version__, logsafe
+from mykronos.api import refusals
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
@@ -441,6 +442,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(webhooks_router)
+    # A refused upload is a 403 and a notification (B-062).
+    refusals.install(app)
 
     # Runs before routing: a request that cannot present the perimeter token
     # should not reach a handler at all, and should not be able to learn which
