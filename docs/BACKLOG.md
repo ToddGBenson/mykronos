@@ -862,6 +862,17 @@ speaks to.
 | **governance score, 9 controls** | | **33** | **11** | **57** | **52** | **52** |
 | **governance score, 14 controls** | | **30** | **8** | **53** | **49** | **49** |
 
+**Read again on 2026-09-09, and D-110 cannot be executed as written.**
+`approving_reviews_required` deadlocks any repository where admin enforcement
+is on — GitHub refuses a self-approval and the bypass is off, so `keel`,
+`mykronos` and `personal-soc` would take the first pull request after the
+change and never merge it. `required_status_checks` has nothing to satisfy it
+on `mykronos`, because D-118 retired that repository's eleven Actions lanes
+hours after D-110 named it as the safe early case for exactly the opposite
+reason. The amendment on D-110 carries the live table and the three choices;
+no setting was changed, because branch protection is outward-facing and this
+is a decision rather than an execution.
+
 **Three gaps are estate-wide**, and they are the ones that matter most:
 
 - **No repository requires an approving review (1.1.3).** TheHub asks for one,

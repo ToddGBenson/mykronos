@@ -4635,6 +4635,49 @@ disabled there. `TheHub` last and not before its `unit` lane is green, because
 the reading working: a governance score that only rises as the audit widens is
 measuring the audit rather than the estate.
 
+**Amended 2026-09-09: neither control is executable as written, and the
+sequencing rationale was overtaken by another decision made the same day.**
+Read live before touching anything:
+
+| repository | admins enforced | reviews required | checks on a pull request |
+|---|---|---:|---|
+| `keel` | **yes** | 0 | arrive, and are red today |
+| `mykronos` | **yes** | 0 | **none arrive at all** |
+| `personal-soc` | **yes** | 0 | none — Actions is disabled there |
+| `binnacle` | — | — | arrive and pass; the branch is unprotected |
+| `TheHub` | no | 1 | — |
+
+**`approving_reviews_required` deadlocks a single-operator estate wherever
+admin enforcement is on.** GitHub refuses to let the author of a pull request
+approve it, and `enforce_admins: true` removes the bypass — so on `keel`,
+`mykronos` and `personal-soc` the first pull request opened after this lands
+can never merge, by anybody. `TheHub` already requires one review and is the
+only repository that can still merge, precisely because its admin enforcement
+is off; that is why this platform scores it `partial` rather than `on`, and
+the score was right about something the decision had not noticed.
+
+The choice is therefore not "turn it on" but which of three things to do:
+turn admin enforcement off alongside it and accept an advisory rule that
+scores `partial`, add a second reviewing identity, or leave 1.1.3 open with a
+reason. All three are decisions; none of them is the one this recorded.
+
+**`required_status_checks` is executable on `keel` and `binnacle` only.**
+Their Actions lanes report on pull requests, so a required context has
+something to satisfy it. Nothing reports on a `mykronos` pull request —
+D-118 retired its eleven Actions lanes on 2026-09-05, hours after this
+decision was written — so requiring a check there blocks every merge on a
+context that never arrives. This decision's own words were that `mykronos`
+should go early because "its lanes are green, so `required_status_checks` is
+immediately meaningful rather than immediately blocking"; those lanes were
+deleted the same day, and the sentence became exactly wrong.
+
+`keel`'s lanes arrive and are currently failing, so requiring them is
+meaningful and would block until they are fixed. That is the rule working
+rather than an obstacle, and it is worth going in knowing it.
+
+**Nothing was changed.** Branch protection is outward-facing and this needed a
+person; the reading above is what that person should have in front of them.
+
 ---
 
 ## D-111 — binnacle is scanned with the tools that can read it, and its green is qualified
