@@ -102,6 +102,12 @@
       "target": ".github/workflows/mykronos-sast-shell.yml",
       "version": "1.0.0",
       "summary": "Shell static analysis with ShellCheck, beside CodeQL rather than instead of it"
+    },
+    "sast-powershell": {
+      "template": "sast-powershell.yml.j2",
+      "target": ".github/workflows/mykronos-sast-powershell.yml",
+      "version": "1.0.0",
+      "summary": "PowerShell static analysis with PSScriptAnalyzer, beside CodeQL rather than instead of it"
     }
   }
 }

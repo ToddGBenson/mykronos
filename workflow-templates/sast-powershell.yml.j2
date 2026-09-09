@@ -1,0 +1,87 @@
+{% extends "_base.yml.j2" %}
+{#-
+  SAST for PowerShell — B-051.
+
+  `personal-soc` is 100% PowerShell and carries one capability, `secrets`, so
+  gitleaks greps it for credential patterns and nothing has ever examined its
+  608 lines for a defect. CodeQL implements no PowerShell, so enabling `sast`
+  there without this would have been a second green lane over unread code.
+
+  A second `sast` lane, like `sast-shell`: both upload `sast`, and the
+  template's own name keeps the workflow, job and concurrency group distinct.
+-#}
+{% block triggers %}
+  pull_request:
+    paths:
+      - "**/*.ps1"
+      - "**/*.psm1"
+      - "**/*.psd1"
+  push:
+    branches: ["<< default_branch >>"]
+  schedule:
+    - cron: "<< config.schedule_cron | default('53 4 * * 1') >>"
+  workflow_dispatch:
+{% endblock %}
+
+{% block job_name %}PSScriptAnalyzer{% endblock %}
+
+{#- Reports `sast`, not `sast-powershell`: a second analyser is not a second
+    capability, and a repository does not gain a new thing to enable by
+    running one. -#}
+{% block upload_capability %}sast{% endblock %}
+{% block tool_name %}psscriptanalyzer{% endblock %}
+
+{% block scan_steps %}
+      - name: Scan PowerShell
+        # `shell: pwsh` rather than a container: PowerShell is preinstalled on
+        # GitHub-hosted runners, so this needs no image and no daemon. The
+        # module is pinned for the reason every other tool here is — an
+        # analyser that silently changes its rule set changes what "clean"
+        # means without anybody deciding to.
+        shell: pwsh
+        # Never fails the step itself: exit codes are the upload step's job,
+        # which applies this repo's configured threshold and blocking policy
+        # (spec 04 §5).
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'mykronos-results'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $report = Join-Path $out 'psscriptanalyzer.json'
+
+          Install-Module PSScriptAnalyzer `
+            -RequiredVersion '<< config.tool_version | default("1.25.0") >>' `
+            -Scope CurrentUser -Force -AllowClobber
+          Import-Module PSScriptAnalyzer
+
+          $files = Get-ChildItem -Path . -Recurse -File `
+            -Include *.ps1, *.psm1, *.psd1 -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' }
+
+          if (-not $files) {
+            # An empty report rather than no report. A capability with nothing
+            # to scan must still say it looked, or the lane reads as never
+            # having run and the cross-check cannot tell the two apart
+            # (spec 04 §6).
+            '[]' | Set-Content -Path $report -Encoding utf8
+            Write-Host '::notice::No PowerShell here, so PSScriptAnalyzer had nothing to read.'
+            exit 0
+          }
+
+          # `-Severity` is not narrowed: everything the analyser has is
+          # reported, and the filtering happens in Mykronos against this
+          # repository's configured threshold (spec 04 §5). A scanner that
+          # drops findings before the platform sees them makes the threshold
+          # unadjustable without a re-render.
+          $findings = Invoke-ScriptAnalyzer -Path $files.FullName -ErrorAction Continue
+
+          # `@()` before the pipe: ConvertTo-Json writes a bare object for a
+          # single result and `null` for none, and both would read as
+          # something other than "a list of findings" on the other side.
+          @($findings) |
+            Select-Object RuleName, Severity, ScriptName, ScriptPath, Line, Column, Message |
+            ConvertTo-Json -Depth 4 -AsArray |
+            Set-Content -Path $report -Encoding utf8
+
+          Write-Host "PSScriptAnalyzer read $($files.Count) file(s) and found $(@($findings).Count)."
+{% endblock %}

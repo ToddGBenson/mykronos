@@ -108,6 +108,7 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # "scan now" button would try to trigger a Concourse job that does not
     # exist before the one that does.
     "sast-shell": "sast",
+    "sast-powershell": "sast",
     "secrets": "secrets",
     "containers": "containers",
     "dast": "dast",
