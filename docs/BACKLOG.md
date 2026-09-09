@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Seventeen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Sixteen, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -91,9 +91,9 @@ assessing the declared floor, so a finding names a version nobody runs.
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
 sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
 deploy path pulls from taking anonymous writes from any host on the LAN, which
-no scanner in this platform could have found. B-050 — eight live TheHub
-findings, read by hand because B-045 meant no scanner had looked at that code in
-sixteen days.
+no scanner in this platform could have found; the rule that closes it is
+written and needs one elevated run. B-050 — eight live TheHub findings, read by
+hand because B-045 meant no scanner had looked at that code in sixteen days.
 
 **The one that was the platform mis-recording its own state is closed.**
 B-062 — enabling one capability silently revoked five others and the audit
@@ -821,92 +821,50 @@ permitting 5000 from `172.16.0.0/12` and loopback, denying it elsewhere.
 first move, because scope is a property of where this machine sits and
 authentication survives it moving.
 
+**Written 2026-09-09 as `deploy/concourse/Set-RegistryScope.ps1`, and D-109's
+own wording would have taken the build down.** Implemented literally — allow
+`172.16/12` and loopback, block `Any` — the block wins: Windows Defender
+Firewall evaluates **block rules ahead of allow rules**, so a block on `Any`
+beats the allow beside it and kaniko's push dies along with the LAN access.
+That is the same trap the loopback correction above describes, one layer down,
+and it was caught by checking the precedence rather than by trying it.
+
+The intent has to be expressed as what is *denied*, so the script installs one
+inbound block rule scoped to this host's LAN prefix (`192.168.0.0/24`,
+computed from the host's own non-Docker addresses rather than hard-coded).
+Evidence that this leaves the build alone: every write in the registry's log
+arrived from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
+filter loopback at all, so `localhost:5000` pulls are untouched either way.
+`-WhatIf` runs unelevated and prints the plan; `-Remove` undoes it.
+
+**What is left is one elevated command and two readings.** A firewall rule
+needs an administrator prompt this session does not have, and the acceptance
+criteria are deliberately both-or-nothing:
+
+    .\deploy\concourse\Set-RegistryScope.ps1 -WhatIf   # read the plan
+    .\deploy\concourse\Set-RegistryScope.ps1           # elevated
+
+then `curl http://192.168.0.14:5000/v2/_catalog` from another LAN host must
+fail, **and** a Concourse `build` job must still push. Either alone is a false
+pass: a registry nobody can reach is not the goal.
+
+The compose comment no longer claims the exposure is required, which was the
+third criterion, and it now records why the obvious rule shape is wrong.
+
 **Acceptance criteria**
 
 - `GET /v2/_catalog` from another host on the network fails, **and** a `build`
-  job still pushes successfully. Both, or the change is not done.
-- Whichever route is taken, the compose comment stops saying the exposure is
-  required, because after the firewall rule it is required only from 172.16/12.
-- A decision is recorded either way: a registry deliberately open on a trusted
-  LAN is a defensible position, it is just not one anybody has stated.
+  job still pushes successfully. Both, or the change is not done. **Waiting on
+  the elevated run.**
+- ~~Whichever route is taken, the compose comment stops saying the exposure is
+  required.~~ Done 2026-09-09: it names the bridge gateway every push has
+  actually come from, and why "block everything else" is the wrong rule.
+- ~~A decision is recorded either way.~~ D-109, amended 2026-09-09 with the
+  block-precedence correction.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
 service scan of 192.168.0.14 run at the operator's request. Recorded as a
 declared surface on `mykronos` with the catalog response as its evidence.
-
----
-
-### B-055 — The promotion gate was fixed in one repository and applied from another — **half done**
-
-**Size:** M **State:** open **Verified:** 2026-09-04
-
-**The applied pipeline let a failed security scan promote to production, and had
-done since #55167 was "fixed".**
-
-Three copies of TheHub's pipeline existed and two of them disagreed:
-
-| copy | `insider.passed` | gates prod on the scans? |
-|---|---|---|
-| TheHub `main` (`7197a028`) | `[api-inventory, dast-demo, oracle-gate]` | yes |
-| TheHub `develop` | `[oracle-gate]` | **no — regressed** |
-| **this repo's copy, which is what gets applied** | `[oracle-gate]` | **no** |
-| live, from `fly get-pipeline` | `[oracle-gate]` | **no** |
-
-So the #55167 fix landed in TheHub's repository and **never reached the pipeline
-that runs**. `api-inventory`, `dast-demo` and `functional-dast` hung off
-`deploy-demo` as siblings of the gate rather than parts of it, and a commit whose
-demo DAST failed stayed eligible for `deploy-prod`. That is the 2026-08-20 state
-the guard test names — api-inventory failed builds #14-#19 while oracle-gate #20
-went green — still live on 2026-09-04. This is D-081 with a security
-consequence: the applied pipeline is the one that governs, and nothing compared
-it to the repository that fixed it.
-
-**Fixed and applied 2026-09-04.** This repo's copy now reads
-`passed: [oracle-gate, api-inventory, dast-demo]`, verified live:
-
-    LIVE insider.passed = ['api-inventory', 'dast-demo', 'oracle-gate']
-    LIVE gate (13 jobs): api-inventory, build, containers, dast-demo,
-      dependencies, deploy-demo, iac, insider, oracle-gate, prompt-evals,
-      sast, secrets, unit
-
-`functional-dast` is deliberately excluded and the reason is now in the file, as
-the guard test requires: it is **paused** under D-053, and a `passed:` on a
-paused job can never be satisfied — listing it would close promotion
-permanently rather than tighten it.
-
-All six of `test_pipeline_promotion_gate.py`'s gate assertions were replayed
-against this copy and pass.
-
-**What is left, and it is not this repository's to fix.**
-
-1. **TheHub's `develop` still carries the regression.** Its twelve red tests are
-   the guard working exactly as designed — catching a regression before it
-   reaches `main`. The fix is the same one-line change in
-   `concourse/pipelines/thehub.yml` there.
-2. **Until those twelve are green, `develop` cannot be scanned at all**, because
-   every scan lane carries `passed: [unit]`. That half of this entry stands: a
-   branch with a red suite receives zero security scanning, silently, and it is
-   why the one-off `develop` scan on 2026-09-03 produced a single run — unit,
-   failed, 0 findings. B-045's fix therefore still waits on this.
-3. **Nothing reconciles the two copies.** `scripts/check_applied_pipelines.py`
-   (D-081) compares the applied pipeline to *this* repository's file; it cannot
-   see that TheHub's own copy has moved ahead. That gap is what let a fix exist
-   and not take effect for two weeks.
-
-**Acceptance criteria**
-
-- ~~`api-inventory` and `dast-demo` are upstream of `deploy-prod` in the applied
-  pipeline.~~ Done 2026-09-04.
-- TheHub's `develop` copy matches, and its twelve promotion-gate tests pass.
-- A check compares TheHub's copy against this repository's, not just the applied
-  pipeline against this one — the direction that was missing.
-- A scan lane that cannot run because an upstream job failed is distinguishable
-  in the briefing from one that is merely silent.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); corrected and
-half-closed 2026-09-04. The first version of this entry said the gate had never
-been wired; it had, on TheHub's `main`, and the real defect was that the applied
-copy never received it.
 
 ---
 
@@ -1564,11 +1522,17 @@ into entries here:
 
 ## Closed
 
-Forty-two entries. The count below was stale at "nineteen": it covered
+Forty-three entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
-**2026-09-09 — three.** B-062, the trap that sprang twice: the ledger is
+**2026-09-09 — four.** B-055, whose last three criteria closed together:
+TheHub's `develop` already agreed about the gate and its suite had been green
+since the 6th, neither of which anybody had written down; a check now compares
+the owning repository's copy to ours, which is the direction that let a fix
+exist for two weeks without taking effect; and a lane quiet because an upstream
+it gates on is red reads `blocked` rather than `silent`, with the upstream's
+button instead of its own. Then B-062, the trap that sprang twice: the ledger is
 authoritative (D-119), a PATCH refuses to narrow ingestion it was not told
 about, `reconcile-grants` widens and never revokes, the cross-check sees a job
 for a capability nobody enabled, and a refused upload notifies. Then two on
@@ -1615,6 +1579,72 @@ Everything is recorded where this repo already looks: a decision for the four
 that changed what the platform promises, a spec amendment for those that made a
 document match the code. Final state: 2311 backend tests, mypy over 108 files,
 ruff, tsc, eslint and `next build` all clean, merged to `main` and deployed.
+
+### B-055 — The promotion gate was fixed in one repository and applied from another — **done**
+
+**Size:** M **Verified:** 2026-09-04 **Closed:** 2026-09-09
+
+Four acceptance criteria. The first closed on 2026-09-04; the other three are
+closed here, and two of them turned out to be already true.
+
+- ~~`api-inventory` and `dast-demo` upstream of `deploy-prod`.~~ 2026-09-04.
+- **TheHub's `develop` copy matches, and its tests pass.** Read on
+  2026-09-09: `insider` on `develop` carries
+  `passed: [oracle-gate, api-inventory, dast-demo]`, the same three this
+  repository applies. The twelve promotion-gate tests are part of TheHub's
+  `unit` suite, and that suite has been green on `develop` since 2026-09-06 —
+  three successful runs since, the most recent at 12:10Z. Neither fact was
+  recorded anywhere, which is the whole argument for the check below.
+- **A check compares TheHub's copy against ours.**
+  `scripts/check_pipeline_gates.py`, the direction `check_applied_pipelines.py`
+  (D-081) never looked in.
+- **A blocked lane is distinguishable from a silent one in the briefing.**
+  `reason="blocked"`, with the upstream named.
+
+**What the new check compares, and what it deliberately does not.** Every job
+name, and every `passed:` constraint on every `get:` in it, nested steps
+included. Not the whole file: ours is 4,100 lines and TheHub's `develop` is
+7,900, mostly inline task scripts, and a diff of that would report hundreds of
+differences nobody should act on — which is how a check stops being read. What
+must agree is what governs promotion, and that is exactly what regressed.
+
+**Only one branch fails it, and choosing which mattered.** `develop` decides,
+because every commit lands there and the pipeline is scanned there (B-045).
+`main` is read and reported and never fails the check: it lags `develop` by
+design — it is missing `dast-staging` today — and a check that goes red for an
+expected lag is one nobody reads. The first run found exactly that and nothing
+else, which is the right answer on an estate where the gate currently agrees.
+
+**The briefing half was a button that did nothing.** Every scan lane on a
+Concourse-scanned repository carries `passed: [unit, ...]`, so while TheHub's
+`develop` suite was red, Concourse scheduled none of them — and the briefing
+called all of them `silent` and offered "Re-run this lane", which Concourse
+would refuse. A lane that is quiet while an upstream it gates on has failed
+*since that lane last ran* now reads `blocked`, names the upstream, and offers
+the upstream's re-run instead. The ordering is load-bearing: an upstream that
+broke *before* this lane last ran did not stop it, and blaming a red suite for
+silence it could not have caused is the same overstatement B-065 complains
+about from the other direction.
+
+**Checked:** 2626 backend tests pass, thirteen new. Six on the briefing —
+blocked behind a red upstream, the button pointing upstream, a green upstream
+leaving silence as silence, an upstream that failed too early not blocking, the
+upstream never blocking itself, and the rendered line. Seven on the gate check
+— the constraint read flat, nested in `in_parallel` (both spellings) and in
+`do`, the 2026-08-20 regression caught, ours-stricter reported, and each
+missing-job direction named separately. mypy over 123 files, ruff, tsc and
+eslint clean.
+
+**What is not closed by this, and belongs to B-050.** TheHub's `develop`
+carried a red suite for days and the only reason anybody noticed was that
+somebody looked. The briefing now says `blocked` rather than `silent`, which
+makes the *reading* honest; it does not make anybody read it. That is B-035's
+webhook, which is still open.
+
+**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep); corrected and
+half-closed 2026-09-04; finished 2026-09-09.
+
+---
 
 ### B-062 — Enabling one capability silently revoked five others, and the audit said nothing was removed — **done**
 

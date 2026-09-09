@@ -4591,6 +4591,19 @@ it; DAST scans applications, not a registry API. It took a port scan of the
 host — the capability the README records as not started. That is the argument
 for finishing that lane.
 
+**Amended 2026-09-09: "permit these, deny the rest" is not implementable as
+written, and implementing it literally would have taken the build down.**
+Windows Defender Firewall evaluates block rules ahead of allow rules, so a
+block on `-RemoteAddress Any` beats an allow for `172.16/12` sitting beside it
+and kills kaniko's push along with the LAN access. The rule
+`Set-RegistryScope.ps1` installs is therefore a single inbound block scoped to
+this host's LAN prefix, computed from its own non-Docker addresses. The intent
+is unchanged and the evidence supports it: every write in the registry's log
+came from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
+filter loopback at all. This is the second time this finding's obvious fix and
+the working pipeline were mutually exclusive — the first was binding to
+loopback — which is worth more than the finding itself.
+
 ---
 
 ## D-110 — Two branch-protection controls are required; signed commits are deliberately not
