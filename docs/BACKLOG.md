@@ -45,7 +45,7 @@ already shipped.
 
 ## Open
 
-Eight, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
+Seven, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
 2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
@@ -195,9 +195,9 @@ the consequence of a blocked release, not to this file.
 inert, which the entry itself called the one indefensible state; that hold
 lasted four days and is in Closed.
 
-### B-042 — Coverage is plumbed end to end and no pipeline writes it
+### B-042 — Coverage is plumbed end to end and no pipeline writes it — **done**
 
-**Size:** S **State:** open **Verified:** 2026-09-03
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09 (D-121)
 
 Every test run in this lake reports `line_coverage = NULL`. All of them: 227
 unit runs and 55 functional runs on `mykronos`, 36 unit runs on `TheHub`.
@@ -276,16 +276,32 @@ adapter merged them — `0 finding(s) from 2 file(s)`, `line_coverage=0.883`,
 `branch_coverage=0.799`, no platform code touched. The plumbing claim in this
 entry was correct.
 
-**What is left, and it is why this stays open.**
+**Decided and built 2026-09-09 — D-121: a weekly lane, off the critical
+path.** A `coverage` job runs the same suite with `--cov --cov-branch` on a
+Sunday clock and gates nothing. It pays D-117's +322s where nothing waits for
+it, and uploads as `unit` so the figure lands on the lane a person reads it
+against — the uploader merges `coverage.xml` and `unit.xml` into one run, which
+is the plumbing this entry proved on 2026-09-05 with no platform change.
 
-1. **Nothing measures coverage right now.** The flag is off Concourse and the
-   Actions lane that carried it no longer exists. Choosing between paying the
-   +322s on Concourse, measuring by hand on a cadence, and recording that this
-   repository does not measure coverage is the whole of what remains here.
-2. **The figure has to come from a lane rather than from a laptop**, whichever
-   way that goes. 88.3% line and 79.9% branch are recorded above from Concourse
-   `unit` #226, so the number exists and the ingest path is proved; what is not
-   established is a figure that keeps arriving.
+Both of the things left are now settled:
+
+1. ~~Nothing measures coverage right now.~~ The weekly lane does, once the
+   pipeline is applied.
+2. ~~The figure has to come from a lane rather than from a laptop.~~ It does.
+   The number can be up to seven days old, which is the trade D-121 states: a
+   stale figure that keeps arriving beats a gate 2.5x slower on every push, and
+   beats the blank that "record that we do not measure it" would have left.
+
+**Two details carried into the job rather than left to be rediscovered.**
+`--cov-branch` is there because Cobertura writes `branch-rate="0"` whether or
+not branch data was collected, so `--cov` alone would publish a measured 0%
+nobody measured. And the clock triggers it, not `source`: a `trigger: true` on
+the repository would make this the thing it was written to avoid.
+
+**Not yet applied.** The job is in `deploy/concourse/pipelines/mykronos.yml`
+and reaches the worker on the next `set-pipeline`. The conformance check
+covers it — it is in the `quality` group, carries a timeout, and probes
+Mykronos before reporting.
 
 **Two things left this list on 2026-09-05.** The generated-file problem — that
 `_test_lane.yml.j2` takes the command from the repo's `unit` capability config,
@@ -1260,7 +1276,7 @@ into entries here:
 
 ## Closed
 
-Fifty-one entries. The count below was stale at "nineteen": it covered
+Fifty-two entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 

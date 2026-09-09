@@ -5158,3 +5158,38 @@ would make every finding a resolved one and retire this distinction; that is
 the real fix and it is not this decision.
 
 ---
+
+## D-121 — Coverage runs weekly, off the lane that gates seven jobs
+
+**2026-09-09.** Coverage had nowhere to live. D-113 put it on the pull-request
+unit lane; D-117 measured what that cost on the real worker — 540.81s against
+218.61s clean, **+322s and about 2.5x**, on a job carrying `trigger: true`
+with seven others waiting behind `passed: [unit, ...]` — and rejected it;
+D-118 then retired the Actions lane that had been carrying it instead. The
+figure was measured once, on Concourse `unit` #226, and never again (B-042).
+
+A new `coverage` job runs the same suite with `--cov --cov-branch` on a weekly
+clock, gating nothing.
+
+**The trade, stated plainly.** The number can be up to seven days old. That is
+a far smaller problem than a gate that is 2.5x slower on every push, and the
+alternative on the table was recording that this repository does not measure
+coverage at all. A stale figure that keeps arriving beats a fresh one nobody
+will pay for and beats a blank.
+
+**It uploads as `unit`, not as a capability of its own.** The coverage belongs
+to the lane a person reads it against, the uploader rglobs its results
+directory and merges `coverage.xml` with `unit.xml` into one run (spec 31 §4),
+and the plumbing for exactly this was proved end to end on 2026-09-05 with no
+platform change.
+
+**`--cov-branch` is not optional and never was.** Cobertura writes
+`branch-rate="0"` whether or not branch data was collected, and the dashboard
+reads that as a measured 0% — publishing a number nobody measured, which is
+the failure B-042 spent a paragraph on and the reason `--cov` alone was
+refused there too.
+
+**It triggers on the clock and not on `source`.** A `trigger: true` on the
+repository would make this the thing it was written to avoid.
+
+---

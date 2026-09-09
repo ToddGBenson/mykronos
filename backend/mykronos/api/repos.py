@@ -972,7 +972,7 @@ async def scan_now(
             )
         pipeline = pipeline_name_for(repo_full_name)
         for capability in scanning:
-            candidates = sorted(jobs_for_capability(capability))
+            candidates = jobs_for_capability(capability)
             if any(
                 client.trigger_job(pipeline, job, token=settings.concourse_api_token)
                 for job in candidates
