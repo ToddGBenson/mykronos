@@ -4525,3 +4525,454 @@ colour asks the reader to already know which ones matter. `absences` stopping
 means findings never close and every count on every page drifts wrong in the
 reassuring direction — the CI failure this codebase keeps writing about,
 happening inside the platform instead.
+
+---
+
+## D-108 — `cloud` is not available on this deployment
+
+**2026-09-05.** `cloud` was enabled on `ToddGBenson/TheHub` and had produced
+zero scan runs across the whole lake, ever, because `thehub`'s `cloud-posture`
+job is paused: `deploy/concourse/.env` carries no Azure service principal and
+`set-thehub-pipeline.ps1` refuses to apply without one. The capability is
+disabled and recorded as unavailable here (B-018).
+
+**Enabled and inert was the one indefensible state.** It is the shape spec 14's
+network claim had before B-007 closed — a capability the platform presents as
+available and is structurally incapable of performing. The dashboard said
+`cloud` was on; nothing could ever report into it.
+
+**Why disable rather than restore.** Restoring needs a credential that may not
+exist. Whether the principal was lost with the rest of `.env` on 2026-08-23 or
+was never set is not recorded anywhere, and building against either answer would
+be guessing — which is why this waited for a decision from 2026-09-01 rather
+than being coded around. Disabling is reversible the day a principal exists;
+leaving it on is not reversible in the only direction that matters, because a
+green capability that cannot report is worse than a missing one.
+
+**Distinct from B-015's case, and it must stay distinct.** `cloud`'s zero was
+real rather than a reporting artefact. After this there is no zero to read: the
+capability is absent, which is a different and honest statement.
+
+---
+
+## D-109 — The registry is closed by network scope, not by binding
+
+**2026-09-05.** `mykronos-registry` (`registry:2`) listened on `0.0.0.0:5000`,
+plain HTTP, with no `auth:` block in its configuration at all — anonymous read
+demonstrable from any LAN host, and anonymous *write* to tags that
+`thehub-demo-backend` is running. That is code execution on this host from any
+device on the network with no credential involved (B-054). It is closed with a
+host firewall rule permitting 5000 from `172.16.0.0/12` and loopback, denying it
+elsewhere.
+
+**Binding to loopback was the obvious fix and it would have taken the build
+down.** Concourse's kaniko task pushes to `${REGISTRY}/thehub:${SHA}` where
+`set-thehub-pipeline.ps1:115` sets `$Registry = "192.168.0.14:5000"` — garden
+task containers reach this registry by host IP because they cannot resolve
+Docker service names, and the compose file says so at the service. The proposed
+fix and the working pipeline were mutually exclusive, which was worth more than
+the finding it was attached to.
+
+**Why the firewall rule rather than authentication.** Garden containers arrive
+from the Docker bridge subnets, not the LAN, so scope alone separates the build
+path from the exposure: one rule, no configuration any service reads, and no new
+credential in kaniko's push or the host's `docker login`.
+`REGISTRY_AUTH=htpasswd` resolved from Vault remains the defence-in-depth
+version and is the right follow-up if this host ever moves networks — scope is a
+property of where the machine is, and authentication is not.
+
+**The compose comment must stop claiming the exposure is required.** After the
+rule it is required only from `172.16/12`, and a comment that overstates a
+constraint is how the loopback fix got proposed in the first place.
+
+**No scanner here could have found it.** Not in a repository, so SAST, secrets
+and IaC never saw it; not a dependency, so `containers` and `atlas` never saw
+it; DAST scans applications, not a registry API. It took a port scan of the
+host — the capability the README records as not started. That is the argument
+for finishing that lane.
+
+---
+
+## D-110 — Two branch-protection controls are required; signed commits are deliberately not
+
+**2026-09-05.** The first readable governance pass (B-060, after B-044's
+`administration: read` grant) found three CIS §1.1 controls off across all five
+repositories. `approving_reviews_required` (1.1.3) and `required_status_checks`
+(1.1.9) are being turned on. `signed_commits_required` (1.1.12) is deliberately
+not, and this is that decision rather than an absence.
+
+**Why signing is the one deferred.** On a single-operator estate its cost lands
+entirely on paths that are easy to forget — every machine, client and automated
+committer needs a key, and an unsigned commit from a path nobody remembered
+becomes an unmergeable one. That failure is worse than the gap it closes,
+because it arrives at the moment somebody is trying to ship a fix. The other two
+cost a review click and a wait for checks that already run.
+
+**Sequencing is part of the decision, not an implementation detail.**
+`binnacle` and `keel` first, because no deploy path depends on either and a
+mistake costs a re-push rather than an outage. `mykronos` next, because its
+lanes are green, so `required_status_checks` is immediately meaningful rather
+than immediately blocking. `personal-soc` after its Concourse checks are wired
+to commit status, or it would block on checks that never arrive — Actions is
+disabled there. `TheHub` last and not before its `unit` lane is green, because
+`main` is what its production deploy gates from.
+
+**The scores will be re-read afterwards and recorded.** B-060's own numbers fell
+3–4 points on 2026-09-05 when five more controls started counting, and that is
+the reading working: a governance score that only rises as the audit widens is
+measuring the audit rather than the estate.
+
+---
+
+## D-111 — binnacle is scanned with the tools that can read it, and its green is qualified
+
+**2026-09-05.** `ToddGBenson/binnacle` sat at `pending_install` with zero
+capabilities because App installation 152755402 is scoped to selected
+repositories and binnacle is not one of them — GitHub answered `404` rather than
+`403`, hiding the repository's existence from a token with no grant (B-052). The
+repository is being added to the installation and granted `atlas`, `sast` and
+`secrets`, matching `keel`, which it is a fork of.
+
+**It is the estate's largest coverage gap.** Private, pushed 2026-08-31, 30
+shell scripts, 46 workflow YAMLs and 9 Python files, with no scanning of any
+kind. Nothing in this platform was misconfigured and no code was missing; the
+App simply could not see it, which is B-044's shape a second time — a
+built-and-waiting capability held shut by one setting in GitHub's UI.
+
+**The grant is necessary and not sufficient, and that must be visible.** CodeQL
+cannot read 67% of binnacle (B-051), so `sast` alone will report green over its
+shell. Granting first and recording the qualification beats withholding an XS
+win behind an M-sized one: `atlas` and `secrets` are language-blind and report
+truthfully today, and a green that is known to be partial is a different object
+from a green nobody has questioned. Shell analysis is B-051's work, not this
+decision's.
+
+**Executed 2026-09-05, undone 2026-09-07, redone 2026-09-08.** The grant landed
+the day this was written, with `iac` and `oracle` on top of the three named
+here; every lane scanned. Two days later an admin PATCH sent the set without
+`secrets` and binnacle #7 removed it, with nothing recorded as to why — the
+audit row says `removed: ["secrets"]`, which is B-062's fix reporting
+correctly on a call nobody explained. Re-enabled with the full set as
+binnacle #8, and the pull-request trigger uploaded a `secrets` run (200 OK)
+before the merge. B-052 has the detail.
+
+---
+
+## D-112 — The platform pushes
+
+**2026-09-05.** `MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY=high` and
+`MYKRONOS_ROUTING_ENABLED=true` were set with `MYKRONOS_SLACK_WEBHOOK_URL`
+empty, so everything was pull: a new critical, a KEV match or a lane going
+silent reached somebody only if they remembered to look (B-035). A webhook is
+being configured, reaching the backend through Vault like every other secret.
+
+**The reason to wait had expired.** B-034 closed, so every finding has an owner
+and a notification has somewhere to go. Sending alerts before that would have
+made them broadcasts, which is why this was sequenced fourth in B-035's own
+ordering rather than done first.
+
+**Three failures in two weeks are the argument.** TheHub was not scanned at all
+for days on three separate occasions — the ingestion token (B-024), the
+promotion-gate regression (B-055) and the SDK pin (B-057) — none of them a
+scanner problem, and none of them announced itself. A single-operator estate
+whose only notification channel is somebody opening a dashboard has no channel.
+
+**What it does not change.** The min-severity threshold stays at `high`, so this
+is not a decision to route everything; and routing remains a read-and-notify
+path with no authority to act.
+
+---
+
+## D-113 — Coverage is collected on the pull-request lane, and its cost is measured rather than assumed
+
+**2026-09-05.** Every test run in the lake reported `line_coverage = NULL` — 227
+unit and 55 functional runs on `mykronos`, 36 unit runs on `TheHub` — with the
+plumbing complete end to end and no pipeline passing `--cov` (B-042).
+`pytest-cov` goes into the `dev` extra and `--cov=mykronos
+--cov-report=xml:$MYKRONOS_RESULTS/coverage.xml` onto the unit lane.
+
+**This was a budget call and it is being answered with a number.** Coverage
+collection under `pytest-xdist` costs real time on a 14-minute suite that runs
+on every pull request, and nobody had measured how much. The added time is
+recorded when it is known; if it turns out to be unacceptable, the decision to
+stop measuring coverage will then rest on a figure rather than a guess, which is
+the same standard D-053 set for ZAP's resource budget.
+
+**A figure appearing without any platform change is the point.** The JUnit
+adapter already parses Cobertura `line-rate` and JaCoCo `LINE` counters, the
+registry merges the columns, the lake stores them, `scan_health` reads the most
+recent run that *reported* coverage rather than the most recent run, and the
+uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS`. Drop a `coverage.xml`
+beside `unit.xml` and the number appears. That is the proof the plumbing was
+right, and it is why this is operator config rather than platform work.
+
+**Superseded in part by D-117.** The measurement below is from the development
+host and its conclusion did not survive the Concourse worker, which ran the same
+suite at 218s clean against 541s with coverage. Coverage is now on the Actions
+lane only. The rest of this entry stands.
+
+**Measured 2026-09-05, and the premise was wrong.** Three full runs of the
+2592-test suite on the development host at `-n auto`, all green:
+
+| run | suite time | step wall |
+|---|---|---|
+| no coverage | 179.07s | 189s |
+| `--cov` | 173.90s | 178s |
+| `--cov --cov-branch` | 173.24s | 177s |
+
+Both coverage runs came in *faster* than the baseline. The added cost is below
+this host's run-to-run variance — a spread of about 6s, 3%, with the two
+coverage runs at the fast end — so the honest reading is no measurable cost
+rather than a small one. B-042 deferred this on the assumption that coverage
+under `pytest-xdist` costs real time; on this host it does not. The likely
+reasons are that coverage 7.x on Python 3.13 collects through `sys.monitoring`
+rather than a trace function, and that this suite is dominated by per-test
+fixture setup — a fresh DuckDB catalog per test — rather than by interpreted
+lines. That explanation is inference from the timings, not something these runs
+measured.
+
+**This is the development host, not either runner.** Actions runs `-n auto` on
+ubuntu and Concourse runs `-n 6` on the shared worker; neither number is in hand
+until the lanes run. What is recorded here is what was actually measured, and
+the lane's own figure is what B-042's criterion asks for.
+
+**`--cov` alone would have published a number nobody measured.** Found by
+normalising the real pair of files a lane writes rather than by reading the flag
+list: with `--cov` only, the merged result carried `line_coverage=0.883` and
+`branch_coverage=0.0`. Cobertura writes `branch-rate="0"` whether or not branch
+data was collected, the adapter reads `0.0` rather than `None`, and
+`dashboard.py` surfaces it — so the Harness tab would have shown a measured 0%
+branch coverage for a measurement that never happened. That is the same
+absence-presented-as-a-reading this estate has four open entries about (B-046,
+B-051, B-058, B-061), arriving inside the fix for a fifth. `--cov-branch` is
+therefore part of this decision rather than a refinement of it. With it, the
+same merge yields `line_coverage=0.883`, `branch_coverage=0.799`, `success`, no
+findings and no warnings.
+
+**Not a nightly lane.** Coverage that lags the branch cannot show a regression
+at review time, and adding a lane nobody watches is the defect this backlog
+already has four entries about.
+
+---
+
+## D-114 — ZAP moves to 2.17.x, and a version bump carries a resource measurement
+
+**2026-09-05.** `ZAP-10116-CWE-1104` — "ZAP is Out of Date" — was open twice
+against `mykronos` and was right: `deploy/demo/docker-compose.yml:124` pinned
+`zaproxy:2.16.1`, published 2025-03-25, against a current stable of 2.17.0 from
+2025-12-15 (B-053). The pin moves to 2.17.x, with CPU and memory observed across
+a full demo run before the change is accepted.
+
+**The measurement is not ceremony.** D-053 paused ZAP's active scanning after it
+measured 548% CPU and 7 GiB on the shared host and made production time out from
+a browser, and spec 32 §11 holds that posture until somebody replaces it with a
+reading taken on a runner. Changing the version of the tool that caused that
+outage deserves the same evidence, and the passive lane is what runs today, so a
+major-minor bump can change what is running in production's neighbourhood.
+
+**Why not wait for the DAST posture revisit.** The two questions are related,
+and chaining an XS fix to open-ended work leaves the lane running nine months of
+stale detection rules for as long as that takes. A scanner that cannot see a
+class of defect reports the same green as one that looked and found nothing —
+the failure shape B-046, B-051 and B-061 each describe from a different angle,
+and the reason this is not merely cosmetic.
+
+**Still pinned, either way.** `:2.16.1` was a deliberate pin and that part was
+right; `:2.17.x` resolves to an exact tag rather than floating.
+
+**Measured 2026-09-09, on the runner.** The pin is `2.17.0` (52bc141), and
+`demo-and-dast.yml` now samples every demo container for the length of the
+run and writes peaks into the job summary, so every future run carries the
+reading rather than this one alone. First reading, passive only: ZAP peaked at
+312% CPU (p95 230%, mean 84%) and 0.76 GiB over 101s, the backend at 113% and
+0.16 GiB, on a 4-vCPU hosted runner, with the job done in 3m08s. Not a
+before-and-after — no 2.16.1 reading was ever taken on a runner — but it is
+the baseline spec 32 §11.4 was waiting for, and the two `ZAP-10116` findings
+left the report on the first run (27 findings became 25). Recorded in B-053.
+
+---
+
+## D-115 — Free-text Consult stays deferred, and D-104's position stands
+
+**2026-09-05.** B-043 asked whether to provision a model credential and build
+the chat window the brief requested. The answer is no, for now, and the entry
+closes as a decision rather than as work — the same disposition D-101 gave
+B-038.
+
+**D-104 already carries the reasoning and it has not weakened.** Grounding
+before phrasing; `consult.Facts` is the whole of what a model could honestly
+say; the `UNANSWERABLE` list is the load-bearing half, because the failure mode
+of an assistant is not saying "I do not know" but answering anyway. Nothing
+since has changed either half.
+
+**What this decision adds is the sequencing claim.** None of the other
+twenty-two open entries is blocked by this one, and several of them — B-046,
+B-051, B-056, B-058, B-061, B-063 — are about the platform not knowing whether a
+scan covered anything. A free-text answer built on top of that would be fluent
+about a coverage picture the platform cannot yet vouch for. On a platform whose
+only product is being believed about security, that is the worst possible place
+to add phrasing.
+
+**And the credential does not land early.** Provisioning a model key now while
+Vault is already being touched for D-112 would leave a live credential idle on
+this deployment for a feature that is not scheduled. The blocker was never the
+key.
+
+---
+
+## D-116 — The queue's disclosure is derived from its terms; the rank does not move yet
+
+**2026-09-05.** Filling in the four risk profiles — the operator half B-033 left
+open — turned an accurate warning off. `ranking_inputs` emitted "business
+context — not consulted" only when some repository lacked a profile, while
+`consulted` was a hardcoded four-element list that never contained business
+context at all, and `rank_terms` reads none of `internet_facing`,
+`data_classification` or `business_criticality` (B-049). The disclosure is being
+fixed: `not_consulted` reports business context whenever it is not a term,
+regardless of whether a profile exists, and `consulted` is derived from the
+terms the rank can actually produce.
+
+**The literal is the defect, not the missing terms.** A disclosure restated by
+hand cannot stay true through a change to the thing it describes, which is
+exactly how this survived B-033's own review — and it could not be seen until a
+profile existed, so it took the operator half landing to expose it.
+
+**Adding the three fields as rank terms is a separate decision, deliberately.**
+It would reorder every triage queue on the estate, and it needs stated weights
+to be reviewable; doing it inside a fix for an inaccurate warning would smuggle
+a triage change in as a bug fix. `oracle/engine.py:719-747` already reads all
+three, and mykronos's portfolio decision carries `Handles confidential data
+(+10.0)`, so the profiles are not wasted while this waits.
+
+**Two rankings on one estate still disagree about which inputs exist, and that
+now says so out loud.** The queue is a threat-intel ranking presenting itself
+honestly, rather than a risk ranking presenting itself as one.
+
+---
+
+## D-117 — Coverage is collected on the free runner, and D-113's number came from the wrong machine
+
+**2026-09-05.** D-113 put `--cov` on both mykronos unit lanes and recorded that
+it cost nothing measurable. The Concourse lane then ran it and the figure was
+2.5x:
+
+| lane | build | suite |
+|---|---|---|
+| Concourse `unit` #223 | no coverage | 238.16s |
+| Concourse `unit` #224 | no coverage | 218.61s |
+| Concourse `unit` #226 | `--cov --cov-branch` | **540.81s** |
+
+**+322s on the gating path.** `unit` carries `trigger: true` on `main` and seven
+jobs carry `passed: [unit, ...]`, so that is five and a half minutes added to
+every commit, in front of everything that gates on the suite.
+
+**Superseded by D-118 within the day.** The Actions unit lane was retired as a
+duplicate of Concourse's, so the free home this decision found no longer exists.
+Coverage is either back on Concourse at the +322s rejected below, or unmeasured;
+B-042 carries it as open. What stands is the measurement and the rule drawn from
+it.
+
+**Coverage moves to the Actions lane only.** `ToddGBenson/mykronos` is a public
+repository, so Actions minutes are free, and that lane gates nothing. Concourse's
+`unit` command is back to what it was. The `dev` extra keeps `pytest-cov`,
+because that is what the Actions lane installs.
+
+**D-113's measurement was not wrong, it was from the wrong machine, and the
+caveat it carried turned out to be the whole finding.** That entry recorded
+179.07s clean against 173.90s with coverage on the development host and said in
+as many words that this was neither runner. The Concourse worker prints its own
+explanation on every build — `Performance budgets scaled x3 for this worker` —
+and coverage tracing is CPU-bound, so a cost that vanishes into fixture setup on
+a fast host does not vanish on a worker three times slower running `-n 6`.
+
+**The general form is worth keeping.** A performance measurement taken somewhere
+other than where the work runs is a hypothesis, and this platform already knows
+that: D-053 holds ZAP's posture until somebody replaces it with a reading taken
+on a runner, and D-016 keeps a latency budget as an enforced test rather than a
+remembered number. D-113 recorded a local figure and drew a conclusion from it,
+which is the thing those two decisions exist to prevent. The rule this adds is
+that the conclusion waits for the lane, even when the local delta looks decisive
+— *especially* then, because a decisive local number is what stops anybody
+checking.
+
+**What `--cov-branch` cost is now unmeasured, and that is fine.** It was added
+under D-113 because Cobertura writes `branch-rate="0"` whether or not branch data
+was collected, so `--cov` alone would have published a measured 0% for something
+nobody measured. On the free runner the flag's cost stops being a question worth
+a build to answer.
+
+**Still true from D-113:** the plumbing was already complete and no platform code
+moved for any of this. The lane's two files merge into one result carrying
+`line_coverage=0.883` and `branch_coverage=0.799` — verified from the real
+Concourse artifacts before this decision took the flag back off that lane.
+
+---
+
+## D-118 — mykronos is Concourse-scanned, and now actually is
+
+**2026-09-05.** `ToddGBenson/mykronos` was `scanned_by=github_actions` with
+eleven generated Actions lanes running against the same commits as a full
+Concourse pipeline. It is now `scanned_by=concourse` and the eleven are removed.
+
+**D-080 already recorded this as done, and it was not.** That entry retired
+TheHub's Mykronos Actions lanes "as this repo's were" — but the platform's own
+record said `github_actions`, the workflow files were present, and they were
+running today: `mykronos-sast`, `mykronos-secrets` and `mykronos-qa` all failing
+on ingestion, `mykronos-atlas` and `mykronos-containers` succeeding. So D-038's
+harm was live for however long that has been true: two CI systems scanning one
+commit, and a repository's capability coverage decided by whichever uploaded
+last.
+
+**Every lane was checked against a Concourse job before it was deleted**, not
+assumed. Eight map by capability — `unit`, `sast`, `secrets`, `containers`,
+`iac`, `ai` one-to-one; `qa` to `lint-and-types`, `qa-spec-links` and
+`frontend`; `atlas` to `dependencies`. The other three upload no capability at
+all and had to be matched by endpoint:
+
+| Actions lane | calls | Concourse job that also calls it |
+|---|---|---|
+| `mykronos-aegis` | `/api/ingest/aegis` | `insider` |
+| `mykronos-oracle` | `/api/oracle/evaluate` | `oracle-gate` |
+| `mykronos-patchwork` | `/api/patchwork/run` | `remediate` |
+
+**Three workflows stay, and none of them is a duplicate.**
+`demo-and-dast.yml` is hand-written and says so: it *replaces* the Concourse
+`demo-and-dast` job, which is paused under D-053, so it is the only thing
+producing `functional` and `dast` here. `delivery.yml` and `promote.yml` are
+delivery rather than scanning.
+
+**The public hostname stays, and this decision does not touch it.** It was
+examined in the same pass and the reasoning is now recorded where it can be
+found: `keel` and `binnacle` are both `scanned_by=github_actions` and both
+reporting — 135 runs across four capabilities for keel, and binnacle's first
+scans arriving on 2026-09-05 after the B-052 grant — and
+`https://mykronos.toddbenson.net/api/ingest/` is their only path. keel's own
+Concourse pipeline posts to the same hostname rather than over the LAN, and
+`demo-and-dast.yml` needs it too. Removing it would have ended scanning for two
+of the four watched repositories, which is why it was not removed.
+
+**And the exposure question it was raised under is already answered.**
+`PerimeterGate` (`gate.py`) fronts this host with the Hub's own credential —
+`X-Hub-Token`, the `hub_token` cookie, or `?_token=`, against the same secret,
+so one credential reaches both. Confirmed live from the container's logs. Only
+five paths are exempt and each carries stronger proof than the gate: per-repo
+ingestion tokens for `/api/ingest/*`, those plus a named grant for
+`/api/oracle/evaluate` and `/api/patchwork/run`, HMAC over the body for
+`/webhooks/github`, and nothing for `/healthz`, which must answer before
+anything is configured. The dashboard was unpublished on 2026-09-03. What is
+reachable from the internet is an authenticated API, not a browsable
+application.
+
+**What this costs, and it is not nothing.** D-117 moved coverage to the Actions
+unit lane because mykronos is public and those minutes are free. That lane is
+now gone, so coverage has no free home: it is either back on Concourse at the
++322s that decision rejected, or not measured. B-042 carries that as open rather
+than pretending it was settled.
+
+**The live failure this pass started from is untouched by all of it.** The
+cloudflared service's copy of the ingress at
+`C:\Windows\System32\config\systemprofile\.cloudflared\config.yml` is stale
+against `~/.cloudflared/config.yml`, so `mykronos.toddbenson.net` returns 502
+while `hub.toddbenson.net` answers 200 through the same tunnel.
+`scripts/install-tunnel-route.ps1`, run elevated, is the fix, and it is now the
+only thing keeping keel and binnacle from reporting.

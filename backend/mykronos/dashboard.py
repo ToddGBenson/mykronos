@@ -238,17 +238,51 @@ def effort_band(*, fixable: bool | None, package_name: str | None) -> str:
     return "small"
 
 
+RANK_INPUTS: dict[str, str] = {
+    "severity": "severity",
+    "in_kev": "threat intel (KEV, EPSS)",
+    "epss": "threat intel (KEV, EPSS)",
+    "overdue": "remediation target",
+    "due_soon": "remediation target",
+    "blast_radius": "blast radius",
+    "repo_is_no_go": "the repository's own risk decision",
+    "orphaned": "reachability (Python only)",
+    "fixable": "whether a fix already exists",
+}
+"""Every term `rank_terms` can produce, and the input each one discloses.
+
+**This is the declaration the disclosure is derived from, and that is the whole
+point (D-116).** `ranking_inputs` used to restate what the rank consulted as a
+hardcoded four-element list. A restated list cannot stay true through a change
+to the thing it describes: it was already missing three terms the rank does
+produce, and it named business context in neither list while the rank has never
+had a term for it. `add()` below looks a key up here before it does anything
+else, so a term added to the rank without saying what input it speaks for
+raises rather than quietly widening the gap between the two.
+
+Several keys share a label on purpose — `in_kev` and `epss` are one input to a
+reader and two terms to the rank, and the disclosure is written for the reader.
+"""
+
+
 def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str, Any]]]:
     """`(score, contributing terms)` for one queue row (spec 27 §1).
 
     Every term is returned, not just the total. A rank a person cannot argue
     with is a rank they will ignore, and this platform's standing rule is that
     a derived number carries its working (spec 10 §6).
+
+    Every term key must appear in `RANK_INPUTS`; see there for why.
     """
     rank = policy.triage_rank
     terms: list[dict[str, Any]] = []
 
     def add(key: str, points: float, detail: str) -> None:
+        if key not in RANK_INPUTS:
+            raise KeyError(
+                f"rank term {key!r} is not in RANK_INPUTS, so the queue would "
+                "rank by it while telling nobody it had (D-116)"
+            )
         if points:
             terms.append({"key": key, "points": round(points, 2), "detail": detail})
 
@@ -311,6 +345,21 @@ def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
     profile and are not terms in `rank_terms` at all — so a queue on an estate
     with no profiles is not a degraded risk ranking, it is a threat-intel
     ranking, and those are different claims about the same list.
+
+    **The disclosure is a property of the rank, not of the data (D-116).** It
+    was wired to whether a profile *existed*, so filling all four profiles in on
+    2026-09-03 turned an accurate warning off without adding a single term —
+    the queue then reported that nothing was unconsulted while consulting
+    exactly what it had before. Business context is named here whenever it is
+    not a term, and only the reason changes with profile coverage. `consulted`
+    is derived from `RANK_INPUTS` rather than restated.
+
+    Oracle does read all three fields (`oracle/engine.py`), which is why this
+    stayed invisible: business context reaches the portfolio decision and never
+    reaches the queue, and two rankings on one estate disagreed about which
+    inputs exist. Making the queue say so is this function's job; giving the
+    rank terms for them is a separate decision, because it reorders every queue
+    on the estate and needs stated weights.
     """
     from mykronos.db.models import RepoOnboarding, RiskProfile
 
@@ -329,23 +378,24 @@ def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
     }
     missing_profile = sorted(set(repos) - with_profile)
 
+    if missing_profile:
+        why = (
+            "internet exposure, data classification and business criticality are "
+            "not terms in this rank, and are unset anyway on "
+            + ", ".join(missing_profile)
+        )
+    else:
+        why = (
+            "internet exposure, data classification and business criticality are "
+            "recorded on every risk profile and read by the portfolio decision, "
+            "but they are not terms in this rank"
+        )
+
     return {
-        "consulted": ["severity", "threat intel (KEV, EPSS)", "remediation target", "blast radius"],
-        "not_consulted": (
-            [
-                {
-                    "input": "business context",
-                    "reason": (
-                        "no risk profile on "
-                        + ", ".join(missing_profile)
-                        + " — internet exposure, data classification and business "
-                        "criticality are unset, and they are not terms in this rank"
-                    ),
-                }
-            ]
-            if missing_profile
-            else []
-        ),
+        # Deduped in declaration order: `dict.fromkeys` keeps `RANK_INPUTS`'s
+        # order, and several keys deliberately share one label.
+        "consulted": list(dict.fromkeys(RANK_INPUTS.values())),
+        "not_consulted": [{"input": "business context", "reason": why}],
         "repos_without_a_risk_profile": missing_profile,
     }
 

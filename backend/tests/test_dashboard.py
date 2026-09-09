@@ -1435,10 +1435,13 @@ class TestTriageQueue:
         )
         assert body["total_open"] == 0
         assert body["truncated"] is False
-        # An empty estate has nothing to rank and nothing missing to say so
-        # about, but the block is always present — a caller should never have
-        # to handle "the queue forgot to mention what it ranked by" (B-033).
-        assert body["ranking"]["not_consulted"] == []
+        # The block is always present — a caller should never have to handle
+        # "the queue forgot to mention what it ranked by" (B-033) — and since
+        # D-116 its content describes the rank rather than the estate, so an
+        # empty portfolio discloses the same gap a full one does.
+        assert [g["input"] for g in body["ranking"]["not_consulted"]] == [
+            "business context"
+        ]
 
     def test_it_says_what_it_could_not_rank_by(
         self, client, admin_auth, seeded
@@ -1457,11 +1460,80 @@ class TestTriageQueue:
 
         gaps = body["ranking"]["not_consulted"]
         assert [g["input"] for g in gaps] == ["business context"]
-        assert "no risk profile" in gaps[0]["reason"]
+        assert "not terms in this rank" in gaps[0]["reason"]
+        assert REPO in gaps[0]["reason"], "it names where the profiles are missing"
         assert body["ranking"]["repos_without_a_risk_profile"] == [REPO]
         # And it is explicit about what it *did* use, so the two lists are
         # read together rather than the absence being inferred.
         assert "severity" in body["ranking"]["consulted"]
+
+    def test_the_disclosure_survives_the_profiles_being_filled_in(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """D-116 — filling the profiles in must not silence an accurate warning.
+
+        This is the defect the entry was written for. The disclosure was wired
+        to whether a risk profile *existed*, so doing the operator half of B-033
+        turned the warning off without adding a single term: the queue then
+        reported that nothing was unconsulted while consulting exactly what it
+        had before. Business context is not in `RANK_INPUTS`, so it is named
+        whether or not a profile exists, and only the reason moves.
+        """
+        from mykronos.dashboard import RANK_INPUTS
+        from tests.test_oracle_risk_profile import put_profile
+
+        assert "business context" not in RANK_INPUTS.values(), (
+            "if the rank ever gains a term for it, this test is the one that "
+            "should fail and be deleted"
+        )
+
+        before = client.get("/api/dashboard/triage", headers=admin_auth).json()["ranking"]
+        assert before["repos_without_a_risk_profile"] == [REPO]
+
+        put_profile(
+            client,
+            admin_auth,
+            seeded,
+            internet_facing=True,
+            data_classification="regulated",
+            business_criticality="critical",
+        ).raise_for_status()
+
+        after = client.get("/api/dashboard/triage", headers=admin_auth).json()["ranking"]
+        assert after["repos_without_a_risk_profile"] == []
+        assert [g["input"] for g in after["not_consulted"]] == ["business context"], (
+            "the profile exists and the rank still cannot read it"
+        )
+        assert "not terms in this rank" in after["not_consulted"][0]["reason"]
+        assert REPO not in after["not_consulted"][0]["reason"], (
+            "the reason should stop blaming a missing profile once one exists"
+        )
+        assert after["consulted"] == before["consulted"], (
+            "what the rank consults did not change, so the disclosure must not "
+            "claim it did"
+        )
+
+    def test_what_it_says_it_consulted_is_what_the_rank_can_produce(
+        self, client, admin_auth, seeded
+    ) -> None:
+        """D-116 — `consulted` is derived, not restated.
+
+        The old list was a four-element literal and was already wrong: the rank
+        also produces `repo_is_no_go`, `orphaned` and `fixable`, and none of the
+        three was disclosed. A list maintained by hand cannot stay true through
+        a change to the thing it describes.
+        """
+        from mykronos.dashboard import RANK_INPUTS
+
+        consulted = client.get("/api/dashboard/triage", headers=admin_auth).json()[
+            "ranking"
+        ]["consulted"]
+
+        assert set(consulted) == set(RANK_INPUTS.values())
+        assert len(consulted) == len(set(consulted)), "labels are deduped"
+        assert consulted == list(dict.fromkeys(RANK_INPUTS.values())), (
+            "declaration order, so the reading matches the rank's own order"
+        )
 
     def test_it_needs_authentication(self, client) -> None:
         assert client.get("/api/dashboard/triage").status_code == 401

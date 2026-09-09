@@ -424,6 +424,14 @@ jobs:
                 # fresh DuckDB catalog per test - and that work is already
                 # isolated, so it parallelises without touching a test. 32
                 # minutes to 6 on this host.
+                # No --cov here, deliberately (D-117). Coverage is collected on
+                # the Actions unit lane instead: mykronos is public, so Actions
+                # minutes are free, while this worker measured the same suite at
+                # 218s clean against 541s with coverage - 2.5x, on a lane that
+                # carries `trigger: true` with seven jobs gating on
+                # `passed: [unit, ...]`. Paying five and a half minutes per
+                # commit on the gating path buys a number the free runner can
+                # produce.
                 python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"

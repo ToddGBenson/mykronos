@@ -125,6 +125,33 @@ jobs:
           docker compose -f "$COMPOSE" pull --quiet
           docker compose -f "$COMPOSE" up -d
 
+      - name: Start the resource sampler
+        # D-114: a version bump on the tool that once took production down
+        # (D-053: 548% CPU and 7 GiB, on the shared host) carries a CPU and
+        # memory reading taken on the runner, not an assumption about one.
+        # Started here rather than after `Wait for health` so ZAP's start-up
+        # burst is in the sample. Every demo container is sampled, ZAP among
+        # them, because the question spec 32 §11.4 asks is what the *stack*
+        # costs on a runner; `Resource read` reduces this to peaks.
+        #
+        # `docker stats --no-stream` blocks for about a second collecting two
+        # cgroup readings, so the effective cadence is ~3s. The loop survives
+        # the end of this step because the runner does not reap detached
+        # processes between steps; `Resource read` kills it explicitly.
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/stats"
+          nohup bash -c '
+            while true; do
+              ids=$(docker ps -q --filter name=mykronos-demo-)
+              if [ -n "$ids" ]; then
+                docker stats --no-stream --format "{{.Name}} {{.CPUPerc}} {{.MemUsage}}" $ids 2>/dev/null                   | sed "s/^/$(date +%s) /"
+              fi
+              sleep 2
+            done' >> "$RUNNER_TEMP/stats/samples.log" 2>/dev/null &
+          echo $! > "$RUNNER_TEMP/stats/sampler.pid"
+          echo "Sampling every ~3s into $RUNNER_TEMP/stats/samples.log (pid $(cat "$RUNNER_TEMP/stats/sampler.pid"))."
+
       - name: Wait for health
         run: |
           set -uo pipefail
@@ -354,6 +381,64 @@ jobs:
           ingestion-url: https://mykronos.toddbenson.net
           token: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
           mykronos-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resource read
+        # Before `Tear down`, so the containers still exist to be named, and
+        # `always()` because the reading is the point on a run that failed as
+        # much as on one that passed. Peaks and p95 per container, into the
+        # job summary, and the ZAP version the stack actually ran.
+        if: always()
+        run: |
+          set -uo pipefail
+          kill "$(cat "$RUNNER_TEMP/stats/sampler.pid" 2>/dev/null)" 2>/dev/null || true
+          ZAP_VERSION=$(curl -fsS --max-time 10 -x "$ZAP_PROXY" "http://zap/JSON/core/view/version/"             | python -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || echo unknown)
+          ZAP_IMAGE=$(docker inspect -f '{{.Config.Image}}' mykronos-demo-zap-1 2>/dev/null || echo unknown)
+          python - "$RUNNER_TEMP/stats/samples.log" "$ZAP_IMAGE" "$ZAP_VERSION" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import re, sys
+          from collections import defaultdict
+
+          path, image, version = sys.argv[1:4]
+          UNITS = {"B": 1, "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "KB": 1e3, "MB": 1e6, "GB": 1e9}
+
+          def as_bytes(text):
+              m = re.fullmatch(r"([\d.]+)([A-Za-z]+)", text.strip())
+              return float(m.group(1)) * UNITS[m.group(2).upper()] if m else 0.0
+
+          cpu, mem, first, last = defaultdict(list), defaultdict(list), None, None
+          try:
+              lines = open(path, encoding="utf-8").read().splitlines()
+          except FileNotFoundError:
+              lines = []
+          for line in lines:
+              parts = line.split()
+              if len(parts) < 5 or not parts[2].endswith("%"):
+                  continue
+              ts, name = int(parts[0]), parts[1]
+              first = ts if first is None else first
+              last = ts
+              cpu[name].append(float(parts[2].rstrip("%")))
+              mem[name].append(as_bytes(parts[3]))
+
+          def p95(xs):
+              xs = sorted(xs)
+              return xs[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))]
+
+          gib = lambda b: f"{b / 1024**3:.2f} GiB"
+          print(f"### Resource read (D-114)\n")
+          print(f"ZAP `{image}`, reporting version `{version}`. "
+                f"{sum(len(v) for v in cpu.values())} samples over "
+                f"{(last - first) if first is not None else 0}s of the run.\n")
+          if not cpu:
+              print("No samples were collected: the sampler never started, or no `mykronos-demo-` container existed.")
+              sys.exit(0)
+          print("| container | peak CPU | p95 CPU | mean CPU | peak memory | samples |")
+          print("|---|---:|---:|---:|---:|---:|")
+          for name in sorted(cpu, key=lambda n: -max(cpu[n])):
+              c = cpu[name]
+              print(f"| `{name}` | {max(c):.0f}% | {p95(c):.0f}% | {sum(c) / len(c):.0f}% | {gib(max(mem[name]))} | {len(c)} |")
+          print("\nCPU is Docker's percentage of one core, so 200% is two cores flat out. "
+                "D-053's reading on the shared host was 548% and 7 GiB for ZAP alone, with active scanning on.")
+          PY
 
       - name: Tear down
         if: always()

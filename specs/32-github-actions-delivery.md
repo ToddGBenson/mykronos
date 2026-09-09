@@ -1030,9 +1030,17 @@ that failure mode since it was written.
    both would reproduce exactly the duplication D-039 removed.
 3. **Does the GHCR pull cost enough to matter for `deploy.ps1`?** §4.1. Measure
    once; a pull-through cache is the answer if it does.
-4. **Does DAST's D-053 budget change on a GitHub-hosted runner?** §4.2. The
-   answer is a measurement, and the passive-only posture holds until there is
-   one.
+4. ~~**Does DAST's D-053 budget change on a GitHub-hosted runner?**~~ §4.2.
+   **Measured 2026-09-09 (D-114, B-053).** `demo-and-dast.yml` samples every
+   demo container for the length of the run and writes peaks into the job
+   summary. First reading, ZAP 2.17.0, passive only, 4-vCPU runner: ZAP peaked
+   at 312% CPU and 0.76 GiB over 101s; the whole job took 3m08s. D-053's 548%
+   and 7 GiB was ZAP *with active scanning* on the shared host, so the two are
+   not the same measurement — but the runner is a machine that exists for
+   ninety seconds and shares nothing, and the passive cost on it is known.
+   Whether active scanning comes back on the runner is now a question with a
+   baseline: dispatch with `active_scan: true` and read the same table. The
+   passive-only posture holds until somebody does.
 5. **How does the coverage cross-check see a repo-owned scanning workflow?**
    *(new, 2026-08-28)* §7 maps a workflow to a capability by its filename,
    from the template registry — exact, because the installer chose the name.

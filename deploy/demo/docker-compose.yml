@@ -121,7 +121,7 @@ services:
   # sees no traffic and spiders from the login page, which is the scan this
   # whole arrangement exists to replace.
   zap:
-    image: ghcr.io/zaproxy/zaproxy:2.16.1
+    image: ghcr.io/zaproxy/zaproxy:2.17.0
     ports:
       - "8290:8090"
     command: >
