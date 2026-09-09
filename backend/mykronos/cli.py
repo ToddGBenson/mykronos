@@ -55,7 +55,7 @@ from mykronos.ci import (
 from mykronos.config import get_settings
 from mykronos.dashboard import DashboardQueries
 from mykronos.db import Database
-from mykronos.db.models import CapabilityGrant, RepoOnboarding
+from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
@@ -997,7 +997,47 @@ def main(argv: list[str] | None = None) -> int:
                         select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
                     ).all()
                 }
-            report = briefing_report.build(catalog, default_branches=default_branches)
+            # Languages are read from GitHub, so the terminal briefing needs a
+            # client to report B-051's gap. Without one it reports nothing
+            # there, which is the honest degradation: not knowing what a
+            # repository is made of is different from knowing it is analysed.
+            languages: dict[str, dict[str, int]] = {}
+            sast_tools: dict[str, str] = {}
+            try:
+                factory = _github_factory(settings)
+                with db.session() as session:
+                    installs = [
+                        (row.github_repo_full_name, row.github_installation_id)
+                        for row in session.execute(
+                            select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+                        )
+                        .scalars()
+                        .all()
+                    ]
+                    sast_tools = {
+                        name: str(
+                            capability_config_for(session, name, "sast").get("enabled_tool")
+                            or "codeql"
+                        )
+                        for name, _ in installs
+                    }
+                for name, installation_id in installs:
+                    counts = asyncio.run(
+                        factory.for_installation(installation_id).languages(name)
+                    )
+                    if counts is not None:
+                        languages[name] = counts
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).debug(
+                    "No GitHub client for the briefing language read"
+                )
+
+            report = briefing_report.build(
+                catalog,
+                default_branches=default_branches,
+                languages=languages,
+                sast_tools=sast_tools,
+            )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
             else:

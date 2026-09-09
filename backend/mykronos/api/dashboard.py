@@ -42,6 +42,7 @@ from mykronos import (
     worklist,
 )
 from mykronos import threat_intel as threat_intel_feed
+from mykronos.adapters.registry import default_tool
 from mykronos.adminauth import PrincipalDep
 from mykronos.api.ingest import (
     installation_client_for_repo,
@@ -2253,6 +2254,17 @@ class BriefingActionOut(BaseModel):
     effect: str
 
 
+class UnreadCodeOut(BaseModel):
+    """Source no configured analyser implements (B-051)."""
+
+    repo_full_name: str
+    tool: str
+    share_unread: float
+    #: (language, bytes), largest first.
+    unread: list[tuple[str, int]]
+    action: BriefingActionOut
+
+
 class StaleLaneOut(BaseModel):
     """A lane that is reporting and not covering (B-046)."""
 
@@ -2358,6 +2370,9 @@ class BriefingOut(BaseModel):
     #: moving (B-046). Separate from `stalled` because the sentence, the
     #: number and the fix are all different: these are green everywhere else.
     stale: list[StaleLaneOut] = Field(default_factory=list)
+    #: Repositories whose analyser cannot read part of them (B-051). Green in
+    #: every other view, which is why it needs its own.
+    unread: list[UnreadCodeOut] = Field(default_factory=list)
     classes: list[BriefingClassOut]
     awaiting: list[AwaitingClosureOut]
     #: What each scanner said to do, grouped by rule (B-026).
@@ -2400,10 +2415,13 @@ async def post_deployment_briefing(
     them.
     """
     asset_id = _resolve_repo(request, repo_id) if repo_id else None
+    languages, sast_tools = await _languages(request)
     report = briefing.build(
         request.app.state.catalog,
         asset_id=asset_id,
         default_branches=_default_branches(request),
+        languages=languages,
+        sast_tools=sast_tools,
     )
     return BriefingOut(
         generated_at=report.generated_at,
@@ -2415,6 +2433,9 @@ async def post_deployment_briefing(
             StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled
         ],
         stale=[StaleLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stale],
+        unread=[
+            UnreadCodeOut.model_validate(dataclasses.asdict(row)) for row in report.unread
+        ],
         classes=[
             BriefingClassOut.model_validate(dataclasses.asdict(entry))
             for entry in report.classes
@@ -3068,6 +3089,49 @@ def _lane_branches(request: Request, repo_full_name: str) -> dict[str, str]:
             for capability in ALL_STAGES
         }
     return out
+
+
+async def _languages(request: Request) -> tuple[dict[str, dict[str, int]], dict[str, str]]:
+    """What each onboarded repository is made of, and what analyses it (B-051).
+
+    Read live from GitHub rather than stored, for the reason the governance
+    panel is: a language mix that is six months old would report a gap a
+    repository closed, or miss one it opened. It is one call per repository on
+    a page rendered rarely.
+
+    A repository whose languages cannot be read is omitted entirely rather
+    than recorded as empty — "we could not look" must not render as "nothing
+    here is unread".
+    """
+    with request.app.state.db.session() as session:
+        rows = [
+            (row.github_repo_full_name, row.github_installation_id)
+            for row in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+            )
+            .scalars()
+            .all()
+        ]
+        tools = {
+            name: str(
+                capability_config_for(session, name, "sast").get("enabled_tool")
+                or default_tool("sast")
+            )
+            for name, _ in rows
+        }
+
+    languages: dict[str, dict[str, int]] = {}
+    for name, installation_id in rows:
+        try:
+            counts = await request.app.state.github_factory.for_installation(
+                installation_id
+            ).languages(name)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not read languages for %s", scrub(name))
+            continue
+        if counts is not None:
+            languages[name] = counts
+    return languages, tools
 
 
 def _default_branches(request: Request) -> dict[str, str]:

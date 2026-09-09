@@ -2711,6 +2711,8 @@ export interface components {
             stalled: components["schemas"]["StalledLaneOut"][];
             /** Stale */
             stale?: components["schemas"]["StaleLaneOut"][];
+            /** Unread */
+            unread?: components["schemas"]["UnreadCodeOut"][];
             /** Classes */
             classes: components["schemas"]["BriefingClassOut"][];
             /** Awaiting */
@@ -5889,6 +5891,24 @@ export interface components {
             repo_full_name: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * UnreadCodeOut
+         * @description Source no configured analyser implements (B-051).
+         */
+        UnreadCodeOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Tool */
+            tool: string;
+            /** Share Unread */
+            share_unread: number;
+            /** Unread */
+            unread: [
+                string,
+                number
+            ][];
+            action: components["schemas"]["BriefingActionOut"];
         };
         /** ValidationError */
         ValidationError: {
