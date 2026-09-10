@@ -323,6 +323,41 @@ already made is now executable.
   not, so the state this entry is about was the silent one. It now warns, and
   names which transport is carrying messages when one is.
 
+**A lane that cannot open a scan run now says so, 2026-09-10.** Found while
+reading the pipeline's own account of an incident it had already survived.
+
+`mykronos.upload` opens a ScanRun *before* it interprets anything and
+finalises in a `finally`, so a crash anywhere after that still leaves evidence
+the run happened — which is why most lanes need no `on_failure` equivalent.
+A failure **at** that first call is the one case the rule does not cover, and
+it is the one that happened: `git rev-parse` run from the wrong directory
+printed nothing, the empty `commit_sha` was refused with a 422, and the
+pipeline's `|| true` turned the exit code green. No ScanRun, no alert, no
+record. It surfaced only when somebody read the stages cross-check and saw
+`unit` as `never_reported`.
+
+The registration is now wrapped, and a failure is reported through
+`/ingest/lane-failure` — the endpoint that exists for exactly this, needing no
+capability grant and no ScanRun, because a lane that died before it could
+report has neither.
+
+**Best-effort, and never a substitute.** The original error is re-raised
+either way, so the exit code is unchanged; a failure to report the failure
+must not replace the real one. It is worth attempting even when ingestion
+looks broken, because the two causes are opposite: a 4xx means the API is up
+and the request was wrong, which is precisely when the report succeeds.
+
+**`""` rather than `null`.** `LaneFailure` forbids unknown keys and types
+every field as `str`, so a null `commit_sha` would be refused with the same
+422 this call exists to report. A test builds the real schema from the real
+payload rather than eyeballing it, because this path is only ever taken when
+something else has already gone wrong.
+
+**No pipeline change.** Every `|| true` stays where it is. This closes the
+hole from the side that knows what happened, rather than by asking twenty-odd
+call sites across three pipelines to tell the difference between "found things"
+and "recorded nothing".
+
 **Provenance:** DevSecOps assessment, 2026-09-03.
 
 ---

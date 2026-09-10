@@ -338,6 +338,45 @@ def write_step_summary(
         logger.warning("Could not write step summary: %s", exc)
 
 
+def _report_unreported(
+    client: IngestionClient,
+    args: argparse.Namespace,
+    scan_run_id: str,
+    cause: Exception,
+) -> None:
+    """Tell the platform that this lane could not open a ScanRun.
+
+    Best-effort, and deliberately so. This runs *because* something already
+    went wrong, and a failure to report the failure must not replace the
+    original error with its own — the caller re-raises the real one either
+    way, so the exit code is unchanged whatever happens in here.
+
+    Worth attempting even when the ingestion API looks broken, because the two
+    common causes are opposite. A 4xx means the API is up and the request was
+    wrong, which is precisely when this call will succeed. A connection error
+    means it is not, and then this fails too and says so in one line.
+    """
+    try:
+        client.post(
+            "/api/ingest/lane-failure",
+            json_body={
+                # The schema forbids unknown keys and every field is a
+                # `str`, so an absent value is "" rather than null. A 422
+                # here would be this function failing in exactly the way it
+                # exists to report.
+                "lane": f"{args.capability}/{args.tool}"[:100],
+                "commit_sha": (args.commit_sha or "")[:100],
+                "detail": (
+                    f"Could not open a scan run: {cause}. "
+                    f"Nothing was recorded for scan run {scan_run_id}."
+                )[:500],
+            },
+        )
+        logger.info("Reported the failure to open a scan run.")
+    except Exception as exc:  # noqa: BLE001 — never replaces the real error
+        logger.warning("Could not report the failure either: %s", exc)
+
+
 def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> UploadOutcome:
     client = client or IngestionClient(args.ingestion_url, args.token)
     results_path = Path(args.results_path)
@@ -413,7 +452,21 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
 
     # Register the run before scanning is interpreted, so a crash between here
     # and the finalise still leaves evidence the run happened (spec 04 §7).
-    client.post("/api/ingest/scan-run", json_body=scan_run_payload())
+    #
+    # A failure *at* this line is the one case that rule does not cover, and it
+    # is the one that actually happened. `rev-parse` printed nothing, the empty
+    # `commit_sha` was refused with a 422, no ScanRun was ever created, and the
+    # pipeline's `|| true` turned the exit code green. Nothing knew until
+    # somebody read the stages cross-check and saw `unit` as `never_reported`.
+    #
+    # So the lane says so itself, through the endpoint that exists for exactly
+    # this: `/ingest/lane-failure` needs no capability grant and no ScanRun,
+    # because a lane that died before it could report has neither.
+    try:
+        client.post("/api/ingest/scan-run", json_body=scan_run_payload())
+    except UploadError as exc:
+        _report_unreported(client, args, scan_run_id, exc)
+        raise
 
     outcome = UploadOutcome(scan_run_id=scan_run_id)
     result = AdapterResult()
