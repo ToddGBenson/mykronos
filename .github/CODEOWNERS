@@ -1,0 +1,61 @@
+# Who reviews what (CIS Software Supply Chain Benchmark v1.0 §1.1.6).
+#
+# `codeowners_coverage` read `unknown` for this repository, which the platform
+# renders as "without one, a code-owner review requirement routes to nobody".
+# Reporting that about four other repositories while having no file of its own
+# is the posture this platform exists to make visible, so it starts here.
+#
+# **This is a single-operator estate, and this file says so plainly rather
+# than inventing teams.** Every line resolves to the same person, which makes
+# the coverage number 100% and makes it mean exactly one thing: nothing here
+# is owned by nobody. It does not mean review is distributed, and a file that
+# implied otherwise would be worse than no file.
+#
+# `codeowner_review_required` is deliberately still off. Turning it on with
+# these lines would deadlock every pull request — GitHub refuses to count a
+# self-approval, which is the same trap D-110 hit and recorded. This file is
+# the routing; enabling the requirement is a decision for the day there is a
+# second reviewer.
+#
+# Last match wins, so the catch-all goes first and the specific paths follow.
+
+*                               @ToddGBenson
+
+# --- The paths where a review actually changes the outcome -----------------
+#
+# Listed separately not because the owner differs but because a reviewer
+# arriving at one of these should know it is one of these. They are the places
+# where a mistake reaches production, another repository, or a credential.
+
+# Anything that runs against the estate's own infrastructure. A wrong value in
+# a pipeline definition applies to a live Concourse target, and the pipelines
+# are where B-065 found credentials that `fly get-pipeline` hands back.
+/deploy/                        @ToddGBenson
+
+# What gets installed into other people's repositories. A template defect ships
+# to every onboarded repository on the next save, and a workflow that ignores
+# an exit code reports a clean scan for a scan that broke.
+/workflow-templates/            @ToddGBenson
+/actions/                       @ToddGBenson
+
+# The composite action's own supply chain and the delivery path to GHCR.
+/.github/workflows/             @ToddGBenson
+
+# What a finding is allowed to mean. The adapters decide severity, and the
+# ranking decides what a person looks at first; both are places where a quiet
+# change alters every number downstream without altering any test that reads
+# only shape.
+/backend/mykronos/adapters/     @ToddGBenson
+/backend/mykronos/cvss.py       @ToddGBenson
+/backend/mykronos/worklist.py   @ToddGBenson
+/backend/mykronos/triage_story.py  @ToddGBenson
+
+# Authentication, tokens and the capability ledger — the boundary between a
+# repository being scanned and a repository being able to report on itself.
+/backend/mykronos/auth.py       @ToddGBenson
+/backend/mykronos/grants.py     @ToddGBenson
+
+# The decisions record. Editing a decision after the fact is how a record of
+# what was chosen becomes a record of what is currently believed.
+/docs/DECISIONS.md              @ToddGBenson
+/specs/                         @ToddGBenson
