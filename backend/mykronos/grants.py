@@ -125,6 +125,106 @@ def _open_finding_ids(catalog: Catalog, repo_full_name: str, capabilities: set[s
     return [str(row[0]) for row in rows]
 
 
+def _open_ids_by_tool(
+    catalog: Catalog,
+    repo_full_name: str,
+    capability: str,
+    tools: set[str],
+    status: str,
+) -> list[str]:
+    """Open findings of one capability that a named tool last observed.
+
+    The tool is not on the finding — it is a property of the observation, so
+    it comes through `last_seen_scan_run_id` exactly as absence reconciliation
+    reads it. `asset_id` rather than `repo_full_name`, which spec 14 §5 keeps
+    only for one migration step.
+
+    A finding whose last scan run has been compacted away joins nothing and is
+    left alone, which is the safe direction: it stays `open` rather than being
+    stranded on the strength of a row nobody can read.
+    """
+    if not tools or not catalog.all_files("findings"):
+        return []
+    placeholders = ", ".join(["?"] * len(tools))
+    rows = catalog.query(
+        f"""
+        SELECT f.finding_id
+        FROM findings f
+        JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
+        WHERE f.asset_id = ?
+          AND f.capability = ?
+          AND f.status = ?
+          AND coalesce(s.tool_name, '') IN ({placeholders})
+        """,
+        [repo_full_name, capability, status, *sorted(tools)],
+    )
+    return [str(row[0]) for row in rows]
+
+
+def strand_tool_findings(
+    catalog: Catalog, repo_full_name: str, capability: str, tools: set[str]
+) -> int:
+    """Record what dropping an analyser did to the findings only it could see.
+
+    B-047 one level down. Removing a *capability* strands its findings because
+    closure needs two consecutive successful scans that no longer observe the
+    finding, and a capability that cannot upload will never produce one.
+    Removing a *tool* from a capability that still runs is the same dead end:
+    ShellCheck's findings need ShellCheck's silence, and CodeQL's silence
+    about a shell script has never been evidence of anything.
+
+    Before absence reconciliation read `tool_name` those findings closed on
+    the other tool's silence — tidily, and wrongly. They now stay open with no
+    exit, which is honest and useless on its own. This makes the removal say
+    what it did.
+
+    `restore_stranded_tool` puts them back the moment the analyser is added
+    again, because nothing about the finding changed; only whether anything
+    was still looking.
+
+    Returns how many were stranded.
+    """
+    ids = _open_ids_by_tool(
+        catalog, repo_full_name, capability, tools, FindingStatus.OPEN.value
+    )
+    if not ids:
+        return 0
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, ids),
+        "status = ?, resolved_at = ?",
+        [FindingStatus.STRANDED.value, utcnow()],
+        only_if_status=FindingStatus.OPEN.value,
+    )
+    return outcome.count
+
+
+def restore_stranded_tool(
+    catalog: Catalog, repo_full_name: str, capability: str, tools: set[str]
+) -> int:
+    """Put back what adding the analyser again made decidable.
+
+    The mirror of `strand_tool_findings`, and it must exist for the same
+    reason `restore_stranded` does: a repository that turns an analyser off
+    and on again would otherwise accumulate a permanent shadow of findings
+    nothing will ever look at, and the platform would be quieter for it while
+    being no safer.
+    """
+    ids = _open_ids_by_tool(
+        catalog, repo_full_name, capability, tools, FindingStatus.STRANDED.value
+    )
+    if not ids:
+        return 0
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, ids),
+        "status = ?, resolved_at = NULL",
+        [FindingStatus.OPEN.value],
+        only_if_status=FindingStatus.STRANDED.value,
+    )
+    return outcome.count
+
+
 def strand_findings(catalog: Catalog, repo_full_name: str, capabilities: set[str]) -> int:
     """Record what disabling a capability did to its open findings (B-047).
 

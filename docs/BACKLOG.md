@@ -811,13 +811,29 @@ now, and it reads the rendered workflow instead.
   ShellCheck finding closed by two CodeQL runs. The eight branch-lane tests
   still pass, so the dimension B-056 added is untouched.
 
-  **The consequence, stated rather than discovered later.** A tool *removed*
-  from `extra_analysers` never runs again, so its open findings can no longer
-  close by any path — the situation B-047 already names `stranded` and handles
-  at the capability level. It is not handled at the tool level. Before this
-  fix those findings closed, wrongly, on another tool's silence; now they stay
-  open, correctly and unhelpfully. Extending `strand_findings` to a removed
-  tool is the follow-on, and it is a different problem from this one.
+  **The consequence, and then the follow-on.** A tool *removed* from
+  `extra_analysers` never runs again, so its open findings can no longer close
+  by any path — the situation B-047 already names `stranded` and handles at
+  the capability level. Before the fix above those findings closed, wrongly,
+  on another tool's silence; after it they stayed open, correctly and
+  uselessly.
+
+  **Handled at the tool level, 2026-09-10.** Dropping an analyser strands
+  exactly the findings that analyser last observed, and adding it back opens
+  them again — the mirror matters, or a repository toggling an analyser
+  accumulates a permanent shadow of findings nothing will ever look at, and
+  the platform is quieter for it while being no safer. The capability is
+  untouched: dropping an analyser is not disabling `sast`, and the grant does
+  not move.
+
+  **And it caught a sentence that was about to become untrue.** The stranding
+  note was only ever appended to the branch where the workflow set changed,
+  which was harmless while stranding could only follow a capability removal.
+  Dropping an analyser leaves the capability set alone, so the response landed
+  on the `already_pending` branch and said **"No change"** while findings had
+  just moved to `stranded`. Every branch carries the note now, and the
+  sentence is scoped to workflows, because that is the only thing that did not
+  change.
 
   Enabling them is still a capability change per repository, and the numbers
   above say what each would close. It is now a configuration change rather
