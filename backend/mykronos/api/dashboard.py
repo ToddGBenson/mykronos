@@ -171,9 +171,37 @@ class PortfolioRowOut(BaseModel):
     risk_assessed_at: datetime | None = None
 
 
+class EstateOut(BaseModel):
+    """What exists against what is watched (B-051).
+
+    The platform has always known what it was told about and never what
+    exists, so "four of eleven repositories are watched" came from a person
+    reading the account rather than from here — and nothing could notice a
+    repository nobody onboarded. `binnacle` sat unscanned with 30 shell
+    scripts in it until somebody looked.
+    """
+
+    #: Repositories the GitHub App installation can see. `None` when it could
+    #: not be read, which is a different answer from zero and must render as
+    #: one: an unreadable installation would otherwise report an estate of
+    #: nothing.
+    visible: int | None = None
+    onboarded: int = 0
+    #: Visible and not onboarded, named rather than counted. A number tells
+    #: somebody there is a gap; the names tell them which repository to look
+    #: at, which is the whole difference between this and the sentence it
+    #: replaces.
+    unwatched: list[str] = Field(default_factory=list)
+    #: Said out loud, because the count is only as wide as the grant. An
+    #: installation scoped to five repositories reports five of five and is
+    #: telling the truth about itself while saying nothing about the account.
+    note: str = ""
+
+
 class PortfolioOut(BaseModel):
     summary: PortfolioSummary
     repos: list[PortfolioRowOut]
+    estate: EstateOut = Field(default_factory=EstateOut)
 
 
 class ClaimRequest(BaseModel):
@@ -966,6 +994,56 @@ def _queries(request: Request) -> DashboardQueries:
     return DashboardQueries(request.app.state.catalog)
 
 
+async def _estate(request: Request, onboarded: set[str]) -> EstateOut:
+    """Read the installation's scope and compare it to what is onboarded.
+
+    Fails soft in the direction that claims least: a listing that cannot be
+    read leaves `visible` as `None` and names nothing, because "the App could
+    not tell us" and "the account has no other repositories" are different
+    facts and only one of them is good news.
+    """
+    visible: list[str] | None = None
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is not None:
+        with request.app.state.db.session() as session:
+            row = (
+                session.execute(
+                    select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+                )
+                .scalars()
+                .first()
+            )
+            installation_id = row.github_installation_id if row else None
+        if installation_id is not None:
+            try:
+                client = factory.for_installation(installation_id)
+                visible = await client.installation_repositories()
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not read the installation's repository list")
+
+    if visible is None:
+        return EstateOut(
+            visible=None,
+            onboarded=len(onboarded),
+            note=(
+                "The App's repository list could not be read, so this is what "
+                "Mykronos was told about and not what exists."
+            ),
+        )
+
+    unwatched = sorted(set(visible) - onboarded)
+    return EstateOut(
+        visible=len(visible),
+        onboarded=len(onboarded),
+        unwatched=unwatched,
+        note=(
+            "Counted from what the GitHub App installation can see. A "
+            "repository outside the installation's scope is invisible here, so "
+            "this is the estate as the App is granted it."
+        ),
+    )
+
+
 @router.get("/portfolio", response_model=PortfolioOut)
 async def portfolio(
     request: Request,
@@ -986,6 +1064,8 @@ async def portfolio(
         if not concourse:
             return None
         return f"{concourse}/teams/{team}/pipelines/{pipeline_name_for(repo_full_name)}"
+
+    estate = await _estate(request, {str(row.repo_full_name) for row in rows})
 
     return PortfolioOut(
         summary=summary,
@@ -1014,6 +1094,7 @@ async def portfolio(
             )
             for row in rows
         ],
+        estate=estate,
     )
 
 

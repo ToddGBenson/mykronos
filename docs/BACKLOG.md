@@ -626,14 +626,28 @@ now, and it reads the rendered workflow instead.
   (B-052, D-111). It is `active` with `sast` enabled — over a repository
   CodeQL reads 32% of, which D-111 recorded at the time as a qualified green
   and which this check now measures on every render.
-- The estate view states how many repositories exist versus how many are
-  watched. **Not built, and it needs a decision first.** The platform sees
-  what its App installation is granted, which is five repositories, all
-  onboarded. "Eleven exist" came from a person reading the account. Reporting
-  five of five would be true and useless; reporting five of eleven means
-  granting the App a wider scope or holding a second credential, and that is a
-  choice about what this platform is allowed to see rather than a query to
-  write.
+- ~~The estate view states how many repositories exist versus how many are
+  watched.~~ **Decided and built 2026-09-09.** The operator widened the App
+  installation to all repositories, so the question is answerable from the
+  App's own scope rather than from a person reading the account. The portfolio
+  carries an `estate` block: how many the installation can see, how many are
+  onboarded, and **the names of the ones that are not** — a number says there
+  is a gap, a name says which repository to go and look at.
+
+  Read live once the listing worked: the installation sees **11**, five are
+  onboarded, and six are not — `configFiles`,
+  `ccfr-security-web-app-automation`, `concourse-maven-spring-boot`,
+  `terraform-project`, `apc` and `blog.toddbenson.net`. Those are the six the
+  2026-09-03 pass examined by hand and judged not urgent; the difference is
+  that the platform now names them on every render rather than waiting for
+  somebody to ask.
+
+  Two things it refuses to do. `visible` stays `null` when the listing cannot
+  be read, because "the App could not tell us" and "the account has no other
+  repositories" are different facts and only one is good news. And the
+  response carries a sentence saying the count is only as wide as the grant —
+  an installation scoped to five would report five of five, which is true
+  about itself and says nothing about the account.
 
 **Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from the
 question "what about the other repositories" — which the platform could not

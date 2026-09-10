@@ -3367,6 +3367,32 @@ export interface components {
             has_reason: boolean;
         };
         /**
+         * EstateOut
+         * @description What exists against what is watched (B-051).
+         *
+         *     The platform has always known what it was told about and never what
+         *     exists, so "four of eleven repositories are watched" came from a person
+         *     reading the account rather than from here — and nothing could notice a
+         *     repository nobody onboarded. `binnacle` sat unscanned with 30 shell
+         *     scripts in it until somebody looked.
+         */
+        EstateOut: {
+            /** Visible */
+            visible?: number | null;
+            /**
+             * Onboarded
+             * @default 0
+             */
+            onboarded: number;
+            /** Unwatched */
+            unwatched?: string[];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /**
          * EvaluateRequest
          * @description What the gate workflow sends.
          *
@@ -4349,6 +4375,7 @@ export interface components {
             summary: components["schemas"]["PortfolioSummary"];
             /** Repos */
             repos: components["schemas"]["PortfolioRowOut"][];
+            estate?: components["schemas"]["EstateOut"];
         };
         /** PortfolioRowOut */
         PortfolioRowOut: {

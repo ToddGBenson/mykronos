@@ -226,6 +226,10 @@ class GitHubClient(Protocol):
         """Bytes per language, or None when it could not be read (B-051)."""
         ...
 
+    async def installation_repositories(self) -> list[str] | None:
+        """Every repository this installation can see (B-051). None if unread."""
+        ...
+
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str
     ) -> PullRequest | None: ...
@@ -569,6 +573,10 @@ class FakeGitHubClient:
             # "nothing applies here" from a repository that does not exist.
             return None
         return sorted(self._repo(repo_full_name).files)
+
+    async def installation_repositories(self) -> list[str] | None:
+        self.calls.append(("installation_repositories", ""))
+        return sorted(self.repos)
 
     async def languages(self, repo_full_name: str) -> dict[str, int] | None:
         self.calls.append(("languages", repo_full_name))
@@ -1104,6 +1112,47 @@ class RestGitHubClient:
             for entry in payload.get("tree") or []
             if entry.get("type") == "blob" and entry.get("path")
         ]
+
+    async def installation_repositories(self) -> list[str] | None:
+        """Every repository this installation can see, or None if it cannot be
+        read.
+
+        The platform has always known what it was *told about* and never what
+        exists. B-051's headline — four of eleven repositories watched — came
+        from a person reading the account, so nothing could notice a
+        repository nobody onboarded: `binnacle` sat unscanned with 30 shell
+        scripts in it until somebody looked.
+
+        This is the App answering for its own scope. It reports what the
+        installation is granted, which is the whole account only if the
+        installation is set to all repositories — so a small number here is a
+        fact about the grant, not about the account, and the caller has to say
+        which it is showing.
+        """
+        names: list[str] = []
+        page = 1
+        while True:
+            try:
+                payload = await self._json(
+                    "GET",
+                    "/installation/repositories",
+                    params={"per_page": 100, "page": page},
+                )
+            except GitHubError:
+                # None, never a partial list. A short answer here would read
+                # as "the account has three repositories", which is the exact
+                # false statement this exists to replace.
+                return None
+            batch = (payload or {}).get("repositories") or []
+            names.extend(str(repo["full_name"]) for repo in batch if repo.get("full_name"))
+            if len(batch) < 100:
+                return sorted(names)
+            page += 1
+            if page > 20:
+                # 2000 repositories is not this estate, and an unbounded loop
+                # against a paginated API is how a status read becomes an
+                # outage.
+                return sorted(names)
 
     async def languages(self, repo_full_name: str) -> dict[str, int] | None:
         """Bytes per language, or None when it could not be read (B-051).
