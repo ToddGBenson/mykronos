@@ -245,6 +245,31 @@ This does not close the entry. It removes a second failure that was hiding
 behind the first: configuring the webhook would have produced silence, and
 this is what makes configuring it worth doing.
 
+**Then the class, 2026-09-10, because the instance was never the point.** Two
+guard tests, one for each half of what kept the digest bug invisible.
+
+The first refuses `Any` on a parameter this codebase has a protocol for —
+`github` and `notifier`. `Any` is legitimate in plenty of places here, and it
+is not legitimate at the one place where declining an available type turns a
+missing `await` into a silent success. It found **six** such parameters, two
+of which the first hand-written sweep missed because those functions pass the
+object along rather than calling a method on it.
+
+The second refuses a test double that answers synchronously where the real
+class is `async`. That is what made `test_send_all_sends_one_per_owner` pass
+for a job delivering nothing: the double agreed with the caller, so the test
+tested the double.
+
+**Measured rather than argued.** The same un-awaited `send`, twice:
+
+| annotation | mypy |
+|---|---|
+| `notifier: Any` | clean, 128 files |
+| `notifier: Notifier \| None` | `[unused-coroutine] Are you missing an await?` |
+
+That is the whole difference between the bug shipping and the bug being
+impossible, and it is one line of type.
+
 **Acceptance criteria**
 
 - Either a webhook is configured, or the absence is recorded as a decision the

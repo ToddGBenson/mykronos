@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from mykronos.db import Database
 from mykronos.db.models import GroomedStory
+from mykronos.github import GitHubClient
 from mykronos.triage_story import TriageStory
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class GroomOutcome:
 
 
 async def open_or_update_story(
-    db: Database, github: Any, actor: str, story: TriageStory
+    db: Database, github: GitHubClient, actor: str, story: TriageStory
 ) -> GroomOutcome:
     """Open the issue for this story, or update the one already open for it."""
     with db.session() as session:
