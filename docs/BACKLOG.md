@@ -51,13 +51,14 @@ was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
 **The nine that needed the operator rather than code were decided on
-2026-09-05, as D-108 to D-116.** Four stay open as execution and each carries
+2026-09-05, as D-108 to D-116.** Three stay open as execution and each carries
 its decision inline: the registry is closed by network scope rather than by
-binding (B-054, D-109); two of three branch-protection controls are required
-and commit signing is deliberately deferred (B-060, D-110); the notifier gets a
-webhook, now that ownership is real (B-035, D-112); and coverage, whose lane
-was retired under it (B-042, D-113 corrected by D-117, then D-118) and which
-now needs a second decision. Five are in Closed: the ranking queue's
+binding (B-054, D-109); the remaining branch-protection controls, now that
+D-110's review half is applied and its status-check half is understood
+(B-060); and the notifier's webhook, which needs a credential this repository
+must not hold (B-035, D-112). Coverage was the fourth and is closed: its lane
+was retired under it (B-042, D-113 corrected by D-117, then D-118), and D-121
+gave it a weekly home off the critical path. Five are in Closed: the ranking queue's
 disclosure derived from its terms (B-049, D-116, built the same day); B-043,
 closed as a decision because free-text Consult stays deferred (D-115); binnacle
 granted with its partial coverage recorded (B-052, D-111 — executed on the
@@ -194,132 +195,6 @@ the consequence of a blocked release, not to this file.
 (D-108). It was deferred on 2026-09-01 with the capability left enabled and
 inert, which the entry itself called the one indefensible state; that hold
 lasted four days and is in Closed.
-
-### B-042 — Coverage is plumbed end to end and no pipeline writes it — **done**
-
-**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09 (D-121)
-
-Every test run in this lake reports `line_coverage = NULL`. All of them: 227
-unit runs and 55 functional runs on `mykronos`, 36 unit runs on `TheHub`.
-
-**Nothing is broken.** The JUnit adapter parses Cobertura `line-rate` and
-JaCoCo `LINE` counters (`adapters/tests_junit.py`), the registry merges the
-columns (`registry.py:223`), the lake stores them, `scan_health` reads the most
-recent run that *reported* coverage rather than the most recent run, and the
-uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS` and merges the results.
-Drop a `coverage.xml` beside `unit.xml` and the number appears.
-
-No pipeline writes one. `mykronos`'s own unit lane runs
-`python -m pytest -q -n auto --junitxml="$MYKRONOS_RESULTS/unit.xml"` and that
-is the entire gap: no `--cov`, and `pytest-cov` is not in the `dev` extra.
-
-This is the same shape as most of B-032 through B-038 — the capability is
-ahead of its wiring — and it is why the new test-estate view renders "never
-measured" for every lane on every repository.
-
-**Not done here, deliberately.** Coverage collection under `pytest-xdist` costs
-real time on a 14-minute suite that runs on every pull request, and spending
-that is a call about this repository's CI budget rather than a defect to fix.
-The per-repo lane `command` is operator config, not platform code.
-
-**Decided 2026-09-05 — D-113: add it, and measure the cost.** On the
-pull-request unit lane rather than a nightly one, because coverage that lags the
-branch cannot show a regression at review time. If the measured CI time is
-unacceptable, the decision to stop rests on that figure rather than on an
-assumption — the standard D-053 set for ZAP.
-
-**Built 2026-09-05, and the cost turned out to be nothing measurable.**
-`pytest-cov>=6.0` in the `dev` extra, and `--cov=mykronos --cov-branch
---cov-report=xml:.../coverage.xml` on *both* mykronos unit lanes — this entry
-quoted the Actions one, but `deploy/concourse/pipelines/mykronos.yml` runs the
-same suite and uploads into the same lake, and instrumenting one of two leaves
-`line_coverage` alternating between a figure and NULL.
-
-Three full runs of the 2592-test suite at `-n auto` on the development host, all
-green: 179.07s with no coverage, 173.90s with `--cov`, 173.24s with
-`--cov --cov-branch`. Both coverage runs were *faster* than the baseline, so the
-overhead is below this host's ~3% run-to-run variance. **This entry's stated
-reason for deferring — that coverage under `pytest-xdist` costs real time — does
-not hold here.** Neither runner's own number is in hand until the lanes run.
-
-**The plumbing was right, and it was proved rather than asserted.** The real pair
-of files a lane writes was normalised through `normalize_results`: one merged
-result, `line_coverage=0.883`, `branch_coverage=0.799`, `success`, zero findings,
-zero warnings. No platform code was touched to get that.
-
-**`--cov` alone would have published a number nobody measured**, and this is the
-part worth keeping. Cobertura writes `branch-rate="0"` whether or not branch data
-was collected; `_rate` reads it as `0.0` rather than `None`; `dashboard.py:2281`
-surfaces it. The first version of this change would have put a measured 0% branch
-coverage on the Harness tab for a measurement that never happened — B-046,
-B-051, B-058 and B-061's own failure, arriving inside the fix for a fifth entry.
-`--cov-branch` is on both lanes for that reason.
-
-**The lane ran, and the local measurement did not survive it (D-117).**
-Concourse `unit` #226 with `--cov --cov-branch`: **540.81s**, against 218.61s
-(#224) and 238.16s (#223) clean. **+322s, about 2.5x**, on a lane carrying
-`trigger: true` with seven jobs gating on `passed: [unit, ...]`. The worker
-prints the reason on every build — `Performance budgets scaled x3 for this
-worker` — and coverage tracing is CPU-bound, so what disappeared into fixture
-setup on a fast host does not disappear on `-n 6` at a third of the speed.
-
-**Coverage went to the Actions lane, and then that lane was retired (D-118).**
-The Actions unit lane was one of eleven duplicating Concourse, so mykronos is now
-`scanned_by=concourse` and those eleven are gone. Coverage therefore has no free
-home: it is Concourse at the +322s D-117 rejected, or unmeasured. `pytest-cov`
-stays in the `dev` extra either way — it costs nothing installed, and the local
-runs above used it.
-
-**The ingest path was proved before the flag came off.** #226 succeeded, wrote
-`coverage.xml` beside `unit.xml`, POSTed both to `/api/ingest/raw`, and the
-adapter merged them — `0 finding(s) from 2 file(s)`, `line_coverage=0.883`,
-`branch_coverage=0.799`, no platform code touched. The plumbing claim in this
-entry was correct.
-
-**Decided and built 2026-09-09 — D-121: a weekly lane, off the critical
-path.** A `coverage` job runs the same suite with `--cov --cov-branch` on a
-Sunday clock and gates nothing. It pays D-117's +322s where nothing waits for
-it, and uploads as `unit` so the figure lands on the lane a person reads it
-against — the uploader merges `coverage.xml` and `unit.xml` into one run, which
-is the plumbing this entry proved on 2026-09-05 with no platform change.
-
-Both of the things left are now settled:
-
-1. ~~Nothing measures coverage right now.~~ The weekly lane does, once the
-   pipeline is applied.
-2. ~~The figure has to come from a lane rather than from a laptop.~~ It does.
-   The number can be up to seven days old, which is the trade D-121 states: a
-   stale figure that keeps arriving beats a gate 2.5x slower on every push, and
-   beats the blank that "record that we do not measure it" would have left.
-
-**Two details carried into the job rather than left to be rediscovered.**
-`--cov-branch` is there because Cobertura writes `branch-rate="0"` whether or
-not branch data was collected, so `--cov` alone would publish a measured 0%
-nobody measured. And the clock triggers it, not `source`: a `trigger: true` on
-the repository would make this the thing it was written to avoid.
-
-**Not yet applied.** The job is in `deploy/concourse/pipelines/mykronos.yml`
-and reaches the worker on the next `set-pipeline`. The conformance check
-covers it — it is in the `quality` group, carries a timeout, and probes
-Mykronos before reporting.
-
-**Two things left this list on 2026-09-05.** The generated-file problem — that
-`_test_lane.yml.j2` takes the command from the repo's `unit` capability config,
-so a resync would drop `--cov` — went away with D-118: mykronos is
-`scanned_by=concourse` and spec 03 §3a means an install has no workflows to
-write. And the tunnel route, still broken, is no longer this entry's blocker; it
-belongs to `keel` and `binnacle`, which are Actions-scanned and cannot report
-without it (B-066).
-
-**Acceptance criteria**
-
-- `pytest-cov` in the `dev` extra and `--cov=mykronos
-  --cov-report=xml:$MYKRONOS_RESULTS/coverage.xml` on the unit lane command.
-- A figure appears on the Harness tab without any platform change, which is
-  the proof that the plumbing was always right.
-- The added CI time is measured and recorded, not assumed.
-
----
 
 ### B-035 — The notifier is configured and addressed to nobody
 
@@ -1441,6 +1316,132 @@ property of the estate rather than of one repository.
 to `personal-soc` — noticed only because the conformance test was run by hand
 against a pipeline it did not cover. Related to B-058: the same repository was
 also the one whose SSDF gaps were mostly practices it cannot apply.
+
+---
+
+### B-042 — Coverage is plumbed end to end and no pipeline writes it — **done**
+
+**Size:** S **Verified:** 2026-09-03 **Closed:** 2026-09-09 (D-121)
+
+Every test run in this lake reports `line_coverage = NULL`. All of them: 227
+unit runs and 55 functional runs on `mykronos`, 36 unit runs on `TheHub`.
+
+**Nothing is broken.** The JUnit adapter parses Cobertura `line-rate` and
+JaCoCo `LINE` counters (`adapters/tests_junit.py`), the registry merges the
+columns (`registry.py:223`), the lake stores them, `scan_health` reads the most
+recent run that *reported* coverage rather than the most recent run, and the
+uploader rglobs every `*.xml` under `$MYKRONOS_RESULTS` and merges the results.
+Drop a `coverage.xml` beside `unit.xml` and the number appears.
+
+No pipeline writes one. `mykronos`'s own unit lane runs
+`python -m pytest -q -n auto --junitxml="$MYKRONOS_RESULTS/unit.xml"` and that
+is the entire gap: no `--cov`, and `pytest-cov` is not in the `dev` extra.
+
+This is the same shape as most of B-032 through B-038 — the capability is
+ahead of its wiring — and it is why the new test-estate view renders "never
+measured" for every lane on every repository.
+
+**Not done here, deliberately.** Coverage collection under `pytest-xdist` costs
+real time on a 14-minute suite that runs on every pull request, and spending
+that is a call about this repository's CI budget rather than a defect to fix.
+The per-repo lane `command` is operator config, not platform code.
+
+**Decided 2026-09-05 — D-113: add it, and measure the cost.** On the
+pull-request unit lane rather than a nightly one, because coverage that lags the
+branch cannot show a regression at review time. If the measured CI time is
+unacceptable, the decision to stop rests on that figure rather than on an
+assumption — the standard D-053 set for ZAP.
+
+**Built 2026-09-05, and the cost turned out to be nothing measurable.**
+`pytest-cov>=6.0` in the `dev` extra, and `--cov=mykronos --cov-branch
+--cov-report=xml:.../coverage.xml` on *both* mykronos unit lanes — this entry
+quoted the Actions one, but `deploy/concourse/pipelines/mykronos.yml` runs the
+same suite and uploads into the same lake, and instrumenting one of two leaves
+`line_coverage` alternating between a figure and NULL.
+
+Three full runs of the 2592-test suite at `-n auto` on the development host, all
+green: 179.07s with no coverage, 173.90s with `--cov`, 173.24s with
+`--cov --cov-branch`. Both coverage runs were *faster* than the baseline, so the
+overhead is below this host's ~3% run-to-run variance. **This entry's stated
+reason for deferring — that coverage under `pytest-xdist` costs real time — does
+not hold here.** Neither runner's own number is in hand until the lanes run.
+
+**The plumbing was right, and it was proved rather than asserted.** The real pair
+of files a lane writes was normalised through `normalize_results`: one merged
+result, `line_coverage=0.883`, `branch_coverage=0.799`, `success`, zero findings,
+zero warnings. No platform code was touched to get that.
+
+**`--cov` alone would have published a number nobody measured**, and this is the
+part worth keeping. Cobertura writes `branch-rate="0"` whether or not branch data
+was collected; `_rate` reads it as `0.0` rather than `None`; `dashboard.py:2281`
+surfaces it. The first version of this change would have put a measured 0% branch
+coverage on the Harness tab for a measurement that never happened — B-046,
+B-051, B-058 and B-061's own failure, arriving inside the fix for a fifth entry.
+`--cov-branch` is on both lanes for that reason.
+
+**The lane ran, and the local measurement did not survive it (D-117).**
+Concourse `unit` #226 with `--cov --cov-branch`: **540.81s**, against 218.61s
+(#224) and 238.16s (#223) clean. **+322s, about 2.5x**, on a lane carrying
+`trigger: true` with seven jobs gating on `passed: [unit, ...]`. The worker
+prints the reason on every build — `Performance budgets scaled x3 for this
+worker` — and coverage tracing is CPU-bound, so what disappeared into fixture
+setup on a fast host does not disappear on `-n 6` at a third of the speed.
+
+**Coverage went to the Actions lane, and then that lane was retired (D-118).**
+The Actions unit lane was one of eleven duplicating Concourse, so mykronos is now
+`scanned_by=concourse` and those eleven are gone. Coverage therefore has no free
+home: it is Concourse at the +322s D-117 rejected, or unmeasured. `pytest-cov`
+stays in the `dev` extra either way — it costs nothing installed, and the local
+runs above used it.
+
+**The ingest path was proved before the flag came off.** #226 succeeded, wrote
+`coverage.xml` beside `unit.xml`, POSTed both to `/api/ingest/raw`, and the
+adapter merged them — `0 finding(s) from 2 file(s)`, `line_coverage=0.883`,
+`branch_coverage=0.799`, no platform code touched. The plumbing claim in this
+entry was correct.
+
+**Decided and built 2026-09-09 — D-121: a weekly lane, off the critical
+path.** A `coverage` job runs the same suite with `--cov --cov-branch` on a
+Sunday clock and gates nothing. It pays D-117's +322s where nothing waits for
+it, and uploads as `unit` so the figure lands on the lane a person reads it
+against — the uploader merges `coverage.xml` and `unit.xml` into one run, which
+is the plumbing this entry proved on 2026-09-05 with no platform change.
+
+Both of the things left are now settled:
+
+1. ~~Nothing measures coverage right now.~~ The weekly lane does, once the
+   pipeline is applied.
+2. ~~The figure has to come from a lane rather than from a laptop.~~ It does.
+   The number can be up to seven days old, which is the trade D-121 states: a
+   stale figure that keeps arriving beats a gate 2.5x slower on every push, and
+   beats the blank that "record that we do not measure it" would have left.
+
+**Two details carried into the job rather than left to be rediscovered.**
+`--cov-branch` is there because Cobertura writes `branch-rate="0"` whether or
+not branch data was collected, so `--cov` alone would publish a measured 0%
+nobody measured. And the clock triggers it, not `source`: a `trigger: true` on
+the repository would make this the thing it was written to avoid.
+
+**Not yet applied.** The job is in `deploy/concourse/pipelines/mykronos.yml`
+and reaches the worker on the next `set-pipeline`. The conformance check
+covers it — it is in the `quality` group, carries a timeout, and probes
+Mykronos before reporting.
+
+**Two things left this list on 2026-09-05.** The generated-file problem — that
+`_test_lane.yml.j2` takes the command from the repo's `unit` capability config,
+so a resync would drop `--cov` — went away with D-118: mykronos is
+`scanned_by=concourse` and spec 03 §3a means an install has no workflows to
+write. And the tunnel route, still broken, is no longer this entry's blocker; it
+belongs to `keel` and `binnacle`, which are Actions-scanned and cannot report
+without it (B-066).
+
+**Acceptance criteria**
+
+- `pytest-cov` in the `dev` extra and `--cov=mykronos
+  --cov-report=xml:$MYKRONOS_RESULTS/coverage.xml` on the unit lane command.
+- A figure appears on the Harness tab without any platform change, which is
+  the proof that the plumbing was always right.
+- The added CI time is measured and recorded, not assumed.
 
 ---
 
