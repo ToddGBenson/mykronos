@@ -31,6 +31,7 @@ from mykronos.auth import TokenRegistry
 from mykronos.db.models import CapabilityConfig, RepoOnboarding, WorkflowInstallEvent
 from mykronos.github.client import FileChange, GitHubClient, PullRequest
 from mykronos.github.secrets import seal_secret
+from mykronos.installer.extra_lanes import lanes_for
 from mykronos.installer.templates import (
     RenderedWorkflow,
     TemplateLibrary,
@@ -255,21 +256,55 @@ class WorkflowInstaller:
             plan.rendered.append(rendered)
 
             current = await self._existing_file(onboarding, rendered.path, baseline)
-            if current == rendered.content:
-                # Byte-identical. Skipping it is what keeps a re-save from
-                # showing up as churn on somebody's open pull request.
-                continue
-            if capability not in plan.added:
-                plan.updated.append(capability)
-            plan.changes.append(FileChange(path=rendered.path, content=rendered.content))
+            if current != rendered.content:
+                if capability not in plan.added:
+                    plan.updated.append(capability)
+                plan.changes.append(
+                    FileChange(path=rendered.path, content=rendered.content)
+                )
+
+            # A second analyser for the same capability is a second workflow,
+            # not a second capability (B-051). CodeQL implements no shell and
+            # no PowerShell, so a repository can name `shellcheck` or
+            # `psscriptanalyzer` in this capability's config and get a lane
+            # that runs beside the primary one and uploads the same thing.
+            for extra in lanes_for(capability, configs.get(capability)):
+                if extra not in self.templates.available:
+                    continue
+                lane = self.templates.render(
+                    extra,
+                    repo_full_name=repo,
+                    default_branch=onboarding.default_branch,
+                    ingestion_api_url=self.ingestion_api_url,
+                    token_secret_name=self.secret_name,
+                    upload_action_ref=self.upload_action_ref,
+                    mykronos_package_spec=self.package_spec,
+                    config=configs.get(capability, {}),
+                    gate_depends_on=_gate_depends_on(capability, enabled_after),
+                )
+                plan.rendered.append(lane)
+                if await self._existing_file(onboarding, lane.path, baseline) == lane.content:
+                    continue
+                if capability not in plan.added and capability not in plan.updated:
+                    plan.updated.append(capability)
+                plan.changes.append(FileChange(path=lane.path, content=lane.content))
 
         for capability in plan.removed:
             # Default is to delete the file so the repo's Actions tab stays
-            # clean (spec 03 §3.3).
-            path = self.templates.target_path(capability)
-            if await self._existing_file(onboarding, path, baseline) is None:
-                continue  # Already absent on the branch we would push to.
-            plan.changes.append(FileChange(path=path, content=None))
+            # clean (spec 03 §3.3). Every lane the capability owns, not only
+            # its primary one: a second analyser left behind would keep
+            # uploading a capability the repository no longer has, and every
+            # one of those uploads is refused at the door (B-062).
+            paths = [self.templates.target_path(capability)]
+            paths += [
+                self.templates.target_path(extra)
+                for extra in lanes_for(capability, configs.get(capability))
+                if extra in self.templates.available
+            ]
+            for path in paths:
+                if await self._existing_file(onboarding, path, baseline) is None:
+                    continue  # Already absent on the branch we would push to.
+                plan.changes.append(FileChange(path=path, content=None))
 
         if not plan.changes:
             # Judged on content, not on capability sets. The two differ exactly

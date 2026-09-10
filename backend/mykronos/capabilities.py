@@ -114,6 +114,19 @@ class BaseCapabilityConfig(BaseModel):
     paths_exclude: list[str] = Field(default_factory=list, max_length=200)
     schedule_cron: str | None = Field(default=None, max_length=120)
     timeout_minutes: int = Field(default=30, ge=1, le=360)
+    extra_analysers: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description=(
+            "Additional tools to run for this capability, each as its own "
+            "workflow beside the primary one. `sast` is the case this exists "
+            "for: CodeQL implements no shell and no PowerShell, so a "
+            "shell-heavy repository runs `shellcheck` alongside it rather "
+            "than instead of it (B-051). Both lanes upload the same "
+            "capability, so this adds coverage without adding a thing to "
+            "enable."
+        ),
+    )
     lane_branch: str | None = Field(
         default=None,
         max_length=255,
@@ -135,6 +148,27 @@ class BaseCapabilityConfig(BaseModel):
                 "e.g. '17 3 * * 1' for 03:17 every Monday."
             )
         return value
+
+    @field_validator("extra_analysers")
+    @classmethod
+    def _extra_analysers_have_lanes(cls, value: list[str]) -> list[str]:
+        """Only tools this platform can actually install a lane for.
+
+        A tool with an adapter but no workflow template would validate, save,
+        and then quietly never run — the shape of failure this platform exists
+        to report, arriving in its own configuration.
+        """
+        from mykronos.installer.extra_lanes import EXTRA_LANES
+
+        unknown = [tool for tool in value if tool not in EXTRA_LANES]
+        # Named for the capability it belongs to, so the message says where it
+        # would have run rather than only that it would not.
+        if unknown:
+            raise ValueError(
+                f"no workflow lane for {', '.join(sorted(unknown))}. "
+                f"Available: {', '.join(sorted(EXTRA_LANES))}."
+            )
+        return sorted(dict.fromkeys(value))
 
     @field_validator("lane_branch")
     @classmethod
