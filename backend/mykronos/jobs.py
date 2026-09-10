@@ -40,7 +40,7 @@ from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
 from mykronos.logsafe import scrub
-from mykronos.notify import Notification
+from mykronos.notify import Notification, Notifier
 from mykronos.oracle.service import OracleService
 from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.patchwork.verification import (
@@ -864,7 +864,7 @@ async def verify_merged_fixes(
 async def check_public_reachability(
     ingestion_api_url: str,
     *,
-    notifier: Any = None,
+    notifier: Notifier | None = None,
     timeout: float = 20.0,
 ) -> ReachabilityResult:
     """Ask the internet whether this platform is answering (spec 32 §8).
@@ -998,7 +998,7 @@ async def check_concourse(concourse_url: str, *, timeout: float = 10.0) -> Reach
 
 
 async def self_check(
-    settings: Any, *, notifier: Any = None
+    settings: Any, *, notifier: Notifier | None = None
 ) -> list[tuple[str, ReachabilityResult]]:
     """Everything a reboot can quietly take away (spec 32 §8.1).
 

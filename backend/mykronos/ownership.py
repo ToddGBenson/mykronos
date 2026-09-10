@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from mykronos.codeowners import Rule, parse, resolve
+from mykronos.github import GitHubClient
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,9 @@ class OwnershipResolver:
     def invalidate(self, repo_full_name: str) -> None:
         self._cache.pop(repo_full_name, None)
 
-    async def rules_for(self, github: Any, repo_full_name: str) -> list[Rule]:
+    async def rules_for(
+        self, github: GitHubClient | None, repo_full_name: str
+    ) -> list[Rule]:
         """The parsed rules for a repository, cached.
 
         `github` may be None — an un-onboarded repository, or a test harness
@@ -106,7 +108,9 @@ class OwnershipResolver:
         )
         return rules
 
-    async def lookup_for(self, github: Any, repo_full_name: str) -> tuple[list[Rule], bool]:
+    async def lookup_for(
+        self, github: GitHubClient | None, repo_full_name: str
+    ) -> tuple[list[Rule], bool]:
         """`(rules, readable)` — the rules, and whether we managed to look.
 
         **The distinction earns its keep now, and did not before.** This module

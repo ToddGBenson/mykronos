@@ -28,6 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from mykronos.github import GitHubClient
 from mykronos.github.client import GitHubError
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
@@ -198,7 +199,7 @@ async def close_superseded_drafts(
     catalog: Catalog,
     buffer: WriteAheadBuffer,
     repo_full_name: str,
-    github: Any,
+    github: GitHubClient,
 ) -> ReconcileResult:
     """Close drafts whose finding is no longer open (spec 08 §8).
 
