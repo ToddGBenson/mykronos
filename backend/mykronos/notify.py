@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx2
 
@@ -99,22 +99,72 @@ class Notifier(Protocol):
         """Post one notification. Returns whether it was delivered."""
 
 
-class SlackNotifier:
-    """Posts to a Slack incoming webhook, or does nothing at all.
+#: Slack's own endpoint for posting as a bot. Named here rather than made
+#: configurable: a "Slack notifier" pointed at an arbitrary host is a
+#: findings exfiltration path with a reassuring name.
+CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 
-    The disabled case is the common one — no webhook configured — and it is a
-    first-class state rather than an error. There is deliberately no default
-    webhook: a deployment that changed no configuration must not be posting
-    anywhere (the same rule spec 12 §5.2 applies to the AI classifier).
+
+class SlackNotifier:
+    """Posts to Slack as a bot, or to an incoming webhook, or nowhere.
+
+    The disabled case is the common one and is a first-class state rather than
+    an error. There is deliberately no default endpoint of either kind: a
+    deployment that changed no configuration must not be posting anywhere (the
+    same rule spec 12 §5.2 applies to the AI classifier).
+
+    **Two transports, because this estate already chose one and this module
+    could not speak it.** The Concourse pipelines post with a bot token
+    against `chat.postMessage`, and say why in the `slack_alert` anchor: a
+    webhook's secret lives in the URL path of the endpoint being called, so
+    whatever holds the URL holds the credential, while a bot token lives in an
+    `Authorization:` header that Vault can substitute at egress. That was PS-9
+    on this host, and thehub and personal-soc already resolve the same
+    credential at team scope — one Slack identity rather than three.
+
+    This module accepted only a webhook, so configuring notification (B-035)
+    meant minting a second Slack identity of the kind the pipelines had
+    already argued against. It now takes either, and prefers the bot token
+    when both are set.
+
+    **`ok: false` arrives with a 200.** Slack answers `chat.postMessage` with
+    HTTP 200 and `{"ok": false, "error": "channel_not_found"}` for a bad
+    channel, a revoked token or a bot that was never invited. A status-code
+    check alone reports every one of those as delivered, which is the failure
+    this platform exists to report: a green result for something that did not
+    happen. The webhook transport keeps its status-code check, because that is
+    how incoming webhooks actually signal refusal.
     """
 
-    def __init__(self, webhook_url: str = "", timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        webhook_url: str = "",
+        timeout: float = 10.0,
+        *,
+        bot_token: str = "",
+        channel: str = "",
+    ) -> None:
         self._webhook_url = webhook_url.strip()
+        self._bot_token = bot_token.strip()
+        self._channel = channel.strip()
         self._timeout = timeout
 
     @property
     def enabled(self) -> bool:
-        return bool(self._webhook_url)
+        return bool(self._bot_token and self._channel) or bool(self._webhook_url)
+
+    @property
+    def transport(self) -> str:
+        """`bot`, `webhook` or `none`. For operators reading a health page.
+
+        A half-configured bot — a token and no channel, which is the shape of
+        a copied-and-truncated deployment — reports `webhook` if a webhook is
+        also set and `none` otherwise. It never reports `bot`, because a bot
+        that cannot name a channel posts nothing.
+        """
+        if self._bot_token and self._channel:
+            return "bot"
+        return "webhook" if self._webhook_url else "none"
 
     async def send(self, note: Notification) -> bool:
         """Post one notification. Returns whether it was delivered.
@@ -128,6 +178,14 @@ class SlackNotifier:
 
         try:
             async with httpx2.AsyncClient(timeout=self._timeout) as http:
+                if self.transport == "bot":
+                    return self._read_bot_response(
+                        await http.post(
+                            CHAT_POST_MESSAGE,
+                            headers={"Authorization": f"Bearer {self._bot_token}"},
+                            json={"channel": self._channel, "text": note.render()},
+                        )
+                    )
                 response = await http.post(
                     self._webhook_url, json={"text": note.render()}
                 )
@@ -144,3 +202,36 @@ class SlackNotifier:
         except Exception as exc:  # noqa: BLE001 - see the class docstring
             logger.warning("Could not post to Slack: %s", scrub(str(exc)))
             return False
+
+    def _read_bot_response(self, response: Any) -> bool:
+        """Whether `chat.postMessage` actually posted.
+
+        Both halves matter. A 200 can carry `ok: false`, and a body that is
+        not JSON at all — a proxy's error page, which is what a blocked egress
+        looks like from in here — must not be read as success just because it
+        arrived.
+        """
+        if response.status_code >= 400:
+            logger.warning(
+                "Slack rejected a notification: %s %s",
+                response.status_code,
+                scrub(response.text)[:200],
+            )
+            return False
+        try:
+            body = response.json()
+        except ValueError:
+            logger.warning(
+                "Slack answered %s with a body that is not JSON.", response.status_code
+            )
+            return False
+        if not body.get("ok"):
+            # `error` is Slack's own enum — `channel_not_found`,
+            # `invalid_auth`, `not_in_channel`. Each names a different thing
+            # for an operator to go and fix, so it is said rather than
+            # flattened into "failed".
+            logger.warning(
+                "Slack refused a notification: %s", scrub(str(body.get("error")))
+            )
+            return False
+        return True

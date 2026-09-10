@@ -270,12 +270,58 @@ tested the double.
 That is the whole difference between the bug shipping and the bug being
 impossible, and it is one line of type.
 
+**D-112 says "configure the webhook", and this host already argued against
+webhooks.** Found 2026-09-10 while reading the pipeline that sends the alerts
+this one cannot. The Concourse `slack_alert` anchor posts with a **bot token**
+against `chat.postMessage`, and records why:
+
+> A webhook's secret lives in the URL path of the endpoint being called, so the
+> pipeline has to hold it; a bot token lives in an `Authorization:` header,
+> which Vault can substitute at egress.
+
+That is PS-9, and the same anchor notes the credential is one thehub and
+personal-soc already resolve at team scope — **this host has one Slack
+identity, and executing D-112 as written would mint a second** of exactly the
+kind that argument rejects.
+
+`SlackNotifier` could only speak webhook, so the choice was not available to
+the operator. **It now takes either, and prefers the bot token when both are
+set** (2026-09-10). Nothing is configured by this: both default to empty and
+an unconfigured deployment still posts nowhere.
+
+**The trap the new transport brings.** Slack answers `chat.postMessage` with
+HTTP **200** and `{"ok": false, "error": "channel_not_found"}` for a bad
+channel, a revoked token, or a bot nobody invited. Reading only the status code
+reports every one of those as delivered — a green result for something that did
+not happen, which is what this platform exists to report. The body is read; the
+webhook path keeps its status-code check, because that is how incoming webhooks
+actually signal refusal. A non-JSON 200, which is what blocked egress looks
+like from inside, is not a delivery either.
+
+**And the compose file caught the rest of it.** `test_compose_passes_settings`
+exists because "a notifier that is wired everywhere except the one process that
+runs is worse than no notifier: it looks configured". Two new settings that
+compose does not list would have read as their code defaults in the container
+and failed silently. Both are in the `environment:` block and in that test's
+own list.
+
+**This is still the operator's call, not a decision taken here.** D-112 stands
+as written until amended. What changed is that the argument the pipelines
+already made is now executable.
+
 **Acceptance criteria**
 
-- Either a webhook is configured, or the absence is recorded as a decision the
-  way D-053 recorded paused DAST, so it stops reading as an oversight.
+- Either a credential is configured, or the absence is recorded as a decision
+  the way D-053 recorded paused DAST, so it stops reading as an oversight.
+  **Two ways to satisfy this now**: `MYKRONOS_SLACK_BOT_TOKEN` plus
+  `MYKRONOS_SLACK_CHANNEL`, reusing the identity this host already has, or
+  `MYKRONOS_SLACK_WEBHOOK_URL` as D-112 originally said.
 - ~~The digest reaches a configured notifier at all.~~ It could not before
   2026-09-09, and the job reported success either way.
+- ~~The platform says when it is addressed to nobody.~~ Startup logged
+  `Slack notification is enabled` when it was and nothing at all when it was
+  not, so the state this entry is about was the silent one. It now warns, and
+  names which transport is carrying messages when one is.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
 

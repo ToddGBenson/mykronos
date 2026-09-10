@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from mykronos.config import Settings
 from mykronos.main import create_app
-from mykronos.notify import Notification, SlackNotifier
+from mykronos.notify import CHAT_POST_MESSAGE, Notification, SlackNotifier
 from tests.conftest import REPO, issue_token, post_findings, post_scan
 
 
@@ -104,6 +104,171 @@ class TestTheNotifierItself:
             Notification(title="t", detail="d", repo_full_name=REPO)
         )
         assert sent is False
+
+
+
+class TestTheBotTransport:
+    """Posting as a bot rather than through an incoming webhook.
+
+    The estate had already chosen this and this module could not speak it. The
+    Concourse pipelines post with a bot token and record why in the
+    `slack_alert` anchor: a webhook's secret lives in the URL path of the
+    endpoint being called, so whatever holds the URL holds the credential,
+    while a bot token lives in an `Authorization:` header Vault can substitute
+    at egress. Accepting only a webhook meant configuring notification (B-035)
+    required minting a second Slack identity of the kind that argument had
+    already rejected.
+    """
+
+    NOTE = Notification(title="t", detail="d", repo_full_name=REPO)
+
+    @staticmethod
+    def _answering(response: Any) -> Any:
+        class Stub:
+            calls: list[dict[str, Any]] = []
+
+            async def __aenter__(self) -> Any:
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, url: str, **kwargs: Any) -> Any:
+                Stub.calls.append({"url": url, **kwargs})
+                return response
+
+        Stub.calls = []
+        return Stub
+
+    def test_a_token_and_a_channel_together_enable_it(self) -> None:
+        notifier = SlackNotifier(bot_token="xoxb-x", channel="#alerts")
+
+        assert notifier.enabled is True
+        assert notifier.transport == "bot"
+
+    def test_a_token_without_a_channel_posts_nowhere(self) -> None:
+        """The shape of a half-copied deployment. A bot that cannot name a
+        channel is configured and addressed to nobody, which is the state
+        B-035 exists about — so it reports `none` rather than `bot`."""
+        notifier = SlackNotifier(bot_token="xoxb-x")
+
+        assert notifier.enabled is False
+        assert notifier.transport == "none"
+
+    def test_the_bot_token_wins_when_both_are_configured(self) -> None:
+        notifier = SlackNotifier(
+            "https://hooks.slack.test/x", bot_token="xoxb-x", channel="#alerts"
+        )
+
+        assert notifier.transport == "bot"
+
+    def test_a_webhook_alone_still_works(self) -> None:
+        """Nothing about this change takes the old transport away. A
+        deployment configured before today keeps posting."""
+        assert SlackNotifier("https://hooks.slack.test/x").transport == "webhook"
+
+    async def test_the_credential_travels_in_a_header_not_the_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole reason for this transport. A token in an `Authorization:`
+        header is a token Vault can substitute at egress; a secret in a URL
+        path is one whatever holds the URL also holds."""
+        stub = self._answering(httpx2.Response(200, json={"ok": True}))
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        await SlackNotifier(bot_token="xoxb-secret", channel="#alerts").send(self.NOTE)
+
+        call = stub.calls[0]
+        assert call["url"] == CHAT_POST_MESSAGE
+        assert call["headers"]["Authorization"] == "Bearer xoxb-secret"
+        assert "xoxb-secret" not in call["url"]
+        assert call["json"]["channel"] == "#alerts"
+
+    async def test_ok_false_arrives_with_a_200_and_is_not_a_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The trap this transport brings with it, and the reason a status
+        check alone is not enough.
+
+        Slack answers `chat.postMessage` with HTTP 200 and
+        `{"ok": false, "error": "channel_not_found"}` for a bad channel, a
+        revoked token, or a bot nobody invited. Reading only the status code
+        reports every one of those as delivered — a green result for something
+        that did not happen, which is the failure this platform exists to
+        report.
+        """
+        stub = self._answering(
+            httpx2.Response(200, json={"ok": False, "error": "channel_not_found"})
+        )
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        sent = await SlackNotifier(bot_token="xoxb-x", channel="#gone").send(self.NOTE)
+
+        assert sent is False
+
+    async def test_a_successful_post_is_a_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = self._answering(httpx2.Response(200, json={"ok": True}))
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        sent = await SlackNotifier(bot_token="xoxb-x", channel="#alerts").send(self.NOTE)
+
+        assert sent is True
+
+    async def test_a_body_that_is_not_json_is_not_a_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What blocked egress looks like from in here: a proxy's own HTML
+        error page, arriving with a 200. It must not read as success merely
+        because something answered."""
+        stub = self._answering(httpx2.Response(200, text="<html>blocked</html>"))
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        sent = await SlackNotifier(bot_token="xoxb-x", channel="#alerts").send(self.NOTE)
+
+        assert sent is False
+
+    async def test_slack_being_down_is_still_never_an_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rule the module exists to keep, asserted on the new path too."""
+
+        class Exploding:
+            async def __aenter__(self) -> Exploding:
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, *args: Any, **kwargs: Any) -> Any:
+                raise httpx2.ConnectError("no route to host")
+
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: Exploding())
+
+        sent = await SlackNotifier(bot_token="xoxb-x", channel="#alerts").send(self.NOTE)
+
+        assert sent is False
+
+    async def test_the_token_is_never_logged(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A refusal is worth a log line. The bearer credential that was
+        refused is not."""
+        stub = self._answering(
+            httpx2.Response(200, json={"ok": False, "error": "invalid_auth"})
+        )
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        with caplog.at_level("WARNING"):
+            await SlackNotifier(bot_token="xoxb-verysecret", channel="#a").send(self.NOTE)
+
+        assert "invalid_auth" in caplog.text
+        assert "xoxb-verysecret" not in caplog.text
+
+
+class TestWhatReachesSlack:
+    """The message itself, whichever transport carried it."""
 
     def test_untrusted_text_is_scrubbed_on_the_way_out(self) -> None:
         """Finding titles come from scanner output, which comes from repository
