@@ -81,24 +81,42 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
     with catalog.connect() as con:
         statuses = ", ".join(f"'{s}'" for s in CONFIRMING_STATUSES)
 
-        # The most recent qualifying scan runs per (repo, capability, branch).
+        # The most recent qualifying scan runs per
+        # (repo, capability, branch, **tool**).
         #
         # `coalesce(branch, '')` rather than dropping the null ones: a run
         # that recorded no branch is its own lane and must not silently join
         # whichever lane happens to be first. Nothing in the estate produces
         # one today, and a scanner that starts to must not close findings on
         # another branch's behalf.
+        #
+        # `tool_name` for the same reason, one dimension over, and it became
+        # load-bearing on 2026-09-09. `extra_analysers` puts two tools on one
+        # capability on purpose: CodeQL implements no shell language, so
+        # ShellCheck runs *alongside* it rather than instead of it (B-051).
+        # Partitioning on capability alone made two CodeQL runs into two
+        # qualifying `sast` scans, and every ShellCheck finding was absent
+        # from both — because CodeQL cannot see shell and never could. They
+        # closed as fixed, which is the reassuring direction and therefore the
+        # worse one.
+        #
+        # It also quietly halved the guarantee. With both lanes reporting on
+        # every push, the two most recent `sast` runs were one of each, so a
+        # finding one push old counted as absent from "two consecutive scans"
+        # after a single push.
         con.execute("DROP TABLE IF EXISTS recent_runs")
         con.execute(
             f"""
             CREATE TEMP TABLE recent_runs AS
-            SELECT repo_full_name, capability, branch, scan_run_id, rn
+            SELECT repo_full_name, capability, branch, tool_name, scan_run_id, rn
             FROM (
                 SELECT repo_full_name, capability,
-                       coalesce(branch, '') AS branch, scan_run_id,
+                       coalesce(branch, '') AS branch,
+                       coalesce(tool_name, '') AS tool_name, scan_run_id,
                        row_number() OVER (
                            PARTITION BY repo_full_name, capability,
-                                        coalesce(branch, '')
+                                        coalesce(branch, ''),
+                                        coalesce(tool_name, '')
                            ORDER BY coalesce(completed_at, started_at) DESC
                        ) AS rn
                 FROM scan_runs
@@ -107,16 +125,21 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
             """
         )
 
-        # Which branch each open finding was last observed on. Joined here
-        # rather than stored on the finding: the branch is a property of the
-        # observation, and a finding seen again on a different branch has
-        # genuinely moved lane.
+        # Which branch — and which tool — each open finding was last observed
+        # by. Joined here rather than stored on the finding: both are
+        # properties of the observation, and a finding seen again on a
+        # different branch has genuinely moved lane.
+        #
+        # The tool is the one whose silence is allowed to close this finding.
+        # A scanner that cannot read the language a finding is written in has
+        # said nothing about it, and nothing is not evidence.
         con.execute("DROP TABLE IF EXISTS finding_branch")
         con.execute(
             """
             CREATE TEMP TABLE finding_branch AS
             SELECT f.finding_id, f.dt, f.asset_id, f.capability,
-                   coalesce(s.branch, '') AS branch
+                   coalesce(s.branch, '') AS branch,
+                   coalesce(s.tool_name, '') AS tool_name
             FROM findings f
             JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
             WHERE f.status = 'open'
@@ -168,7 +191,8 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
                   WHERE r.repo_full_name = b.asset_id
                     AND r.capability = b.capability
                     AND r.branch = b.branch
-                  GROUP BY r.repo_full_name, r.capability, r.branch
+                    AND r.tool_name = b.tool_name
+                  GROUP BY r.repo_full_name, r.capability, r.branch, r.tool_name
                   HAVING count(*) >= {required}
               )
               AND f.last_seen_scan_run_id NOT IN (
@@ -176,6 +200,7 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
                   WHERE r.repo_full_name = b.asset_id
                     AND r.capability = b.capability
                     AND r.branch = b.branch
+                    AND r.tool_name = b.tool_name
               )
             """
         ).fetchall()
