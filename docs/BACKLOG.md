@@ -214,10 +214,43 @@ real these would have been broadcasts. Three separate multi-day scanning outages
 in two weeks (B-024, B-055, B-057), none of which announced itself, are the
 argument.
 
+**And the weekly digest would not have arrived even with one.** Found
+2026-09-09 while reading this entry. `SlackNotifier.send` is a coroutine;
+`digest.send_all` was synchronous, took the notifier as `Any`, and called
+`send` without awaiting it. Every call built a coroutine, dropped it, and then
+logged `Weekly digest sent to N owner(s)`.
+
+Proven rather than inferred — the real class, under `warnings`:
+
+```
+warnings: ["coroutine 'SlackNotifier.send' was never awaited"]
+```
+
+**Three things kept it invisible for as long as the empty webhook did.** The
+test double's `send` was synchronous, so it agreed with the caller and the
+test passed. The parameter was typed `Any`, so mypy was never asked. And the
+whole job was handed to `asyncio.to_thread`, which is what made dropping the
+coroutine look like the normal shape. The only observable symptom was a log
+line asserting a delivery that did not happen — which is precisely the failure
+this platform reports in other people's CI.
+
+**Fixed 2026-09-09.** `send_all` is async and awaits each send; `build` keeps
+its own thread because it queries the lake, and the posts do not need one
+because `httpx` is async. The count is of *deliveries* rather than of digests
+built, and a disabled notifier says so once and plainly instead of reporting
+four sends that went nowhere. `notify.Notifier` is now a Protocol, so the next
+caller is asked the question by mypy rather than by production.
+
+This does not close the entry. It removes a second failure that was hiding
+behind the first: configuring the webhook would have produced silence, and
+this is what makes configuring it worth doing.
+
 **Acceptance criteria**
 
 - Either a webhook is configured, or the absence is recorded as a decision the
   way D-053 recorded paused DAST, so it stops reading as an oversight.
+- ~~The digest reaches a configured notifier at all.~~ It could not before
+  2026-09-09, and the job reported success either way.
 
 **Provenance:** DevSecOps assessment, 2026-09-03.
 

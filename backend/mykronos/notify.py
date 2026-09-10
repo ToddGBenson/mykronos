@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Protocol
 
 import httpx2
 
@@ -76,6 +77,26 @@ class Notification:
             f"{scrub(self.detail)}"
         )
         return text[:MAX_TEXT]
+
+
+class Notifier(Protocol):
+    """What a caller may assume about a notifier.
+
+    It exists because `send` is a coroutine and nothing said so at a call
+    site typed `Any`. `digest.send_all` took that `Any`, called `send`
+    without awaiting it, and logged that a digest had gone out — for a
+    fortnightly job that had never delivered anything and could not have.
+    A test double with a *synchronous* `send` agreed with it.
+
+    One line of type, and mypy answers the question the double could not.
+    """
+
+    @property
+    def enabled(self) -> bool:
+        """Whether anything sent here reaches a person."""
+
+    async def send(self, note: Notification) -> bool:
+        """Post one notification. Returns whether it was delivered."""
 
 
 class SlackNotifier:

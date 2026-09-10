@@ -19,6 +19,7 @@ weekly message is a training exercise in ignoring weekly messages.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from typing import Any
 
 from mykronos.dashboard import due_state
 from mykronos.lake.catalog import Catalog
-from mykronos.notify import Notification
+from mykronos.notify import Notification, Notifier
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -189,15 +190,47 @@ def render(digest: OwnerDigest) -> Notification:
     )
 
 
-def send_all(catalog: Catalog, notifier: Any, *, now: datetime | None = None) -> int:
-    """Send every owner's digest. Returns how many went out.
+async def send_all(
+    catalog: Catalog, notifier: Notifier, *, now: datetime | None = None
+) -> int:
+    """Send every owner's digest. Returns how many were **delivered**.
+
+    Async because `Notifier.send` is, and that was the bug. This function was
+    synchronous, took the notifier as `Any`, and called `send` without
+    awaiting it: every call built a coroutine, dropped it, and logged that a
+    digest had gone out. The weekly digest had never delivered anything and
+    could not have. It was invisible because no webhook was configured either
+    (B-035), so the only observable symptom was a log line claiming success —
+    the exact failure this platform reports in other people's CI.
+
+    The count is of deliveries, not of digests built. "Sent to 4 owners" when
+    the notifier is disabled is the same untrue sentence one layer down, and a
+    disabled notifier is a supported state rather than an error, so it is said
+    once and plainly rather than four times as a failure.
 
     A delivery failure is surfaced by the notifier itself (PS-10: a notifier
     that cannot deliver is worse than none) rather than swallowed here.
     """
-    digests = build(catalog, now=now)
+    # In a thread: `build` runs several queries against the lake, and this is
+    # called from the event loop. The sends below are not — `httpx` is async,
+    # so awaiting them yields rather than blocks.
+    digests = await asyncio.to_thread(build, catalog, now=now)
+    if not digests:
+        return 0
+
+    if not notifier.enabled:
+        logger.info(
+            "Weekly digest built for %d owner(s) and sent to nobody: "
+            "no webhook is configured.",
+            len(digests),
+        )
+        return 0
+
+    delivered = 0
     for digest in digests:
-        notifier.send(render(digest))
-    if digests:
-        logger.info("Weekly digest sent to %d owner(s).", len(digests))
-    return len(digests)
+        if await notifier.send(render(digest)):
+            delivered += 1
+    logger.info(
+        "Weekly digest delivered to %d of %d owner(s).", delivered, len(digests)
+    )
+    return delivered
