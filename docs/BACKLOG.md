@@ -938,6 +938,31 @@ reading.
   recorded above.
 - A CODEOWNERS file exists where `codeowners_coverage` reads `unknown`, so
   `codeowner_review_required` becomes meaningful rather than decorative.
+  **`mykronos` has one as of 2026-09-09**, and it started here on purpose:
+  reporting `unknown` about four other repositories while having no file of
+  its own is the posture this platform exists to make visible. Verified
+  through the platform's own parser rather than by eye — 13 rules, every
+  sampled path routed, coverage `1.0`, which moves this repository from
+  `unknown` to `on`.
+
+  **It says single-operator plainly rather than inventing teams.** Every line
+  resolves to the same person, so the coverage number means exactly one thing:
+  nothing here is owned by nobody. It does not mean review is distributed, and
+  a file implying otherwise would be worse than no file.
+
+  The specific paths are listed even though the owner never changes, because a
+  reviewer arriving at one of them should know it is one of them: the
+  pipelines, the templates and action installed into other repositories, the
+  adapters and ranking that decide what a finding means, the auth and grant
+  boundary, and the decisions record.
+
+  **`codeowner_review_required` stays off.** Turning it on against these lines
+  would deadlock every pull request — GitHub refuses to count a self-approval,
+  the same trap D-110 hit and recorded. This file is the routing; the
+  requirement is a decision for the day there is a second reviewer.
+
+  `TheHub` and `personal-soc` still read `unknown`. Both are separate
+  repositories and each needs its own file.
 - 1.1.13 and 1.1.17 are read and reported, closing two of the nine gaps for the
   cost of two field reads.
 - The governance scores are re-read afterwards and recorded here, so the change
