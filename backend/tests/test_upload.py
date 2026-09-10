@@ -522,3 +522,120 @@ class TestAdapterDispatch:
         client = RecordingClient()
         outcome = upload(make_args(results, workspace, tool="semgrep"), client=client)
         assert outcome.findings_accepted == 1
+
+
+class TestALaneThatCouldNotReport:
+    """The one failure the "register first, finalise in a `finally`" rule
+    does not cover, and the one that actually happened.
+
+    `mykronos.upload` opens a ScanRun before it interprets anything, so a
+    crash anywhere after that still leaves evidence the run happened. A
+    failure *at* that first call leaves nothing at all — and on this estate it
+    did: `git rev-parse` printed nothing from the wrong directory, the empty
+    `commit_sha` was refused with a 422, and the pipeline's `|| true` turned
+    the exit code green. Nobody knew until somebody read the stages
+    cross-check and saw `unit` as `never_reported`.
+
+    So the lane says so itself now, through the endpoint that exists for
+    exactly this. `/ingest/lane-failure` needs no capability grant and no
+    ScanRun, because a lane that died before it could report has neither.
+    """
+
+    def test_failing_to_open_a_scan_run_is_reported(
+        self, results: Path, workspace: Path
+    ) -> None:
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run"}
+
+        with pytest.raises(UploadError):
+            upload(make_args(results, workspace), client=client)
+
+        assert "/api/ingest/lane-failure" in client.paths()
+
+    def test_the_original_error_still_reaches_the_caller(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """Reporting is additional, never a substitute. The exit code has to
+        stay 1, or a lane that could not report goes green again by a
+        different route."""
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run"}
+
+        with pytest.raises(UploadError, match="scan-run"):
+            upload(make_args(results, workspace), client=client)
+
+    def test_the_message_names_the_lane_and_the_cause(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """A person reading this in Slack has to know which lane, on which
+        commit, and why. "A lane failed" is not actionable."""
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run"}
+
+        with pytest.raises(UploadError):
+            upload(make_args(results, workspace), client=client)
+
+        body = client.bodies_for("/api/ingest/lane-failure")[0]
+        assert body["lane"] == "sast/codeql"
+        assert body["commit_sha"] == "a91f2c7"
+        assert "Could not open a scan run" in body["detail"]
+
+    def test_the_incident_itself_an_empty_commit_sha(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """The 2026 incident reproduced. `rev-parse` from the wrong directory
+        printed nothing, and the empty value was what the API refused.
+
+        `commit_sha` must be `""` rather than `None` in the report: the
+        schema forbids unknown keys and types every field as `str`, so a null
+        would be refused with the same 422 this call exists to report.
+        """
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run"}
+
+        with pytest.raises(UploadError):
+            upload(make_args(results, workspace, commit_sha=""), client=client)
+
+        body = client.bodies_for("/api/ingest/lane-failure")[0]
+        assert body["commit_sha"] == ""
+        assert set(body) <= {"lane", "detail", "commit_sha", "run_url"}
+
+    def test_the_report_matches_what_the_endpoint_accepts(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """Against the real schema rather than by eye. A report the endpoint
+        rejects is a report that does not exist, and this one is only ever
+        built on a path nothing else exercises."""
+        from mykronos.schemas import LaneFailure
+
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run"}
+
+        with pytest.raises(UploadError):
+            upload(make_args(results, workspace, commit_sha=""), client=client)
+
+        LaneFailure(**client.bodies_for("/api/ingest/lane-failure")[0])
+
+    def test_failing_to_report_does_not_replace_the_real_error(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """The ingestion API being unreachable takes both calls with it. The
+        caller must still see why the upload failed, not why the report of the
+        failure failed."""
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/scan-run", "/api/ingest/lane-failure"}
+
+        with pytest.raises(UploadError, match="scan-run"):
+            upload(make_args(results, workspace), client=client)
+
+    def test_a_working_upload_reports_no_lane_failure(
+        self, results: Path, workspace: Path
+    ) -> None:
+        """An alert channel is destroyed by volume. Nothing here fires on the
+        path everything takes."""
+        client = RecordingClient()
+
+        upload(make_args(results, workspace), client=client)
+
+        assert "/api/ingest/lane-failure" not in client.paths()
+
