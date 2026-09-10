@@ -7,7 +7,9 @@ closed — and whether it was *verified* closed — is why the rest gets read.
 
 from __future__ import annotations
 
+import gc
 import json
+import warnings
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -17,16 +19,29 @@ from mykronos import digest
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.maturity import throughput
+from mykronos.notify import SlackNotifier
 from mykronos.schemas import utcnow
 from tests.conftest import REPO, finding_payload, post_findings, post_scan
 
 
 class Recorder:
-    def __init__(self) -> None:
-        self.sent: list[Any] = []
+    """A notifier double that matches the real contract.
 
-    def send(self, notification: Any) -> None:
+    `send` is `async` here because `SlackNotifier.send` is. It was
+    synchronous, and that is how the digest shipped a bug: `send_all` called
+    `send` without awaiting it, built a coroutine, dropped it, and logged a
+    delivery. The double agreed, so the test passed for a job that had never
+    delivered anything.
+    """
+
+    def __init__(self, *, enabled: bool = True, delivers: bool = True) -> None:
+        self.sent: list[Any] = []
+        self.enabled = enabled
+        self._delivers = delivers
+
+    async def send(self, notification: Any) -> bool:
         self.sent.append(notification)
+        return self._delivers
 
 
 def seed(
@@ -180,7 +195,7 @@ class TestTheDigest:
 
         assert message.level == "critical"
 
-    def test_send_all_sends_one_per_owner(
+    async def test_send_all_sends_one_per_owner(
         self, client: TestClient, auth, catalog: Catalog, run_compaction
     ) -> None:
         ids = seed(client, auth, run_compaction, count=2)
@@ -188,10 +203,66 @@ class TestTheDigest:
         set_owner(catalog, [ids[1]], "@org/frontend")
         recorder = Recorder()
 
-        sent = digest.send_all(catalog, recorder)
+        sent = await digest.send_all(catalog, recorder)
 
         assert sent == 2
         assert len(recorder.sent) == 2
+
+    async def test_a_disabled_notifier_delivers_nothing_and_says_so(
+        self, client: TestClient, auth, catalog: Catalog, run_compaction
+    ) -> None:
+        """The state this estate is actually in: digests are built weekly and
+        no webhook is configured (B-035). The count must be of deliveries, or
+        "sent to 2 owners" is a log line asserting something that did not
+        happen."""
+        ids = seed(client, auth, run_compaction, count=2)
+        set_owner(catalog, [ids[0]], "@org/payments")
+        set_owner(catalog, [ids[1]], "@org/frontend")
+        recorder = Recorder(enabled=False)
+
+        sent = await digest.send_all(catalog, recorder)
+
+        assert sent == 0
+        assert recorder.sent == []
+
+    async def test_a_refused_delivery_is_not_counted(
+        self, client: TestClient, auth, catalog: Catalog, run_compaction
+    ) -> None:
+        """Slack answering 500 is not a digest arriving."""
+        ids = seed(client, auth, run_compaction, count=2)
+        set_owner(catalog, ids, "@org/payments")
+        recorder = Recorder(delivers=False)
+
+        sent = await digest.send_all(catalog, recorder)
+
+        assert sent == 0
+        assert len(recorder.sent) == 1
+
+    async def test_the_real_notifier_is_awaited(
+        self, client: TestClient, auth, catalog: Catalog, run_compaction
+    ) -> None:
+        """The regression itself, asserted against the shipped class rather
+        than a double — which is the only place it was visible.
+
+        `send_all` used to call a coroutine function and discard the result.
+        Python says so at garbage-collection time and nothing was listening.
+        """
+        ids = seed(client, auth, run_compaction, count=1)
+        set_owner(catalog, ids, "@org/payments")
+        posted: list[str] = []
+
+        class Unreachable(SlackNotifier):
+            async def send(self, note: Any) -> bool:
+                posted.append(note.title)
+                return True
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await digest.send_all(catalog, Unreachable("https://hooks.invalid/x"))
+            gc.collect()
+
+        assert posted, "the digest never reached the notifier"
+        assert not [w for w in caught if "never awaited" in str(w.message)]
 
     def test_a_long_list_is_summarised_not_dumped(
         self, client: TestClient, auth, catalog: Catalog, run_compaction

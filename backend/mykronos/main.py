@@ -316,11 +316,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
         async def _digest() -> None:
-            # In a thread: it queries the lake and posts to Slack, and the
-            # notifier's HTTP call would otherwise stall the event loop.
-            await asyncio.to_thread(
-                send_digests, app.state.catalog, app.state.notifier
-            )
+            # Awaited rather than threaded. `send_all` puts its own lake
+            # queries on a thread and awaits the posts, which is what a
+            # coroutine notifier needs: handing the whole thing to
+            # `to_thread` is how the sends came to be dropped un-awaited.
+            await send_digests(app.state.catalog, app.state.notifier)
 
         async def _acceptances() -> None:
             # In a thread: it rewrites partitions, same as the other sweeps.
