@@ -4678,6 +4678,40 @@ rather than an obstacle, and it is worth going in knowing it.
 **Nothing was changed.** Branch protection is outward-facing and this needed a
 person; the reading above is what that person should have in front of them.
 
+**Decided and executed 2026-09-09: reviews on, admin enforcement off, all
+five.** The operator took the second of the three choices and applied it
+estate-wide. Every repository now requires one approving review on its default
+branch with `enforce_admins` off, which is the posture TheHub already had — so
+the review requirement is real for anybody else and advisory for the account
+that owns the estate. This platform scores that `partial` rather than `on`,
+and that reading is the honest one: one approval on a repository with no
+CODEOWNERS is one rubber stamp from a self-merge.
+
+`binnacle` had no branch protection at all and gained the rest of the estate's
+shape with it — linear history, force-push and deletion blocked, conversation
+resolution and stale-review dismissal.
+
+**The scores fell on three repositories, which is the trade being visible
+rather than a regression.**
+
+| repository | before | after | why |
+|---|---:|---:|---|
+| `binnacle` | 8 | **48** | had no protection at all |
+| `keel` | 53 | 48 | traded 1.1.14 for 1.1.3 `partial` |
+| `mykronos` | 49 | 43 | as above |
+| `personal-soc` | 49 | 43 | as above |
+| `TheHub` | 30 | 30 | already in this state |
+
+Turning `enforced_for_admins` off is a control that was passing and now is
+not, and CIS scores it the same weight as the one gained. The trade was made
+knowing that: a review requirement nobody can satisfy is worth less than one
+that is advisory and recorded, and the alternative on a single-operator estate
+was a deadlock. Said out loud here because a governance number that moved
+down deserves the same explanation as one that moved up.
+
+**`required_status_checks` was not part of this** and stays open. It is
+executable on `keel` and `binnacle` only, for the reasons above.
+
 ---
 
 ## D-111 — binnacle is scanned with the tools that can read it, and its green is qualified
@@ -5122,5 +5156,40 @@ transitive resolution calls deps.dev, which returns an internal error for any
 whole lane. Resolving locally with `pip-compile` or `uv` and scanning the lock
 would make every finding a resolved one and retire this distinction; that is
 the real fix and it is not this decision.
+
+---
+
+## D-121 — Coverage runs weekly, off the lane that gates seven jobs
+
+**2026-09-09.** Coverage had nowhere to live. D-113 put it on the pull-request
+unit lane; D-117 measured what that cost on the real worker — 540.81s against
+218.61s clean, **+322s and about 2.5x**, on a job carrying `trigger: true`
+with seven others waiting behind `passed: [unit, ...]` — and rejected it;
+D-118 then retired the Actions lane that had been carrying it instead. The
+figure was measured once, on Concourse `unit` #226, and never again (B-042).
+
+A new `coverage` job runs the same suite with `--cov --cov-branch` on a weekly
+clock, gating nothing.
+
+**The trade, stated plainly.** The number can be up to seven days old. That is
+a far smaller problem than a gate that is 2.5x slower on every push, and the
+alternative on the table was recording that this repository does not measure
+coverage at all. A stale figure that keeps arriving beats a fresh one nobody
+will pay for and beats a blank.
+
+**It uploads as `unit`, not as a capability of its own.** The coverage belongs
+to the lane a person reads it against, the uploader rglobs its results
+directory and merges `coverage.xml` with `unit.xml` into one run (spec 31 §4),
+and the plumbing for exactly this was proved end to end on 2026-09-05 with no
+platform change.
+
+**`--cov-branch` is not optional and never was.** Cobertura writes
+`branch-rate="0"` whether or not branch data was collected, and the dashboard
+reads that as a measured 0% — publishing a number nobody measured, which is
+the failure B-042 spent a paragraph on and the reason `--cov` alone was
+refused there too.
+
+**It triggers on the clock and not on `source`.** A `trigger: true` on the
+repository would make this the thing it was written to avoid.
 
 ---
