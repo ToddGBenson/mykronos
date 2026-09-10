@@ -576,7 +576,12 @@ def main(argv: list[str] | None = None) -> int:
             # is.
             checks = asyncio.run(
                 self_check(
-                    settings, notifier=SlackNotifier(settings.slack_webhook_url)
+                    settings,
+                    notifier=SlackNotifier(
+                        settings.slack_webhook_url,
+                        bot_token=settings.slack_bot_token,
+                        channel=settings.slack_channel,
+                    ),
                 )
             )
             _print_table(

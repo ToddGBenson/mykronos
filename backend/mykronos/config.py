@@ -543,6 +543,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    slack_bot_token: str = Field(
+        default="",
+        description=(
+            "Slack bot token (`xoxb-...`) for `chat.postMessage`. Preferred "
+            "over `slack_webhook_url` and used instead of it when both are "
+            "set, for the reason the Concourse pipelines already record: a "
+            "webhook's secret lives in the URL path of the endpoint being "
+            "called, so whatever holds the URL holds the credential, while a "
+            "bot token lives in an `Authorization:` header that Vault can "
+            "substitute at egress. This host already has one bot token that "
+            "thehub and personal-soc resolve at team scope — reusing it means "
+            "one Slack identity rather than three. Needs "
+            "`slack_channel` set too; a token with no channel posts nowhere."
+        ),
+    )
+
+    slack_channel: str = Field(
+        default="",
+        description=(
+            "Channel id or name for `slack_bot_token`. Both are required "
+            "together: a bot that cannot name a channel is configured and "
+            "addressed to nobody, which is the state B-035 exists about."
+        ),
+    )
+
     slack_notify_min_severity: str = Field(
         default="high",
         pattern="^(critical|high|medium|low|info)$",

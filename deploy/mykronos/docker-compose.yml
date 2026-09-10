@@ -76,6 +76,15 @@ services:
       # except the one process that runs is worse than no notifier: it looks
       # configured.
       MYKRONOS_SLACK_WEBHOOK_URL: ${MYKRONOS_SLACK_WEBHOOK_URL:-}
+      # Preferred over the webhook above, and used instead of it when both
+      # are set. The pipelines already post with a bot token and record
+      # why: a webhook's secret lives in the URL path of the endpoint being
+      # called, so whatever holds the URL holds the credential, while a bot
+      # token lives in an `Authorization:` header Vault can substitute at
+      # egress. Both are needed together - a token with no channel posts
+      # nowhere, which is the state B-035 exists about.
+      MYKRONOS_SLACK_BOT_TOKEN: ${MYKRONOS_SLACK_BOT_TOKEN:-}
+      MYKRONOS_SLACK_CHANNEL: ${MYKRONOS_SLACK_CHANNEL:-}
       MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY: ${MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY:-high}
     volumes:
       # Every finding, decision, token and archived scan output. Without this

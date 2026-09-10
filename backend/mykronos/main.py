@@ -237,9 +237,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # present and disabled is one branch at the call site; a notifier that may
     # be absent from `app.state` is a `getattr` at every call site and an
     # AttributeError at the one that forgot (spec 16 §14).
-    app.state.notifier = SlackNotifier(settings.slack_webhook_url)
+    app.state.notifier = SlackNotifier(
+        settings.slack_webhook_url,
+        bot_token=settings.slack_bot_token,
+        channel=settings.slack_channel,
+    )
+    # Said either way. A notifier that is addressed to nobody is the
+    # state B-035 records, and a deployment that logs nothing about it
+    # leaves 'notifications are on' and 'notifications go nowhere'
+    # looking identical from the outside.
     if app.state.notifier.enabled:
-        logger.info("Slack notification is enabled.")
+        logger.info(
+            "Slack notification is enabled (%s).", app.state.notifier.transport
+        )
+    else:
+        logger.warning(
+            "Slack notification is not configured: nothing this platform "
+            "decides will reach anybody. Set MYKRONOS_SLACK_BOT_TOKEN and "
+            "MYKRONOS_SLACK_CHANNEL, or MYKRONOS_SLACK_WEBHOOK_URL."
+        )
 
     # Always constructed, for the reason the notifier above is: an ingest
     # handler that has to guard `hasattr(state, "ownership")` is one that will
