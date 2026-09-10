@@ -37,7 +37,12 @@ from mykronos.db.models import (
     get_or_create_organization,
 )
 from mykronos.github.client import GitHubError
-from mykronos.grants import restore_stranded, strand_findings
+from mykronos.grants import (
+    restore_stranded,
+    restore_stranded_tool,
+    strand_findings,
+    strand_tool_findings,
+)
 from mykronos.installer import (
     InstallerError,
     PathCollisionError,
@@ -45,6 +50,7 @@ from mykronos.installer import (
     WorkflowInstaller,
     capability_configs,
 )
+from mykronos.lake.catalog import Catalog
 from mykronos.schemas import Capability
 
 logger = logging.getLogger(__name__)
@@ -547,6 +553,32 @@ async def set_scanner(
         return _summary(row)
 
 
+def _strand_dropped_analysers(
+    catalog: Catalog, repo_full_name: str, dropped: dict[str, set[str]]
+) -> int:
+    """Strand what each capability's removed analysers were the only reader of.
+
+    Counted into the same total as capability-level stranding, because the
+    reader of that sentence is being told the same thing either way: this many
+    findings can no longer be closed by any scan. Which knob caused it is in
+    the audit record, not in a number.
+    """
+    return sum(
+        strand_tool_findings(catalog, repo_full_name, capability, tools)
+        for capability, tools in dropped.items()
+    )
+
+
+def _restore_added_analysers(
+    catalog: Catalog, repo_full_name: str, added: dict[str, set[str]]
+) -> int:
+    """The mirror. An analyser added back makes its findings decidable again."""
+    return sum(
+        restore_stranded_tool(catalog, repo_full_name, capability, tools)
+        for capability, tools in added.items()
+    )
+
+
 def _stranding_note(stranded: int, restored: int) -> str:
     """Say what happened to the findings, or say nothing.
 
@@ -616,6 +648,15 @@ async def update_capabilities(
                 ),
             )
 
+        # An analyser dropped from `extra_analysers` is B-047 one level down.
+        # The capability keeps running, so nothing here is revoked and the
+        # grant does not move — but the findings only that tool could see have
+        # lost the thing whose silence would close them (B-051). Collected
+        # while both configs are in hand, applied once the transaction has
+        # decided the rest.
+        analysers_dropped: dict[str, set[str]] = {}
+        analysers_added: dict[str, set[str]] = {}
+
         for capability, raw_config in body.config.items():
             if capability not in requested:
                 raise HTTPException(
@@ -640,6 +681,17 @@ async def update_capabilities(
                 .scalars()
                 .first()
             )
+            before = set(
+                (existing.config_json or {}).get("extra_analysers") or []
+                if existing is not None
+                else []
+            )
+            after = set(config.get("extra_analysers") or [])
+            if before - after:
+                analysers_dropped[capability] = before - after
+            if after - before:
+                analysers_added[capability] = after - before
+
             if existing is None:
                 session.add(
                     CapabilityConfig(
@@ -677,6 +729,12 @@ async def update_capabilities(
             catalog = request.app.state.catalog
             stranded = strand_findings(catalog, row.github_repo_full_name, grants_removed)
             restored = restore_stranded(catalog, row.github_repo_full_name, grants_added)
+            stranded += _strand_dropped_analysers(
+                catalog, row.github_repo_full_name, analysers_dropped
+            )
+            restored += _restore_added_analysers(
+                catalog, row.github_repo_full_name, analysers_added
+            )
             row.enabled_capabilities = sorted(requested)
             # Any PR left open by an earlier install is now describing a set
             # nobody is waiting for. Clearing the pointer is not the same as
@@ -749,6 +807,12 @@ async def update_capabilities(
             catalog = request.app.state.catalog
             stranded = strand_findings(catalog, row.github_repo_full_name, result.grants_removed)
             restored = restore_stranded(catalog, row.github_repo_full_name, result.grants_added)
+            stranded += _strand_dropped_analysers(
+                catalog, row.github_repo_full_name, analysers_dropped
+            )
+            restored += _restore_added_analysers(
+                catalog, row.github_repo_full_name, analysers_added
+            )
         except PathCollisionError as exc:
             # spec 03 §8 — a human wrote a file where we would generate one.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -779,13 +843,24 @@ async def update_capabilities(
             findings_restored=restored,
         )
 
+        # Every branch carries the stranding note, and that is not
+        # decoration. Dropping an analyser leaves the capability set alone, so
+        # this lands on `is_noop` or `already_pending` while findings have
+        # genuinely moved to `stranded` — and "No change" would be the
+        # platform denying something it had just done. The sentence is scoped
+        # to workflows for the same reason: that is the only thing that did
+        # not change.
         if plan.already_pending:
             detail = (
-                f"No change; this is already requested and pull request "
-                f"#{plan.pending_pr_number} is open. Merge it to activate."
-            )
+                f"No workflow change; this is already requested and pull request "
+                f"#{plan.pending_pr_number} is open. Merge it to activate. "
+                + _stranding_note(stranded, restored)
+            ).strip()
         elif plan.is_noop:
-            detail = "No change; the requested set already matches what is enabled."
+            detail = (
+                "No workflow change; the requested set already matches what is "
+                "enabled. " + _stranding_note(stranded, restored)
+            ).strip()
         else:
             detail = (
                 f"Opened/updated a pull request to {plan.describe()}. Capabilities "
