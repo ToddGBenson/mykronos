@@ -786,9 +786,43 @@ now, and it reads the rendered workflow instead.
     store a configuration that installs nothing and never runs. Failing quiet
     is the shape of failure this platform exists to report.
 
+  **And enabling one would have silently closed the other's findings.** Found
+  2026-09-10, before either analyser was enabled anywhere. Absence
+  reconciliation partitions on `(repo, capability, branch)` and had no
+  `tool_name` in it — which was correct for exactly as long as a capability
+  had one tool.
+
+  Two CodeQL runs are two qualifying `sast` scans. Every ShellCheck finding is
+  absent from both, because CodeQL implements no shell language and never
+  could. So they closed as `fixed`: `resolved_at` written, mean-time-to-fix
+  improved, the finding gone from the queue, and nothing anywhere saying a
+  tool was never asked. The reassuring direction, which is the worse one.
+
+  **It also quietly halved the two-scan rule.** With both lanes reporting on
+  every push, the two most recent `sast` runs are one of each — so a finding
+  one push old counted as absent from "two consecutive scans" after a single
+  push. The guarantee degraded from two to one with nothing appearing to
+  change.
+
+  **This is B-056's defect one dimension over**, and the fix is the same
+  shape: `tool_name` joins `branch` in the partition, and a finding is closed
+  only on the silence of a tool that could have seen it. Proven by reverting
+  it — three of the five new tests fail without the change, including a
+  ShellCheck finding closed by two CodeQL runs. The eight branch-lane tests
+  still pass, so the dimension B-056 added is untouched.
+
+  **The consequence, stated rather than discovered later.** A tool *removed*
+  from `extra_analysers` never runs again, so its open findings can no longer
+  close by any path — the situation B-047 already names `stranded` and handles
+  at the capability level. It is not handled at the tool level. Before this
+  fix those findings closed, wrongly, on another tool's silence; now they stay
+  open, correctly and unhelpfully. Extending `strand_findings` to a removed
+  tool is the follow-on, and it is a different problem from this one.
+
   Enabling them is still a capability change per repository, and the numbers
   above say what each would close. It is now a configuration change rather
-  than a hand-committed workflow.
+  than a hand-committed workflow — and one that no longer closes the findings
+  of whichever analyser was already there.
 - ~~`binnacle` is onboarded, or a decision is recorded that it will not be.~~
   Onboarded 2026-09-04, granted on the 5th, and `secrets` restored on the 8th
   (B-052, D-111). It is `active` with `sast` enabled — over a repository
