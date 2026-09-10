@@ -619,8 +619,37 @@ now, and it reads the rendered workflow instead.
   absolute on the runner, so without the workspace strip every finding's
   identity would move with the checkout layout.
 
-  Neither analyser is enabled anywhere yet. Enabling them is a capability
-  change per repository, and the numbers above say what each would close.
+  **And neither could be enabled, because nothing could install them.** The
+  adapters and the templates shipped; the installer maps one template to one
+  capability, and `sast-shell` is a template with no capability of that name,
+  so `plan()` would have refused it as unknown. Two lanes built, measured and
+  written up, and the only way to run either was to commit the workflow by
+  hand. That is the *capability ahead of its wiring* failure this platform
+  files against other people's repositories, arriving in its own installer,
+  one commit after the entry above explains why two lanes on one capability is
+  the right shape.
+
+  **Fixed 2026-09-09.** The lane is chosen in the capability's own config —
+  `{"sast": {"extra_analysers": ["shellcheck"]}}` — and the installer renders
+  it beside the primary one. Three things that decision had to get right, each
+  of which was wrong first:
+
+  - **The capability is part of the key**, not an assumption. Keyed on the
+    tool alone, `extra_analysers` in an `iac` config installed a `sast`
+    workflow: a repository handed a lane uploading a capability its own
+    configuration never mentioned.
+  - **Disabling the capability removes every lane it owns**, not only the
+    primary one. A lane left behind keeps uploading a capability the
+    repository no longer has, and every one of those uploads is refused at the
+    door (B-062) — a red workflow nobody can explain.
+  - **A tool with an adapter and no template is refused at save time.**
+    Semgrep is readable here and has no extra lane, so accepting it would
+    store a configuration that installs nothing and never runs. Failing quiet
+    is the shape of failure this platform exists to report.
+
+  Enabling them is still a capability change per repository, and the numbers
+  above say what each would close. It is now a configuration change rather
+  than a hand-committed workflow.
 - ~~`binnacle` is onboarded, or a decision is recorded that it will not be.~~
   Onboarded 2026-09-04, granted on the 5th, and `secrets` restored on the 8th
   (B-052, D-111). It is `active` with `sast` enabled — over a repository
