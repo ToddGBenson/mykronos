@@ -76,6 +76,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    carry_forward_interval_seconds: int = Field(
+        default=3_600,
+        ge=1,
+        description=(
+            "Link findings whose matched code changed to their replacements "
+            "(spec 05 §5b). Hourly, alongside absence reconciliation: it only "
+            "acts once a lane has scanned again, so running it more often "
+            "changes nothing."
+        ),
+    )
+
     absence_reconcile_interval_seconds: int = Field(
         default=3_600,
         ge=1,

@@ -65,7 +65,13 @@ from mykronos.jobs import (
     score_portfolio,
     self_check,
 )
-from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.lake import (
+    Catalog,
+    WriteAheadBuffer,
+    carry_forward,
+    compact,
+    reconcile_absences,
+)
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.migrate_assets import migrate_assets
 from mykronos.notify import SlackNotifier
@@ -152,6 +158,18 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "reconcile-absences",
         help="Close findings absent from two consecutive scans (spec 05 §5)",
+    )
+    carry = sub.add_parser(
+        "carry-forward",
+        help=(
+            "Link a finding whose matched code changed to its replacement, "
+            "carrying the operator's decision across (spec 05 §5b)"
+        ),
+    )
+    carry.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be carried and what could not be, and write nothing.",
     )
     sub.add_parser("rotate-due", help="Run the token rotation sweep now")
     sub.add_parser("sync-installations", help="Check each installation still exists on GitHub")
@@ -460,6 +478,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Closed {outcome.total_fixed} absent finding(s).")
             for repo, capability in outcome.insufficient_history:
                 print(f"  skipped {repo}/{capability}: fewer than 2 qualifying scans")
+            return 0
+
+        if args.command == "carry-forward":
+            carried = carry_forward(catalog, dry_run=args.dry_run)
+            print(carried.summary() + (" (dry run, nothing written)" if args.dry_run else ""))
+            for link in carried.carried:
+                print(f"  {link.describe()}")
+            # Loud, and last, because this is the half a person has to act on:
+            # a decision nothing could carry is a decision somebody has to
+            # make again, and it should not need a log to find out.
+            for stuck in carried.stranded:
+                print(f"  STRANDED {stuck.describe()}")
             return 0
 
         if args.command in {"rotate-due", "sync-installations"}:

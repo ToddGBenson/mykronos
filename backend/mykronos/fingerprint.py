@@ -66,6 +66,36 @@ def normalize_snippet(snippet: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def snippet_similarity(left: str | None, right: str | None) -> float:
+    """How much code two snippets share, 0.0 to 1.0 (spec 05 §5b).
+
+    Jaccard over the set of normalized non-empty lines: the lines they have
+    in common, divided by the lines either of them has. Two empty snippets
+    score 0.0 rather than 1.0 — "nothing in common" and "nothing at all" are
+    different answers, and only one of them is evidence.
+
+    **Not a second fingerprint.** Identity stays an exact hash (§5), because
+    a fuzzy identity merges findings that are genuinely distinct and hiding a
+    real finding is the worse of the two failures. This is only ever used to
+    decide whether an operator's decision about one snippet should be carried
+    onto another, and it is used with a floor *and* a margin so an ambiguous
+    answer is refused rather than rounded.
+
+    Jaccard rather than a character-level diff ratio, and the reason is
+    measured. On the four snippets from `lifecycle.py` that produced this
+    defect, `difflib.SequenceMatcher` scored the right successor 0.78 and the
+    wrong one 0.69 — nine points apart, far too close to act on. Jaccard over
+    lines scored them 0.75 and 0.35. Whole lines are also the unit an edit
+    arrives in: the change that broke this inserted three of them.
+    """
+    left_lines = {line for line in normalize_snippet(left or "").splitlines() if line}
+    right_lines = {line for line in normalize_snippet(right or "").splitlines() if line}
+    union = left_lines | right_lines
+    if not union:
+        return 0.0
+    return len(left_lines & right_lines) / len(union)
+
+
 def _digest(*parts: str | None) -> str:
     joined = _SEP.join(_NULL if p is None else p for p in parts)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()

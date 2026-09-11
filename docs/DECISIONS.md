@@ -5193,3 +5193,55 @@ refused there too.
 repository would make this the thing it was written to avoid.
 
 ---
+
+## D-122 — Identity stays exact; the decision is what gets carried
+
+**2026-09-10.** The story that prompted this said a finding is keyed on
+`file_path + line_start`. It is not, and has not been since D-001: identity is
+a hash of the matched snippet and the enclosing symbol, and
+`test_line_shift_does_not_change_identity` has pinned that since the lake
+shipped. What actually happened on 2026-09-09 is the *other* edge of the same
+rule. Identity **is** the matched code, so editing the matched code changes it.
+Two lines were added inside the SQL string of a `text()` call in TheHub's
+`lifecycle.py`, the hash moved, and a false positive dismissed four days
+earlier came back as a new open high that blocked the gate.
+
+**The obvious fix is the wrong one.** Hash less — the first line of the match,
+or only the enclosing symbol — and the dismissal survives. So does a second
+distinct finding in the same function, folded into the same row and never
+reported. Under-reporting is the failure this codebase refuses everywhere else
+(spec 04 §6), and trading a visible resurrection for an invisible omission is
+trading a problem somebody notices for one nobody does.
+
+**So identity is left alone and the link is made explicit.** `carry_forward`
+(spec 05 §5b) pairs a finding its lane stopped reporting with one the same
+lane did report, under the same rule in the same file, when the snippets are
+substantially the same thing. The predecessor becomes `superseded` naming its
+replacement; the replacement inherits what belongs to the finding rather than
+to the sighting — when it was first seen, and any disposition a person had
+recorded.
+
+**Similarity is Jaccard over normalized lines, and the constants are
+measured.** On the four real snippets, `difflib.SequenceMatcher` scored the
+right successor 0.78 and the wrong one 0.69 — nine points apart and unusable.
+Jaccard over lines scored them 0.75 and 0.35. A floor of 0.60 sits in that gap
+and a margin of 0.20 refuses the ambiguous cases outright, which is the whole
+reason this is allowed to exist: a mechanism that can hand a real finding
+somebody else's dismissal has to be able to say it does not know.
+
+**Scope was cut by measurement, twice.** Dependency and network findings are
+excluded because their identity contains no snippet — a package CVE cannot
+churn on a code edit. And a dismissed finding whose rule stopped firing in that
+file at all is not reported: the first version did report those, and produced
+178 rows across an estate holding one real case, 133 of them container CVEs
+that had simply been patched. That is the same shape as the discredited "161
+stale dispositions" count the story warns about, arrived at honestly and still
+wrong.
+
+**What the dry run found.** One carry — the `lifecycle.py` case, 0.75 against a
+next-best 0.35 — and one refusal: a `db/session.py` `text()` call whose
+dismissal was stranded the same way on 2026-08-15 when the query was wrapped in
+`_identifier(...)`, scoring 0.33 against its successor. The platform declines to
+carry that one and names it, which is correct on both counts: 0.33 is a
+different finding by any honest reading, and a person should know the decision
+is there to be re-made.
