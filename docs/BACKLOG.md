@@ -91,7 +91,9 @@ B-063, `--no-resolve` assessing the declared floor; and B-056, no branch
 dimension on a lane, which is why B-045 was forced rather than chosen.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
-sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
+sensitive table encrypted with unauthenticated CBC (**fixed 2026-09-11 as
+TheHub #59310; it was an S, not an M — the table held zero rows, so the
+migration half it was sized on did not exist**). B-054 — the registry the
 deploy path pulls from taking anonymous writes from any host on the LAN, which
 no scanner in this platform could have found; the rule that closes it is
 written and needs one elevated run. B-050 — eight live TheHub findings, read by
@@ -1196,7 +1198,26 @@ enforced" including the ones that were on.
 
 ### B-064 — TheHub encrypts its most sensitive table with unauthenticated CBC
 
-**Size:** M **State:** open **Verified:** 2026-09-05
+**Size:** ~~M~~ **S** **State:** fixed in TheHub **Verified:** 2026-09-05,
+re-verified 2026-09-11
+
+> **THE MIGRATION HALF DOES NOT EXIST — re-measured 2026-09-11.**
+> `SELECT count(*) FROM intimacy_logs` → **0**. Zero rows, no oldest, no
+> newest. The sizing argument below ("every stored row has to be read under CBC
+> and rewritten… getting it wrong destroys data that by definition cannot be
+> regenerated") describes work that has no subject. There is no migration, no
+> dual-read transition to get right, and no irreplaceable data to destroy.
+> `grep -rl "modes.CBC" backend/ --include=*.py` returns one file. One file,
+> one table, zero rows — **size S, not M**. Do not re-scope this as an M on the
+> strength of the paragraph below; it was written before anyone counted.
+>
+> Fixed in TheHub as story **#59310**: new writes are Fernet behind a
+> `fernet1:` version prefix, the read path still accepts legacy CBC rows, and
+> `intimacy_service.count_unmigrated_logs` MEASURES how many remain (surfaced
+> on `GET /api/intimacy/status` as `unmigrated_legacy_rows`) rather than
+> assuming the zero holds. The backfill AC below is **not met and is not
+> applicable** — there is nothing to backfill; `token_crypto.backfill_plaintext`
+> remains the shape to copy if a legacy row ever appears.
 
 `backend/services/intimacy_service.py` encrypts with AES-256-CBC and no
 authentication:
