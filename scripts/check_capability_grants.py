@@ -37,6 +37,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: The pipelines whose definitions live in THIS repository. keel and binnacle
+#: have ingestion tokens and are scanned too, but keel's pipeline is defined in
+#: its own repo (`ci/pipeline.yml`) and binnacle is scanned by GitHub Actions,
+#: so neither can be read from here. Concourse's `/config` endpoint needs
+#: authentication, unlike the job and build endpoints, so it is no help either.
+#:
+#: That is a blind spot, and the point of `_unexaminable` below is that it is
+#: printed rather than left to silence. A check that covers three of five
+#: repositories and signs off with "every capability each pipeline uploads is
+#: granted" reads as an estate-wide all-clear.
 PIPELINES = (
     "deploy/concourse/pipelines/mykronos.yml",
     "deploy/concourse/pipelines/thehub.yml",
@@ -120,6 +130,31 @@ def compare(sent: dict[str, set[str]], allowed: dict[str, set[str]]) -> list[str
     return problems
 
 
+def unexamined(sent: dict[str, set[str]], allowed: dict[str, set[str]]) -> list[str]:
+    """Repositories with a token that this check could not read a pipeline for.
+
+    Not a failure. Nothing here says they are wrong — it says they were not
+    looked at, which is a different fact and the one this script exists to
+    keep separate. keel's pipeline is defined in its own repository and
+    binnacle is scanned by GitHub Actions, so neither is visible from here.
+    """
+    return sorted(set(allowed) - set(sent))
+
+
+def scope_sentence(sent: dict[str, set[str]], allowed: dict[str, set[str]]) -> str:
+    """The all-clear, with the size of the claim attached.
+
+    "Every capability each pipeline uploads is granted" reads as an
+    estate-wide sign-off. It covered three of the five repositories holding
+    ingestion tokens, and said nothing about the other two.
+    """
+    return (
+        "Every capability each pipeline uploads is granted to the repository "
+        f"it uploads as, across {len(sent)} of {len(allowed)} repositories "
+        "with ingestion tokens."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="check-capability-grants", description=__doc__)
     parser.add_argument("--container", default=CONTAINER)
@@ -152,6 +187,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  granted but no lane here: {', '.join(extra)}")
             print()
 
+    # Repositories the platform has issued a token to and this check cannot
+    # read a pipeline for. Not a failure -- nothing here says they are wrong --
+    # but the difference between "checked and clean" and "not checked" is the
+    # whole business of this script, and it should not make that mistake about
+    # itself.
+    missing = unexamined(sent, allowed)
+    if missing and not args.quiet:
+        print("Not checked -- no pipeline definition in this repository:")
+        for repo in missing:
+            print(f"  {repo}  (granted: {', '.join(sorted(allowed[repo])) or 'nothing'})")
+        print()
+
     problems = compare(sent, allowed)
     if problems:
         print("A pipeline uploads a capability its repository may not write:")
@@ -159,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {problem}")
         return 1
 
-    print("Every capability each pipeline uploads is granted to the repository it uploads as.")
+    print(scope_sentence(sent, allowed))
     return 0
 
 
