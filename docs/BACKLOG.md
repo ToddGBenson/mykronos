@@ -366,7 +366,43 @@ and "recorded nothing".
 
 ### B-050 — Eight live TheHub findings, verified against `develop`
 
-**Size:** M **State:** open **Verified:** 2026-09-03
+**Size:** M **State:** closed — all four fixed, verified 2026-09-11 **Verified:** 2026-09-03
+
+**ALL FOUR REAL FINDINGS ARE FIXED. Re-verified against TheHub `develop`
+and against running production on 2026-09-11.**
+
+**1 & 2 — script injection in `deploy-prod.yml`.** Fixed, and fixed the way
+this entry recommended: the free-text input is passed through `env:` and
+referenced as a shell variable, so GitHub no longer substitutes it into the
+`run:` block before the shell parses it.
+
+```
+.github/workflows/deploy-prod.yml
+  :83   REASON: ${{ inputs.reason }}      (env:)
+  :88   echo "reason: $REASON"
+  :129  REASON: ${{ inputs.reason }}      (env:)
+  :132  echo "operator note: $REASON"
+```
+
+**3 & 4 — unauthenticated encryption of intimacy data.** These were B-064,
+and B-064 shipped on 2026-09-11 as TheHub `bd5cbd0d`. New writes use
+**AES-256-GCM with the user id bound as AAD**, behind a `gcm1:` version
+prefix. Production serves it.
+
+> **`modes.CBC` still appears twice in `intimacy_service.py` and that is
+> correct.** It is the read-only legacy path. Three schemes coexist —
+> unprefixed CBC, `fernet1:`, and `gcm1:` — and only `gcm1:` writes. A grep
+> for `modes.CBC` will otherwise read as "not fixed".
+
+A row whose version prefix is damaged is **refused**, not fallen back to the
+unauthenticated reader — that hole existed in the first cut and was caught by
+a merge collision rather than by a gate. Tampered, truncated, foreign-key,
+forged-prefix and moved-to-another-user values are all rejected.
+
+The other seventeen findings this entry dispositioned on 2026-09-03 are
+unchanged: fifteen `avoid-sqlalchemy-text` false positives, one Dockerfile
+finding accepted on a verified compensating control, one local-script XML
+parse accepted with a date.
 
 TheHub's twenty-one open high SAST findings were read one by one at the scanned
 commit `7197a028`. Seventeen were dispositioned — fifteen `avoid-sqlalchemy-text`
