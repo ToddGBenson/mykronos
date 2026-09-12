@@ -28,6 +28,15 @@
     this. Without the keys the deploy jobs cannot authenticate, and this script
     refuses to apply a pipeline whose deploy half is guaranteed to fail.
 
+.PARAMETER AllowPipelineFromAnyBranch
+    Apply pipelines\thehub.yml as this working tree holds it - whatever branch
+    that is, and including edits that are in no commit - instead of reading it
+    out of the `main` commit. For trying a pipeline change before it is merged.
+
+    It announces itself in red on every run, naming the branch and the SHA,
+    because the failure this guards against is not "somebody applied from a
+    branch". It is "somebody applied from a branch and nothing said so".
+
 .PARAMETER AllowMissingAzure
     Apply the pipeline without an Azure service principal. The delivery jobs
     all work and cloud-posture is paused, because a job that cannot run should
@@ -133,12 +142,203 @@ param(
     [string]$TimeZone = "America/Phoenix",
 
     [switch]$AllowMissingAzure,
+    # See the guard below, and the .PARAMETER note above. Never the default,
+    # and never quiet.
+    [switch]$AllowPipelineFromAnyBranch,
     [switch]$Pause
 )
 
 $ErrorActionPreference = "Stop"
 $fly = Join-Path $PSScriptRoot "bin\fly.exe"
 $backend = Join-Path $PSScriptRoot "..\..\backend"
+
+# -- B-59073: the pipeline that gates prod is whatever branch a tree sits on ---
+#
+# `fly set-pipeline` at the bottom of this script applies pipelines\thehub.yml.
+# It used to read that file off disk, which made the live `thehub` pipeline -
+# the control every TheHub deploy passes through - whatever this checkout
+# happened to contain at the moment somebody ran this. It failed twice, in
+# opposite directions:
+#
+#   2026-09-08  the checkout sat 129 commits BEHIND its branch. Three applies
+#               pushed a stale template. A phantom "orphaned dast-staging" job,
+#               persistent drift warnings and a sast/semgrep naming mismatch
+#               were then chased as real bugs; the mismatch was "fixed"
+#               redundantly. All three were artifacts of the stale apply.
+#   2026-09-10  the checkout sat on a feature branch, 3 commits AHEAD of
+#               origin/main and unmerged. An apply would have put unreviewed
+#               pipeline changes in front of production.
+#
+# Behind and ahead are one defect: the source of a production control was a
+# mutable working tree. Operator decision 2026-09-10, option A - the pipeline
+# source is `main`, and only `main`.
+#
+# A procedure cannot enforce that, and this is not a guess; it was tried. The
+# preconditions were verified by hand - HEAD on main, zero behind origin/main
+# after a fast-forward, no tracked modifications - and the apply that followed
+# announced it was applying from `docs/retro-2026-09-11 @ 62cfdac`. Somebody
+# else works in that tree and switched branches in the seconds between the
+# check and the apply. There is no interval short enough to check in.
+#
+# So the checks are not the load-bearing part. Two other things are:
+#
+#   1. The configuration that gets applied is read out of the `main` *commit*,
+#      with `git show <sha>:...`, and never off disk. Once that SHA is resolved
+#      the bytes are immutable and a branch switch mid-run cannot reach them.
+#      That closes the race by construction rather than by being quick enough.
+#   2. The checks run twice: here, so an operator hears "no" in a second rather
+#      than after a minute of token-minting and a fly login, and again on the
+#      line before `fly set-pipeline`, from a fresh read of git with nothing
+#      remembered in between.
+#
+# The refusals still matter after (1), because the YAML is not the only thing
+# this apply is made of. The vars beneath it - the branch delivered,
+# `mykronos-ref`, the environment URLs - come from *this* file, which
+# PowerShell read off disk before any of it ran. Pinning the pipeline to `main`
+# and leaving those floating would only move the problem.
+
+$PipelineSourceRef = "main"
+
+function Invoke-RepoGit {
+    param([Parameter(Mandatory = $true, Position = 0)][string[]]$GitArgs)
+    # A non-zero exit is routinely the answer here ("there is no local main")
+    # rather than a failure, so both of the ways PowerShell turns one into a
+    # terminating error are switched off for the length of the call. Both
+    # assignments are function-scoped and end with it.
+    $ErrorActionPreference = "Continue"
+    $PSNativeCommandUseErrorActionPreference = $false
+    $out = & git -C $PSScriptRoot @GitArgs 2>&1
+    $code = $LASTEXITCODE
+    return [pscustomobject]@{
+        Ok   = ($code -eq 0)
+        Text = ((($out | Out-String) -replace "`r", "").Trim())
+    }
+}
+
+function Get-PipelineSourceState {
+    # Read fresh every call, with nothing kept between them. A remembered
+    # answer about a working tree is the bug this exists to stop, one
+    # indirection further back.
+    $top = Invoke-RepoGit -GitArgs @("rev-parse", "--show-toplevel")
+    if (-not $top.Ok) {
+        throw "$PSScriptRoot is not inside a git checkout, so there is no way to say " +
+              "which version of pipelines\thehub.yml an apply would push."
+    }
+
+    $main = Invoke-RepoGit -GitArgs @("rev-parse", "--verify", "--quiet", "refs/heads/$PipelineSourceRef")
+    $remote = Invoke-RepoGit -GitArgs @("rev-parse", "--verify", "--quiet", "refs/remotes/origin/$PipelineSourceRef")
+
+    # $null means "cannot be answered", which is not the same as 0 and is not
+    # treated as it.
+    $behind = $null
+    if ($main.Ok -and $remote.Ok) {
+        $count = Invoke-RepoGit -GitArgs @("rev-list", "--count", "$PipelineSourceRef..origin/$PipelineSourceRef")
+        if ($count.Ok) { $behind = [int]$count.Text }
+    }
+
+    return [pscustomobject]@{
+        Branch  = (Invoke-RepoGit -GitArgs @("rev-parse", "--abbrev-ref", "HEAD")).Text
+        Head    = (Invoke-RepoGit -GitArgs @("rev-parse", "--short", "HEAD")).Text
+        # Tracked files only. Untracked ones are in nobody's pipeline and this
+        # checkout always has a few; refusing on them would make the guard the
+        # thing people route around, which is how a guard stops working.
+        Dirty   = (Invoke-RepoGit -GitArgs @("status", "--porcelain", "--untracked-files=no")).Text
+        MainSha = $(if ($main.Ok) { $main.Text } else { $null })
+        Behind  = $behind
+        # "deploy/concourse/" - so the blob path below is right from wherever
+        # in the tree this script has been moved to.
+        Prefix  = (Invoke-RepoGit -GitArgs @("rev-parse", "--show-prefix")).Text
+    }
+}
+
+function Assert-PipelineSourceIsMain {
+    $s = Get-PipelineSourceState
+
+    if ($AllowPipelineFromAnyBranch) {
+        Write-Host ""
+        Write-Host "  ############################################################" -ForegroundColor Red
+        Write-Host "  ##  OVERRIDE: applying '$Pipeline' from '$($s.Branch)' @ $($s.Head)," -ForegroundColor Red
+        Write-Host "  ##  and NOT from '$PipelineSourceRef'." -ForegroundColor Red
+        if ($s.Dirty) {
+            Write-Host "  ##  Uncommitted edits to tracked files are going in with it." -ForegroundColor Red
+        }
+        Write-Host "  ##" -ForegroundColor Red
+        Write-Host "  ##  Until somebody re-applies from '$PipelineSourceRef', every TheHub" -ForegroundColor Red
+        Write-Host "  ##  production deploy is gated by that branch." -ForegroundColor Red
+        Write-Host "  ############################################################" -ForegroundColor Red
+        Write-Host ""
+        return $s
+    }
+
+    $refusals = @()
+    if ($s.Branch -ne $PipelineSourceRef) {
+        $refusals += "HEAD is on '$($s.Branch)', at $($s.Head). Expected '$PipelineSourceRef'."
+    }
+    if ($s.Dirty) {
+        $refusals += "Tracked files are modified, so this tree holds a pipeline that is in " +
+                     "no commit:`n      " + (($s.Dirty -split "`n") -join "`n      ")
+    }
+    if (-not $s.MainSha) {
+        $refusals += "There is no local '$PipelineSourceRef' branch to read the configuration out of."
+    } elseif ($null -eq $s.Behind) {
+        $refusals += "There is no origin/$PipelineSourceRef here, so whether this checkout is " +
+                     "behind cannot be answered - and behind is how 2026-09-08 happened."
+    } elseif ($s.Behind -gt 0) {
+        $refusals += "'$PipelineSourceRef' is $($s.Behind) commit(s) behind origin/$PipelineSourceRef, so " +
+                     "applying it would push a pipeline older than the one on the server." +
+                     "`n      git fetch origin $PipelineSourceRef" +
+                     "`n      git merge --ff-only origin/$PipelineSourceRef"
+    }
+
+    if ($refusals) {
+        # Written out rather than carried in the exception, because PowerShell
+        # folds a multi-line throw message into one run-on line inside its
+        # error banner - and a refusal nobody can read is most of the way back
+        # to a refusal nobody gets. The exception keeps the one-line version so
+        # a caller still sees why it stopped.
+        Write-Host ""
+        Write-Host "Refusing to apply the '$Pipeline' pipeline." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  It gates every TheHub production deploy, and its only source is" -ForegroundColor Red
+        Write-Host "  '$PipelineSourceRef' (operator decision 2026-09-10)." -ForegroundColor Red
+        foreach ($r in $refusals) {
+            Write-Host ""
+            Write-Host "  - $r" -ForegroundColor Red
+        }
+        Write-Host ""
+        Write-Host "  -AllowPipelineFromAnyBranch applies this tree anyway. It says so in red," -ForegroundColor DarkGray
+        Write-Host "  and production stays gated by that branch until somebody re-applies" -ForegroundColor DarkGray
+        Write-Host "  from '$PipelineSourceRef'." -ForegroundColor DarkGray
+        Write-Host ""
+        throw ("Refusing to apply '{0}': {1}" -f $Pipeline, (($refusals[0] -split "`n")[0]))
+    }
+
+    return $s
+}
+
+# origin/main is itself a cached answer, and a stale one has the 2026-09-08
+# shape exactly: a checkout that looks level because the thing it is level with
+# has not moved in a while. So refresh it, once, here.
+#
+# Here and not at the call site, because the second evaluation has to be
+# instant: a network round trip inside it would reopen the window it exists to
+# shut.
+#
+# A fetch that fails warns rather than refuses. An unreachable origin is a
+# visible and different condition, and turning it into "you cannot deploy"
+# would push people toward -AllowPipelineFromAnyBranch for a reason that has
+# nothing to do with what that flag means. A flag reached for out of habit has
+# stopped being a decision.
+$fetch = Invoke-RepoGit -GitArgs @("fetch", "--quiet", "origin", $PipelineSourceRef)
+if (-not $fetch.Ok) {
+    Write-Host "Could not reach origin: the behind-check below compares against whatever" -ForegroundColor Yellow
+    Write-Host "  this checkout last saw of origin/$PipelineSourceRef, which may be old." -ForegroundColor Yellow
+}
+
+$source = Assert-PipelineSourceIsMain
+if (-not $AllowPipelineFromAnyBranch) {
+    Write-Host "Pipeline source: $PipelineSourceRef @ $($source.MainSha.Substring(0, 7)), clean and level with origin." -ForegroundColor DarkGray
+}
 
 function Read-EnvValue {
     param([string]$Path, [string]$Key, [switch]$Optional)
@@ -357,6 +557,7 @@ if ($fromFile) {
 }
 
 $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-vars-$(Get-Random).yml"
+$tempConfig = $null
 try {
     $vars = @(
         "mykronos-url: http://192.168.0.14:8100",
@@ -472,12 +673,50 @@ try {
     # checked below either way. The real fix is a credential manager, so that
     # the config never contains a secret to print (spec 15 section 6) - this
     # closes the hole in the meantime.
+
+    # Second evaluation, from a fresh read of git, and the last thing that
+    # happens before the apply. Nothing between this line and `fly` below waits
+    # on anything, so there is no window for the tree to move through - which
+    # is the reason it is repeated here and not only at the top of the script.
+    $source = Assert-PipelineSourceIsMain
+
+    if ($AllowPipelineFromAnyBranch) {
+        # Applying what is on disk is the entire point of the override.
+        $configPath = Join-Path $PSScriptRoot "pipelines\thehub.yml"
+        Write-Host "=== applying from: $($source.Branch) @ $($source.Head) (working tree) ===" -ForegroundColor Red
+    } else {
+        # Out of the commit, not off disk. `git show <sha>:<path>` names an
+        # object nobody can edit, so from this line on nothing anyone does in
+        # this checkout can change what is applied.
+        #
+        # Through Start-Process rather than captured into a variable: this file
+        # is UTF-8 and PowerShell decodes native output with the console
+        # codepage, which would mangle its non-ASCII bytes on any machine not
+        # set to UTF-8. Redirecting the child's stdout copies bytes.
+        #
+        # Those bytes carry LF where the checked-out copy has CRLF
+        # (core.autocrlf). YAML normalises line breaks inside scalars, so the
+        # configuration Concourse ends up holding is the same either way.
+        $blob = "$($source.MainSha):$($source.Prefix)pipelines/thehub.yml"
+        $tempConfig = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ("thehub-{0}-{1}.yml" -f $source.MainSha.Substring(0, 7), (Get-Random))
+        $configPath = $tempConfig
+        $show = Start-Process -FilePath "git" -NoNewWindow -Wait -PassThru `
+            -ArgumentList @("-C", $PSScriptRoot, "show", $blob) `
+            -RedirectStandardOutput $tempConfig
+        if ($show.ExitCode -ne 0 -or -not (Test-Path $tempConfig) -or (Get-Item $tempConfig).Length -eq 0) {
+            throw "Could not read $blob out of the '$PipelineSourceRef' commit."
+        }
+        Write-Host "=== applying from: $PipelineSourceRef @ $($source.MainSha.Substring(0, 7)) (committed) ===" -ForegroundColor Green
+    }
+
     & $fly --target $Target set-pipeline --pipeline $Pipeline `
-        --config (Join-Path $PSScriptRoot "pipelines\thehub.yml") `
+        --config $configPath `
         --load-vars-from $varsFile --non-interactive | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "fly set-pipeline failed" }
 } finally {
     if (Test-Path $varsFile) { Remove-Item $varsFile -Force }
+    if ($tempConfig -and (Test-Path $tempConfig)) { Remove-Item $tempConfig -Force }
 }
 
 if ($Pause) {
