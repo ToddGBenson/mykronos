@@ -198,13 +198,14 @@ class TestReporting:
     run for a day and the dashboard simply showed sast as un-scanned."""
 
     @staticmethod
-    def _job(name, status="succeeded", finished=None):
+    def _job(name, status="succeeded", finished=None, paused=False):
         return JobStatus(
             name=name,
             status=status,
             build_name="1",
             build_url="http://x",
             finished_at=finished,
+            paused=paused,
         )
 
     def test_a_job_that_reported_is_reporting(self) -> None:
@@ -291,6 +292,52 @@ class TestReporting:
         [row] = reconcile([self._job("containers", finished=built)], {})
 
         assert row.state == "never_reported"
+
+    def test_a_paused_lane_says_paused_and_not_failed(self) -> None:
+        """Somebody switched it off. That is not the same as it being broken.
+
+        A paused Concourse job keeps reporting its last build for ever, and
+        that build is usually the failure that prompted the pause. Deriving
+        the state from it says `failed`, which reads as "repair this" when
+        the truth is "decide whether you still want this control".
+
+        Found on 2026-09-12. Four security lanes were paused, each after a
+        run of failures, between 2026-08-13 and 2026-08-16:
+
+            thehub/cloud-posture     1 build, failed   — Azure posture, daily
+            thehub/functional-dast   8 builds, 0 succeeded
+            personal-soc/breach-check 1 build, failed  — HIBP, weekly
+            mykronos/demo-and-dast   16 builds, 2 succeeded
+
+        Concourse reports `paused: true` on every one of them and `_job` was
+        dropping the field. A month later nothing anywhere said they had been
+        switched off rather than left broken.
+        """
+        [row] = reconcile([self._job("sast", status="failed", paused=True)], {})
+
+        assert row.state == "paused", (
+            "a paused lane derived its state from the build that got it "
+            "paused, so it reads as a lane to repair"
+        )
+
+    def test_pausing_is_read_ahead_of_the_failure_underneath_it(self) -> None:
+        """Order is the design, not an accident.
+
+        Both flags are true for every real case — a lane is paused *because*
+        it was failing — so whichever is checked first is the one a reader
+        sees. `paused` is the fact that changes what they should do.
+        """
+        [row] = reconcile([self._job("sast", status="failed", paused=True)], {})
+
+        assert row.paused is True
+        assert row.last_build_failed is True
+        assert row.state == "paused"
+
+    def test_an_unpaused_failure_is_still_a_failure(self) -> None:
+        """The guard that this did not swallow the state it sits in front of."""
+        [row] = reconcile([self._job("sast", status="failed")], {})
+
+        assert row.state == "failed"
 
     def test_a_failed_job_is_not_held_against_the_lake(self) -> None:
         """A lane that fails produces nothing, and the lake is right to be
