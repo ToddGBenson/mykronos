@@ -149,6 +149,73 @@ class TestStalledLanes:
         assert briefing.build(catalog).stalled == []
         assert "Findings can close." in briefing.render(briefing.build(catalog))
 
+    def test_a_stalled_lane_holding_nothing_does_not_raise_the_header(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The header states a consequence, so it must not print without one.
+
+        On 2026-09-12 the briefing led with LANES THAT CANNOT CLOSE FINDINGS
+        and "their findings cannot close however thoroughly the defect was
+        fixed" — above an empty list, because the only stalled lanes were
+        holding nothing open. Two lines later its own body said so: "Also
+        stalled, holding nothing open ... nothing is stuck behind these."
+
+        The section was gated on `briefing.stalled` while its claim is only
+        true of the `holding` subset. A reader who trusts the header goes
+        looking for frozen findings that do not exist; a reader who learns not
+        to trust it stops reading the section that exists to catch the case
+        where they *are* frozen.
+        """
+        _scan(client, auth, "run-1", [])
+        run_compaction()
+
+        report = briefing.build(catalog, now=_utcnow() + timedelta(days=30))
+        rendered = briefing.render(report)
+
+        assert report.stalled, "the lane really did stop running"
+        assert all(not lane.open_findings for lane in report.stalled)
+        assert "LANES THAT CANNOT CLOSE FINDINGS" not in rendered
+        assert "cannot close however thoroughly" not in rendered
+        assert "No stalled lane is holding a finding open." in rendered
+        assert "Findings can close." in rendered
+
+    def test_the_idle_note_still_names_the_lanes_that_are_not_watching(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """Silencing the false header must not silence the true warning.
+
+        A lane holding nothing open is still not watching, and that is worth
+        a line — the whole point of the split is that the two statements are
+        different, not that one of them goes away.
+        """
+        _scan(client, auth, "run-1", [])
+        run_compaction()
+
+        rendered = briefing.render(
+            briefing.build(catalog, now=_utcnow() + timedelta(days=30))
+        )
+
+        assert "holding nothing open" in rendered
+        assert REPO in rendered
+
+    def test_also_appears_only_when_something_precedes_it(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """"Also" is a reference, and with nothing above it it dangles.
+
+        With a lane holding findings open the word is correct and kept; with
+        no such lane the note has to stand on its own.
+        """
+        _scan(client, auth, "run-1", [])
+        run_compaction()
+
+        idle_only = briefing.render(
+            briefing.build(catalog, now=_utcnow() + timedelta(days=30))
+        )
+
+        assert "Also stalled, holding nothing open" not in idle_only
+        assert "Stalled, holding nothing open" in idle_only
+
 
 class TestAwaitingClosure:
     """"You need do nothing" is a promise, so it must use the closing rule."""

@@ -1000,7 +1000,14 @@ def render(briefing: Briefing) -> str:
         "",
     ]
 
-    if briefing.stalled:
+    # Split before deciding what to print, not after. A lane holding nothing
+    # open is still broken and still worth knowing about, but it must not push
+    # a lane holding 213 findings down the page — and it must not raise a
+    # header announcing that findings cannot close when no finding is held.
+    holding = [lane for lane in briefing.stalled if lane.open_findings]
+    idle = [lane for lane in briefing.stalled if not lane.open_findings]
+
+    if holding:
         lines += [
             "LANES THAT CANNOT CLOSE FINDINGS",
             "  A finding closes only after two consecutive successful scans see",
@@ -1008,11 +1015,6 @@ def render(briefing: Briefing) -> str:
             "  cannot close however thoroughly the defect was fixed.",
             "",
         ]
-        # A lane holding nothing open is still broken and still worth knowing
-        # about, but it must not push a lane holding 213 findings down the
-        # page. One line for all of them, at the bottom.
-        holding = [lane for lane in briefing.stalled if lane.open_findings]
-        idle = [lane for lane in briefing.stalled if not lane.open_findings]
 
         for lane in holding:
             if lane.reason == "failing":
@@ -1043,19 +1045,30 @@ def render(briefing: Briefing) -> str:
             if lane.detail:
                 lines.append(f"      {lane.detail[:110]}")
             lines.append(f"      → {lane.action.method} {lane.action.path}")
-
-        if idle:
-            names = ", ".join(f"{lane.repo_full_name} {lane.capability}" for lane in idle)
-            lines.append("")
-            lines += textwrap.wrap(
-                f"  Also stalled, holding nothing open: {names}. Nothing is "
-                f"stuck behind these, but they are not watching either.",
-                72,
-                subsequent_indent="  ",
-            )
+        # Closes the section whether or not the idle note follows it.
         lines.append("")
+
+    elif briefing.stalled:
+        # Stalled lanes exist, but none of them holds a finding open. The
+        # header above would be a false alarm here, so say the true thing:
+        # nothing is waiting on a broken lane, and the idle note below still
+        # reports that those lanes are not watching.
+        lines += ["No stalled lane is holding a finding open. Findings can close.", ""]
     else:
         lines += ["Every lane is reporting. Findings can close.", ""]
+
+    if idle:
+        names = ", ".join(f"{lane.repo_full_name} {lane.capability}" for lane in idle)
+        # "Also" needs something to be also to. With nothing printed above it
+        # the word is a dangling reference to a section that never rendered.
+        lead = "Also stalled" if holding else "Stalled"
+        lines += textwrap.wrap(
+            f"  {lead}, holding nothing open: {names}. Nothing is "
+            f"stuck behind these, but they are not watching either.",
+            72,
+            subsequent_indent="  ",
+        )
+        lines.append("")
 
     if briefing.stale:
         lines += [
