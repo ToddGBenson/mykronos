@@ -561,8 +561,18 @@ class DashboardQueries:
                 for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
             ]
 
+            # Rolls up SCANS. The `REPORTS_ELSEWHERE` capabilities are
+            # injected into `scan_state` above so that "enabled and silent"
+            # does not false-alarm on them, and per capability that is right
+            # — but none of them scans anything, and `oracle` re-scores every
+            # onboarded repository on a schedule. Counting them here pins
+            # `last_scan_at` to the present for ever, which makes `is_stale`
+            # unreachable and hides a repository that has gone dark behind a
+            # freshness it did not earn.
             last_scan_values = [
-                state["last_scan_at"] for state in scan_state.values() if state.get("last_scan_at")
+                state["last_scan_at"]
+                for capability, state in scan_state.items()
+                if capability not in REPORTS_ELSEWHERE and state.get("last_scan_at")
             ]
 
             rows.append(
