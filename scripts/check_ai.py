@@ -88,12 +88,30 @@ class Finding:
 
 
 def _files(root: Path) -> list[Path]:
+    """Every scannable file under `root`, skipping the usual vendored trees.
+
+    `relative_to(root)`, not `p.parts`. `SKIP_DIRS` is a statement about
+    directories *inside* the project — `node_modules`, `dist`, `.venv` — and
+    testing it against the absolute path lets a directory ABOVE the root
+    disqualify the entire scan.
+
+    That is not hypothetical. Concourse runs every task in `/tmp/build/<guid>/`
+    and `main` resolves the root to an absolute path, so on TheHub's
+    `ai-models` job every file came out as
+    `/tmp/build/<guid>/source/backend/config.py` — whose parts contain
+    `build`, which is in `SKIP_DIRS`. Nothing was ever scanned, on 74
+    consecutive builds, and the checker reported a clean repository each time.
+
+    `check.py`, in the same task and the same directory, uses a relative
+    `Path("source")` and found the model references this one missed. The two
+    scripts differed by `.resolve()`.
+    """
     return [
         p
         for p in sorted(root.rglob("*"))
         if p.suffix in CODE_SUFFIXES
         and p.is_file()
-        and not any(part in SKIP_DIRS for part in p.parts)
+        and not any(part in SKIP_DIRS for part in p.relative_to(root).parts)
     ]
 
 
@@ -226,6 +244,32 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
+
+    # A check that examined nothing has not passed; it has lost track of what
+    # it was pointed at. personal-soc's PSScriptAnalyzer task says exactly
+    # that and exits 1 when it finds no .ps1 files. This one printed "No
+    # model references found - nothing to check." and exited 0 — the same
+    # sentence, and the same exit code, as a repository that genuinely calls
+    # no model.
+    #
+    # Those two states were indistinguishable, and the difference mattered:
+    # TheHub's `ai-models` job has reported 0 findings on every one of its 74
+    # builds, while this same checker — at the same pinned commit, run the
+    # same way — finds seven in a clean clone of the branch that job scans.
+    # Whatever puts the checker in front of an empty tree, it should say so
+    # rather than pass.
+    #
+    # `any()` rather than a count: it stops at the first file, so this costs
+    # one directory entry on a repository that has any source at all.
+    if not any(_files(root)):
+        print(
+            f"ERROR: no source files under {root}. A check that examined "
+            "nothing has not passed - it has lost track of what it was "
+            "pointed at.",
+            file=sys.stderr,
+        )
+        return 2
+
     findings, uses_a_model = check(root)
 
     if args.sarif:
