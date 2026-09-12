@@ -88,12 +88,30 @@ class Finding:
 
 
 def _files(root: Path) -> list[Path]:
+    """Every scannable file under `root`, skipping the usual vendored trees.
+
+    `relative_to(root)`, not `p.parts`. `SKIP_DIRS` is a statement about
+    directories *inside* the project — `node_modules`, `dist`, `.venv` — and
+    testing it against the absolute path lets a directory ABOVE the root
+    disqualify the entire scan.
+
+    That is not hypothetical. Concourse runs every task in `/tmp/build/<guid>/`
+    and `main` resolves the root to an absolute path, so on TheHub's
+    `ai-models` job every file came out as
+    `/tmp/build/<guid>/source/backend/config.py` — whose parts contain
+    `build`, which is in `SKIP_DIRS`. Nothing was ever scanned, on 74
+    consecutive builds, and the checker reported a clean repository each time.
+
+    `check.py`, in the same task and the same directory, uses a relative
+    `Path("source")` and found the model references this one missed. The two
+    scripts differed by `.resolve()`.
+    """
     return [
         p
         for p in sorted(root.rglob("*"))
         if p.suffix in CODE_SUFFIXES
         and p.is_file()
-        and not any(part in SKIP_DIRS for part in p.parts)
+        and not any(part in SKIP_DIRS for part in p.relative_to(root).parts)
     ]
 
 

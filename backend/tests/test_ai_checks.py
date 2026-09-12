@@ -222,3 +222,56 @@ class TestARootWithNothingInIt:
 
         assert check_ai.main([str(tmp_path)]) == 0
         assert "No model references found" in capsys.readouterr().out
+
+
+class TestARootUnderADirectoryNamedLikeAVendorTree:
+    """A directory ABOVE the root must not disqualify the scan.
+
+    `_files` tested `SKIP_DIRS` against `p.parts` — the absolute path, because
+    `main` resolves the root. Concourse runs every task in `/tmp/build/<guid>/`
+    and `build` is in `SKIP_DIRS`, so on TheHub's `ai-models` job every file
+    came out as `/tmp/build/<guid>/source/backend/config.py` and was skipped.
+
+    74 consecutive builds reported a clean repository. `check.py`, in the same
+    task and the same working directory, used a relative `Path("source")` and
+    listed the model references this checker missed. The two differed by
+    `.resolve()`.
+
+    Reproduced by copying a clone under a directory named `build`: seven
+    findings became zero, and back to seven with the fix.
+    """
+
+    @pytest.mark.parametrize("wrapper", ["build", "dist", "node_modules", ".venv"])
+    def test_the_scan_survives_its_own_absolute_path(
+        self, tmp_path: Path, wrapper: str
+    ) -> None:
+        root = tmp_path / wrapper / "abc123" / "source"
+        root.mkdir(parents=True)
+        write(root, "app.py", 'model = "claude-sonnet-4-6"\n')
+
+        findings, uses = check_ai.check(root.resolve())
+
+        assert uses, f"a root under {wrapper}/ was skipped entirely"
+        assert "ai-model-unpinned" in [f.rule_id for f in findings]
+
+    def test_a_vendor_tree_inside_the_project_is_still_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard that this did not simply disable SKIP_DIRS.
+
+        Vendored code is somebody else's unpinned model and not this
+        repository's finding, which is the whole reason the list exists.
+        """
+        write(tmp_path, "app.py", 'model = "claude-sonnet-4-6-20260101"\n')
+        vendored = tmp_path / "node_modules" / "pkg"
+        vendored.mkdir(parents=True)
+        write(vendored, "vendored.py", 'model = "claude-3-opus"\n')
+
+        findings, _ = check_ai.check(tmp_path.resolve())
+
+        # The repository's own model is pinned, so the only thing that could
+        # produce an `ai-model-unpinned` here is the vendored copy.
+        assert "ai-model-unpinned" not in [f.rule_id for f in findings], (
+            "a vendored model reference became this repository's finding"
+        )
+        assert not [f for f in findings if "node_modules" in f.file]
