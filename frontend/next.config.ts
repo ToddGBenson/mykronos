@@ -63,6 +63,33 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+
+  // There is deliberately no `images` block, and its absence is load-bearing.
+  //
+  // With no `images.remotePatterns`, Next refuses every remote URL handed to
+  // the optimizer before it fetches anything:
+  //
+  //     GET /_next/image?url=https%3A%2F%2Fexample.com%2Fx.avif
+  //     400  "url" parameter is not allowed
+  //
+  // That is currently the only thing standing between this deployment and
+  // GHSA-2xp9-vwfh-vxw4 (CVSS 9.5, RCE in libheif via sharp, triggered when
+  // an AVIF is optimized). `/_next/image` is enabled, answers 200, and is
+  // internet-facing: the tunnel routes everything except /api, /webhooks,
+  // /healthz and the docs to this process. The advisory needs an
+  // attacker-supplied AVIF, and an empty remotePatterns is what stops one
+  // arriving — the optimizer will only touch paths inside this bundle, which
+  // is five SVGs.
+  //
+  // So adding a domain here to serve an avatar or a chart image — an
+  // entirely ordinary change — makes this remotely exploitable the same
+  // afternoon, until the deployed image carries next >= 16.3.3. The repo
+  // pins 16.3.3; the running container was still 16.3.0 when this was
+  // written (mykronos#288), and nothing in the build tells you that.
+  //
+  // If you need remote images before that rebuild has happened: check the
+  // deployed version first, not package.json.
+
 };
 
 export default nextConfig;
