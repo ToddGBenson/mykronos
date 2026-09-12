@@ -111,10 +111,6 @@ KNOWN_GAPS: dict[str, str] = {
         "five downloads with no checksum. PS-8's point is that a fetched binary "
         "is code, and this pipeline fetches five"
     ),
-    "personal-soc.yml jobs": (
-        "every one of its thirteen jobs is in no group, so Concourse hides the "
-        "whole pipeline from its own UI"
-    ),
 }
 
 #: Steps that are hooks rather than work. They carry their timeout on the
