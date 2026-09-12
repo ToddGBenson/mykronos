@@ -321,6 +321,95 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: How recently a GitHub Actions upload must have landed for it to count as
+#: evidence that the public ingestion URL works. Six hours rather than one:
+#: Actions lanes here are push- and schedule-driven, so a quiet afternoon is
+#: normal and must not be read as an outage.
+_ACTIONS_UPLOAD_GRACE_HOURS = 6.0
+
+
+def ingestion_verdict(hours_since_actions_upload: float | None) -> list[str]:
+    """What to say when the public ingestion URL is unreachable from here.
+
+    "Findings are being lost now" is the most alarming sentence this command
+    can print, and it was printed from the one vantage point that cannot
+    establish it: a host inside this network reaches its own public hostname
+    through hairpin NAT, which does not work here. The URL is unreachable
+    from the backend container AND from the host, while GitHub Actions
+    uploads keep arriving.
+
+    Measured 2026-09-12: `self-check` said findings were being lost while
+    Actions runs 34683969779 and 34683887120 had landed at 08:43 and 08:41
+    that morning. Both carry a workflow run id, so both came from a
+    GitHub-hosted runner, which cannot reach 192.168.0.14 — they went through
+    the public URL.
+
+    `None` means the lake could not be read, or has never seen an Actions
+    upload. That is no evidence either way, and it keeps the stronger
+    wording: an unreadable lake is not permission to reassure anybody.
+    """
+    if (
+        hours_since_actions_upload is not None
+        and hours_since_actions_upload <= _ACTIONS_UPLOAD_GRACE_HOURS
+    ):
+        return [
+            "The URL is unreachable FROM HERE. Uploads are still arriving: a "
+            f"GitHub Actions scan run landed {hours_since_actions_upload:.1f}h "
+            "ago, and a GitHub runner cannot reach this LAN, so it went "
+            "through this URL. Suspect hairpin NAT rather than an outage — "
+            "and check from outside before acting.",
+        ]
+    lines = [
+        "Scan uploads from GitHub Actions and from Concourse both go through "
+        "the ingestion URL, so findings are being lost now.",
+    ]
+    if hours_since_actions_upload is not None:
+        lines.append(
+            f"No GitHub Actions upload for {hours_since_actions_upload:.1f}h, "
+            "which is consistent with that."
+        )
+    return lines
+
+
+def _hours_since_an_actions_upload(settings: object) -> float | None:
+    """Hours since a scan run arrived that could only have come from GitHub.
+
+    A run carrying `github_workflow_run_id` was uploaded by a GitHub-hosted
+    runner, and a GitHub runner cannot reach this LAN. So such a run is
+    positive evidence that the public ingestion URL was working when it
+    landed — which is exactly the claim `self-check` cannot make from inside
+    the network.
+
+    None when the lake cannot be read or has no such run. The caller treats
+    that as "no evidence either way" and keeps the stronger wording: an
+    unreadable lake is not permission to reassure anybody.
+    """
+    try:
+        from mykronos.lake.catalog import Catalog
+
+        catalog = Catalog(settings.datalake_dir)  # type: ignore[attr-defined]
+        rows = catalog.query(
+            """
+            SELECT max(started_at) FROM scan_runs
+            WHERE github_workflow_run_id IS NOT NULL
+              AND github_workflow_run_id <> ''
+            """
+        )
+    except Exception:  # noqa: BLE001 - self-check must not fail on its own diagnostics
+        return None
+    if not rows or rows[0][0] is None:
+        return None
+    from mykronos.schemas import utcnow
+
+    # `utcnow()` here is naive, and the lake hands back naive UTC too --
+    # but not always, so drop any tzinfo rather than adding one. Adding
+    # it raises "can't subtract offset-naive and offset-aware", which is
+    # what the first version of this did.
+    latest = rows[0][0].replace(tzinfo=None)
+
+    return float((utcnow() - latest).total_seconds()) / 3600
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     settings = get_settings()
@@ -662,11 +751,10 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(f"Not reachable: {', '.join(broken)}", file=sys.stderr)
             if "ingestion" in broken:
-                print(
-                    "Scan uploads from GitHub Actions and from Concourse both go "
-                    "through the ingestion URL, so findings are being lost now.",
-                    file=sys.stderr,
-                )
+                for line in ingestion_verdict(
+                    _hours_since_an_actions_upload(settings)
+                ):
+                    print(line, file=sys.stderr)
             return 1
 
         if args.command == "parity":
