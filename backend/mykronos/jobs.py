@@ -861,11 +861,67 @@ async def verify_merged_fixes(
     return resolve_pending(catalog, buffer, result=result)
 
 
+#: How recently a GitHub Actions upload must have landed for it to count as
+#: evidence that the public URL works. Six hours rather than one: the Actions
+#: lanes are push- and schedule-driven, so a quiet afternoon is normal and must
+#: not be read as an outage.
+ACTIONS_UPLOAD_GRACE_HOURS = 6.0
+
+
+def reachability_alert(detail: str, hours_since_actions_upload: float | None) -> str:
+    """The body of the critical notification, with the claim it can support.
+
+    The unqualified version said "findings are being lost now" -- the most
+    alarming sentence this platform sends, at `level="critical"`, asserted from
+    the one vantage point that cannot establish it.
+
+    A host inside this network reaches its own public hostname through hairpin
+    NAT, which does not work here. Measured 2026-09-12:
+    `mykronos.toddbenson.net/healthz` was unreachable from the backend container
+    AND from the host, while GitHub Actions runs 34683969779 and 34683887120 had
+    uploaded at 08:43 and 08:41 the same morning. Both carry a workflow run id,
+    so both came from a GitHub-hosted runner, which cannot reach 192.168.0.14 --
+    they went through the public URL.
+
+    A `critical` alert that is wrong is how a real outage stops being believed,
+    and this one fires on a schedule.
+
+    `None` is deliberately not reassuring: nothing corroborates either way, so
+    the stronger wording stands.
+    """
+    if (
+        hours_since_actions_upload is not None
+        and hours_since_actions_upload <= ACTIONS_UPLOAD_GRACE_HOURS
+    ):
+        return (
+            detail + "\n"
+            "This was checked from inside the network, where a public hostname "
+            "resolves through hairpin NAT. Uploads are still arriving: a GitHub "
+            f"Actions scan run landed {hours_since_actions_upload:.1f}h ago, and "
+            "a GitHub runner cannot reach this LAN, so it went through this URL. "
+            "Check from outside before treating this as an outage."
+        )
+    body = (
+        detail + "\n"
+        "Scan uploads from GitHub Actions and from Concourse both go through "
+        "this URL, so findings are being lost now. The dashboard may still look "
+        "healthy: the frontend reaches the backend over the Docker network, and "
+        "the container's own healthcheck runs inside it."
+    )
+    if hours_since_actions_upload is not None:
+        body += (
+            f"\nNo GitHub Actions upload for {hours_since_actions_upload:.1f}h, "
+            "which is consistent with that."
+        )
+    return body
+
+
 async def check_public_reachability(
     ingestion_api_url: str,
     *,
     notifier: Notifier | None = None,
     timeout: float = 20.0,
+    hours_since_actions_upload: float | None = None,
 ) -> ReachabilityResult:
     """Ask the internet whether this platform is answering (spec 32 §8).
 
@@ -903,21 +959,15 @@ async def check_public_reachability(
 
     logger.error("Public reachability FAILED: %s", scrub(result.detail))
     if notifier is not None:
-        # Critical, and it earns it: while this is false, every scan upload
-        # from every pipeline is failing and nothing else will say so. The
-        # dashboard keeps serving, which is what makes it dangerous.
+        # Critical, and it earns it WHEN nothing contradicts it: while this is
+        # genuinely false, every scan upload from every pipeline is failing and
+        # nothing else will say so. The dashboard keeps serving, which is what
+        # makes it dangerous. What it must not do is say that while uploads are
+        # visibly landing.
         await notifier.send(
             Notification(
                 title="Mykronos is not reachable from the internet",
-                detail=(
-                    result.detail
-                    + "\n"
-                    "Scan uploads from GitHub Actions and from Concourse both "
-                    "go through this URL, so findings are being lost now. The "
-                    "dashboard may still look healthy: the frontend reaches "
-                    "the backend over the Docker network, and the container's "
-                    "own healthcheck runs inside it."
-                ),
+                detail=reachability_alert(result.detail, hours_since_actions_upload),
                 repo_full_name="",
                 level="critical",
             )

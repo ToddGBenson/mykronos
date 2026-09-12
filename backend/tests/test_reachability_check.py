@@ -193,3 +193,90 @@ class TestUnreachable:
         result = await jobs.check_public_reachability("https://mykronos.example")
 
         assert not result.reachable
+
+
+class TestTheAlertCorroboratesBeforeClaimingLoss:
+    """"Findings are being lost now" is sent at level="critical", on a schedule.
+
+    It was asserted from the one vantage point that cannot establish it. A host
+    inside this network reaches its own public hostname through hairpin NAT,
+    which does not work here.
+
+    MEASURED 2026-09-12. `mykronos.toddbenson.net/healthz` was unreachable from
+    the backend container AND from the host, while GitHub Actions runs
+    34683969779 and 34683887120 had uploaded at 08:43 and 08:41 that morning.
+    Both carry a `github_workflow_run_id`, so both came from a GitHub-hosted
+    runner — which cannot reach 192.168.0.14, so they went through the public
+    URL. It was working for the callers that matter.
+
+    The check is still right that the URL cannot be reached from here. It was
+    the consequence that needed evidence, and a critical alert that is wrong is
+    how a real outage stops being believed.
+    """
+
+    def test_a_recent_upload_replaces_the_loss_claim(self) -> None:
+        body = jobs.reachability_alert("gone away", 4.9)
+
+        assert "hairpin NAT" in body
+        assert "Check from outside" in body
+        assert "being lost now" not in body
+
+    def test_a_stale_estate_keeps_the_stronger_wording(self) -> None:
+        body = jobs.reachability_alert("gone away", 30.0)
+
+        assert "findings are being lost now" in body
+        assert "No GitHub Actions upload for 30.0h" in body, (
+            "the corroborating fact belongs in the alert, not just the alarm"
+        )
+
+    def test_no_evidence_is_not_reassurance(self) -> None:
+        """`None` means nothing corroborates either way.
+
+        An unreadable lake means this job knows less than it did, which is not
+        the same as nothing being wrong — so the alarm stands, with nothing
+        appended, because there is no corroborating fact to offer.
+        """
+        body = jobs.reachability_alert("gone away", None)
+
+        assert "findings are being lost now" in body
+        assert "No GitHub Actions upload" not in body
+
+    def test_the_boundary_is_inclusive(self) -> None:
+        """The grace period decides between two opposite sentences, so it must
+        not flip on a rounding error at its own edge."""
+        assert "hairpin" in jobs.reachability_alert("x", jobs.ACTIONS_UPLOAD_GRACE_HOURS)
+        assert "being lost" in jobs.reachability_alert(
+            "x", jobs.ACTIONS_UPLOAD_GRACE_HOURS + 0.1
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_notification_carries_the_corroborated_body(
+        self, client_factory
+    ) -> None:
+        """End to end: the wording has to reach Slack, not just exist."""
+        client_factory(503)
+        notifier = Recorder()
+
+        await jobs.check_public_reachability(
+            "https://mykronos.example",
+            notifier=notifier,
+            hours_since_actions_upload=4.9,
+        )
+
+        [sent] = notifier.sent
+        assert sent.level == "critical", "an unreachable URL is still worth waking for"
+        assert "hairpin NAT" in sent.detail
+        assert "being lost now" not in sent.detail
+
+    @pytest.mark.asyncio
+    async def test_the_default_is_unchanged(self, client_factory) -> None:
+        """Every existing caller passes nothing and must be unaffected."""
+        client_factory(503)
+        notifier = Recorder()
+
+        await jobs.check_public_reachability(
+            "https://mykronos.example", notifier=notifier
+        )
+
+        [sent] = notifier.sent
+        assert "findings are being lost now" in sent.detail
