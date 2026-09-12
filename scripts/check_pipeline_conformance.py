@@ -107,10 +107,6 @@ KNOWN_GAPS: dict[str, str] = {
         "repository has one branch, and exactly the assumption B-045 cost "
         "sixteen days of scanning"
     ),
-    "personal-soc.yml PS-8": (
-        "five downloads with no checksum. PS-8's point is that a fetched binary "
-        "is code, and this pipeline fetches five"
-    ),
     "personal-soc.yml jobs": (
         "every one of its thirteen jobs is in no group, so Concourse hides the "
         "whole pipeline from its own UI"

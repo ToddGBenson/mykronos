@@ -341,6 +341,10 @@ jobs:
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+                # PS-8. The version was already pinned; a pin says which bytes
+                # were intended, a checksum says these are them.
+                echo "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb  /tmp/gitleaks.tar.gz" \
+                  | sha256sum -c -
                 tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
 
                 cd source
@@ -1239,6 +1243,11 @@ jobs:
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
+          # Pinned and verified where it is fetched (PS-8). dl.min.io now
+          # returns 410 Gone -- MinIO archived the open-source client -- so
+          # the release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
           MINIO_ACCESS_KEY: ((minio-access-key))
           MINIO_SECRET_KEY: ((minio-secret-key))
           RELEASE_BUCKET: ((skills-release-bucket))
@@ -1254,7 +1263,13 @@ jobs:
               - |
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- PS-8, a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
                 SCHEME=${MINIO_ENDPOINT%%://*}
                 HOSTPORT=${MINIO_ENDPOINT#*://}
@@ -1500,6 +1515,11 @@ jobs:
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
+          # Pinned and verified where it is fetched (PS-8). dl.min.io now
+          # returns 410 Gone -- MinIO archived the open-source client -- so
+          # the release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
           MINIO_ACCESS_KEY: ((minio-access-key))
           MINIO_SECRET_KEY: ((minio-secret-key))
           BUCKET: ((netassess-bucket))
@@ -1513,7 +1533,13 @@ jobs:
               - |
                 set -uo pipefail
                 apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- PS-8, a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
 
                 # MC_HOST_ rather than `mc alias set`, which writes the
@@ -1692,6 +1718,11 @@ jobs:
         image: pwsh
         params:
           MINIO_ENDPOINT: ((minio-endpoint))
+          # Pinned and verified where it is fetched (PS-8). dl.min.io now
+          # returns 410 Gone -- MinIO archived the open-source client -- so
+          # the release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
           MINIO_ACCESS_KEY: ((minio-access-key))
           MINIO_SECRET_KEY: ((minio-secret-key))
           BUCKET: ((netassess-bucket))
@@ -1705,7 +1736,13 @@ jobs:
               - |
                 set -uo pipefail
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- PS-8, a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
                 SCHEME=${MINIO_ENDPOINT%%://*}
                 HOSTPORT=${MINIO_ENDPOINT#*://}
@@ -1788,6 +1825,11 @@ jobs:
           HIBP_API_KEY: ((hibp-api-key))
           MONITOR_EMAILS: ((monitor-emails))
           MINIO_ENDPOINT: ((minio-endpoint))
+          # Pinned and verified where it is fetched (PS-8). dl.min.io now
+          # returns 410 Gone -- MinIO archived the open-source client -- so
+          # the release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
           MINIO_ACCESS_KEY: ((minio-access-key))
           MINIO_SECRET_KEY: ((minio-secret-key))
           BUCKET: ((monitor-bucket))
@@ -1802,7 +1844,13 @@ jobs:
               - |
                 set -uo pipefail
                 apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- PS-8, a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
                 SCHEME=${MINIO_ENDPOINT%%://*}
                 HOSTPORT=${MINIO_ENDPOINT#*://}
