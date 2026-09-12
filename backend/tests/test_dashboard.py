@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -2038,6 +2039,97 @@ class TestCapabilitiesThatReportElsewhere:
             "as having never reported"
         )
         assert states["aegis"]["last_scan_at"] is not None
+
+    def test_a_scheduled_score_does_not_make_a_dark_repository_look_fresh(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        auth,
+        run_compaction,
+        buffer,
+    ) -> None:
+        """The repository-level freshness rolls up SCANS, not every report.
+
+        These three capabilities are injected into the per-capability states
+        on purpose, so that "enabled and silent" does not false-alarm on a
+        capability that never writes a ScanRun. Rolling them into the
+        repository's `last_scan_at` as well is a different claim, and a
+        false one: `oracle` re-scores every onboarded repository on a
+        schedule whether or not a scanner has run, so the maximum is pinned
+        to the present for ever and `is_stale` can never become true.
+
+        Found on 2026-09-12. `personal-soc` had not been scanned by anything
+        since 2026-09-06 — six days dark, on an estate with a seven-day
+        threshold — and the portfolio reported it fresh, because Oracle had
+        scored it that afternoon.
+        """
+        onboard(client, admin_auth, scanned_by="concourse")
+        went_dark = utcnow() - timedelta(days=30)
+        post_scan(client, auth, started_at=went_dark.isoformat())
+        buffer.append(
+            "risk_decisions",
+            [
+                {
+                    "decision_id": "d1",
+                    "repo_full_name": REPO,
+                    "decision_type": "portfolio",
+                    "overall_risk_score": 12,
+                    "recommendation": "go",
+                    "evaluated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+        states = {s["capability"]: s for s in row["capability_states"]}
+
+        assert states["oracle"]["has_scanned"] is True, (
+            "oracle still reports through its own table — the per-capability "
+            "state is not what this test narrows"
+        )
+        assert row["last_scan_at"].startswith(went_dark.date().isoformat()), (
+            "repository freshness is the newest SCAN, not the newest report "
+            f"of any kind (got {row['last_scan_at']})"
+        )
+        assert row["is_stale"] is True, (
+            "a repository last scanned 30 days ago is stale however recently "
+            "Oracle scored it"
+        )
+
+    def test_a_repository_only_oracle_has_touched_is_awaiting_its_first_scan(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        run_compaction,
+        buffer,
+    ) -> None:
+        """The other half of the same rollup.
+
+        `awaiting_first_scan` is `last_scan_at is None`, so a score counted as
+        a scan also moves a never-scanned repository out of the one state that
+        says nobody has looked at it yet.
+        """
+        onboard(client, admin_auth, scanned_by="concourse")
+        buffer.append(
+            "risk_decisions",
+            [
+                {
+                    "decision_id": "d1",
+                    "repo_full_name": REPO,
+                    "decision_type": "portfolio",
+                    "overall_risk_score": 12,
+                    "recommendation": "go",
+                    "evaluated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        row = client.get("/api/dashboard/portfolio", headers=admin_auth).json()["repos"][0]
+
+        assert row["last_scan_at"] is None
+        assert row["awaiting_first_scan"] is True
 
     def test_a_capability_with_nothing_recorded_is_still_silent(
         self, client: TestClient, admin_auth: dict[str, str], auth
