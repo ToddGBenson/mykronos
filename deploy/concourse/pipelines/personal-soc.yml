@@ -95,6 +95,51 @@ resources:
       secret_access_key: ((minio-secret-key))
 
 anchors:
+  # -- PS-12: retry the fetch, never the verdict ---------------------------
+  #
+  # `attempts:` re-runs a step on ANY non-success, from inside the step and
+  # beneath the errored/failed routing the hooks below use -- so to it, a
+  # scanner exiting 1 on a real finding and a scanner dying on DNS are the
+  # same event. Applied to a verdict it launders a red gate green by
+  # repetition.
+  #
+  # So it goes only where non-success is necessarily an ERROR and can never be
+  # a FAILURE: `get:` steps, which have no exit code and render no verdict,
+  # and the `notify-slack` hook, which ends `exit 0` unconditionally. Every
+  # other task here can fail, and none of them carries this.
+  #
+  # That is the same surface the three transients of 2026-09-10 struck -- a
+  # sealed Vault resolving a key for a `get:`, an iptables lock lost creating
+  # a check container, a DNS timeout checking a resource image. None was a
+  # scanner.
+  #
+  # No backoff exists to ask for; Concourse re-runs immediately. This absorbs
+  # a lost lock or a resolver blip and nothing longer. Anything that outlasts
+  # it stays red, and the `on_error:` hooks carry it to a human.
+  #
+  # docs/pipeline-standard.md PS-12.
+  retry_fetch: &retry_fetch 3
+
+  # The same rule, a smaller number, and the reason is PS-7. Concourse applies
+  # `timeout:` per attempt, not per step, so a retried hook doubles the longest
+  # it can hold this estate's single worker -- TheHub's notifier goes from a
+  # five-minute ceiling to a ten-minute one. Worth it, narrowly: the thing
+  # being protected is the alert about an errored lane, and a lost alert is the
+  # exact silence PS-12 exists to close. Not worth a third attempt.
+  retry_hook: &retry_hook 2
+
+  # The notifier's credentials, hoisted into their own anchor for the same
+  # reason `hub_params` exists: the `on_error:` path now passes an extra param
+  # (OUTCOME below), and a step-level `params:` that named only that would be
+  # relying on Concourse merging it onto the ones in the task config. If it
+  # replaced them instead, the token would be unset, the notifier's
+  # "unset is not an error" guard would exit 0, and every errored lane would
+  # go quiet -- silently, which is the failure mode this whole change is
+  # about. Restating them at the call site removes the question.
+  slack_params: &slack_params
+    SLACK_BOT_TOKEN: ((slack-bot-token))
+    SLACK_CHANNEL: ((slack-alert-channel))
+
   # -- Failure notification -------------------------------------------------
   #
   # Neither value is supplied by set-personal-soc-pipeline.ps1. Both resolve
@@ -119,6 +164,12 @@ anchors:
   # list cannot reach a channel that is not the private build log.
   slack_alert: &slack_alert
     task: notify-slack
+    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
+    # reach a non-success is by never having run at all -- a resolver blip
+    # pulling its image, a lost container lock. There is no verdict here to
+    # launder, and a lost alert about an errored lane is exactly the silence
+    # PS-12 exists to close.
+    attempts: *retry_hook
     config:
       platform: linux
       image_resource:
@@ -127,9 +178,7 @@ anchors:
       inputs:
         - name: notify
           optional: true
-      params:
-        SLACK_BOT_TOKEN: ((slack-bot-token))
-        SLACK_CHANNEL: ((slack-alert-channel))
+      params: *slack_params
       run:
         path: sh
         args:
@@ -145,10 +194,28 @@ anchors:
 
             BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
 
-            if [ -s notify/message.txt ]; then
+            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
+            # else sets it, so the failure path keeps the wording it had.
+            #
+            # This is the errored/failed line reaching the one surface a human
+            # actually reads, and the two need different words because they
+            # need opposite actions. An errored lane did not run, and
+            # re-triggering it is the correct response. A failed lane ran and
+            # answered, and re-triggering that is how a red gate gets
+            # laundered green by repetition. Told only "job X failed", nobody
+            # can tell which they are looking at -- and for three days in
+            # September nobody did.
+            #
+            # `notify/message.txt` is deliberately not read on the errored
+            # path. A job writes it to explain a verdict; a job that errored
+            # never reached one, so whatever is on disk is a half-finished
+            # thought from a run that died.
+            if [ "${OUTCOME:-failed}" = "errored" ]; then
+              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` ERRORED (build $BUILD_NAME) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
+            elif [ -s notify/message.txt ]; then
               TEXT=$(head -1 notify/message.txt)
             else
-              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME) - it ran and the answer was bad. Re-triggering does not clear this."
             fi
 
             ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
@@ -204,11 +271,15 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: pwsh
+        attempts: *retry_fetch
       - task: no-personal-data
         # PS-7. 10m from 6 observed run(s): median 101s, slowest 146s.
         timeout: 10m
@@ -314,12 +385,16 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard]
       - get: python
+        attempts: *retry_fetch
       - task: gitleaks
         # PS-7. 10m from 6 observed run(s): median 78s, slowest 169s.
         timeout: 10m
@@ -464,12 +539,16 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard]
       - get: python
+        attempts: *retry_fetch
       - task: checkov
         image: python
         # PS-7, and this pipeline is the only one in the estate whose tasks
@@ -580,12 +659,16 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [secrets, iac]
       - get: python
+        attempts: *retry_fetch
       - task: evaluate
         timeout: 10m
         image: python
@@ -687,12 +770,16 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard]
       - get: pwsh
+        attempts: *retry_fetch
       - task: psscriptanalyzer
         # PS-7. 10m from 5 observed run(s): median 35s, slowest 48s.
         timeout: 10m
@@ -778,12 +865,16 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard]
       - get: pwsh
+        attempts: *retry_fetch
       - task: run-tests
         # PS-7. 10m from 5 observed run(s): median 69s, slowest 86s.
         timeout: 10m
@@ -994,12 +1085,16 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard]
       - get: python
+        attempts: *retry_fetch
       - task: check-skills
         # PS-7. 10m from 6 observed run(s): median 36s, slowest 56s.
         timeout: 10m
@@ -1221,16 +1316,20 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       # Every gate, not just guard. This job puts a bundle on the host and the
       # Scheduled Tasks then run it unattended at 03:00 on a Sunday, which is
       # the worst moment to discover that a SKILL.md points at a reference that
       # is not there. A gate that delivery does not wait for is advice.
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [guard, secrets, lint, functional, skill-integrity]
       - get: pwsh
+        attempts: *retry_fetch
       - task: bundle-and-publish
         # PS-7. 30m from 5 observed run(s): median 212s, slowest 504s.
         # 30m rather than 10m: this one polls for the host's install acknowledgement,
@@ -1334,11 +1433,15 @@ jobs:
   - name: doc-drift
     public: true
     serial_groups: [worker]
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: pwsh
+        attempts: *retry_fetch
       - task: find-doc-drift
         # PS-7. 10m from 5 observed run(s): median 57s, slowest 136s.
         timeout: 10m
@@ -1415,12 +1518,17 @@ jobs:
   - name: external-exposure
     public: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: weekly
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: pwsh
+        attempts: *retry_fetch
       - task: shodan-internetdb
         # PS-7. 15m from 4 observed run(s): median 95s, slowest 207s.
         timeout: 15m
@@ -1487,12 +1595,17 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: netassess-run
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: pwsh
+        attempts: *retry_fetch
       - task: verify-and-diff
         # PS-7. 15m from 1 observed run(s): median 33s, slowest 33s.
         # One sample only, so the headroom is deliberately wide.
@@ -1681,11 +1794,15 @@ jobs:
   - name: netassess-freshness
     public: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: weekly
+        attempts: *retry_fetch
         trigger: true
       - get: pwsh
+        attempts: *retry_fetch
       - task: check-age
         # PS-7. 15m from 4 observed run(s): median 95s, slowest 228s.
         timeout: 15m
@@ -1772,12 +1889,17 @@ jobs:
   - name: breach-check
     public: false
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: weekly
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: pwsh
+        attempts: *retry_fetch
       - task: hibp
         # PS-7.
         # No observed durations: `breach-check` is paused, so this is the estate's
