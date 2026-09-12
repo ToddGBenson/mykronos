@@ -45,8 +45,9 @@ already shipped.
 
 ## Open
 
-Seven, from five sweeps: 2026-09-03 (first and second), 2026-09-04,
-2026-09-05, and one finding from verifying that day's own work. Every entry here was reproduced against the live system before it
+Eight, from six sweeps: 2026-09-03 (first and second), 2026-09-04,
+2026-09-05, one finding from verifying that day's own work, and B-067 from
+building the fix for the 2026-09-09 gate block. Every entry here was reproduced against the live system before it
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
@@ -195,6 +196,62 @@ the consequence of a blocked release, not to this file.
 (D-108). It was deferred on 2026-09-01 with the capability left enabled and
 inert, which the entry itself called the one indefensible state; that hold
 lasted four days and is in Closed.
+
+### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal
+
+**Size:** M **State:** open **Verified:** 2026-09-10
+
+`compute_finding_id` hashes the enclosing `symbol` alongside the snippet
+(spec 05 §5), and `adapters/snippet.infer_symbol` produces it by scanning
+*backwards* from the finding's line for the first thing that looks like a
+declaration, with no bound. So the symbol — and with it the identity — depends
+on what happens to sit above the finding.
+
+Reproduced against this codebase on 2026-09-10 with a module-level finding:
+
+    before          after inserting one function above it
+    line  6         line  9        (the flagged line is byte-identical)
+    symbol Config   symbol helper
+    id a63fdf9d…    id 42788567…
+
+`slice_snippet` is the same defect one layer down: when no tool supplies a
+snippet it takes the finding's line plus `CONTEXT_LINES = 2` either side from
+disk, so an edit within two lines of a finding changes the hashed text.
+
+And the heuristic can read a "declaration" out of a string literal. Three of
+TheHub's `avoid-sqlalchemy-text` findings in `lifecycle.py` carry
+`symbol = 'stories'`, which is a JSON key inside the SQL they flag, not the
+enclosing function — the real one is `_deploy_run_sha_for_story`.
+
+**Why this is separate from the 2026-09-10 carry-forward change.**
+`lake/carry_forward.py` (spec 05 §5b, D-122) already carries a decision across
+these, because it matches on content rather than on symbol — that is what
+makes this a defect in the *quality* of the identity rather than a live loss
+of operator decisions. Fixing `infer_symbol` changes the symbol of every code
+finding and therefore re-keys all of them: 2,105 `v2-snippet` rows as measured
+on 2026-09-10, 172 of them dispositioned. Spec 05 §5 is explicit that changing
+the fingerprint rule requires a new `fingerprint_version` and a migration, and
+doing that in the same change as the mechanism that would cover it means
+shipping the migration and its safety net together, untested against each
+other.
+
+**Acceptance criteria**
+
+- `infer_symbol` returns the enclosing declaration, bounded by indentation for
+  indentation-structured languages, and never a match inside a string literal.
+- A snippet sliced from disk is the matched lines, not the matched lines plus
+  neighbours — or the context is excluded from the hash while staying
+  available for display.
+- The change lands as `v3-*` with a migration that re-derives every existing
+  `v2-snippet` id from the retained `code_snippet`, carrying `first_seen_at`
+  and every disposition across, and reports any row it could not re-derive.
+- The `lifecycle.py` findings carry `_deploy_run_sha_for_story` rather than
+  `stories`.
+
+**Provenance:** found while building the fix for the 2026-09-09 gate block
+(TheHub dev_stories #59068). Not the cause of that incident — the cause was
+an edit inside the matched snippet — but the same class, and the one that
+makes "inserting code above a finding" literally true.
 
 ### B-035 — The notifier is configured and addressed to nobody
 

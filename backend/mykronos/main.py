@@ -52,7 +52,13 @@ from mykronos.jobs import (
     verify_merged_fixes,
 )
 from mykronos.knowledge import KnowledgeStore, default_store_dir
-from mykronos.lake import Catalog, WriteAheadBuffer, compact, reconcile_absences
+from mykronos.lake import (
+    Catalog,
+    WriteAheadBuffer,
+    carry_forward,
+    compact,
+    reconcile_absences,
+)
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -297,6 +303,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # block ingestion for the duration.
             await asyncio.to_thread(reconcile_absences, app.state.catalog)
 
+        async def _carry_forward() -> None:
+            # In a thread, for the same reason as absences. Runs before it in
+            # the list below rather than after, though the two are independent
+            # timers: a finding withdrawn as `superseded` here is one the
+            # absence reconciler will not later close as `fixed`, and `fixed`
+            # is the number this platform is most careful about.
+            result = await asyncio.to_thread(carry_forward, app.state.catalog)
+            if result.carried or result.stranded:
+                logger.info("Carry-forward: %s", result.summary())
+
         async def _portfolio() -> None:
             await score_portfolio(
                 app.state.db,
@@ -388,6 +404,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
             ("installations", settings.installation_sync_interval_seconds, _installations),
+            ("carry-forward", settings.carry_forward_interval_seconds, _carry_forward),
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),

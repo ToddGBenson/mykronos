@@ -335,6 +335,66 @@ Normative:
   needs to be at least as inspectable as the one that opens them: which scan
   run, which adapter, how many records, and what replaced them.
 
+## 5b. Carrying a finding forward when its content changes
+
+§5 excludes `line_start` from identity so a finding survives unrelated edits
+above it. That holds. It leaves an edge the same paragraph creates: identity
+**is** the matched snippet, so when the matched code itself is edited the hash
+changes, the old row is orphaned, and the same defect arrives as a new finding
+with a new `first_seen_at` and without any disposition somebody had recorded
+against it.
+
+**Observed 2026-09-09.** TheHub's Oracle gate blocked with "Introduced by
+bd9e3c6b: 0 critical, 3 high". Two were new code. The third was a `text()`
+call in `backend/services/devops/lifecycle.py` dismissed as a false positive
+four days earlier; an unrelated change added two lines *inside* its SQL
+string, and the call returned as a new open high. The gate named a line the
+commit had not written, and an operator decision was discarded in silence.
+
+**The fix is not a coarser hash.** Hashing less — the first line of the match,
+the enclosing symbol alone — trades this failure for a worse one: two distinct
+findings in the same function collapse into one row and the platform stops
+reporting a real defect. Under-reporting is the direction spec 04 §6 refuses.
+Identity therefore stays exact, and the link between two identities becomes an
+explicit recorded fact.
+
+`carry_forward` runs on a timer beside absence reconciliation. For each
+finding whose own lane — `(repo, capability, branch, tool)`, the same four
+columns §5's absence rule uses — has scanned again without reporting it, it
+looks for a finding that lane *did* report, under the same `rule_id`, in the
+same `file_path`, whose snippet is substantially the one that went missing.
+
+Normative:
+
+- **Scope is code findings only.** A dependency finding is keyed on the
+  package and a network finding on address and port, so neither identity
+  contains a snippet that an edit can move.
+- **Similarity is Jaccard over normalized snippet lines**, and it is not a
+  second fingerprint — it decides only whether a *decision* travels, never
+  what a finding is. Measured against the `lifecycle.py` case: the edited
+  successor scored 0.75, the two genuinely new calls beside it 0.35 and 0.26.
+- **A floor and a margin, both.** The best match must clear the floor and beat
+  the runner-up by the margin, and must be the best match for both sides. A
+  call copied into two places is refused rather than handed to whichever copy
+  sorted first.
+- **A refusal is reported, not swallowed.** Where something did appear under
+  the same rule in the same file and no match was taken, the decision is named
+  with the reason, because a decision nobody can carry is one somebody has to
+  make again.
+- **Absence is not a refusal.** A dismissed finding whose rule stopped firing
+  in that file at all is simply gone; reporting it here would produce a
+  large number about an estate holding a small one.
+- **The predecessor becomes `superseded`, not `fixed`** (§5a), naming its
+  replacement in `superseded_by`. Exactly one row ends up holding the
+  disposition, so a dismissal is never counted twice in the dampening
+  denominator (spec 11 §4).
+- **`first_seen_at` and `first_seen_scan_run_id` travel with it**, which is
+  what stops a gate attributing a moved line to the commit that moved it.
+  An `open` predecessor carries those and nothing else: nobody decided
+  anything about it, so there is no decision to copy.
+- **Findings stored before snippets were captured (`v1-line`) cannot be
+  matched** and are reported as such rather than guessed at.
+
 ## 6. Rate limiting & backpressure
 
 - Ingestion API enforces a per-token rate limit (default: 100 requests/min,

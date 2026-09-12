@@ -68,7 +68,7 @@ Hashing the line meant any edit above a finding retired it and re-reported the
 identical issue as new, destroying `first_seen_at` and every metric built on
 it: age, mean time to fix, Oracle's age term, every trend line.
 
-Three further collapses sit on top:
+Four further collapses sit on top:
 
 - **Occurrence grouping** (`_group_findings`) — the same rule firing many times
   in a repository is one row with a count, not many rows.
@@ -76,6 +76,17 @@ Three further collapses sit on top:
   become one decision, with `toxic_combination_id`. Five so far.
 - **Supersession** — a corrected adapter retires the old record and names the
   replacement in `superseded_by`.
+- **Carrying forward** (`lake/carry_forward.py`, spec 05 §5b) — the edge the
+  first bullet creates. Identity *is* the matched code, so editing the matched
+  code changes it, and on 2026-09-09 two lines added inside a `text()` call's
+  SQL string brought a four-day-old dismissal back as a new open high that
+  blocked TheHub's gate. Rather than hash less — which would fold two distinct
+  findings in one function into one row, and stop reporting a real defect —
+  the link is made explicit: the withdrawn row becomes `superseded` naming its
+  replacement, and the replacement inherits when the finding was first seen and
+  whatever a person had decided about it. Where two candidates are too close to
+  separate, nothing is carried and the decision is named for somebody to make
+  again (D-122).
 
 **Measured:** 2,070 finding records; 457 superseded.
 
@@ -303,7 +314,7 @@ docker exec mykronos-backend mykronos query \
 
 | Stage | Specs | Code |
 |---|---|---|
-| Deduplicate | 05 §5, D-001 | `fingerprint.py`, `dashboard._group_findings`, `patchwork/correlate.py` |
+| Deduplicate | 05 §5 §5b, D-001, D-122 | `fingerprint.py`, `lake/carry_forward.py`, `dashboard._group_findings`, `patchwork/correlate.py` |
 | False positive | 10 §2.2, 11 §4 §6.1 | `api/dashboard.py` disposition, `knowledge/dampening.py`, `patchwork/triage.py`, `patchwork/rejection.py` |
 | Triage | 19, 24, 27 | `dashboard.py` ranking, `worklist.py`, `ownership.py` |
 | Remediate | 08, 25, 31 | `patchwork/pipeline.py`, `patchwork/verification.py`, `regression.py` |
