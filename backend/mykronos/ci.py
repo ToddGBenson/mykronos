@@ -216,6 +216,18 @@ class Reporting:
     capability: str
     built_at: datetime | None
     scanned_at: datetime | None
+    paused: bool = False
+    """Somebody switched this lane off, and Concourse still lists it.
+
+    A paused job reports its last build for ever, so the state derived from
+    that build says `failed` — which reads as "fix this" when the truth is
+    "decide whether you still want this control". On 2026-09-12 four security
+    lanes were paused: TheHub's `cloud-posture` and `functional-dast`,
+    personal-soc's `breach-check`, and mykronos's `demo-and-dast`. All four
+    were paused between 2026-08-13 and 2026-08-16, each after a run of
+    failures, and nothing anywhere recorded that they had been switched off
+    rather than left broken.
+    """
     last_build_failed: bool = False
     """The lane ran and its last build did not succeed.
 
@@ -227,6 +239,13 @@ class Reporting:
 
     @property
     def state(self) -> str:
+        # Before `last_build_failed`, and deliberately: a paused job's last
+        # build is usually the failure that prompted somebody to pause it, so
+        # reporting `failed` would keep telling a reader to repair a lane that
+        # is off on purpose. "Paused" is the more actionable fact and it
+        # already implies the failure underneath.
+        if self.paused:
+            return "paused"
         # Before the built_at check, because a failed build leaves built_at
         # unset - that is the whole reason a failing lane used to read as one
         # that had never run.
@@ -249,6 +268,8 @@ class JobStatus:
     build_name: str | None
     build_url: str | None
     finished_at: datetime | None
+    #: Concourse reports this on every job and it was being dropped here.
+    paused: bool = False
 
     @property
     def ok(self) -> bool:
@@ -420,6 +441,7 @@ class ConcourseClient:
                 build_name=None,
                 build_url=None,
                 finished_at=None,
+                paused=bool(raw.get("paused")),
             )
 
         build_name = str(build.get("name", ""))
@@ -433,6 +455,7 @@ class ConcourseClient:
             finished_at=datetime.fromtimestamp(int(end), tz=UTC)
             if isinstance(end, int | float) and end
             else None,
+            paused=bool(raw.get("paused")),
         )
 
 
@@ -1021,6 +1044,7 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
                     built_at=job.finished_at if job.status == "succeeded" else None,
                     scanned_at=last_scan_at.get(capability),
                     last_build_failed=job.status in _DID_NOT_SUCCEED,
+                    paused=job.paused,
                 )
             )
     return out
