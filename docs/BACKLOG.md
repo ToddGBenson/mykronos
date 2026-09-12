@@ -92,7 +92,9 @@ B-063, `--no-resolve` assessing the declared floor; and B-056, no branch
 dimension on a lane, which is why B-045 was forced rather than chosen.
 
 **Three are live defects rather than reporting gaps.** B-064 — TheHub's most
-sensitive table encrypted with unauthenticated CBC. B-054 — the registry the
+sensitive table encrypted with unauthenticated CBC (**fixed 2026-09-11 as
+TheHub #59310; it was an S, not an M — the table held zero rows, so the
+migration half it was sized on did not exist**). B-054 — the registry the
 deploy path pulls from taking anonymous writes from any host on the LAN, which
 no scanner in this platform could have found; the rule that closes it is
 written and needs one elevated run. B-050 — eight live TheHub findings, read by
@@ -932,7 +934,30 @@ answer because it only knows the ones it was told about.
 
 ### B-054 — The image registry the deploy path pulls from takes anonymous writes
 
-**Size:** S **State:** open **Verified:** 2026-09-03
+**Size:** S **State:** closed — executed, verified 2026-09-11 **Verified:** 2026-09-03
+
+**EXECUTED AND VERIFIED 2026-09-11.** D-109's firewall rule is in place and
+enabled. Three inbound Block rules exist on port 5000 — `Block registry 5000
+from the LAN (B-054)` (twice, an exact duplicate) and `Mykronos registry 5000 -
+deny the LAN` — covering `192.168.0.0/24`. The build path still has its route:
+every Docker bridge on this host sits in 172.17–172.24, inside the
+`172.16.0.0/12` scope D-109 relies on, and the Concourse worker is on
+172.19.0.0/16 specifically.
+
+One caveat on the evidence, because it nearly produced a wrong answer: an
+anonymous `curl http://192.168.0.14:5000/v2/_catalog` still returns the
+repository list, and that is NOT a failure of the rule. The request originated
+**on the host**, which an inbound rule does not filter. A LAN host is the only
+test that means anything here, and re-verifying this from the host alone would
+read as still-open forever.
+
+The duplicate rule is untidy rather than harmful — it suggests the rule was
+applied more than once. Worth removing one, not worth a story.
+
+Still true and deliberately not done: `REGISTRY_AUTH=htpasswd` from Vault
+remains the defence-in-depth version D-109 names as the right follow-up if this
+host ever moves networks. Scope is a property of where the machine is;
+authentication is not.
 
 `mykronos-registry` (`registry:2`) listens on **0.0.0.0:5000**, plain HTTP, with
 **no `auth:` block in its configuration at all**. Read it back from the running
@@ -1230,7 +1255,26 @@ enforced" including the ones that were on.
 
 ### B-064 — TheHub encrypts its most sensitive table with unauthenticated CBC
 
-**Size:** M **State:** open **Verified:** 2026-09-05
+**Size:** ~~M~~ **S** **State:** fixed in TheHub **Verified:** 2026-09-05,
+re-verified 2026-09-11
+
+> **THE MIGRATION HALF DOES NOT EXIST — re-measured 2026-09-11.**
+> `SELECT count(*) FROM intimacy_logs` → **0**. Zero rows, no oldest, no
+> newest. The sizing argument below ("every stored row has to be read under CBC
+> and rewritten… getting it wrong destroys data that by definition cannot be
+> regenerated") describes work that has no subject. There is no migration, no
+> dual-read transition to get right, and no irreplaceable data to destroy.
+> `grep -rl "modes.CBC" backend/ --include=*.py` returns one file. One file,
+> one table, zero rows — **size S, not M**. Do not re-scope this as an M on the
+> strength of the paragraph below; it was written before anyone counted.
+>
+> Fixed in TheHub as story **#59310**: new writes are Fernet behind a
+> `fernet1:` version prefix, the read path still accepts legacy CBC rows, and
+> `intimacy_service.count_unmigrated_logs` MEASURES how many remain (surfaced
+> on `GET /api/intimacy/status` as `unmigrated_legacy_rows`) rather than
+> assuming the zero holds. The backfill AC below is **not met and is not
+> applicable** — there is nothing to backfill; `token_crypto.backfill_plaintext`
+> remains the shape to copy if a legacy row ever appears.
 
 `backend/services/intimacy_service.py` encrypts with AES-256-CBC and no
 authentication:
