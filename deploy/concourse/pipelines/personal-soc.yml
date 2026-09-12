@@ -34,6 +34,37 @@
 # `fly set-pipeline --load-vars-from`, written and deleted by
 # set-personal-soc-pipeline.ps1.
 
+# Concourse hides a pipeline whose jobs belong to no group: the UI renders the
+# group tabs and nothing under them. All thirteen jobs here were ungrouped, so
+# personal-soc has been an empty page since it was written, and
+# `check_pipeline_conformance.py` has been recording exactly that.
+#
+# That is not cosmetic. `breach-check` was paused after its first build failed
+# on 2026-08-14 and nobody noticed for a month -- the weekly HIBP check against
+# the operator's own addresses, off, on a page that shows nothing.
+#
+# Grouped the way thehub and mykronos are, by what a person is looking for
+# rather than by what runs together.
+groups:
+  # Does the repository still hold together: its own guard, its analysers,
+  # its tests and its documentation.
+  - name: quality
+    jobs: [guard, lint, functional, skill-integrity, doc-drift]
+
+  # Scanning that reports to Mykronos, plus the one gate.
+  - name: security
+    jobs: [secrets, iac, oracle]
+
+  # The world outside this repository. These run on a clock rather than on a
+  # commit, which is why they are worth their own tab: after an outage or a
+  # holiday, this is the list you check.
+  - name: exposure
+    jobs: [external-exposure, netassess-ingest, netassess-freshness, breach-check]
+
+  # Publishing.
+  - name: release
+    jobs: [package]
+
 resource_types:
   - name: registry-image
     type: registry-image
