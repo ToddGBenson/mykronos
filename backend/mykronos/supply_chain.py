@@ -106,6 +106,13 @@ def _fixed_version(raw_json: str | None) -> str:
         raw = json.loads(raw_json)
     except (ValueError, TypeError):
         return ""
+    # Adapter-resolved value first: osv-scanner states its remediation in the
+    # rule, not the message, so a regex over the message answers "no fix" for
+    # every atlas finding regardless of the truth (mykronos#256).
+    explicit = str(raw.get("fixed_version") or "").strip()
+    if explicit:
+        return explicit
+
     text = str((raw.get("message") or {}).get("text", ""))
     match = _FIXED.search(text)
     if not match:
