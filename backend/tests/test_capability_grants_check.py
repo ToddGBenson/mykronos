@@ -89,3 +89,53 @@ def test_the_real_pipelines_declare_a_repo_and_upload_something() -> None:
         for repo, capabilities in sent.items():
             assert "/" in repo, f"{relative}: {repo!r} is not owner/name"
             assert capabilities, f"{relative}: {repo} uploads nothing, which cannot be right"
+
+
+def test_a_repository_it_cannot_read_is_named_not_omitted() -> None:
+    """Three of five, signed off as if it were five.
+
+    keel's pipeline is defined in its own repository and binnacle is scanned
+    by GitHub Actions, so neither definition is readable from here — and
+    Concourse's `/config` endpoint needs authentication, unlike its job and
+    build endpoints, so it is no help either. Both hold ingestion tokens and
+    both were simply absent from the output.
+
+    The whole business of this script is the difference between "checked and
+    clean" and "not checked". It should not make that mistake about itself.
+    """
+    sent = {"ToddGBenson/mykronos": {"sast"}}
+    allowed = {
+        "ToddGBenson/mykronos": {"sast"},
+        "ToddGBenson/keel": {"sast", "secrets"},
+        "ToddGBenson/binnacle": {"sast"},
+    }
+
+    assert checker.unexamined(sent, allowed) == [
+        "ToddGBenson/binnacle",
+        "ToddGBenson/keel",
+    ]
+
+
+def test_nothing_unread_is_an_empty_list_not_a_note() -> None:
+    """No blind spot means no paragraph about blind spots."""
+    pair = {"ToddGBenson/mykronos": {"sast"}}
+
+    assert checker.unexamined(pair, pair) == []
+
+
+def test_the_all_clear_carries_the_size_of_the_claim() -> None:
+    sent = {"a": {"sast"}, "b": {"sast"}, "c": {"sast"}}
+    allowed = dict(sent, d={"sast"}, e={"sast"})
+
+    sentence = checker.scope_sentence(sent, allowed)
+
+    assert "3 of 5 repositories" in sentence, (
+        "an unqualified all-clear reads as estate-wide when it is not"
+    )
+
+
+def test_full_coverage_still_reads_as_full_coverage() -> None:
+    """The guard that this did not turn a complete pass into a hedge."""
+    pair = {"a": {"sast"}, "b": {"sast"}}
+
+    assert "2 of 2 repositories" in checker.scope_sentence(pair, pair)
