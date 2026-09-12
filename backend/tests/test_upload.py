@@ -16,13 +16,15 @@ from typing import Any
 import pytest
 
 from mykronos.adapters.base import AdapterResult
-from mykronos.schemas import FindingSubmission, ScanStatus, Severity
+from mykronos.schemas import FindingSubmission, ScanStatus, Severity, TriggeredBy
 from mykronos.upload import (
     MAX_ATTEMPTS,
     IngestionClient,
     UploadError,
     UploadOutcome,
+    build_parser,
     count_blocking,
+    resolve_triggered_by,
     upload,
     write_step_summary,
 )
@@ -639,3 +641,100 @@ class TestALaneThatCouldNotReport:
 
         assert "/api/ingest/lane-failure" not in client.paths()
 
+
+class TestWhatStartedTheScan:
+    """`triggered_by` was `push` whenever nobody said otherwise.
+
+    That is a specific claim, not an absence. `actions/upload-results` derives
+    the flag from `github.event_name`, so every GitHub Actions lane is already
+    right; the Concourse pipelines never pass it. TheHub's `dast-staging` and
+    `cloud-posture` run off a `daily` time resource, personal-soc has three
+    `weekly` jobs, and every run any of them has recorded says `push`. So does
+    every `fly trigger-job`.
+
+    On 2026-09-12 that cost an hour. The twenty open TheHub DAST findings read
+    `triggered_by: push`, `dast-staging` triggers only on `daily`, and the
+    obvious conclusion was that three cycles of header work had been aimed at
+    the wrong deployment. They had not been — the reported paths settled it,
+    `/robots.txt` answering 200 on staging against 404 on demo and 401 on prod
+    — but the field that exists to answer that question answered it wrongly,
+    and answered it confidently.
+    """
+
+    def test_an_explicit_flag_is_believed(self) -> None:
+        """Unchanged for every caller that already passes one."""
+        assert resolve_triggered_by("schedule") is TriggeredBy.SCHEDULE
+        assert resolve_triggered_by("push") is TriggeredBy.PUSH
+
+    def test_the_environment_is_read_when_the_caller_is_silent(self) -> None:
+        """For a caller that invokes this module directly.
+
+        `actions/upload-results` already passes the flag, so this is not what
+        rescues the Actions lanes — they were never wrong. It is here so that
+        anything reaching the uploader without the composite action still gets
+        the right answer rather than an invented one.
+        """
+        assert (
+            resolve_triggered_by(None, {"GITHUB_EVENT_NAME": "schedule"})
+            is TriggeredBy.SCHEDULE
+        )
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            ("push", TriggeredBy.PUSH),
+            ("pull_request", TriggeredBy.PULL_REQUEST),
+            ("pull_request_target", TriggeredBy.PULL_REQUEST),
+            ("workflow_dispatch", TriggeredBy.WORKFLOW_DISPATCH),
+        ],
+    )
+    def test_every_mapped_event_survives_the_round_trip(
+        self, event: str, expected: TriggeredBy
+    ) -> None:
+        assert resolve_triggered_by(None, {"GITHUB_EVENT_NAME": event}) is expected
+
+    def test_an_unmapped_event_falls_back_rather_than_guessing(self) -> None:
+        """`release` is a real Actions event this platform has no opinion on.
+
+        Inventing a value for it would swap one confident wrong answer for
+        another; the fallback is the previous behaviour, unchanged.
+        """
+        assert (
+            resolve_triggered_by(None, {"GITHUB_EVENT_NAME": "release"})
+            is TriggeredBy.PUSH
+        )
+
+    def test_no_caller_and_no_environment_is_push_and_says_so_out_loud(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Concourse sets no such variable, so it lands here.
+
+        The value does not change — nothing existing moves — but the
+        assumption stops being invisible. A pipeline author reading their own
+        build log is the only person positioned to fix this, and the warning
+        is what tells them there is something to fix.
+        """
+        with caplog.at_level("WARNING", logger="mykronos.upload"):
+            assert resolve_triggered_by(None, {}) is TriggeredBy.PUSH
+
+        assert "--triggered-by schedule" in caplog.text, (
+            "the warning has to name the flag that fixes it, not just report "
+            "that a default was taken"
+        )
+
+    def test_omitting_the_flag_is_distinguishable_from_passing_push(self) -> None:
+        """The whole fix rests on the parser no longer defaulting the value.
+
+        With `default="push"` the two cases arrive identical and no later code
+        can tell them apart.
+        """
+        base = [
+            "--capability", "sast", "--tool", "codeql",
+            "--results-path", "r.sarif", "--ingestion-url", "https://mykronos.test",
+            "--token", "t", "--repo", REPO, "--commit-sha", "a91f2c7",
+            "--branch", "main",
+        ]
+        parser = build_parser()
+
+        assert parser.parse_args(base).triggered_by is None
+        assert parser.parse_args([*base, "--triggered-by", "push"]).triggered_by == "push"
