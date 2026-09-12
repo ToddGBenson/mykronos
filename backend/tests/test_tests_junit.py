@@ -168,3 +168,80 @@ class TestAHostileReportCannotExhaustMemory:
         result = normalize(report(tests=3), context())
 
         assert result.scan_status is ScanStatus.SUCCESS
+
+
+class TestTheFailureNamesItsSuite:
+    """Three jobs upload `--capability qa` on the mykronos pipeline.
+
+    `lint-and-types`, `qa-spec-links` and the coverage lane, deliberately:
+    a quality stage records a run and never a finding (D-046), so they cannot
+    overwrite one another the way two scanners on one capability would.
+
+    The cost is that "1 of 2 test(s) failed" is a sentence true of any of
+    them. On 2026-09-12 `main`'s lint gate was red for twelve hours, and
+    working out *which* of the three was red meant reading the pipeline YAML
+    and noticing that only `lint-and-types` emits a two-case suite. The name
+    was in the XML the entire time — `mykronos.junit_stage` writes it from
+    `--suite`, which the pipeline sets to the job name.
+    """
+
+    def test_a_single_failing_suite_is_named(self) -> None:
+        """The case that cost the twelve hours, verbatim from the pipeline."""
+        report = (
+            b'<testsuites><testsuite name="lint-and-types" tests="2" '
+            b'failures="1" errors="0" skipped="0"/></testsuites>'
+        )
+
+        result = normalize(report, context("qa"))
+
+        assert result.warnings[0].startswith("lint-and-types: "), result.warnings[0]
+        assert "1 of 2 test(s) failed" in result.warnings[0]
+
+    def test_only_the_suites_that_failed_are_named(self) -> None:
+        """Naming a green suite beside a red one sends the reader to the
+        wrong job, which is worse than naming nothing."""
+        report = (
+            b"<testsuites>"
+            b'<testsuite name="qa-spec-links" tests="60" failures="0" errors="0"/>'
+            b'<testsuite name="lint-and-types" tests="2" failures="1" errors="0"/>'
+            b"</testsuites>"
+        )
+
+        result = normalize(report, context("qa"))
+
+        assert "lint-and-types" in result.warnings[0]
+        assert "qa-spec-links" not in result.warnings[0]
+
+    def test_an_error_counts_as_failing_for_naming(self) -> None:
+        """`errors` and `failures` both fail the run, so both must name it."""
+        report = (
+            b'<testsuites><testsuite name="demo-and-dast" tests="4" '
+            b'failures="0" errors="2"/></testsuites>'
+        )
+
+        assert normalize(report, context("qa")).warnings[0].startswith("demo-and-dast: ")
+
+    def test_a_long_list_is_capped_rather_than_becoming_the_message(self) -> None:
+        """Past three the list stops identifying and starts obscuring."""
+        suites = b"".join(
+            f'<testsuite name="s{i}" tests="1" failures="1"/>'.encode() for i in range(5)
+        )
+        result = normalize(b"<testsuites>" + suites + b"</testsuites>", context("qa"))
+
+        assert result.warnings[0].startswith("s0, s1, s2 and 2 more: "), result.warnings[0]
+
+    def test_an_unnamed_suite_adds_no_prefix(self) -> None:
+        """A `testsuite` with no `name` is legal JUnit.
+
+        "unknown: 1 of 2 test(s) failed" is a worse sentence than the one
+        without a prefix, so the absence stays an absence.
+        """
+        report = b'<testsuites><testsuite tests="2" failures="1"/></testsuites>'
+
+        assert normalize(report, context("qa")).warnings[0].startswith("1 of 2")
+
+    def test_a_passing_run_is_not_decorated(self) -> None:
+        """Nobody investigates a green lane, so nothing needs identifying."""
+        result = normalize(report(tests=10, skipped=2), context("qa"))
+
+        assert result.warnings[0].startswith("8 test(s) passed")

@@ -50,6 +50,48 @@ def _ints(element: ElementTree.Element, *names: str) -> dict[str, int]:
     return out
 
 
+def _failing_suite_names(suites: list[ElementTree.Element]) -> list[str]:
+    """The names of the suites that actually contain a failure.
+
+    A report can hold several suites and the counts are summed, so the
+    message alone identifies nothing. On the mykronos pipeline three jobs
+    upload `--capability qa` — `lint-and-types`, `qa-spec-links` and the
+    coverage lane — because a quality stage records a run and never a finding
+    (D-046), so they cannot overwrite one another.
+
+    That is a good design with one cost: "1 of 2 test(s) failed" is true of
+    all three, and on 2026-09-12 working out which one was red took reading
+    the pipeline YAML and noticing that only `lint-and-types` produces a
+    two-case suite. The name was in the XML the whole time.
+
+    Order is preserved and duplicates dropped, so a report is described the
+    way it is written rather than in some sorted order the author would not
+    recognise.
+    """
+    named = [
+        (suite.get("name") or "").strip()
+        for suite in suites
+        if sum(_ints(suite, "failures", "errors").values())
+    ]
+    return list(dict.fromkeys(name for name in named if name))
+
+
+def _suite_label(names: list[str]) -> str:
+    """`"lint-and-types: "`, or `""` when the report does not say.
+
+    Capped at three, because past that the list stops being an identifier and
+    starts being the message. An unnamed suite contributes nothing rather
+    than a placeholder: `<testsuite>` with no `name` is legal JUnit, and
+    "unknown: " would be a worse sentence than no prefix at all.
+    """
+    if not names:
+        return ""
+    shown = names[:3]
+    rest = len(names) - len(shown)
+    joined = ", ".join(shown) + (f" and {rest} more" if rest else "")
+    return f"{joined}: "
+
+
 def _rate(element: ElementTree.Element, name: str) -> float | None:
     """A Cobertura rate attribute as 0..1, or `None` if it is absent."""
     value = element.get(name)
@@ -157,9 +199,10 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         return result
 
     if failed:
+        label = _suite_label(_failing_suite_names(suites))
         result.scan_status = ScanStatus.FAILURE
         result.warn(
-            f"{failed} of {totals['tests']} test(s) failed "
+            f"{label}{failed} of {totals['tests']} test(s) failed "
             f"({totals['failures']} failure(s), {totals['errors']} error(s))."
         )
     elif ran == 0:
