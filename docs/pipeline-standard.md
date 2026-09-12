@@ -263,6 +263,95 @@ literal, supplied through `--load-vars-from` and readable by anyone who can run
 credentials. It never prints a value: the applied config holds resolved secrets,
 and a drift report that leaked them would be the worse problem.
 
+### PS-12 — Retry the fetch, never the verdict
+
+D-123. `attempts:` may appear only on a step whose non-success is necessarily
+an **error** and can never be a **failure**. Two kinds of step qualify: every
+`get:`, and the `report-to-hub` and `notify-slack` hooks. Nothing else, ever.
+
+And every `get:` must carry it. The rule runs in both directions, because half
+of it is a security control and the other half is the reason the rule exists.
+
+**What it prevents, in both directions.**
+
+*Nothing retried.* On 2026-09-10 seven lanes across four pipelines were red and
+six of them went green on a re-trigger with no code change, after being red for
+between eight hours and three days: a Vault that had sealed itself, an iptables
+lock lost when ten keel jobs scheduled in the same second onto two workers, and
+a DNS timeout reaching Docker Hub. All three are ordinary infrastructure
+weather and all three cleared on their own. Nothing retried and nothing
+escalated, so weather became a permanently dark security lane, and the only
+reason any of it was found is that somebody read every job on every pipeline by
+hand. That is the failure this platform exists to catch — it says so in the
+README — happening to the platform's own pipelines.
+
+*Everything retried.* Concourse's `attempts:` re-runs a step on **any**
+non-success. It operates *inside* the step, *beneath* the build-level
+`errored`/`failed` routing that `on_error:` and `on_failure:` hooks are written
+against, and fires before either hook is reached. A semgrep exiting 1 on a real
+finding and a semgrep dying on DNS are the same event to it. Applied to
+scanners it would auto-retry `dast-staging`'s refusal to report an empty scan
+as clean, and `netassess-ingest`'s refusal to pass a check that reported
+`unknown` — laundering a red gate green by repetition, which is worse than the
+noise it removes. The two halves of the requirement are unsatisfiable with the
+built-in knob applied naively; they are only satisfiable together on a surface
+where the knob cannot see a verdict in the first place.
+
+**Why these two kinds of step and no others.**
+
+- A `get:` has no exit code. It fetches or it errors; it renders no judgement
+  about the commit, so a retry has nothing to launder.
+- `report-to-hub` and `notify-slack` end `exit 0` unconditionally, by
+  construction, so the only way either reaches a non-success is never having
+  run. `check_pipeline_conformance.py` asserts that last line rather than
+  trusting it: the exemption is worth exactly what `exit 0` is worth, and an
+  edit that gives either hook a non-zero path has to take the exemption with
+  it.
+
+That is also the surface all three observed causes actually struck. The sealed
+Vault died resolving a git private key for a `get:`; the iptables lock was lost
+in "find or create container" running a check; the DNS timeout was "checking
+origin concourse/registry-image-resource". Not one of them was a scanner. The
+retryable surface and the observed-transient surface are the same surface, and
+it is disjoint from the verdict surface.
+
+**`preflight` is deliberately excluded**, even though it is a hook and is
+listed in `HOOK_TASKS` for PS-7. It *can* fail: a rejected ingestion token is
+an answer, and PS-2 says a failure there is a real failure. So its retry lives
+inside its `curl` — `--retry 4 --retry-delay 5 --retry-connrefused`, which
+re-tries a connection refused, reset or timed out and a 5xx from the platform,
+and does not re-try the 401 that means the token is wrong. Same shape as the
+DAST guard's `curl --retry 5 --retry-delay 6 --retry-all-errors` reachability
+loop: re-try being unable to ask, never the answer. In-task classification is
+the idiomatic route in these pipelines and it predates this rule.
+
+**Inside the step, not around the build.** An outer retry — something
+re-triggering errored builds — would re-run the job-level hooks and post a
+second `dast_headers` report for the same commit, which is the path that
+reopened TheHub's abandoned deploy run 5772 on 2026-09-10 and would mint
+duplicate attempts on it. `attempts:` fires beneath the hooks, so a retried
+fetch still produces exactly one report per stage per build. That property is
+as much the reason for this shape as the errored/failed line is.
+
+**Three attempts on a fetch, two on a hook, and PS-7 is why.** Concourse
+applies `timeout:` per attempt rather than per step, so a retried hook doubles
+the longest it can hold the estate's single worker — TheHub's notifier goes
+from a five-minute ceiling to a ten-minute one. That is a real cost against
+PS-7 and it is paid deliberately, because what is being protected is the alert
+about an errored lane. It is not worth a third attempt. `get:` steps carry no
+timeout, so the same arithmetic does not apply to them.
+
+**What it does not buy, stated so nobody expects it to.** Concourse does not
+delay between attempts, so three of them absorb a lost lock or a resolver blip
+and nothing longer. A Vault that stays sealed for three days stays red, and
+correctly — the lane genuinely cannot run. A *task* that errors rather than
+fails (an OOM kill, a worker vanishing mid-scan) is also not retried, because
+`attempts:` on that task could not tell that from a finding. Both cases are
+handed to the `on_error:` hooks, which now say which of the two happened: an
+errored lane did not run and re-triggering it is the correct response, a failed
+lane ran and answered and re-triggering it is not. Told only "job X failed",
+nobody can tell those apart — and for three days in September nobody did.
+
 ---
 
 ## Conformance: the fifteen capabilities
@@ -317,8 +406,14 @@ Accepted, and recorded in the README's status table.
 | PS-8 | gitleaks + syft checksummed | gitleaks + syft checksummed |
 | PS-9 | Vault-first credentials; webhook → bot token | already partly conformant |
 | PS-10 | notifier repaired — it had never delivered | already repaired |
+| PS-12 | 44 fetches retried, 0 verdicts; notifier says *errored* or *failed* | 52 fetches retried, 0 verdicts; same, plus `report-to-hub` |
 | — | `remediate` waits on `iac` | `remediate` waits on `iac` |
 | — | `groups:` added | `groups:` added |
+
+PS-12 landed on `personal-soc.yml` too — 29 fetches, 13 notifier hooks — which
+the table has no column for and which matters here more than tidiness: it is
+the pipeline holding `netassess-ingest`, one of the two refusals the rule is
+written to protect.
 
 Plus, outside the pipelines: `mykronos.junit_stage` (new module),
 `check_pinned_ref.py` extended to assert the raw-fetched scripts exist at the
@@ -356,3 +451,36 @@ These are named rather than done, each with the reason.
    `oracle-gate`'s `passed:` list, so runtime findings never reach the decision
    — the ordering TheHub deliberately adopted (spec 16 §3). Moot while the lane
    is paused under D-053, and worth revisiting when it is unpaused.
+7. **PS-12 does not reach keel, and keel is where the stampede is.** keel's
+   `daily` resource is `interval: 24h` rather than a window, and `get: daily`
+   appears ten times, all ten with `trigger: true` — build, lint, test,
+   secrets, sca, iac, suppression-audit, platform-integrity, compliance-daily
+   and sast all schedule in the same instant onto two workers, which is what
+   produced the iptables contention PS-12 now retries around. The three
+   pipelines in this repository are structurally immune to the same thing:
+   `thehub` uses a `2:00–3:00 AM` window and puts every job in one
+   `serial_groups: [worker]`, `mykronos` and `personal-soc` use windows too.
+   But keel's pipeline is not maintained here — `docs/current-state/keel-pipeline.yml`
+   is a captured snapshot, not a source — so the fan-out fix belongs in keel's
+   own repository. Retrying a stampede is treating the symptom; the two changes
+   are complementary and only one of them can be made from here.
+8. **Nothing yet notices a lane that is still red tomorrow.** PS-12's
+   `on_error:` hooks now say *errored* rather than *failed*, and say what to do
+   about each — which is the difference between an alert and a notification.
+   It is still one message at the moment of failure, though. The lanes that
+   went dark on 2026-09-07 would have produced one Slack message each on the
+   seventh and then nothing for three days.
+
+   A standing signal does exist, and the honest first step is to find out why
+   it did not fire rather than to build a second one. `ci.py` already counts
+   `errored` among the statuses that did not succeed
+   (`_DID_NOT_SUCCEED`, `last_build_failed`), and the coverage cross-check
+   resolves each capability to `reporting` / `silent` / `never_reported` /
+   `failed` and leads the briefing with the ones that cannot close a finding.
+   That machinery covers what is onboarded and listed in `CAPABILITY_BY_JOB` —
+   which the five keel compliance and AI-assurance jobs that stayed red for
+   three days are not. So the question to answer before writing anything is
+   whether this was a detector that failed or a lane outside the detector's
+   scope, and the answer decides whether the fix is a backend change or a
+   grant. That is a story of its own; PS-12 does not close it and does not
+   claim to.
