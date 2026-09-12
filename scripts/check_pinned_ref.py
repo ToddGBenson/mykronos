@@ -121,7 +121,7 @@ def _missing_scripts(commit: str) -> list[str]:
     the thing people pause. A script that is genuinely missing 404s every time,
     so it is caught on the next build regardless.
     """
-    if not commit or commit in {"not installed", "local install", "unknown", "unreadable"}:
+    if not can_check_scripts(commit):
         print(f"Cannot resolve the pinned commit ({commit}); skipping the script check.")
         return []
 
@@ -144,6 +144,17 @@ def _missing_scripts(commit: str) -> list[str]:
         print(f"Could not reach raw.githubusercontent.com ({exc}); skipping the script check.")
         return []
     return problems
+
+
+#: Commits that are not commits. `_installed_commit` returns one of these when
+#: the package is absent, installed from a local path, or has no direct_url
+#: metadata to read — none of which is a SHA a raw URL can be built from.
+_UNRESOLVED = frozenset({"", "not installed", "local install", "unknown", "unreadable"})
+
+
+def can_check_scripts(commit: str) -> bool:
+    """Whether a raw-URL existence check is possible for this pin at all."""
+    return commit not in _UNRESOLVED
 
 
 def check(commit: str = "") -> list[str]:
@@ -181,10 +192,28 @@ def main(argv: list[str] | None = None) -> int:
 
     problems = check(commit)
     if not problems:
-        print(
-            f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
-            f"flags, and all {len(REQUIRED_SCRIPTS)} raw-fetched scripts."
-        )
+        # Only what was actually established. With an unresolvable commit the
+        # script half never runs, and the summary used to name those scripts
+        # as supported anyway -- a clean bill of health for a check that did
+        # not happen, in the one script whose entire purpose is catching a pin
+        # that has gone quietly stale. It has bitten twice (53 commits at
+        # D-051, 61 at D-074) and both times a person found it late.
+        #
+        # Still exit 0. Failing open is deliberate here and the docstring
+        # argues it well: an unresolvable pin on somebody's laptop is not a
+        # broken pipeline, and a check that goes red on a slow network is one
+        # people pause. Saying less is the fix, not saying no.
+        if can_check_scripts(commit):
+            print(
+                f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
+                f"flags, and all {len(REQUIRED_SCRIPTS)} raw-fetched scripts."
+            )
+        else:
+            print(
+                f"The pin supports all {len(REQUIRED_MODULES)} runner modules and "
+                f"their flags. The {len(REQUIRED_SCRIPTS)} raw-fetched scripts were "
+                "NOT checked - the pinned commit could not be resolved here."
+            )
         return 0
 
     print()

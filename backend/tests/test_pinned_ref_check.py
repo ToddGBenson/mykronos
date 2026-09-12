@@ -163,3 +163,59 @@ class TestTheRequirementsMatchWhatIsActuallyInvoked:
         }
 
         assert len(set(refs.values())) == 1, refs
+
+
+class TestItDoesNotClaimWhatItSkipped:
+    """The summary named scripts it had not looked at.
+
+    `_installed_commit()` returns `unknown` whenever the package has no
+    readable `direct_url.json` — which is every run on a checkout where
+    mykronos is not pip-installed from git. The script half then skips, says
+    so, and the final line reported:
+
+        The pin supports all 8 runner modules, their flags, and all 2
+        raw-fetched scripts.
+
+    A clean bill of health for a check that did not happen, in the one script
+    whose entire purpose is catching a pin that has gone quietly stale. That
+    has bitten twice — 53 commits at D-051, 61 at D-074 — and both times a
+    person found it late.
+
+    Exit 0 is unchanged and deliberate. Failing open is argued in the module
+    docstring and the argument holds: an unresolvable pin on somebody's laptop
+    is not a broken pipeline, and a check that goes red on a slow network is
+    one people pause. Saying less is the fix, not saying no.
+    """
+
+    @pytest.mark.parametrize(
+        "commit", ["", "unknown", "not installed", "local install", "unreadable"]
+    )
+    def test_an_unresolvable_commit_cannot_check_scripts(self, checker, commit) -> None:
+        assert checker.can_check_scripts(commit) is False
+
+    def test_a_real_commit_can(self, checker) -> None:
+        assert checker.can_check_scripts("9cae400d75a8") is True
+
+    def test_the_summary_says_the_scripts_were_not_checked(
+        self, checker, monkeypatch, capsys
+    ) -> None:
+        monkeypatch.setattr(checker, "_installed_commit", lambda: "unknown")
+        monkeypatch.setattr(checker, "check", lambda commit="": [])
+
+        assert checker.main([]) == 0
+
+        out = capsys.readouterr().out
+        assert "NOT checked" in out
+        assert "raw-fetched scripts." not in out, (
+            "the summary still asserts the scripts are supported"
+        )
+
+    def test_a_resolvable_pin_still_gets_the_full_claim(
+        self, checker, monkeypatch, capsys
+    ) -> None:
+        """The guard that this did not turn every pass into a hedge."""
+        monkeypatch.setattr(checker, "_installed_commit", lambda: "9cae400d75a8")
+        monkeypatch.setattr(checker, "check", lambda commit="": [])
+
+        assert checker.main([]) == 0
+        assert "raw-fetched scripts." in capsys.readouterr().out

@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -398,7 +399,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         commit_sha=args.commit_sha,
         branch=args.branch,
         workflow_run_id=args.workflow_run_id,
-        triggered_by=TriggeredBy(args.triggered_by),
+        triggered_by=resolve_triggered_by(args.triggered_by),
         pr_number=pr_number,
         workspace=workspace,
     )
@@ -443,7 +444,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
             "commit_sha": args.commit_sha,
             "branch": args.branch,
             "pr_number": pr_number,
-            "triggered_by": args.triggered_by,
+            "triggered_by": resolve_triggered_by(args.triggered_by).value,
             "github_workflow_run_id": args.workflow_run_id,
             "started_at": started_at.isoformat(),
         }
@@ -538,6 +539,72 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
     return outcome
 
 
+#: GitHub Actions event names that map onto `TriggeredBy`. The two
+#: vocabularies overlap almost exactly, so this is a lookup rather than a
+#: guess — an event not listed here is one this platform has no opinion about,
+#: and falls through to the same default as before.
+_GITHUB_EVENT_TRIGGERS: dict[str, TriggeredBy] = {
+    "push": TriggeredBy.PUSH,
+    "pull_request": TriggeredBy.PULL_REQUEST,
+    "pull_request_target": TriggeredBy.PULL_REQUEST,
+    "schedule": TriggeredBy.SCHEDULE,
+    "workflow_dispatch": TriggeredBy.WORKFLOW_DISPATCH,
+}
+
+
+def resolve_triggered_by(
+    supplied: str | None, env: Mapping[str, str] | None = None
+) -> TriggeredBy:
+    """What actually started this scan, and a warning when nobody knows.
+
+    `--triggered-by` defaulted to `push`. That is a specific claim, not an
+    absence, and it is wrong every time a lane runs on a clock without passing
+    the flag. `actions/upload-results` does pass it, derived from
+    `github.event_name`, so every GitHub Actions lane is already correct. The
+    Concourse pipelines do not: TheHub's `dast-staging` and `cloud-posture` are
+    driven by a `daily` time resource, personal-soc has three `weekly` jobs,
+    and every run any of them has recorded says `push`. So does every
+    `fly trigger-job`.
+
+    That is not cosmetic. `TriggeredBy` exists to separate a scan reacting to a
+    change from one running on the clock, and the briefing reasons about lane
+    cadence — "silent for 5 days (usually every 12 hours)" — on exactly that
+    distinction. A daily lane filed under `push` has its expected cadence read
+    off the wrong curve.
+
+    Three cases, in order:
+
+    * the caller said so — believe them, unchanged for every existing caller;
+    * the caller did not, but the environment did — `GITHUB_EVENT_NAME`, for a
+      caller that invokes this module directly rather than through the action;
+    * nobody said — `push`, exactly as before, **and a warning**, because the
+      whole defect is that this assumption was invisible. A pipeline author
+      reading their own build log is the only person positioned to fix it, and
+      this is the line that tells them there is something to fix.
+
+    Concourse lands in the third case: it sets no such variable, so a
+    clock-driven job there must pass `--triggered-by schedule` itself. This
+    function cannot know, and inventing a value would swap one confident wrong
+    answer for another.
+    """
+    if supplied is not None:
+        return TriggeredBy(supplied)
+    source = os.environ if env is None else env
+    event = (source.get("GITHUB_EVENT_NAME") or "").strip()
+    inferred = _GITHUB_EVENT_TRIGGERS.get(event)
+    if inferred is not None:
+        return inferred
+    logger.warning(
+        "No --triggered-by given and no recognised CI event in the "
+        "environment%s; recording this run as '%s'. If this lane runs on a "
+        "clock, pass --triggered-by schedule — a scheduled lane filed under "
+        "'push' has its expected cadence read off the wrong curve.",
+        f" (GITHUB_EVENT_NAME={event!r})" if event else "",
+        TriggeredBy.PUSH.value,
+    )
+    return TriggeredBy.PUSH
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mykronos-upload",
@@ -553,7 +620,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--workflow-run-id", default="")
-    parser.add_argument("--triggered-by", default="push", choices=[t.value for t in TriggeredBy])
+    # No default. `None` means the caller did not say, which
+    # `resolve_triggered_by` answers from the environment — distinct from a
+    # caller that explicitly said "push".
+    parser.add_argument("--triggered-by", default=None, choices=[t.value for t in TriggeredBy])
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--scan-run-id", default="")

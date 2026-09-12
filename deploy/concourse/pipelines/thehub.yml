@@ -186,6 +186,86 @@ resources:
       stop: "3:00 AM"
 
 anchors:
+  # -- PS-12: retry the fetch, never the verdict ---------------------------
+  #
+  # Seven lanes across four pipelines were red on 2026-09-10, and six of them
+  # went green on a re-trigger with no code change after being red for between
+  # eight hours and three days. A sealed Vault, an iptables lock lost to a
+  # scheduling stampede, and a DNS timeout to Docker Hub: ordinary
+  # infrastructure weather that had become permanently dark security lanes,
+  # found only because somebody read every job on every pipeline by hand.
+  # That is the failure this platform exists to catch, happening to the
+  # platform's own pipelines.
+  #
+  # The obvious fix is a regression. Concourse's `attempts:` re-runs a step on
+  # ANY non-success. It sits INSIDE the step, beneath the build-level
+  # errored/failed routing that the `on_error:` and `on_failure:` hooks below
+  # are written against, and it fires before either hook is reached. To
+  # `attempts:`, a semgrep exiting 1 on a real finding and a semgrep dying on
+  # DNS are the same event. Sprinkled over the scanners it would auto-retry
+  # `dast-staging`'s refusal to report an empty scan as clean, and
+  # personal-soc's refusal to pass an `unknown` check -- laundering a red gate
+  # green by repetition, which is worse than the noise it removes.
+  #
+  # So the rule is structural rather than a judgement call:
+  #
+  #     `attempts:` may appear ONLY on a step whose non-success is
+  #     necessarily an ERROR and can never be a FAILURE.
+  #
+  # Exactly two kinds of step have that property here:
+  #
+  #   * `get:` -- a fetch either succeeds or errors. It has no exit code and
+  #     renders no verdict, so a retry has nothing to launder.
+  #   * `report-to-hub` and `notify-slack` -- both end `exit 0`
+  #     unconditionally by construction, so the only way either reaches a
+  #     non-success is by never having run.
+  #
+  # Every other task in this file can `fail`, and none of them carries this.
+  #
+  # That is also the surface all three observed causes actually struck. The
+  # sealed Vault died resolving a git private key for a `get:`; the iptables
+  # lock was lost in "find or create container" running a check; the DNS
+  # timeout was "checking origin concourse/registry-image-resource". Not one
+  # was a scanner. The retryable surface and the observed-transient surface
+  # are the same surface, and it is disjoint from the verdict surface -- which
+  # is what lets one change satisfy both halves of the story rather than
+  # trading one against the other.
+  #
+  # Deliberately inside the step rather than around the build. An outer retry
+  # -- something re-triggering errored builds -- would re-run the job-level
+  # hooks and post a SECOND `dast_headers` report for the same commit, which
+  # is the path that reopened TheHub's abandoned deploy run 5772 on
+  # 2026-09-10. `attempts:` fires beneath the hooks, so a retried fetch still
+  # produces exactly one report per stage per build.
+  #
+  # Three, and no backoff exists to ask for: Concourse re-runs immediately.
+  # This absorbs a lost lock or a resolver blip and nothing longer. A Vault
+  # that stays sealed stays red -- correctly -- and the `on_error:` hooks are
+  # what has to carry that to a human.
+  #
+  # docs/pipeline-standard.md PS-12.
+  retry_fetch: &retry_fetch 3
+
+  # The same rule, a smaller number, and the reason is PS-7. Concourse applies
+  # `timeout:` per attempt, not per step, so a retried hook doubles the longest
+  # it can hold this estate's single worker -- TheHub's notifier goes from a
+  # five-minute ceiling to a ten-minute one. Worth it, narrowly: the thing
+  # being protected is the alert about an errored lane, and a lost alert is the
+  # exact silence PS-12 exists to close. Not worth a third attempt.
+  retry_hook: &retry_hook 2
+
+  # The notifier's credentials, hoisted into their own anchor for the same
+  # reason `hub_params` exists: the `on_error:` path now passes an extra param
+  # (OUTCOME below), and a step-level `params:` that named only that would be
+  # relying on Concourse merging it onto the ones in the task config. If it
+  # replaced them instead, the token would be unset, the notifier's
+  # "unset is not an error" guard would exit 0, and every errored lane would
+  # go quiet -- silently, which is the failure mode this whole change is
+  # about. Restating them at the call site removes the question.
+  slack_params: &slack_params
+    SLACK_BOT_TOKEN: ((slack-bot-token))
+    SLACK_CHANNEL: ((slack-alert-channel))
+
   # Reporting credentials. Deliberately does *not* include the deploy keys or
   # the Azure principal: spec 15 section 6 asks for deploy credentials scoped
   # to the deploy job, and an anchor every job pulls in is the opposite of
@@ -232,7 +312,16 @@ anchors:
         args:
           - -ec
           - |
-            curl --fail --silent --show-error --max-time 20 \
+            # PS-12, in-task rather than as `attempts:`. This probe CAN fail
+            # -- a rejected token is an answer, and PS-2 says a failure here is
+            # a real failure -- so it must not be wrapped in a step-level
+            # retry that cannot tell the two apart. curl can: `--retry`
+            # re-tries a connection that was refused, reset or timed out and a
+            # 5xx from the platform, and does NOT re-try the 401 that means
+            # this token is wrong. The same shape as the DAST guard's
+            # reachability loop: re-try being unable to ask, never the answer.
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+              --retry 4 --retry-delay 5 --retry-connrefused \
               -H "Authorization: Bearer $MYKRONOS_TOKEN" \
               "$MYKRONOS_URL/api/ingest/health" > /dev/null
             echo "Mykronos is reachable and this token is accepted."
@@ -279,6 +368,12 @@ anchors:
 
   hub_report: &hub_report
     task: report-to-hub
+    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
+    # reach a non-success is by never having run at all -- a resolver blip
+    # pulling its image, a lost container lock. There is no verdict here to
+    # launder, and a lost alert about an errored lane is exactly the silence
+    # PS-12 exists to close.
+    attempts: *retry_hook
     # PS-7. A hook that hangs holds the single worker exactly as a scan does,
     # and this one is one curl. Five minutes is a ceiling, not a budget.
     timeout: 5m
@@ -342,6 +437,12 @@ anchors:
   # notification per event instead of a specific one racing a generic one.
   slack_alert: &slack_alert
     task: notify-slack
+    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
+    # reach a non-success is by never having run at all -- a resolver blip
+    # pulling its image, a lost container lock. There is no verdict here to
+    # launder, and a lost alert about an errored lane is exactly the silence
+    # PS-12 exists to close.
+    attempts: *retry_hook
     # PS-7. A notifier that hangs turns one failed job into a held worker,
     # inside the hook that exists to report the first failure.
     timeout: 5m
@@ -353,9 +454,7 @@ anchors:
       inputs:
         - name: notify
           optional: true
-      params:
-        SLACK_BOT_TOKEN: ((slack-bot-token))
-        SLACK_CHANNEL: ((slack-alert-channel))
+      params: *slack_params
       run:
         path: sh
         args:
@@ -380,10 +479,28 @@ anchors:
 
             BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
 
-            if [ -s notify/message.txt ]; then
+            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
+            # else sets it, so the failure path keeps the wording it had.
+            #
+            # This is the errored/failed line reaching the one surface a human
+            # actually reads, and the two need different words because they
+            # need opposite actions. An errored lane did not run, and
+            # re-triggering it is the correct response. A failed lane ran and
+            # answered, and re-triggering that is how a red gate gets
+            # laundered green by repetition. Told only "job X failed", nobody
+            # can tell which they are looking at -- and for three days in
+            # September nobody did.
+            #
+            # `notify/message.txt` is deliberately not read on the errored
+            # path. A job writes it to explain a verdict; a job that errored
+            # never reached one, so whatever is on disk is a half-finished
+            # thought from a run that died.
+            if [ "${OUTCOME:-failed}" = "errored" ]; then
+              TEXT="*TheHub*: job \`$BUILD_JOB_NAME\` ERRORED (build $BUILD_NAME) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
+            elif [ -s notify/message.txt ]; then
               TEXT=$(head -1 notify/message.txt)
             else
-              TEXT="*TheHub*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+              TEXT="*TheHub*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME) - it ran and the answer was bad. Re-triggering does not clear this."
             fi
 
             # Escaped with sed because this image has no jq. Single-line
@@ -448,7 +565,8 @@ jobs:
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -457,8 +575,10 @@ jobs:
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: pytest
         image: python
@@ -1080,7 +1200,8 @@ jobs:
           params: { <<: *hub_params, STAGE: junit, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: junit, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1089,9 +1210,11 @@ jobs:
           params: { <<: *hub_params, STAGE: junit, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: check-links
         timeout: 45m
@@ -1144,7 +1267,8 @@ jobs:
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1153,10 +1277,13 @@ jobs:
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - get: kaniko
+        attempts: *retry_fetch
 
       # kaniko's image is busybox with no git, so the SHA is computed here and
       # handed over as a file.
@@ -1231,7 +1358,8 @@ jobs:
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1240,6 +1368,7 @@ jobs:
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # PS-4: behind the quality gate, like every other scanning lane in
         # this pipeline and like the whole of the mykronos one. These five
@@ -1249,6 +1378,7 @@ jobs:
         # in scanning a commit that does not pass its own tests."
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: gitleaks
         timeout: 55m
@@ -1320,7 +1450,8 @@ jobs:
           params: { <<: *hub_params, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1329,6 +1460,7 @@ jobs:
           params: { <<: *hub_params, STAGE: semgrep, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # PS-4: behind the quality gate, like every other scanning lane in
         # this pipeline and like the whole of the mykronos one. These five
@@ -1338,6 +1470,7 @@ jobs:
         # in scanning a commit that does not pass its own tests."
         passed: [unit]
       - get: python313
+        attempts: *retry_fetch
       - *preflight
       - task: semgrep
         timeout: 45m
@@ -1420,7 +1553,8 @@ jobs:
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1429,6 +1563,7 @@ jobs:
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # PS-4: behind the quality gate, like every other scanning lane in
         # this pipeline and like the whole of the mykronos one. These five
@@ -1438,6 +1573,7 @@ jobs:
         # in scanning a commit that does not pass its own tests."
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: osv-scanner
         timeout: 45m
@@ -1708,7 +1844,8 @@ jobs:
           params: { <<: *hub_params, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1717,10 +1854,13 @@ jobs:
           params: { <<: *hub_params, STAGE: trivy, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [build]
       - get: python
+        attempts: *retry_fetch
       - get: trivy
+        attempts: *retry_fetch
 
       - *preflight
       # The SHA is resolved in a task that has git, and handed over as a file.
@@ -1865,7 +2005,8 @@ jobs:
           params: { <<: *hub_params, STAGE: insider_risk, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: insider_risk, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1874,9 +2015,11 @@ jobs:
           params: { <<: *hub_params, STAGE: insider_risk, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [oracle-gate, api-inventory, dast-demo]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: aegis
         timeout: 15m
@@ -2055,7 +2198,8 @@ jobs:
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -2064,6 +2208,7 @@ jobs:
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # DAST is temporarily out of the mandatory chain (D-053): the active
         # scan saturates the single worker host - ZAP alone was measured at
@@ -2074,6 +2219,7 @@ jobs:
         # when the scan has a resource budget it can live within.
         passed: [deploy-demo]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: evaluate
         timeout: 10m
@@ -2202,7 +2348,8 @@ jobs:
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -2211,9 +2358,11 @@ jobs:
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
+        attempts: *retry_fetch
       - task: request-deploy
         timeout: 45m
         image: python
@@ -2344,7 +2493,8 @@ jobs:
           params: { <<: *hub_params, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -2353,6 +2503,7 @@ jobs:
           params: { <<: *hub_params, STAGE: checkov, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # PS-4: behind the quality gate, like every other scanning lane in
         # this pipeline and like the whole of the mykronos one. These five
@@ -2362,7 +2513,9 @@ jobs:
         # in scanning a commit that does not pass its own tests."
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - get: checkov
+        attempts: *retry_fetch
       - *preflight
       - task: scan-iac
         timeout: 20m
@@ -2459,7 +2612,8 @@ jobs:
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -2468,6 +2622,7 @@ jobs:
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # PS-4: behind the quality gate, like every other scanning lane in
         # this pipeline and like the whole of the mykronos one. These five
@@ -2477,6 +2632,7 @@ jobs:
         # in scanning a commit that does not pass its own tests."
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: run-evals
         timeout: 90m
@@ -2612,7 +2768,8 @@ jobs:
           params: { <<: *hub_params, STAGE: api_inventory, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: api_inventory, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -2621,9 +2778,11 @@ jobs:
           params: { <<: *hub_params, STAGE: api_inventory, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [deploy-demo]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: check-inventory
         timeout: 20m
@@ -2715,7 +2874,8 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -2724,10 +2884,13 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [deploy-demo]
       - get: python
+        attempts: *retry_fetch
       - get: zap
+        attempts: *retry_fetch
       - *preflight
       # Scan and upload in ONE task, which is not the obvious shape but is the
       # only one that works here. Concourse creates output volumes owned by
@@ -2875,7 +3038,8 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -2884,10 +3048,13 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [deploy-prod]
       - get: python
+        attempts: *retry_fetch
       - get: zap
+        attempts: *retry_fetch
       - *preflight
       # Scan and upload in ONE task, which is not the obvious shape but is the
       # only one that works here. Concourse creates output volumes owned by
@@ -3061,7 +3228,8 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: staging }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: staging }
     on_abort:
@@ -3070,10 +3238,14 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: staging }
     plan:
       - get: daily
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: python
+        attempts: *retry_fetch
       - get: zap
+        attempts: *retry_fetch
       - *preflight
       # One task, for the same reason dast-demo uses one: Concourse creates
       # output volumes root-owned and this image runs as the unprivileged `zap`
@@ -3189,7 +3361,8 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: functional, STATUS: errored, TARGET_ENV: demo }
         - <<: *hub_report
@@ -3202,10 +3375,13 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [deploy-demo]
       - get: python
+        attempts: *retry_fetch
       - get: playwright
+        attempts: *retry_fetch
       - *preflight
       - task: functional-and-scan
         image: playwright
@@ -3572,7 +3748,8 @@ jobs:
           params: { <<: *hub_params, STAGE: finish, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: finish, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -3581,8 +3758,10 @@ jobs:
           params: { <<: *hub_params, STAGE: finish, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         passed: [insider]
       - get: python
+        attempts: *retry_fetch
       - task: request-deploy
         timeout: 30m
         image: python
@@ -3674,7 +3853,8 @@ jobs:
           params: { <<: *hub_params, STAGE: prowler, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: prowler, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -3683,10 +3863,14 @@ jobs:
           params: { <<: *hub_params, STAGE: prowler, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: daily
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: python
+        attempts: *retry_fetch
       - get: prowler
+        attempts: *retry_fetch
 
       - *preflight
       - task: prowler-azure
@@ -3817,7 +4001,8 @@ jobs:
           params: { <<: *hub_params, STAGE: auto_remediation, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: auto_remediation, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -3826,6 +4011,7 @@ jobs:
           params: { <<: *hub_params, STAGE: auto_remediation, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # `iac` added: Patchwork's source capabilities are sast, secrets,
         # containers **and iac** (`patchwork/pipeline.py`,
@@ -3835,6 +4021,7 @@ jobs:
         # against this one.
         passed: [secrets, sast, dependencies, iac, containers]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: patchwork
         timeout: 20m
@@ -3940,7 +4127,8 @@ jobs:
           params: { <<: *hub_params, STAGE: model_inventory, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - *slack_alert
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: model_inventory, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -3949,9 +4137,11 @@ jobs:
           params: { <<: *hub_params, STAGE: model_inventory, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: model-inventory
         timeout: 15m

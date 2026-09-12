@@ -24,8 +24,8 @@ the fields null — exactly where they were before.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
