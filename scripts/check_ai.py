@@ -226,6 +226,32 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
+
+    # A check that examined nothing has not passed; it has lost track of what
+    # it was pointed at. personal-soc's PSScriptAnalyzer task says exactly
+    # that and exits 1 when it finds no .ps1 files. This one printed "No
+    # model references found - nothing to check." and exited 0 — the same
+    # sentence, and the same exit code, as a repository that genuinely calls
+    # no model.
+    #
+    # Those two states were indistinguishable, and the difference mattered:
+    # TheHub's `ai-models` job has reported 0 findings on every one of its 74
+    # builds, while this same checker — at the same pinned commit, run the
+    # same way — finds seven in a clean clone of the branch that job scans.
+    # Whatever puts the checker in front of an empty tree, it should say so
+    # rather than pass.
+    #
+    # `any()` rather than a count: it stops at the first file, so this costs
+    # one directory entry on a repository that has any source at all.
+    if not any(_files(root)):
+        print(
+            f"ERROR: no source files under {root}. A check that examined "
+            "nothing has not passed - it has lost track of what it was "
+            "pointed at.",
+            file=sys.stderr,
+        )
+        return 2
+
     findings, uses_a_model = check(root)
 
     if args.sarif:

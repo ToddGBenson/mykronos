@@ -161,3 +161,64 @@ class TestSarif:
             "ai-model-unpinned",
             "ai-no-evaluation-suite",
         }
+
+
+class TestARootWithNothingInIt:
+    """"Nothing to check" and "nothing was there" printed the same sentence.
+
+    `main` used to print `No model references found - nothing to check.` and
+    exit 0 for both a repository that calls no model — a result — and a path
+    with no source in it — the absence of an input.
+
+    TheHub's `ai-models` job has reported 0 findings on all 74 of its builds.
+    The same checker, at the same pinned commit (`7e23c9b1`, byte-identical to
+    `main`), run the same way (`check_ai.py source`) against a clean clone of
+    the branch that job scans, finds **seven**. The build log shows the
+    checker printing the "nothing to check" line while `check.py` — same
+    container, same working directory — had listed model references out of
+    `source/` two lines earlier.
+
+    I have not established what puts the checker in front of an empty tree.
+    This is the part that is fixable without knowing: it must not be possible
+    for that to look like a pass.
+
+    personal-soc's PSScriptAnalyzer task already says exactly this and exits 1
+    when it finds no `.ps1` files — "A check that examined nothing has not
+    passed - it has lost track of what it was pointed at." This brings the
+    same rule here.
+    """
+
+    def test_a_missing_root_is_an_error_not_a_pass(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code = check_ai.main([str(tmp_path / "does-not-exist")])
+
+        assert code == 2, "a path that is not there must not exit 0"
+        assert "examined nothing" in capsys.readouterr().err
+
+    def test_an_empty_root_is_an_error_too(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The shape the pipeline hits: the directory exists and is empty.
+
+        A missing path and an empty one fail for the same reason and must
+        report the same way. Only one of them is a typo.
+        """
+        (tmp_path / "source").mkdir()
+
+        assert check_ai.main([str(tmp_path / "source")]) == 2
+        assert "examined nothing" in capsys.readouterr().err
+
+    def test_a_repository_with_source_and_no_models_still_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The guard that this did not turn a real clean result into an error.
+
+        A repository that calls no model is a genuine pass, and the sentence
+        that says so has to survive — it is what keeps a clean report from
+        reading as evidence of anything.
+        """
+        write(tmp_path, "util.py", "def add(a, b):\n    return a + b\n")
+
+        assert check_ai.main([str(tmp_path)]) == 0
+        assert "No model references found" in capsys.readouterr().out
