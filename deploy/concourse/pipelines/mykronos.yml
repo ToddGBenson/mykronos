@@ -128,6 +128,51 @@ resources:
       secret_access_key: ((minio-secret-key))
 
 anchors:
+  # -- PS-12: retry the fetch, never the verdict ---------------------------
+  #
+  # `attempts:` re-runs a step on ANY non-success, from inside the step and
+  # beneath the errored/failed routing the hooks below use -- so to it, a
+  # scanner exiting 1 on a real finding and a scanner dying on DNS are the
+  # same event. Applied to a verdict it launders a red gate green by
+  # repetition.
+  #
+  # So it goes only where non-success is necessarily an ERROR and can never be
+  # a FAILURE: `get:` steps, which have no exit code and render no verdict,
+  # and the `notify-slack` hook, which ends `exit 0` unconditionally. Every
+  # other task here can fail, and none of them carries this.
+  #
+  # That is the same surface the three transients of 2026-09-10 struck -- a
+  # sealed Vault resolving a key for a `get:`, an iptables lock lost creating
+  # a check container, a DNS timeout checking a resource image. None was a
+  # scanner.
+  #
+  # No backoff exists to ask for; Concourse re-runs immediately. This absorbs
+  # a lost lock or a resolver blip and nothing longer. Anything that outlasts
+  # it stays red, and the `on_error:` hooks carry it to a human.
+  #
+  # docs/pipeline-standard.md PS-12.
+  retry_fetch: &retry_fetch 3
+
+  # The same rule, a smaller number, and the reason is PS-7. Concourse applies
+  # `timeout:` per attempt, not per step, so a retried hook doubles the longest
+  # it can hold this estate's single worker -- TheHub's notifier goes from a
+  # five-minute ceiling to a ten-minute one. Worth it, narrowly: the thing
+  # being protected is the alert about an errored lane, and a lost alert is the
+  # exact silence PS-12 exists to close. Not worth a third attempt.
+  retry_hook: &retry_hook 2
+
+  # The notifier's credentials, hoisted into their own anchor for the same
+  # reason `hub_params` exists: the `on_error:` path now passes an extra param
+  # (OUTCOME below), and a step-level `params:` that named only that would be
+  # relying on Concourse merging it onto the ones in the task config. If it
+  # replaced them instead, the token would be unset, the notifier's
+  # "unset is not an error" guard would exit 0, and every errored lane would
+  # go quiet -- silently, which is the failure mode this whole change is
+  # about. Restating them at the call site removes the question.
+  slack_params: &slack_params
+    SLACK_BOT_TOKEN: ((slack-bot-token))
+    SLACK_CHANNEL: ((slack-alert-channel))
+
   # Failure notification. curl rather than a slack-notification resource type:
   # this pipeline already carries no third-party resource types, and adding
   # one to a security pipeline to send a chat message is a poor trade. It also
@@ -140,6 +185,12 @@ anchors:
   # notification per event instead of a specific one racing a generic one.
   slack_alert: &slack_alert
     task: notify-slack
+    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
+    # reach a non-success is by never having run at all -- a resolver blip
+    # pulling its image, a lost container lock. There is no verdict here to
+    # launder, and a lost alert about an errored lane is exactly the silence
+    # PS-12 exists to close.
+    attempts: *retry_hook
     # PS-7. A notifier that hangs turns one failed job into a held worker,
     # inside the hook that exists to report the first failure.
     timeout: 5m
@@ -151,9 +202,7 @@ anchors:
       inputs:
         - name: notify
           optional: true
-      params:
-        SLACK_BOT_TOKEN: ((slack-bot-token))
-        SLACK_CHANNEL: ((slack-alert-channel))
+      params: *slack_params
       run:
         path: sh
         args:
@@ -188,10 +237,28 @@ anchors:
 
             BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
 
-            if [ -s notify/message.txt ]; then
+            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
+            # else sets it, so the failure path keeps the wording it had.
+            #
+            # This is the errored/failed line reaching the one surface a human
+            # actually reads, and the two need different words because they
+            # need opposite actions. An errored lane did not run, and
+            # re-triggering it is the correct response. A failed lane ran and
+            # answered, and re-triggering that is how a red gate gets
+            # laundered green by repetition. Told only "job X failed", nobody
+            # can tell which they are looking at -- and for three days in
+            # September nobody did.
+            #
+            # `notify/message.txt` is deliberately not read on the errored
+            # path. A job writes it to explain a verdict; a job that errored
+            # never reached one, so whatever is on disk is a half-finished
+            # thought from a run that died.
+            if [ "${OUTCOME:-failed}" = "errored" ]; then
+              TEXT="*Mykronos*: job \`$BUILD_JOB_NAME\` ERRORED (build $BUILD_NAME) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
+            elif [ -s notify/message.txt ]; then
               TEXT=$(head -1 notify/message.txt)
             else
-              TEXT="*Mykronos*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME)"
+              TEXT="*Mykronos*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME) - it ran and the answer was bad. Re-triggering does not clear this."
             fi
 
             # Escaped with sed because this image has no jq. Single-line
@@ -271,7 +338,16 @@ anchors:
         args:
           - -ec
           - |
-            curl --fail --silent --show-error --max-time 20 \
+            # PS-12, in-task rather than as `attempts:`. This probe CAN fail
+            # -- a rejected token is an answer, and PS-2 says a failure here is
+            # a real failure -- so it must not be wrapped in a step-level
+            # retry that cannot tell the two apart. curl can: `--retry`
+            # re-tries a connection that was refused, reset or timed out and a
+            # 5xx from the platform, and does NOT re-try the 401 that means
+            # this token is wrong. The same shape as the DAST guard's
+            # reachability loop: re-try being unable to ask, never the answer.
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+              --retry 4 --retry-delay 5 --retry-connrefused \
               -H "Authorization: Bearer $MYKRONOS_TOKEN" \
               "$MYKRONOS_URL/api/ingest/health" > /dev/null
             echo "Mykronos is reachable and this token is accepted."
@@ -343,11 +419,15 @@ jobs:
     # superseded before they finished.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: python
+        attempts: *retry_fetch
       - task: check
         timeout: 30m
         image: python
@@ -376,11 +456,15 @@ jobs:
     public: true
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: pytest
         timeout: 120m
@@ -483,12 +567,17 @@ jobs:
     public: true
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: weekly
+        attempts: *retry_fetch
         trigger: true
       - get: source
+        attempts: *retry_fetch
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: pytest-cov
         # 120m, the same as `unit`, which it is: the suite plus coverage
@@ -545,12 +634,16 @@ jobs:
     public: true
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: []
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: ruff-and-mypy
         timeout: 60m
@@ -633,11 +726,15 @@ jobs:
     public: true
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: check-links
         timeout: 60m
@@ -679,12 +776,17 @@ jobs:
     public: true
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
       - get: python
+        attempts: *retry_fetch
       - get: node
+        attempts: *retry_fetch
 
       - *preflight
       # The generated client is derived from the backend's OpenAPI, so the
@@ -835,12 +937,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: gitleaks
         timeout: 20m
@@ -908,12 +1014,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: osv-scanner
         timeout: 30m
@@ -1152,12 +1262,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: ai-checks
         timeout: 45m
@@ -1197,12 +1311,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: semgrep
         timeout: 90m
@@ -1323,12 +1441,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: aegis
         timeout: 15m
@@ -1480,13 +1602,18 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - get: checkov
+        attempts: *retry_fetch
       - *preflight
       - task: scan-iac
         timeout: 20m
@@ -1602,12 +1729,16 @@ jobs:
     # twenty-minute image build for work that takes seconds.
     serial: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [secrets, dependencies, sast, insider, containers, iac]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: evaluate
         timeout: 10m
@@ -1696,12 +1827,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [oracle-gate]
       - get: python
+        attempts: *retry_fetch
       - task: resolve-sha
         timeout: 5m
         image: python
@@ -1774,12 +1909,16 @@ jobs:
     # real work on a worker rather than an API call.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
+        attempts: *retry_fetch
       - task: build-backend
         timeout: 20m
         image: python
@@ -1847,12 +1986,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [build]
       - get: python
+        attempts: *retry_fetch
       - task: resolve-sha
         timeout: 5m
         image: python
@@ -1923,12 +2066,16 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [build]
       - get: python
+        attempts: *retry_fetch
       - task: resolve-sha
         timeout: 5m
         image: python
@@ -2008,13 +2155,18 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [publish-backend, publish-frontend]
       - get: python
+        attempts: *retry_fetch
       - get: trivy
+        attempts: *retry_fetch
 
       - *preflight
       # The SHA is resolved in a task that has git and handed over as a file.
@@ -2163,9 +2315,12 @@ jobs:
     # 11 builds pending and 0 started for hours.
     serial: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         # `iac` added: Patchwork's source capabilities are sast, secrets,
         # containers **and iac** (`patchwork/pipeline.py`,
@@ -2175,6 +2330,7 @@ jobs:
         # reporting against this one.
         passed: [secrets, dependencies, sast, iac, containers]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: patchwork
         timeout: 20m
@@ -2274,12 +2430,16 @@ jobs:
     # 8 and 9 started while it was still scanning.
     serial: true
     on_failure: *slack_alert
-    on_error: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
     plan:
       - get: source
+        attempts: *retry_fetch
         trigger: true
         passed: [publish-backend, publish-frontend]
       - get: python
+        attempts: *retry_fetch
       - *preflight
       - task: functional-and-dast
         timeout: 120m

@@ -5245,3 +5245,94 @@ dismissal was stranded the same way on 2026-08-15 when the query was wrapped in
 carry that one and names it, which is correct on both counts: 0.33 is a
 different finding by any honest reading, and a person should know the decision
 is there to be re-made.
+
+## D-123 — Retry the fetch, never the verdict
+
+**2026-09-12.** Seven lanes across the four Concourse pipelines were red on
+2026-09-10 and six of them went green on a re-trigger with no code change,
+after being red for between eight hours and three days: a Vault that had
+sealed itself, an iptables lock lost when ten keel jobs scheduled in the same
+second onto two workers, and a DNS timeout reaching Docker Hub. Nothing retries
+and nothing escalates, so ordinary infrastructure weather became a permanently
+dark security lane, and it was found only because somebody read every job on
+every pipeline by hand. `fly get-pipeline` across all four confirms it:
+`attempts:` was 0 everywhere.
+
+**The obvious fix is the regression.** Concourse's `attempts:` re-runs a step
+on *any* non-success. It operates inside the step, beneath the build-level
+`errored`/`failed` routing that the `on_error:` and `on_failure:` hooks are
+written against, and fires before either hook is reached. A semgrep exiting 1
+on a real finding and a semgrep dying on DNS are the same event to it. An
+`attempts: 2` sweep over the flaky jobs would auto-retry exactly the two
+controls that must keep their teeth — `dast-staging` refusing to report an
+empty scan as clean when its target is unreachable, and `netassess-ingest`
+refusing to pass a check that reported `unknown`. Both are the system being
+honest, both say so with a non-zero exit, and repetition would launder both.
+The two halves of the requirement are not satisfiable by choosing which jobs
+get the knob.
+
+**So the line is drawn structurally rather than per job.** `attempts:` may
+appear only on a step whose non-success is *necessarily* an error and can never
+be a failure. Two kinds of step have that property: every `get:`, which has no
+exit code and renders no verdict, and the `report-to-hub` / `notify-slack`
+hooks, which end `exit 0` unconditionally so their only route to a non-success
+is never having run. That is a property of the step, not a judgement about the
+job, which is why `check_pipeline_conformance.py` can hold it — and it has to,
+because `attempts:` on a scanner and `attempts:` on a `get:` are one keystroke
+apart and read identically in a diff.
+
+**The evidence is what makes it sufficient rather than merely safe.** All three
+observed causes struck that same surface: the sealed Vault died resolving a git
+private key for a `get:`, the iptables lock was lost in "find or create
+container" running a check, the DNS timeout was "checking origin
+concourse/registry-image-resource". Not one was a scanner. The retryable
+surface and the observed-transient surface are the same surface, and it is
+disjoint from the verdict surface.
+
+**Inside the step, not around the build, and that is a second reason.** An
+outer retry — anything re-triggering errored builds — would re-run the
+job-level hooks and post a second `dast_headers` report for the same commit.
+That is the path that reopened TheHub's abandoned deploy run 5772 on
+2026-09-10, and duplicating it is the #59065 trap that migration 313's meta
+names by number. `attempts:` fires beneath the hooks, so a retried fetch still
+produces exactly one report per stage per build.
+
+**`preflight` is excluded even though it is a hook**, because it can fail: a
+rejected ingestion token is an answer, and PS-2 says a failure there is a real
+failure. Its retry went inside its `curl` instead —
+`--retry 4 --retry-delay 5 --retry-connrefused`, which re-tries a connection
+refused, reset or timed out and a 5xx from the platform, and does not re-try
+the 401 that means the token is wrong. In-task classification is the idiomatic
+route in these pipelines and predates this: the DAST guard's
+`curl --retry 5 --retry-delay 6 --retry-all-errors` retries reachability and
+then hard-fails, and `netassess`'s `unpack()` distinguishes `unzip` exit 1 from
+exit 2 or more.
+
+**Three attempts on a fetch, two on a hook.** Concourse applies `timeout:` per
+attempt rather than per step, so a retried hook doubles the longest it can hold
+the estate's single worker — TheHub's notifier goes from a five-minute ceiling
+to a ten-minute one. That is a real cost against PS-7, paid deliberately
+because what is being protected is the alert about an errored lane, and not
+worth a third attempt.
+
+**What this does not buy, recorded so nobody expects it to.** Concourse does
+not delay between attempts, so three of them absorb a lost lock or a resolver
+blip and nothing longer. A Vault that stays sealed for three days stays red,
+correctly. A *task* that errors rather than fails — an OOM kill, a worker
+vanishing mid-scan — is not retried either, because `attempts:` on that task
+could not tell that from a finding. Both cases are handed to the `on_error:`
+hooks, which now say which of the two happened and what to do about it, because
+"job X failed" cannot distinguish a lane that did not run from one that ran and
+answered — and re-triggering is correct for the first and is laundering for the
+second.
+
+**Recorded as not done.** The keel stampede that produced the lock contention
+is not fixed here: keel's pipeline is not maintained in this repository, and
+retrying a stampede treats the symptom in any case. And nothing yet notices a
+lane that is *still* red tomorrow; the machinery for that exists — `ci.py`
+already counts `errored` among the statuses that did not succeed, and the
+coverage cross-check leads the briefing with lanes that cannot close a finding
+— but the five keel jobs that stayed dark for three days are not in
+`CAPABILITY_BY_JOB`. Whether that is a detector that failed or a lane outside
+the detector's scope is the question that decides the fix, and it is a story of
+its own. Both are open items 7 and 8 in `docs/pipeline-standard.md`.

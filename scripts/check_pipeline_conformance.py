@@ -9,8 +9,8 @@ asking a question about the parsed pipeline — does this job have a preflight
 step, does that task carry a timeout — and each maps to one numbered rule with
 the failure it prevents written out in the standard.
 
-Six of the eleven rules are machine-checkable and are checked here; PS-11 needs a
-running Concourse, so it lives in check_applied_pipelines.py:
+Eight of the twelve rules are machine-checkable and are checked here; PS-11 needs
+a running Concourse, so it lives in check_applied_pipelines.py:
 
     PS-2   a job that talks to Mykronos probes it first
     PS-3   a scanner's exit code cannot skip the upload
@@ -19,7 +19,14 @@ running Concourse, so it lives in check_applied_pipelines.py:
     PS-7   every non-hook task has a timeout
     PS-8   no binary is fetched into a shell unverified
     PS-10  the notifier verifies delivery
+    PS-12  every fetch retries, and nothing that can fail does
     (plus: every job appears in a group, or Concourse hides it)
+
+PS-12 is the one that most needs a machine. `attempts:` on a scanner and
+`attempts:` on a `get:` are one keystroke apart and read identically in a
+diff, and the difference between them is a security gate that keeps its teeth
+and one that can be retried until it goes green. That is not a distinction to
+leave to review.
 
 The other four are judgement — whether a stage reports the *right* capability
 (PS-1), whether a granted capability has a lane (PS-5), whether a credential
@@ -122,6 +129,21 @@ KNOWN_GAPS: dict[str, str] = {
 #: anchor as a violation.
 HOOK_TASKS = frozenset({"preflight", "report-to-hub", "notify-slack"})
 
+#: PS-12. The only *tasks* allowed to carry `attempts:`.
+#:
+#: `get:` steps qualify structurally and need no list: a fetch has no exit code,
+#: so it can error and cannot fail, and a retry has no verdict to launder.
+#: These two qualify by construction instead — both end `exit 0` unconditionally,
+#: so their only route to a non-success is never having run. That premise is
+#: asserted below rather than trusted, because the exemption is worth exactly
+#: what that last line is worth.
+#:
+#: `preflight` is deliberately NOT here even though it is a hook. It *can* fail:
+#: a rejected ingestion token is an answer, and PS-2 says a failure there is a
+#: real failure. Its retry is inside its curl, where "could not ask" and "asked
+#: and was refused" are still different things.
+RETRYABLE_TASKS = frozenset({"report-to-hub", "notify-slack"})
+
 #: A job with no `passed:` is conformant when it *is* the gate — which is
 #: derived below from what other jobs depend on, rather than listed here, so
 #: that adding a lane to the quality gate does not also mean editing this file.
@@ -159,6 +181,31 @@ def _scripts(job: dict[str, Any]) -> str:
 
     _walk(job, visit)
     return "\n".join(found)
+
+
+def _ends_in_exit_zero(node: dict[str, Any]) -> bool:
+    """Does this task's script finish `exit 0` whatever happened?
+
+    Judged on the last line, which is the whole of what a reader checks at a
+    glance and the part a future edit is most likely to move. PS-12 exempts two
+    hooks from the no-retry rule *because* they cannot fail; if one grows a path
+    that exits non-zero, the exemption has to lapse with it rather than quietly
+    outlive its reason.
+    """
+    run = node.get("config", {}).get("run", {})
+    bodies = [arg for arg in (run.get("args") or []) if isinstance(arg, str) and len(arg) > 40]
+    if not bodies:
+        return False
+    lines = [line.strip() for line in bodies[-1].strip().splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    return bool(lines) and lines[-1] == "exit 0"
+
+
+def _step_label(node: dict[str, Any]) -> str:
+    for kind in ("task", "get", "put"):
+        if kind in node:
+            return f"{kind}: {node[kind]}"
+    return "step"
 
 
 def _uncommented(raw: str) -> str:
@@ -235,6 +282,46 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
         if untimed:
             problems.append(f"{name}:{job_name} PS-7 task(s) with no timeout: {sorted(untimed)}")
 
+        # -- PS-12: retry the fetch, never the verdict ------------------------
+        #
+        # Walked over the whole job rather than its plan, because the two hooks
+        # that are allowed to retry hang off the job and not off any step.
+        retried_verdict: list[str] = []
+        unretried_fetch: list[str] = []
+        lapsed_exemption: list[str] = []
+
+        def retry_visit(node: dict[str, Any]) -> None:
+            if "get" in node:
+                if "attempts" not in node:
+                    unretried_fetch.append(str(node["get"]))
+                return
+            if "attempts" not in node:
+                return
+            task = node.get("task")
+            if not isinstance(task, str) or task not in RETRYABLE_TASKS:
+                retried_verdict.append(_step_label(node))
+            elif not _ends_in_exit_zero(node):
+                lapsed_exemption.append(task)
+
+        _walk(job, retry_visit)
+
+        if retried_verdict:
+            problems.append(
+                f"{name}:{job_name} PS-12 `attempts:` on a step that can fail rather than "
+                f"merely error, so a real result would be retried until it changed: "
+                f"{sorted(set(retried_verdict))}"
+            )
+        if unretried_fetch:
+            problems.append(
+                f"{name}:{job_name} PS-12 fetch with no `attempts:`, so one infrastructure "
+                f"blip leaves this lane dark until a human reads it: {sorted(set(unretried_fetch))}"
+            )
+        if lapsed_exemption:
+            problems.append(
+                f"{name}:{job_name} PS-12 {sorted(set(lapsed_exemption))} carries `attempts:` "
+                f"but no longer ends `exit 0`, so it can now fail and the exemption has lapsed"
+            )
+
         triggered = any(step.get("get") == "source" and step.get("trigger") for step in plan)
         gated = bool(plan[0].get("passed"))
         exempt = job_name in GATE_EXEMPT or job_name in depended_on
@@ -248,6 +335,7 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
                 "yes" if has_preflight else ("--" if not talks else "MISS"),
                 "n/a" if not uploads else ("rc" if captures else "ensure"),
                 "yes" if not untimed else "MISS",
+                "yes" if not (retried_verdict or unretried_fetch or lapsed_exemption) else "MISS",
                 ",".join(capabilities) or "-",
                 "yes" if gated else "--",
             )
@@ -298,11 +386,17 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 78)
         print(relative)
         print("=" * 78)
-        header = ("job", "PS-2", "PS-3", "PS-7", "reports", "PS-4")
-        print(f"{header[0]:<18}{header[1]:<6}{header[2]:<8}{header[3]:<6}{header[4]:<24}{header[5]}")
+        header = ("job", "PS-2", "PS-3", "PS-7", "PS-12", "reports", "PS-4")
+        print(
+            f"{header[0]:<18}{header[1]:<6}{header[2]:<8}{header[3]:<6}"
+            f"{header[4]:<7}{header[5]:<22}{header[6]}"
+        )
         print("-" * 78)
         for row in rows:
-            print(f"{row[0]:<18}{row[1]:<6}{row[2]:<8}{row[3]:<6}{row[4][:23]:<24}{row[5]}")
+            print(
+                f"{row[0]:<18}{row[1]:<6}{row[2]:<8}{row[3]:<6}"
+                f"{row[4]:<7}{row[5][:21]:<22}{row[6]}"
+            )
         print()
 
     if recorded and not args.quiet:
