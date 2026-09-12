@@ -140,8 +140,17 @@ def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
     text = str((raw.get("message") or {}).get("text", ""))
     package = (_PACKAGE.search(text) or [None, ""])[1] if _PACKAGE.search(text) else ""
     installed = _INSTALLED.search(text)
-    fixed = _FIXED.search(text)
-    fixed_version = fixed.group(1) if fixed else ""
+
+    # The adapter-resolved field first. Trivy states its remediation in the
+    # message and osv-scanner states it in the rule, so a regex over the
+    # message reads one tool and silently returns "no fix" for the other --
+    # which reported a critical RCE as unfixable (mykronos#256). Both adapters
+    # now normalise to `fixed_version`; the regex stays as the fallback for
+    # any record written before they did.
+    fixed_version = str(raw.get("fixed_version") or "").strip()
+    if not fixed_version:
+        fixed = _FIXED.search(text)
+        fixed_version = fixed.group(1) if fixed else ""
 
     if fixed_version and not fixed_version.startswith("Link"):
         now = f" (from {installed.group(1)})" if installed else ""

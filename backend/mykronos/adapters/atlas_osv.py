@@ -25,6 +25,7 @@ the fields null — exactly where they were before.
 from __future__ import annotations
 
 import logging
+import json
 import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -161,6 +162,79 @@ def _split(spec: str) -> tuple[str, str | None]:
     return name, version or None
 
 
+def _fixed_versions(raw_output: bytes) -> dict[tuple[str, str], str]:
+    """(vulnerability id, package) -> the fixed versions osv-scanner named.
+
+    **The fixed version is in the SARIF; it is just not in the result.** Every
+    other adapter reads its remediation out of the result's message, and for
+    osv-scanner that message says only
+    `Package 'js-yaml@4.3.0' is vulnerable to 'GHSA-...'`. The remediation
+    lives in the *rule*, as a markdown table:
+
+        ### Fixed Versions
+
+        | Vulnerability ID | Package Name | Fixed Version |
+        | --- | --- | --- |
+        | GHSA-5p4m-2wfm-xmqj | js-yaml | 3.15.1, 4.3.1 |
+
+    Parsed here rather than in the shared SARIF reader because it is
+    osv-scanner's own presentation, not a SARIF convention -- and because the
+    cost of missing it is specific and was measured: every atlas finding was
+    reported as having no published fix, including a critical unauthenticated
+    RCE that had one (mykronos#256).
+    """
+    try:
+        document = json.loads(raw_output.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+
+    table: dict[tuple[str, str], str] = {}
+    for run in document.get("runs") or []:
+        driver = (run.get("tool") or {}).get("driver") or {}
+        for rule in driver.get("rules") or []:
+            markdown = ((rule.get("help") or {}).get("markdown") or "")
+            start = markdown.find("### Fixed Versions")
+            if start < 0:
+                continue
+            for line in markdown[start:].splitlines()[1:]:
+                line = line.strip()
+                if not line.startswith("|"):
+                    # The table ends at the first non-row once it has begun.
+                    if table:
+                        break
+                    continue
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if len(cells) < 3:
+                    continue
+                if cells[0] == "Vulnerability ID" or set(cells[0]) <= set("- "):
+                    continue  # header or separator
+                table[(cells[0], cells[1])] = cells[2]
+    return table
+
+
+def _pick_fix(installed: str | None, candidates: str) -> str:
+    """The fix that applies to the version actually installed.
+
+    osv-scanner names one fix per affected release line -- `3.15.1, 4.3.1` is
+    two answers, not a list to take the first of. Handing a 3.x consumer
+    `4.3.1` is a major upgrade wearing a patch's clothes, so the candidate
+    sharing the installed major wins.
+
+    Falls back to the lowest candidate when the installed version is unknown
+    or matches no line: the smallest upgrade that could be right is a safer
+    thing to advise than the largest.
+    """
+    options = [part.strip() for part in candidates.split(",") if part.strip()]
+    if not options:
+        return ""
+    if installed:
+        major = installed.lstrip("v=<>~^ ").split(".")[0]
+        for option in options:
+            if option.lstrip("v").split(".")[0] == major:
+                return option
+    return options[0]
+
+
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     outcome = sarif_to_findings(raw_output, context)
 
@@ -182,6 +256,32 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         finding.version_basis = _basis(
             finding.file_path or "", finding.package_name, context.workspace
         )
+
+    # Remediation, from the rule rather than the result (mykronos#256).
+    # Same field and same contract as the containers adapter: Patchwork and
+    # the acceptance sweep both read `fixed_version` off the raw record, and
+    # an empty one is the meaningful answer "no fix published" rather than
+    # "not looked up".
+    fixes = _fixed_versions(raw_output)
+    resolved = 0
+    if fixes:
+        for finding in outcome.findings:
+            candidates = fixes.get((finding.rule_id, finding.package_name or ""))
+            if not candidates or not isinstance(finding.raw_finding_json, dict):
+                continue
+            chosen = _pick_fix(finding.package_version, candidates)
+            if chosen:
+                finding.raw_finding_json["fixed_version"] = chosen
+                resolved += 1
+        if not resolved:
+            # The table was there and matched nothing, which means the ids or
+            # package names stopped lining up -- worth saying, because the
+            # symptom downstream is silent: every finding reads as unfixable.
+            outcome.warn(
+                "osv-scanner published fixed versions but none matched a finding "
+                "by rule id and package. Dependency findings will report no "
+                "available fix."
+            )
 
     floors = sum(1 for f in outcome.findings if f.version_basis == "declared_floor")
     if floors:
