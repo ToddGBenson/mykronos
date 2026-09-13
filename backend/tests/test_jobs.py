@@ -18,7 +18,11 @@ from mykronos.github import FakeGitHubClient
 from mykronos.github.client import GitHubError
 from mykronos.github.factory import FakeGitHubClientFactory
 from mykronos.installer import DEFAULT_SECRET_NAME
-from mykronos.jobs import reconcile_installations, rotate_ingestion_tokens
+from mykronos.jobs import (
+    reconcile_installations,
+    rotate_ingestion_tokens,
+    unsynced_deferral_warning,
+)
 from mykronos.lake import reconcile_absences
 from mykronos.schemas import utcnow
 from tests.conftest import CAPABILITY, REPO, finding_payload, post_findings, post_scan
@@ -154,6 +158,59 @@ class TestRotation:
         assert result.deferred == [REPO]
         assert result.rotated == []
         assert DEFAULT_SECRET_NAME not in github.repos[REPO].secrets
+
+    async def test_an_unsynced_concourse_repo_is_not_called_due(
+        self, db: Database, factory, github: FakeGitHubClient, caplog
+    ) -> None:
+        """The job walks `due | unsynced` and said "is due for token rotation"
+        about both. A Concourse repo is permanently in the second set and
+        never in the first — `secret_synced` is only ever set after an Actions
+        secret write, which this job cannot perform for it — so the line fired
+        on every scheduled run, about a token months from its due date.
+
+        The wrong word matters because the remedy differs. `mykronos
+        rotate-due` told an operator to hand-rotate ToddGBenson/TheHub while
+        it was uploading successfully from Concourse; doing so would have
+        changed the token, left Vault serving the old one, and taken the
+        repository dark when the overlap expired."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+        # Deliberately not aged: the token is nowhere near due.
+
+        with caplog.at_level("WARNING"):
+            result = await rotate_ingestion_tokens(db, factory)
+
+        assert result.deferred == [REPO]
+        assert result.rotated == []
+        message = caplog.text
+        assert "is due for token rotation" not in message
+        assert "secret-never-synced" in message
+        assert "NOT due for rotation" in message
+
+    async def test_a_due_concourse_repo_still_says_due(
+        self, db: Database, factory, github: FakeGitHubClient, caplog
+    ) -> None:
+        """The other half of the split: a genuinely due token should still be
+        rotated by hand, and the line that says so is unchanged."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        with caplog.at_level("WARNING"):
+            result = await rotate_ingestion_tokens(db, factory)
+
+        assert result.deferred == [REPO]
+        assert "is due for token rotation" in caplog.text
+
+    def test_the_unsynced_warning_does_not_tell_anyone_to_rotate(self) -> None:
+        """A warning whose recommended action breaks the thing it is warning
+        about is worse than silence."""
+        message = unsynced_deferral_warning("o/r", "is scanned by concourse")
+        assert "Rotate it by hand" not in message
+        assert "briefing" in message
 
     async def test_a_repo_scanned_by_both_systems_is_deferred(
         self, db: Database, factory, github: FakeGitHubClient
