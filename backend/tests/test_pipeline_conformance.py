@@ -156,7 +156,11 @@ def test_the_two_named_refusals_keep_their_teeth() -> None:
         jobs = {job["name"]: job for job in document["jobs"]}
         assert job_name in jobs, f"{path.name} no longer defines {job_name}"
 
-        tasks = [step for step in _steps({"jobs": [jobs[job_name]]}) if step.get("task") == task_name]
+        tasks = [
+            step
+            for step in _steps({"jobs": [jobs[job_name]]})
+            if step.get("task") == task_name
+        ]
         assert tasks, f"{path.name}:{job_name} no longer has a {task_name} task"
         for task in tasks:
             assert "attempts" not in task, (
