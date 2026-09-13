@@ -103,6 +103,39 @@ class RotationResult:
         )
 
 
+def unsynced_deferral_warning(repo: str, blocker: str) -> str:
+    """What to say about a repo deferred for being unsynced rather than due.
+
+    `rotate_ingestion_tokens` walks `due | unsynced`, and until now every
+    deferral said "is due for token rotation" -- true of the first set and
+    false of the second. The difference is not cosmetic, because the two want
+    opposite actions from whoever reads the line.
+
+    `secret_synced` is set in exactly two places, and both set it immediately
+    after a GitHub Actions secret write lands. So a repository this job cannot
+    write to can never carry the flag: it joins `unsynced_repos()` on the day
+    it is onboarded and stays there permanently, warning on every scheduled
+    run about a token that may be delivered perfectly well by some other path.
+    ToddGBenson/TheHub is that repository -- flagged unsynced, three months
+    from its rotation date, and uploading successfully from Concourse the
+    whole time.
+
+    Telling that operator to "rotate it by hand" is telling them to break a
+    working pipeline: the token changes, Vault keeps serving the old value,
+    and the repository goes dark when the overlap expires. That is the
+    2026-08-31 outage (D-097) reached from the other direction -- by following
+    the advice instead of by ignoring it.
+    """
+    return (
+        f"{repo} is flagged secret-never-synced and {blocker}; its token is "
+        "NOT due for rotation. This job sets that flag only after writing a "
+        "GitHub Actions secret, so a repository it cannot write to carries the "
+        "flag permanently -- it is not evidence the token is undelivered. "
+        "Confirm ingestion is actually failing (mykronos briefing) before "
+        "rotating: rotating a token whose Vault copy works is what breaks it."
+    )
+
+
 async def rotate_ingestion_tokens(
     db: Database,
     github_factory: GitHubClientFactory,
@@ -159,13 +192,23 @@ async def rotate_ingestion_tokens(
         # repository as soon as its overlap expires. Doing nothing loudly beats
         # doing the wrong thing quietly.
         if onboarding.scanned_by != "github_actions":
-            logger.warning(
-                "%s is due for token rotation and is scanned by %s, which this "
-                "job cannot deliver to. Rotate it by hand and re-run "
-                "set-pipeline (or Import-EnvSecretsToVault.ps1 -Apply).",
-                repo,
-                onboarding.scanned_by,
-            )
+            if repo in due:
+                logger.warning(
+                    "%s is due for token rotation and is scanned by %s, which this "
+                    "job cannot deliver to. Rotate it by hand and re-run "
+                    "set-pipeline (or Import-EnvSecretsToVault.ps1 -Apply).",
+                    repo,
+                    onboarding.scanned_by,
+                )
+            else:
+                logger.warning(
+                    "%s",
+                    unsynced_deferral_warning(
+                        repo,
+                        f"is scanned by {onboarding.scanned_by}, which this job "
+                        "cannot deliver to",
+                    ),
+                )
             result.deferred.append(repo)
             continue
 
@@ -186,18 +229,22 @@ async def rotate_ingestion_tokens(
         if concourse is not None:
             has_pipeline = concourse.has_pipeline_for(repo)
             if has_pipeline is not False:
-                logger.warning(
-                    "%s is due for token rotation and %s. This job can only "
-                    "write a GitHub Actions secret, so rotating would leave "
-                    "Vault serving the old value until a human runs "
-                    "set-pipeline. Rotate it by hand instead.",
-                    repo,
-                    (
-                        "also has a Concourse pipeline reading its token"
-                        if has_pipeline
-                        else "Concourse could not be reached to rule one out"
-                    ),
+                blocker = (
+                    "also has a Concourse pipeline reading its token"
+                    if has_pipeline
+                    else "Concourse could not be reached to rule one out"
                 )
+                if repo in due:
+                    logger.warning(
+                        "%s is due for token rotation and %s. This job can only "
+                        "write a GitHub Actions secret, so rotating would leave "
+                        "Vault serving the old value until a human runs "
+                        "set-pipeline. Rotate it by hand instead.",
+                        repo,
+                        blocker,
+                    )
+                else:
+                    logger.warning("%s", unsynced_deferral_warning(repo, blocker))
                 result.deferred.append(repo)
                 continue
 
