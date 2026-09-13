@@ -2374,6 +2374,11 @@ jobs:
           DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
           TARGET_URL: ((thehub-demo-url))
           ENVIRONMENT: demo
+          # Pinned and verified where it is fetched. dl.min.io now returns
+          # 410 Gone -- MinIO archived the open-source client -- so the
+          # release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -2384,7 +2389,13 @@ jobs:
               - |
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
                 SCHEME=${MINIO_ENDPOINT%%://*}
                 HOSTPORT=${MINIO_ENDPOINT#*://}
@@ -3773,6 +3784,11 @@ jobs:
           DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
           TARGET_URL: ((thehub-prod-url))
           ENVIRONMENT: prod
+          # Pinned and verified where it is fetched. dl.min.io now returns
+          # 410 Gone -- MinIO archived the open-source client -- so the
+          # release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -3783,7 +3799,13 @@ jobs:
               - |
                 set -euo pipefail
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
-                curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
                 SCHEME=${MINIO_ENDPOINT%%://*}
                 HOSTPORT=${MINIO_ENDPOINT#*://}
