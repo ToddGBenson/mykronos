@@ -114,10 +114,6 @@ KNOWN_GAPS: dict[str, str] = {
         "repository has one branch, and exactly the assumption B-045 cost "
         "sixteen days of scanning"
     ),
-    "personal-soc.yml jobs": (
-        "every one of its thirteen jobs is in no group, so Concourse hides the "
-        "whole pipeline from its own UI"
-    ),
 }
 
 #: Steps that are hooks rather than work. They carry their timeout on the
