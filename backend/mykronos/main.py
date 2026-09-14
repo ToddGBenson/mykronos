@@ -498,10 +498,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(SecurityHeaders)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
-    async def healthz() -> dict[str, str]:
+    async def healthz() -> dict[str, Any]:
         """For infrastructure only. Deliberately reveals nothing about the
-        lake — the authenticated /api/ingest/health is what workflows call."""
-        return {"status": "ok", "version": __version__}
+        lake — the authenticated /api/ingest/health is what workflows call.
+
+        `build.sha` is the one thing here that is not liveness. It is the
+        commit this *image* was built from, and it is unauthenticated on
+        purpose: whatever asks "is the fix running yet?" has to be able to
+        ask it from outside, of the process actually serving traffic. On
+        2026-09-13 twenty-six merged PRs sat undeployed for eight days with
+        every indicator green, because the platform compared scans to `main`
+        and nothing compared the running artifact to anything (#361). A
+        commit SHA is not a secret — it names a public commit in a public
+        repository, and TheHub has served its own from `/health` throughout.
+
+        `build.source` exists so the absent case cannot be misread. An image
+        built without the build-arg reports `sha: null, source: "unknown"`
+        rather than a version string that looks like an answer.
+        """
+        sha = resolved.build_sha.strip()
+        return {
+            "status": "ok",
+            "version": __version__,
+            "build": {
+                "sha": sha or None,
+                "source": "image" if sha else "unknown",
+            },
+        }
 
     return app
 

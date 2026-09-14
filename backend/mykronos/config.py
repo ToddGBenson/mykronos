@@ -59,6 +59,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Build provenance (#361) ---------------------------------------
+
+    build_sha: str = Field(
+        default="",
+        description=(
+            "The commit this image was built from, baked in by the Dockerfile "
+            "at image build time and read back by `/healthz`. Empty is a real "
+            "and expected state -- a local `docker build`, an editable "
+            "install, or the test suite -- and it must be reported as "
+            "unknown rather than filled in with a guess. Nothing here may "
+            "fall back to reading the working tree: the whole point is to "
+            "describe the artifact that is *running*, and a running container "
+            "has no working tree to consult. `mykronos.__version__` cannot "
+            "serve this purpose. The pipeline's `build` job renames its wheel "
+            "to carry `+<short-sha>`, but a wheel's version lives in its "
+            "METADATA rather than its filename, and the image is built from a "
+            "*separate* wheel that `backend/Dockerfile` compiles itself -- so "
+            "the stamped artifact never reaches production and every "
+            "deployment reports 0.1.0."
+        ),
+    )
+
     # --- Scheduled jobs -----------------------------------------------
 
     token_rotation_interval_seconds: int = Field(
