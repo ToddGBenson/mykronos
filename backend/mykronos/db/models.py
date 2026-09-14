@@ -142,6 +142,25 @@ class RepoOnboarding(Base):
 
     default_branch: Mapped[str] = mapped_column(String(255), default="main")
 
+    #: Where to ask this repository's deployment what revision it is running
+    #: (#361). An unauthenticated GET returning JSON with a string at
+    #: `build.sha`; mykronos serves it at `/healthz` and TheHub at `/health`.
+    #:
+    #: Empty is the common state and is not a fault. A repository with no
+    #: deployment this platform can reach -- a library, a scanner, a config
+    #: tree -- is a normal thing to be, and the portfolio reports it as
+    #: `not_configured` rather than as a failed probe.
+    deployment_probe_url: Mapped[str] = mapped_column(String(1024), default="")
+
+    #: The last revision a probe actually read back, and when. Never inferred
+    #: from the default branch, a tag, or a build number: the whole point is to
+    #: record what the running process said about itself, and a value derived
+    #: from anything else would reproduce the defect this exists to catch.
+    deployed_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+    deployed_revision_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: not_configured | ok | unreachable | unparsed — see `mykronos.deployments`.
+    deployment_probe_status: Mapped[str] = mapped_column(String(32), default="not_configured")
+
     onboarded_by: Mapped[str] = mapped_column(String(255), default="")
     onboarded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)

@@ -74,6 +74,7 @@ from mykronos.db.models import (
     ThreatIntelMatch,
     capability_config_for,
 )
+from mykronos.deployments import DeploymentState, latest_scanned_revisions
 from mykronos.jobs import self_check as jobs_self_check
 from mykronos.knowledge.capture import (
     capture_classification_rejected,
@@ -5045,4 +5046,88 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
             "never was. A job with no successful run since this process started is "
             "reported as fine until twice its interval has passed."
         ),
+    )
+
+
+class DeploymentOut(BaseModel):
+    """What one repository is running, next to what was scanned (#361)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str
+    #: not_configured | ok | unreachable | unparsed
+    status: str
+    deployed_revision: str | None
+    deployed_revision_at: datetime | None
+    scanned_revision: str | None
+    #: True, False, or null for "cannot say". Never a defaulted False: most
+    #: repositories have no probe, and inventing a divergence for them would
+    #: be the same class of wrong answer this endpoint exists to prevent.
+    matches_scan: bool | None
+    probe_url: str
+
+
+class DeploymentsOut(BaseModel):
+    """The answer to "is what I am reporting on what you are running?"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repos: list[DeploymentOut]
+    #: Repositories running a revision other than the newest one scanned.
+    #: The list the 2026-09-13 gap would have appeared in.
+    diverged: int
+    #: Active repositories with no probe configured. A coverage number, not an
+    #: error — but it is the denominator that makes `diverged: 0` meaningful,
+    #: and omitting it is how "nothing is wrong" and "nothing is measured"
+    #: become indistinguishable.
+    not_configured: int
+
+
+@router.get("/deployments", response_model=DeploymentsOut)
+async def deployments_page(request: Request, principal: PrincipalDep) -> DeploymentsOut:
+    """What each repository is actually running.
+
+    Reads the revision recorded by the `deployment-probe` job rather than
+    probing live. A live probe here would make the page slow and, worse, would
+    make this endpoint the only place the answer exists — the value is in the
+    job running on a timer whether or not anybody opens the page, because the
+    failure being caught is one nobody was looking for.
+
+    `scanned_revision` is the newest commit any capability scanned. When it
+    differs from `deployed_revision`, every open and closed finding for that
+    repository describes code that is not the code serving traffic.
+    """
+    from mykronos.db.models import RepoOnboarding
+
+    scanned = latest_scanned_revisions(request.app.state.catalog)
+    rows: list[DeploymentOut] = []
+    with request.app.state.db.session() as session:
+        onboardings = session.scalars(
+            select(RepoOnboarding).where(RepoOnboarding.status == "active")
+        ).all()
+        for row in onboardings:
+            state = DeploymentState(
+                repo_full_name=row.github_repo_full_name,
+                status=row.deployment_probe_status or "not_configured",
+                revision=row.deployed_revision,
+                observed_at=row.deployed_revision_at,
+                scanned_revision=scanned.get(row.github_repo_full_name),
+            )
+            rows.append(
+                DeploymentOut(
+                    repo_full_name=state.repo_full_name,
+                    status=state.status,
+                    deployed_revision=state.revision,
+                    deployed_revision_at=state.observed_at,
+                    scanned_revision=state.scanned_revision,
+                    matches_scan=state.matches_scan,
+                    probe_url=row.deployment_probe_url or "",
+                )
+            )
+
+    rows.sort(key=lambda r: r.repo_full_name)
+    return DeploymentsOut(
+        repos=rows,
+        diverged=sum(1 for r in rows if r.matches_scan is False),
+        not_configured=sum(1 for r in rows if not r.probe_url),
     )

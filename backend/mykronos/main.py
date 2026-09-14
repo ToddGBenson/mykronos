@@ -29,6 +29,7 @@ from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.db.models import JobRun
+from mykronos.deployments import run_probe_sweep
 from mykronos.digest import send_all as send_digests
 from mykronos.gate import PerimeterGate
 from mykronos.github.auth import AppCredentials
@@ -347,6 +348,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings,
             )
 
+        async def _deployment_probe() -> None:
+            # Awaited rather than threaded: it is a handful of HTTP GETs with
+            # their own timeout, and the DB write at the end is four columns
+            # on a few rows.
+            sweep = await run_probe_sweep(
+                app.state.db,
+                app.state.catalog,
+                timeout=settings.deployment_probe_timeout_seconds,
+            )
+            for state in sweep.diverged:
+                logger.warning(
+                    "Deployment divergence: %s runs %s, newest scan was %s",
+                    state.repo_full_name,
+                    state.revision,
+                    state.scanned_revision,
+                )
+
         async def _digest() -> None:
             # Awaited rather than threaded. `send_all` puts its own lake
             # queries on a thread and awaits the posts, which is what a
@@ -412,6 +430,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
+            (
+                "deployment-probe",
+                settings.deployment_probe_interval_seconds,
+                _deployment_probe,
+            ),
             # Off unless opted in: this job messages people.
             *(
                 [("digest", settings.weekly_digest_interval_seconds, _digest)]
