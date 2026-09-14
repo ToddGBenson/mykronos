@@ -192,6 +192,19 @@ jobs:
           # tag rather than the artifact (D-047). A refused commit leaves an
           # image nothing points at.
           tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/mykronos-${{ matrix.component }}:${{ github.sha }}
+          # The same SHA, inside the image as well as on the tag (#361). A
+          # container cannot read the tag it was started from, so an image
+          # that is only tagged cannot answer "what commit are you?" — which
+          # is how twenty-six merged PRs sat undeployed for eight days with
+          # every indicator green.
+          #
+          # Passed for both matrix components although only
+          # `backend/Dockerfile` declares the ARG today; buildx warns about an
+          # unconsumed build-arg and succeeds. Kept unconditional so that the
+          # day the frontend image wants to report its own build, the value is
+          # already arriving rather than needing to be threaded through again.
+          build-args: |
+            MYKRONOS_BUILD_SHA=${{ github.sha }}
           # Layer cache in the registry, so a rebuild of an unchanged
           # component is cheap. Scoped per component or they evict each other.
           cache-from: type=gha,scope=${{ matrix.component }}

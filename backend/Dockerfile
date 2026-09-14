@@ -96,7 +96,24 @@ COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml \
 USER mykronos
 WORKDIR /app
 
-ENV MYKRONOS_DATALAKE_DIR=/data/datalake \
+# The commit this image was built from (#361).
+#
+# It has to arrive as a build-arg. The obvious alternative -- stamp it into
+# the wheel version -- is already attempted in the pipeline's `build` job and
+# already does nothing: that job renames its wheel to carry `+<short-sha>`,
+# but a wheel records its version in METADATA rather than in its filename, and
+# this Dockerfile compiles a *separate* wheel of its own in the build stage
+# above. The stamped artifact never reaches the image, which is why every
+# deployment reports `0.1.0`.
+#
+# Empty is the honest default and `/healthz` reports it as `source: unknown`.
+# A local `docker build` genuinely does not know the commit, and inventing one
+# is worse than admitting it -- the whole reason this exists is that a
+# confident wrong answer about what is deployed went unnoticed for eight days.
+ARG MYKRONOS_BUILD_SHA=""
+
+ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA} \
+    MYKRONOS_DATALAKE_DIR=/data/datalake \
     MYKRONOS_DATABASE_URL=sqlite:////data/mykronos.db \
     MYKRONOS_WORKFLOW_TEMPLATES_DIR=/app/workflow-templates \
     MYKRONOS_ORACLE_POLICY_PATH=/app/oracle-policy-v1.yaml \

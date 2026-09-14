@@ -1945,6 +1945,15 @@ jobs:
                 # The SHA is also the better key - it identifies the exact
                 # code, and it is what the scan runs and the Oracle decision
                 # for this artifact are already keyed on.
+                #
+                # DO NOT read this as the provenance of the deployed image.
+                # It renames the wheel *file*; a wheel records its version in
+                # METADATA, so an install of it still reports 0.1.0. And the
+                # image does not consume this wheel at all - backend/Dockerfile
+                # compiles its own in a build stage. What the running container
+                # reports comes from `--build-arg MYKRONOS_BUILD_SHA` in
+                # publish-backend's kaniko task (#361). This stamp is for the
+                # dist artifact only.
                 cd ../..
                 SHA=$(git -C source rev-parse --short HEAD)
                 cd source/backend
@@ -2057,7 +2066,13 @@ jobs:
                 # templates from disk at startup and they live outside
                 # backend/.
                 SHA=$(cat meta/sha)
-                /kaniko/executor                   --context source                   --dockerfile source/backend/Dockerfile                   --destination "${REGISTRY}/mykronos-backend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
+                # --build-arg MYKRONOS_BUILD_SHA: the same SHA that becomes
+                # the tag, baked into the image so the *running* container can
+                # say what it is (#361). The tag alone is not enough -- a
+                # container cannot read the tag it was started from, which is
+                # why eight days of undeployed commits looked identical to a
+                # current deployment from inside the platform.
+                /kaniko/executor                   --context source                   --dockerfile source/backend/Dockerfile                   --build-arg "MYKRONOS_BUILD_SHA=${SHA}"                   --destination "${REGISTRY}/mykronos-backend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
 
   - name: publish-frontend
     public: true

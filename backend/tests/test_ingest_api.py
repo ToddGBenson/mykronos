@@ -102,9 +102,22 @@ class TestAuth:
         assert client.get("/api/ingest/health").status_code == 401
 
     def test_unauthenticated_liveness_probe_reveals_nothing(self, client: TestClient) -> None:
+        """`build` was added by #361 and is a deliberate widening, not a leak.
+
+        It carries the commit the image was built from — a public commit in a
+        public repository, which TheHub has served unauthenticated from
+        `/health` throughout. It has to be readable from outside the container
+        by whatever asks "is the fix running yet?", which is the question
+        nothing could answer on 2026-09-13 when twenty-six merged PRs sat
+        undeployed for eight days.
+
+        The assertion stays an equality on purpose: it is the guard that keeps
+        the *next* addition from being a lake path or a repository name.
+        """
         response = client.get("/healthz")
         assert response.status_code == 200
-        assert set(response.json()) == {"status", "version"}
+        assert set(response.json()) == {"status", "version", "build"}
+        assert set(response.json()["build"]) == {"sha", "source"}
 
 
 class TestValidation:
