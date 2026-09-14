@@ -137,6 +137,28 @@ Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue 
 # than the ingestion API, which authenticates with the repo token alone.
 Add-Secret -Name "mykronos-gate-token" -SecretScope team -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN' }
 
+# PS-9. These two were written straight into $varsFile as literals, which put
+# them in the applied config for anyone who can run `fly get-pipeline` -- the
+# exact thing the comment beside the vars array says Vault resolution exists to
+# prevent, applied to the Slack tokens and not to these. The drift check
+# reported it as `CREDENTIALS INLINE: ((personal-soc-ingestion-token))` and
+# nobody saw it, because nothing runs the drift check (#368).
+#
+# Through Add-Secret they are referenced when Vault holds them and, when it does
+# not, still written to the file -- but announced in yellow rather than
+# silently. Losing the loud fallback would trade one silent exposure for
+# another.
+# Three capabilities report against this token - secrets, iac and oracle.
+# Empty is allowed for the two scanning lanes: the scan still runs and still
+# gates, and says loudly in the build log that nothing was filed. The oracle
+# job is the exception and fails instead, because a risk decision that was
+# never requested is an unevaluated commit rather than a clean one. Mint one
+# with `mykronos rotate-token ToddGBenson/personal-soc`.
+Add-Secret -Name "personal-soc-ingestion-token" -Fallback { Read-EnvValueOptional $stackEnv 'PERSONAL_SOC_INGESTION_TOKEN' }
+# Optional. Without it skill-integrity inventories the model IDs it finds and
+# states plainly that it validated none of them.
+Add-Secret -Name "anthropic-api-key" -Fallback { Read-EnvValueOptional $stackEnv 'ANTHROPIC_API_KEY' }
+
 if ($fromVault) {
     Write-Host "Resolving from Vault: $($fromVault -join ', ')" -ForegroundColor DarkGray
 }
@@ -188,19 +210,7 @@ try {
         # whole batch; the backend now accepts it and v7 omits it when empty.
         # See the longer note in set-pipeline.ps1 for the ordering rule:
         # deploy the backend first, then move the pin.
-        "mykronos-ref: v7",
-        # Three capabilities now report against this token - secrets, iac and
-        # oracle - where the comment here said "exactly one" until 2026-09-04.
-        # Empty is allowed for the two scanning lanes: the scan still runs and
-        # still gates, and says loudly in the build log that nothing was filed.
-        # The oracle job is the exception and fails instead, because a risk
-        # decision that was never requested is an unevaluated commit rather
-        # than a clean one. Mint one with
-        # `mykronos rotate-token ToddGBenson/personal-soc`.
-        "personal-soc-ingestion-token: '$(Read-EnvValueOptional $stackEnv 'PERSONAL_SOC_INGESTION_TOKEN')'",
-        # Optional. Without it skill-integrity inventories the model IDs it
-        # finds and states plainly that it validated none of them.
-        "anthropic-api-key: '$(Read-EnvValueOptional $stackEnv 'ANTHROPIC_API_KEY')'"
+        "mykronos-ref: v7"
 
         # slack-bot-token and slack-alert-channel are deliberately NOT here.
         # They resolve through the Vault credential manager at team scope
