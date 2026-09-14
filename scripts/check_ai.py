@@ -46,6 +46,29 @@ SKIP_DIRS = {
 
 CODE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".yml", ".yaml", ".toml"}
 
+#: Directories whose contents are test material rather than shipped code.
+#:
+#: Separate from SKIP_DIRS, which lists vendored trees this project did not
+#: write. These are ours, and they are excluded for a different reason: a test
+#: for a detector contains, by construction, the thing the detector looks for.
+#:
+#: `backend/tests/test_ai_checks.py` builds an interpolated-prompt example as
+#: a STRING LITERAL, writes it to a temp file, and asserts that `check()` flags
+#: it. Scanning the test source therefore reports the fixture as a real
+#: injection surface. Five of them, at `error`, which is what took
+#: `oracle-gate` red on 2026-09-13 and blocked `promote` behind it.
+#:
+#: The example is deliberately NOT reproduced here. Writing it out put the
+#: pattern in this file, and the first run after that flagged this comment --
+#: a detector cannot quote its own signature in its own source.
+#:
+#: This is a scope decision and not a suppression: a prompt assembled from
+#: untrusted input inside a test is not a production surface, and every SAST
+#: tool this pipeline runs already excludes tests for the same reason. The
+#: cost is that a genuine injection surface in a test *helper* goes unseen,
+#: which is the cheaper of the two mistakes.
+TEST_DIRS = {"tests", "test", "__tests__", "testdata", "fixtures"}
+
 #: A pinned Anthropic or OpenAI identifier carries a date or an explicit
 #: version. `-latest`, or a bare family name, resolves to whatever the vendor
 #: is serving today.
@@ -111,7 +134,10 @@ def _files(root: Path) -> list[Path]:
         for p in sorted(root.rglob("*"))
         if p.suffix in CODE_SUFFIXES
         and p.is_file()
-        and not any(part in SKIP_DIRS for part in p.relative_to(root).parts)
+        and not any(
+            part in SKIP_DIRS or part in TEST_DIRS
+            for part in p.relative_to(root).parts
+        )
     ]
 
 

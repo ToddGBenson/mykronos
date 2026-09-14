@@ -275,3 +275,50 @@ class TestARootUnderADirectoryNamedLikeAVendorTree:
             "a vendored model reference became this repository's finding"
         )
         assert not [f for f in findings if "node_modules" in f.file]
+class TestTheCheckerDoesNotFlagItsOwnCorpus:
+    """A detector's tests contain the thing it detects.
+
+    `check_ai.py` had an absolute-path bug that made it skip every file
+    (#308). Fixing that turned the scan on for the first time, and the first
+    thing it found was this file: five `ai-prompt-injection-surface` findings
+    at `error`, every one of them a fixture written as a string literal a few
+    lines above the assertion that `check()` flags it. That took `oracle-gate`
+    red and blocked `promote` behind it.
+
+    Excluding test directories is the fix. This pins it, because the failure
+    is invisible when running the checker against a temp path -- which is
+    exactly what every other test in this file does.
+    """
+
+    def test_a_test_directory_is_not_scanned(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "test_thing.py").write_text(
+            'prompt = f"Summarise this: {request.body}"\n', encoding="utf-8"
+        )
+
+        findings, _ = check_ai.check(tmp_path)
+
+        assert not [
+            f for f in findings if f.rule_id == "ai-prompt-injection-surface"
+        ], "a fixture inside tests/ must not be reported as a production surface"
+
+    def test_the_same_file_outside_tests_is_still_scanned(self, tmp_path: Path) -> None:
+        """The exclusion is about location, not about the pattern."""
+        write(tmp_path, "handler.py", 'prompt = f"Summarise this: {request.body}"\n')
+
+        findings, _ = check_ai.check(tmp_path)
+
+        assert [f for f in findings if f.rule_id == "ai-prompt-injection-surface"]
+
+    def test_this_repository_scans_clean(self) -> None:
+        """The regression itself: run the checker over the real tree."""
+        root = Path(__file__).resolve().parents[2]
+        findings, _ = check_ai.check(root)
+
+        offenders = [
+            f for f in findings
+            if f.rule_id == "ai-prompt-injection-surface"
+            and "test" in str(getattr(f, "file_path", "")).lower()
+        ]
+        assert not offenders, f"checker flags its own test material: {offenders[:3]}"
