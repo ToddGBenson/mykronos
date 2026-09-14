@@ -25,7 +25,7 @@
     identically whichever shell and whichever encoding guess it meets.
 
     Usage:  Right-click PowerShell -> Run as administrator, then:
-              cd C:\Users\tgb_\Documents\Projects\PDSO2
+              cd C:\Users\tgb_\Documents\Projects\mykronos
               .\scripts\install-tunnel-route.ps1
 #>
 

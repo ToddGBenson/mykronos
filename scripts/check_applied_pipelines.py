@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,9 +58,26 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-FLY = os.environ.get(
-    "FLY", str(Path.home() / "Documents/Projects/PDSO2/deploy/concourse/bin/fly.exe")
-)
+def _default_fly() -> str:
+    """Find `fly`, rather than assert where it lives.
+
+    The previous default was an absolute path into a *different project's*
+    checkout (`~/Documents/Projects/PDSO2/...`). Nothing there, so every
+    invocation died in `subprocess` before reading a single pipeline.
+
+    `audit_pipeline_timeouts.py` carried the identical bug and its docstring
+    already records fixing it -- the fix was applied to one script and never
+    swept to its sibling, which is why this one has been unrunnable ever since
+    (#368).
+    """
+    found = shutil.which("fly")
+    if found:
+        return found
+    local = Path.home() / "bin" / ("fly.exe" if os.name == "nt" else "fly")
+    return str(local)
+
+
+FLY = os.environ.get("FLY") or _default_fly()
 TARGET = os.environ.get("FLY_TARGET", "mykronos")
 
 PIPELINES = {
@@ -125,13 +143,30 @@ def _substituted(disk: str, live: Any, name: str) -> str | None:
 
 
 def fetch(pipeline: str) -> dict[str, Any] | None:
-    result = subprocess.run(
-        [FLY, "--target", TARGET, "get-pipeline", "-p", pipeline],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
+    """The applied config, or None if Concourse could not be read.
+
+    `check=False` suppresses a non-zero exit; it does not catch a *missing
+    executable*, so a wrong `FLY` path raised `FileNotFoundError` straight out
+    of `main()` as a traceback. The fail-open branch below -- and the comment
+    explaining it -- were unreachable for the one failure that actually
+    happened (#368). A drift check that crashes reports no drift, which is
+    indistinguishable from finding none.
+    """
+    try:
+        result = subprocess.run(
+            [FLY, "--target", TARGET, "get-pipeline", "-p", pipeline],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
-    return yaml.safe_load(result.stdout)
+    try:
+        return yaml.safe_load(result.stdout)
+    except yaml.YAMLError:
+        # `fly` exited 0 with something that is not a pipeline. Treated as
+        # unreadable rather than as drift, for the same reason as above.
+        return None
 
 
 def index(items: list[Any]) -> dict[str, Any] | None:

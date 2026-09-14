@@ -119,3 +119,45 @@ def test_credentials_are_told_from_settings() -> None:
 def test_every_pipeline_in_the_map_exists() -> None:
     for relative in checker.PIPELINES.values():
         assert (REPO_ROOT / relative).is_file(), relative
+
+
+class TestItCanActuallyRun:
+    """The checker was unrunnable for its whole life (#368).
+
+    Not wrong — its comparison logic is right, and the tests above cover it.
+    Unrunnable: the default `FLY` path pointed into a different project's
+    checkout, and the missing binary raised out of `subprocess` rather than
+    reaching the fail-open branch. A drift check that crashes reports no drift,
+    which from the outside is the same as finding none.
+    """
+
+    def test_a_missing_fly_fails_open_rather_than_raising(self, monkeypatch) -> None:
+        """`check=False` suppresses a non-zero exit, not a missing executable.
+
+        This is the exact failure that happened: FileNotFoundError straight out
+        of `main()`, past the comment promising it fails open.
+        """
+        monkeypatch.setattr(checker, "FLY", "/definitely/not/a/real/fly")
+
+        assert checker.fetch("mykronos") is None
+
+    def test_the_default_does_not_point_at_another_project(self) -> None:
+        """The bug by name. `audit_pipeline_timeouts.py` already documents
+        fixing the identical stale path; this is the sibling it was never
+        swept to."""
+        assert "PDSO2" not in checker.FLY
+
+    def test_output_that_is_not_a_pipeline_is_unreadable_not_drift(
+        self, monkeypatch
+    ) -> None:
+        """A `fly` that exits 0 with a login prompt or an error page must not
+        be compared against the committed file — every key would read as a
+        difference, and a wall of false drift is how a real one gets missed."""
+
+        class Result:
+            returncode = 0
+            stdout = "\tthis: is: not: yaml\n  - [unclosed"
+
+        monkeypatch.setattr(checker.subprocess, "run", lambda *a, **k: Result())
+
+        assert checker.fetch("mykronos") is None
