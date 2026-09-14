@@ -26,6 +26,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+_logger = logging.getLogger(__name__)
+
 #: Long enough for a repository name, a rule id, or a GitHub delivery uuid
 #: with room to spare; short enough that a hostile value cannot push the rest
 #: of a record off the end of a viewer's screen.
@@ -76,13 +78,71 @@ class ControlCharacterFilter(logging.Filter):
         return True
 
 
-def install(logger: logging.Logger | None = None) -> None:
-    """Attach the backstop filter to every handler on `logger`.
-
-    On the handlers rather than the logger itself: a filter on a logger does
-    not see records propagated up from its children, which is most of them.
-    """
-    target = logger or logging.getLogger()
+def _attach(target: logging.Logger) -> int:
+    """Add the filter to any of `target`'s own handlers that lack it."""
+    attached = 0
     for handler in target.handlers:
         if not any(isinstance(f, ControlCharacterFilter) for f in handler.filters):
             handler.addFilter(ControlCharacterFilter())
+            attached += 1
+    return attached
+
+
+def install(logger: logging.Logger | None = None) -> int:
+    """Attach the backstop filter to every handler that will emit a record.
+
+    On the handlers rather than the loggers: a filter on a logger does not see
+    records propagated up from its children, which is most of them.
+
+    Root is not enough, and assuming it was made this a no-op in production for
+    its whole life (#364). Under uvicorn the root logger has **zero** handlers:
+    uvicorn configures the named loggers `uvicorn` and `uvicorn.access` with
+    their own handlers and `propagate: False`, so nothing reaches root and the
+    original loop body never executed. Measured inside the running image, after
+    `lifespan` had called this function:
+
+        root             handlers=0  ControlCharacterFilter=False
+        uvicorn          handlers=1  ControlCharacterFilter=False
+        uvicorn.access   handlers=1  ControlCharacterFilter=False
+
+    `uvicorn.access` is exactly the logger that writes attacker-influenced
+    request lines, so the one logger this was described as covering was the one
+    it could never reach.
+
+    Every logger with handlers of its own is therefore walked, via the stdlib's
+    own registry rather than by naming uvicorn: a `propagate: False` logger is
+    a terminal sink wherever it comes from, and the next library to configure
+    one should not need this function edited.
+
+    Returns the number of handlers newly filtered, so a caller can tell
+    "already installed" from "covered nothing" — the two states this could not
+    previously distinguish, and the reason a silent no-op survived.
+    """
+    if logger is not None:
+        return _attach(logger)
+
+    root = logging.getLogger()
+    attached = _attach(root)
+    covered = len(root.handlers)
+
+    # `loggerDict` holds PlaceHolder entries for intermediate names that were
+    # never configured; only real Loggers have handlers.
+    for existing in list(logging.root.manager.loggerDict.values()):
+        if isinstance(existing, logging.Logger) and existing.handlers:
+            attached += _attach(existing)
+            covered += len(existing.handlers)
+
+    if not covered:
+        # Not an exception: logging is not worth crashing a deployment over.
+        # But a backstop protecting nothing must not look identical to one that
+        # is doing its job, which is the whole defect this docstring describes.
+        #
+        # Resolved through the module attribute rather than inline, so this
+        # branch is reachable from a test: the only way to reach it is to leave
+        # the process with no handlers anywhere, which also removes the ones a
+        # test would use to observe it.
+        _logger.warning(
+            "logsafe.install() found no log handlers to filter; untrusted text "
+            "is protected only at the call sites that scrub explicitly."
+        )
+    return attached
