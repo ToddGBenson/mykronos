@@ -1636,6 +1636,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deployments Page
+         * @description What each repository is actually running.
+         *
+         *     Reads the revision recorded by the `deployment-probe` job rather than
+         *     probing live. A live probe here would make the page slow and, worse, would
+         *     make this endpoint the only place the answer exists — the value is in the
+         *     job running on a timer whether or not anybody opens the page, because the
+         *     failure being caught is one nobody was looking for.
+         *
+         *     `scanned_revision` is the newest commit any capability scanned. When it
+         *     differs from `deployed_revision`, every open and closed finding for that
+         *     repository describes code that is not the code serving traffic.
+         */
+        get: operations["deployments_page_api_dashboard_deployments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge/entries": {
         parameters: {
             query?: never;
@@ -3135,6 +3165,38 @@ export interface components {
             reachable: boolean;
             /** Detail */
             detail: string;
+        };
+        /**
+         * DeploymentOut
+         * @description What one repository is running, next to what was scanned (#361).
+         */
+        DeploymentOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Status */
+            status: string;
+            /** Deployed Revision */
+            deployed_revision: string | null;
+            /** Deployed Revision At */
+            deployed_revision_at: string | null;
+            /** Scanned Revision */
+            scanned_revision: string | null;
+            /** Matches Scan */
+            matches_scan: boolean | null;
+            /** Probe Url */
+            probe_url: string;
+        };
+        /**
+         * DeploymentsOut
+         * @description The answer to "is what I am reporting on what you are running?".
+         */
+        DeploymentsOut: {
+            /** Repos */
+            repos: components["schemas"]["DeploymentOut"][];
+            /** Diverged */
+            diverged: number;
+            /** Not Configured */
+            not_configured: number;
         };
         /**
          * DigestGroupOut
@@ -7922,6 +7984,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlatformHealthOut"];
+                };
+            };
+        };
+    };
+    deployments_page_api_dashboard_deployments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentsOut"];
                 };
             };
         };

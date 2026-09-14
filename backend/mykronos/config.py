@@ -81,6 +81,29 @@ class Settings(BaseSettings):
         ),
     )
 
+    deployment_probe_interval_seconds: int = Field(
+        default=1_800,
+        ge=1,
+        description=(
+            "How often to ask each configured deployment what revision it is "
+            "running (#361). Half-hourly, matching `fix_verification`: the "
+            "question is whether a merge has reached production, and the "
+            "interesting window is the one just after a deploy. Cheap enough "
+            "to run at that rate -- one unauthenticated GET per repository."
+        ),
+    )
+
+    deployment_probe_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Per-probe budget. Sized for a host that accepts the connection "
+            "and then stalls, which is the failure that would otherwise hold "
+            "the whole sweep open; a healthy probe answers in well under a "
+            "second."
+        ),
+    )
+
     # --- Scheduled jobs -----------------------------------------------
 
     token_rotation_interval_seconds: int = Field(
