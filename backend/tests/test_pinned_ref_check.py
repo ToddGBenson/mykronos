@@ -218,4 +218,101 @@ class TestItDoesNotClaimWhatItSkipped:
         monkeypatch.setattr(checker, "check", lambda commit="": [])
 
         assert checker.main([]) == 0
-        assert "raw-fetched scripts." in capsys.readouterr().out
+        out = capsys.readouterr().out
+        # Asserted on the hedge rather than the wording. The summary gained a
+        # clause when the adapter check was added, and pinning the exact
+        # sentence made this fail for a reason that had nothing to do with
+        # what it is guarding.
+        assert "NOT checked" not in out
+        assert "raw-fetched scripts" in out
+        assert "adapter pairs" in out
+
+
+class TestTheRegistryIsCheckedToo:
+    """The third way the pin goes stale, and the one that was not checked.
+
+    Modules, flags and raw-fetched scripts were all asserted. The adapter
+    registry was not — so a repository could point a lane at a new tool, the
+    pinned runner could be unable to normalise its output, and this check
+    stayed green. It did: `pin-check` succeeded at 2026-09-15 04:09 while
+    keel's ShellCheck lane failed every run with
+
+        ERROR No adapter for capability 'sast' with tool 'shellcheck'.
+              Supported for 'sast': codeql, semgrep.
+
+    `sast_shellcheck.py` landed 2026-09-09; v8, the newest tag, is from
+    2026-08-30. The adapter exists on main and in no release.
+    """
+
+    def test_every_declared_pair_resolves_against_this_checkout(self, checker) -> None:
+        """The working tree is the thing tags are cut from, so a pair that
+        cannot resolve here is a typo rather than a stale pin."""
+        assert checker._missing_adapters() == []
+
+    def test_the_list_is_not_empty(self, checker) -> None:
+        assert checker.REQUIRED_ADAPTERS
+
+    def test_an_unsupported_pair_is_reported(self, checker, monkeypatch) -> None:
+        monkeypatch.setattr(
+            checker,
+            "REQUIRED_ADAPTERS",
+            checker.REQUIRED_ADAPTERS + (("sast", "not-a-real-tool"),),
+        )
+
+        problems = checker._missing_adapters()
+
+        assert len(problems) == 1
+        assert "not-a-real-tool" in problems[0]
+
+    def test_the_message_names_what_the_pin_does_support(
+        self, checker, monkeypatch
+    ) -> None:
+        """"No adapter" on its own sends the reader to the wrong place. The
+        supported list is what distinguishes a typo from a stale pin."""
+        monkeypatch.setattr(
+            checker, "REQUIRED_ADAPTERS", (("sast", "not-a-real-tool"),)
+        )
+
+        problem = checker._missing_adapters()[0]
+
+        assert "the pin supports:" in problem
+        assert "codeql" in problem
+
+    def test_a_registry_that_will_not_import_is_one_problem_not_fifteen(
+        self, checker, monkeypatch
+    ) -> None:
+        """A pin whose registry is unimportable is unusable, and repeating that
+        once per pair buries the sentence that matters."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fail_registry(name, *args, **kwargs):
+            if name == "mykronos.adapters":
+                raise ImportError("no registry in this pin")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fail_registry)
+
+        problems = checker._missing_adapters()
+
+        assert len(problems) == 1
+        assert "registry will not import" in problems[0]
+
+    def test_the_pairs_the_pipelines_upload_are_declared(self, checker) -> None:
+        """The same discipline the module list keeps: a lane that uploads a
+        pair nobody declared is a pair nothing checks."""
+        root = SCRIPT.resolve().parents[1]
+        declared = set(checker.REQUIRED_ADAPTERS)
+        import re
+
+        used = set()
+        for path in (root / "deploy" / "concourse" / "pipelines").glob("*.yml"):
+            text = path.read_text(encoding="utf-8")
+            for cap, tool in re.findall(
+                r"--capability ([a-z-]+) --tool ([a-z0-9_-]+)", text
+            ):
+                used.add((cap, tool))
+
+        assert used, "found no --capability/--tool pairs to check against"
+        assert used <= declared, f"undeclared pairs: {sorted(used - declared)}"
