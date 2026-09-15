@@ -3716,6 +3716,10 @@ export interface components {
             owner?: string | null;
             /** Owner Source */
             owner_source?: string | null;
+            /** Accepted Reason Code */
+            accepted_reason_code?: string | null;
+            /** Accepted Until */
+            accepted_until?: string | null;
             /** Due At */
             due_at?: string | null;
             /** Due Source */
