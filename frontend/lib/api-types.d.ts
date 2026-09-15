@@ -2250,6 +2250,42 @@ export interface paths {
         patch: operations["set_scanner_api_repos__repo_id__patch"];
         trace?: never;
     };
+    "/api/repos/{repo_id}/deployment-probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Deployment Probe
+         * @description Set the URL the deployment probe asks (#361).
+         *
+         *     #367 added the probe, the sweep, the comparison against the scanned
+         *     revision and the endpoint that reports it, and no way to configure any of
+         *     it. `deployment_probe_url` was read in three places and written in none,
+         *     so every repository reported `not_configured` permanently and the job had
+         *     nothing to sweep.
+         *
+         *     That is the defect this platform keeps finding in other people's systems --
+         *     a control that exists and cannot run -- shipped by the change that exists
+         *     to catch it. Worth saying plainly rather than quietly adding a setter.
+         *
+         *     No validation beyond a length bound and a scheme check. A probe that
+         *     cannot be reached, or answers in the wrong shape, is reported as
+         *     `unreachable` or `unparsed` by the sweep, which is more useful than a 422
+         *     here: the interesting failures are the ones that appear later, when a
+         *     deployment moves and the URL stops being right.
+         */
+        put: operations["set_deployment_probe_api_repos__repo_id__deployment_probe_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/{repo_id}/capabilities": {
         parameters: {
             query?: never;
@@ -3184,6 +3220,17 @@ export interface components {
             /** Matches Scan */
             matches_scan: boolean | null;
             /** Probe Url */
+            probe_url: string;
+        };
+        /**
+         * DeploymentProbeUpdate
+         * @description Where to ask this repository's deployment what it is running (#361).
+         */
+        DeploymentProbeUpdate: {
+            /**
+             * Probe Url
+             * @default
+             */
             probe_url: string;
         };
         /**
@@ -8767,6 +8814,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ScannerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_deployment_probe_api_repos__repo_id__deployment_probe_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeploymentProbeUpdate"];
             };
         };
         responses: {

@@ -347,3 +347,107 @@ class TestTheEndpointSaysWhatItCannotSee:
 
     def test_it_needs_a_credential(self, client) -> None:
         assert client.get("/api/dashboard/deployments").status_code == 401
+
+
+class TestTheProbeCanActuallyBeConfigured:
+    """#367 shipped the probe with no way to set its URL.
+
+    `deployment_probe_url` was read in three places and written in none, so
+    every repository reported `not_configured` for ever and the sweep had
+    nothing to sweep. A control that exists and cannot run is the defect this
+    platform keeps finding in other people's systems; this one was mine.
+    """
+
+    @staticmethod
+    def _repo_id(client) -> str:
+        from mykronos.db.models import Organization, RepoOnboarding
+
+        with client.app.state.db.session() as session:
+            org = Organization(github_org_login="ToddGBenson")
+            session.add(org)
+            session.flush()
+            row = RepoOnboarding(
+                org_id=org.id,
+                github_repo_full_name="ToddGBenson/probe-me",
+                github_installation_id=1,
+                status="active",
+                enabled_capabilities=["sast"],
+                default_branch="main",
+            )
+            session.add(row)
+            session.commit()
+            return str(row.id)
+
+    def test_setting_a_url_makes_the_repo_probeable(self, client, admin_auth) -> None:
+        repo_id = self._repo_id(client)
+
+        response = client.put(
+            f"/api/repos/{repo_id}/deployment-probe",
+            json={"probe_url": "http://hub.example/health"},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200
+        from mykronos.deployments import probe_targets
+
+        assert probe_targets(client.app.state.db) == {
+            "ToddGBenson/probe-me": "http://hub.example/health"
+        }
+
+    def test_clearing_it_also_clears_what_was_read_through_it(
+        self, client, admin_auth
+    ) -> None:
+        """A stale revision behind a removed probe would leave the portfolio
+        asserting what a repository runs on the strength of a probe nobody is
+        making."""
+        from mykronos.db.models import RepoOnboarding
+        from sqlalchemy import select
+
+        repo_id = self._repo_id(client)
+        client.put(
+            f"/api/repos/{repo_id}/deployment-probe",
+            json={"probe_url": "http://hub.example/health"},
+            headers=admin_auth,
+        )
+        with client.app.state.db.session() as session:
+            row = session.scalars(
+                select(RepoOnboarding).where(RepoOnboarding.id == repo_id)
+            ).one()
+            row.deployed_revision = DEPLOYED
+            row.deployment_probe_status = OK
+            session.commit()
+
+        client.put(
+            f"/api/repos/{repo_id}/deployment-probe",
+            json={"probe_url": ""},
+            headers=admin_auth,
+        )
+
+        with client.app.state.db.session() as session:
+            row = session.scalars(
+                select(RepoOnboarding).where(RepoOnboarding.id == repo_id)
+            ).one()
+            assert row.deployed_revision is None
+            assert row.deployment_probe_status == NOT_CONFIGURED
+
+    def test_a_non_http_url_is_refused(self, client, admin_auth) -> None:
+        repo_id = self._repo_id(client)
+
+        response = client.put(
+            f"/api/repos/{repo_id}/deployment-probe",
+            json={"probe_url": "file:///etc/passwd"},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 422
+
+    def test_it_needs_a_credential(self, client) -> None:
+        repo_id = self._repo_id(client)
+
+        assert (
+            client.put(
+                f"/api/repos/{repo_id}/deployment-probe",
+                json={"probe_url": "http://x/health"},
+            ).status_code
+            == 401
+        )

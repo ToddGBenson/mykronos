@@ -553,6 +553,78 @@ async def set_scanner(
         return _summary(row)
 
 
+class DeploymentProbeUpdate(BaseModel):
+    """Where to ask this repository's deployment what it is running (#361)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: An unauthenticated GET returning JSON with a string at `build.sha`.
+    #: mykronos serves it at /healthz and TheHub at /health. Empty clears the
+    #: probe and returns the repository to `not_configured`, which is a real
+    #: state and not a failure: most repositories have no deployment this
+    #: platform can reach.
+    probe_url: str = Field(default="", max_length=1024)
+
+
+@router.put("/{repo_id}/deployment-probe", response_model=RepoSummary)
+async def set_deployment_probe(
+    request: Request, repo_id: str, body: DeploymentProbeUpdate, actor: AdminDep
+) -> RepoSummary:
+    """Set the URL the deployment probe asks (#361).
+
+    #367 added the probe, the sweep, the comparison against the scanned
+    revision and the endpoint that reports it, and no way to configure any of
+    it. `deployment_probe_url` was read in three places and written in none,
+    so every repository reported `not_configured` permanently and the job had
+    nothing to sweep.
+
+    That is the defect this platform keeps finding in other people's systems --
+    a control that exists and cannot run -- shipped by the change that exists
+    to catch it. Worth saying plainly rather than quietly adding a setter.
+
+    No validation beyond a length bound and a scheme check. A probe that
+    cannot be reached, or answers in the wrong shape, is reported as
+    `unreachable` or `unparsed` by the sweep, which is more useful than a 422
+    here: the interesting failures are the ones that appear later, when a
+    deployment moves and the URL stops being right.
+    """
+    url = body.probe_url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="probe_url must be an http:// or https:// URL, or empty to clear it.",
+        )
+
+    db = request.app.state.db
+    with db.session() as session:
+        row = _get(session, repo_id)
+        if row.status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{row.github_repo_full_name} is offboarded.",
+            )
+        previous = row.deployment_probe_url or ""
+        row.deployment_probe_url = url
+        if not url:
+            # Clearing the URL clears what was read through it. Leaving a
+            # revision behind would leave the portfolio asserting what a
+            # repository runs on the strength of a probe nobody is making.
+            row.deployed_revision = None
+            row.deployed_revision_at = None
+            row.deployment_probe_status = "not_configured"
+        db.audit(
+            session,
+            actor=actor,
+            action="repo.deployment_probe",
+            entity_type="repo_onboarding",
+            entity_id=row.id,
+            repo=row.github_repo_full_name,
+            previous=previous,
+            probe_url=url,
+        )
+        session.commit()
+        return _summary(row)
+
 def _strand_dropped_analysers(
     catalog: Catalog, repo_full_name: str, dropped: dict[str, set[str]]
 ) -> int:
