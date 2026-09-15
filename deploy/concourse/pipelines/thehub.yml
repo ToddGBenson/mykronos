@@ -3394,13 +3394,35 @@ jobs:
                 # real-looking hash that differs from WANT -- so a 404 would be
                 # reported as "the target serves different content", which is a
                 # different problem with a different fix.
-                if ! curl -fsS --max-time 20 -o served.probe "${TARGET_URL%/}/${PROBE_REL}"; then
-                  echo "::error::Could not fetch ${TARGET_URL%/}/${PROBE_REL} from the target."
+                # Into a writable directory, and NOT the working directory.
+                # This task runs as the unprivileged `zap` user against a
+                # root-owned volume, so `-o served.probe` failed with curl 23,
+                # "Failure writing output to destination" -- the fetch had
+                # already succeeded. `zap-baseline` uses /zap/wrk for the same
+                # reason, and that directory is created above.
+                PROBE_FILE="/zap/wrk/served.probe"
+
+                # The exit code is kept, because curl reports "could not
+                # resolve", "connection refused", "HTTP 404" and "could not
+                # write the file" through the same non-zero return, and those
+                # need different things done. The first version of this printed
+                # "Could not fetch" for all of them and named the wrong cause
+                # in production on the first run.
+                rc=0
+                curl -fsS --max-time 20 -o "$PROBE_FILE" "${TARGET_URL%/}/${PROBE_REL}" || rc=$?
+                if [ "$rc" -ne 0 ]; then
+                  case "$rc" in
+                    23) echo "::error::Fetched ${PROBE_REL} but could not write ${PROBE_FILE}." ;;
+                    22) echo "::error::The target returned an HTTP error for ${TARGET_URL%/}/${PROBE_REL}." ;;
+                    6|7) echo "::error::Could not reach ${TARGET_URL%/} to fetch ${PROBE_REL}." ;;
+                    28) echo "::error::Timed out fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
+                    *)  echo "::error::curl exited ${rc} fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
+                  esac
                   echo "::error::The scan ran, but what it scanned cannot be established, so"
                   echo "::error::no findings are filed (#305)."
                   exit 1
                 fi
-                GOT=$(sha256sum served.probe | cut -d" " -f1)
+                GOT=$(sha256sum "$PROBE_FILE" | cut -d" " -f1)
 
                 if [ "$WANT" != "$GOT" ]; then
                   echo "::error::The target is not serving the commit this scan would record."
