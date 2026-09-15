@@ -3326,6 +3326,76 @@ jobs:
                   exit 1
                 }
 
+                # Prove the target actually serves this commit (#305).
+                #
+                # This job checks out `source` and then scans a long-running
+                # container that mounts a host directory. Nothing connected the
+                # two, so `rev-parse HEAD` described the checkout while ZAP
+                # described whatever the container happened to hold. Measured
+                # 2026-09-14:
+                #
+                #   staging served   772c9fc080f9   2026-04-26
+                #   DAST recorded    675086e86237   2026-09-12
+                #   production ran   f725fe1e293d   2026-09-13
+                #
+                # Three different commits, and four and a half months of ZAP
+                # results filed against code that was never scanned.
+                #
+                # The check compares a served asset against the checkout copy
+                # byte for byte. Deliberately NOT `sw.js` or `index.html`:
+                # deploy.sh sed-stamps those and then restores the placeholder
+                # afterwards (its Story #2809 block), so they differ from the
+                # checkout even when the deploy is correct. Nothing under
+                # frontend/js/ is ever stamped, so those files compare cleanly.
+                #
+                # The file is chosen deterministically rather than hardcoded, so
+                # a rename cannot silently turn this check off.
+                PROBE_REL=$(cd source/frontend && ls js/*.js 2>/dev/null | sort | head -1)
+
+                test -n "$PROBE_REL" || {
+                  echo "::error::No asset under frontend/js/ to verify the target with."
+                  exit 1
+                }
+
+                WANT=$(sha256sum "source/frontend/${PROBE_REL}" | cut -d" " -f1)
+
+                # To a file, not down a pipe. `curl | sha256sum` hashes an empty
+                # stream when the fetch fails, and the sha256 of nothing is a
+                # real-looking hash that differs from WANT -- so a 404 would be
+                # reported as "the target serves different content", which is a
+                # different problem with a different fix.
+                if ! curl -fsS --max-time 20 -o served.probe "${TARGET_URL%/}/${PROBE_REL}"; then
+                  echo "::error::Could not fetch ${TARGET_URL%/}/${PROBE_REL} from the target."
+                  echo "::error::The scan ran, but what it scanned cannot be established, so"
+                  echo "::error::no findings are filed (#305)."
+                  exit 1
+                fi
+                GOT=$(sha256sum served.probe | cut -d" " -f1)
+
+                if [ "$WANT" != "$GOT" ]; then
+                  echo "::error::The target is not serving the commit this scan would record."
+                  echo "::error::  probe    : ${PROBE_REL}"
+                  echo "::error::  checkout : ${COMMIT_SHA}"
+                  echo "::error::  expected : ${WANT}"
+                  echo "::error::  served   : ${GOT}"
+                  echo "::error::"
+                  echo "::error::Staging mounts frontend-staging/, which is only refreshed by"
+                  echo "::error::scripts/hydrate-staging-frontend.sh. Nothing automated calls it,"
+                  echo "::error::so the tree can sit months behind frontend/. Run it on the host"
+                  echo "::error::and re-run this job."
+                  echo "::error::"
+                  echo "::error::Note a mismatch can also mean the asset 404d into the SPA"
+                  echo "::error::fallback: staging nginx answers a missing file with 200 and"
+                  echo "::error::index.html, so an absent asset never shows up as a 404."
+                  echo "::error::"
+                  echo "::error::Findings are NOT filed. A DAST result attributed to code that"
+                  echo "::error::was never served is worse than no DAST result (#305)."
+                  exit 1
+                fi
+
+                echo "Target verified: ${PROBE_REL} served by ${TARGET_URL} matches ${COMMIT_SHA}."
+
+
                 python3 -m mykronos.upload \
                   --capability dast --tool zap \
                   --results-path /zap/wrk \
