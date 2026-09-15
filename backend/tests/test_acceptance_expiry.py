@@ -421,3 +421,89 @@ class TestTheSweepIsSafe:
 
         assert (result.expired, result.reopened_by_fix, result.still_accepted) == (0, 0, 0)
         assert state(catalog)[0] == "open"
+
+
+class TestTheDetailEndpointShowsTheAcceptance:
+    """An acceptance you cannot read the expiry of is a permanent suppression.
+
+    `GET /api/dashboard/findings/{id}` served `status: accepted_risk` with
+    neither the reason code nor the review date beside it — both absent from
+    the response, not null. The lake held them throughout; only this surface
+    was silent.
+
+    That is not cosmetic. It is the endpoint a person opens to decide whether
+    an acceptance still holds, and without the expiry there is nothing to
+    decide against. It misled a reader into recording that an acceptance was
+    undated when it carried `compensating_control` until 2027-03-11 (#378).
+    """
+
+    def test_the_reason_and_expiry_come_back(
+        self, client: TestClient, auth: dict[str, str], admin_auth: dict[str, str],
+        catalog: Catalog, run_compaction: Any,
+    ) -> None:
+        seed(client, auth, run_compaction)
+        finding_id = only_finding(catalog)
+        until = today() + timedelta(days=30)
+        assert accept(
+            client, admin_auth, finding_id,
+            accepted_until=until.isoformat(),
+            accepted_reason_code="compensating_control",
+        ).status_code == 200
+        run_compaction()
+
+        body = client.get(
+            f"/api/dashboard/findings/{finding_id}", headers=admin_auth
+        ).json()
+
+        assert body["status"] == "accepted_risk"
+        assert body["accepted_reason_code"] == "compensating_control"
+        assert body["accepted_until"] == until.isoformat()
+
+    def test_the_keys_are_present_even_when_not_accepted(
+        self, client: TestClient, auth: dict[str, str], admin_auth: dict[str, str],
+        catalog: Catalog, run_compaction: Any,
+    ) -> None:
+        """Present-and-null, not absent.
+
+        The distinction is what made the original defect hard to see: read
+        through `dict.get()`, a missing key and a null value are the same
+        thing, so "this acceptance has no expiry" and "this endpoint does not
+        report expiries" were indistinguishable from the outside.
+        """
+        seed(client, auth, run_compaction)
+
+        body = client.get(
+            f"/api/dashboard/findings/{only_finding(catalog)}", headers=admin_auth
+        ).json()
+
+        assert "accepted_reason_code" in body
+        assert "accepted_until" in body
+        assert body["accepted_reason_code"] is None
+        assert body["accepted_until"] is None
+
+    def test_the_query_selects_superseded_by(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """Asserted against the query, not the response.
+
+        The first version of this test checked `"superseded_by" in body` and
+        passed with the column removed -- Pydantic emits a declared field as
+        null whether or not anything populated it, so the response shape says
+        nothing about what was selected. A test that passes both ways is worth
+        less than none, because it looks like coverage.
+
+        `findings()` has selected this since spec 17 §5.1 and `finding()` never
+        did, so the detail endpoint was the one surface that could not follow a
+        re-fingerprinted finding to its replacement -- the trail #377 needed.
+        """
+        from mykronos.dashboard import DashboardQueries
+
+        seed(client, auth, run_compaction)
+
+        record = DashboardQueries(catalog).finding(only_finding(catalog))
+
+        assert record is not None
+        assert "superseded_by" in record
+        assert "accepted_reason_code" in record
+        assert "accepted_until" in record
