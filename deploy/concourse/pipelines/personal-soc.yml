@@ -815,6 +815,10 @@ jobs:
         passed: [guard]
       - get: pwsh
         attempts: *retry_fetch
+      # The uploader needs python; the analyser needs pwsh. Two images, two
+      # tasks, one job.
+      - get: python
+        attempts: *retry_fetch
       - task: psscriptanalyzer
         # PS-7. 10m from 5 observed run(s): median 35s, slowest 48s.
         timeout: 10m
@@ -822,7 +826,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: notify }]
+          outputs: [{ name: notify }, { name: results }]
           run:
             path: pwsh
             args:
@@ -845,6 +849,36 @@ jobs:
                 }
 
                 $all = @(Invoke-ScriptAnalyzer -Path source/skills -Recurse)
+
+                # What Mykronos receives, which is deliberately narrower than
+                # what this job prints. Display and error-gating below are
+                # unchanged and still see every rule.
+                #
+                # Measured 2026-09-15 over skills/: 79 findings, all Warning,
+                # of which 63 are PSAvoidUsingWriteHost and 10 are
+                # PSUseBOMForUnicodeEncodedFile. The adapter maps Warning to
+                # LOW, so uploading unfiltered would take personal-soc from
+                # 0 open to 79 open on two style rules and no security
+                # content -- and a portfolio that gains 73 findings with no
+                # signal is one people stop reading.
+                #
+                # Excluded because they are style, not defect: Write-Host is a
+                # console-output preference, and a missing BOM matters to
+                # Windows PowerShell 5.1 reading non-ASCII, which is not how
+                # any of this runs. Every security-category rule still
+                # reports -- PSAvoidUsingPlainTextForPassword,
+                # PSAvoidUsingInvokeExpression,
+                # PSAvoidUsingConvertToSecureStringWithPlainText and the rest.
+                $styleOnly = @("PSAvoidUsingWriteHost", "PSUseBOMForUnicodeEncodedFile")
+                $uploadable = @($all | Where-Object { $styleOnly -notcontains $_.RuleName })
+
+                # -Depth matters: the records nest, and the default of 2
+                # truncates ScriptPath and Extent into "System.Object[]".
+                # ConvertTo-Json emits a bare object rather than an array for a
+                # single finding, so the array is forced.
+                ,$uploadable | ConvertTo-Json -Depth 6 |
+                  Set-Content -Path results/psscriptanalyzer.json -Encoding utf8
+                Write-Host "Uploading $($uploadable.Count) of $($all.Count) finding(s); $($all.Count - $uploadable.Count) style-only excluded."
                 $errors = @($all | Where-Object Severity -eq 'Error')
                 $warnings = @($all | Where-Object Severity -eq 'Warning')
 
@@ -870,6 +904,48 @@ jobs:
                   exit 1
                 }
                 Write-Host "No analyser errors. $($warnings.Count) warning(s) recorded above."
+
+      # personal-soc is 100% PowerShell and CodeQL implements none of it, so
+      # until now nothing had ever read this repository for a defect -- its
+      # three capabilities are secrets, iac and oracle (B-051, #260). The
+      # analysis above has run on every push the whole time and uploaded
+      # nothing; this is the reporting half.
+      #
+      # A separate task because the analyser needs pwsh and the uploader needs
+      # python. `--blocking false`: the gate above already decided, on errors,
+      # and a linter should not also hold the ingestion path.
+      - task: upload
+        timeout: 10m
+        image: python
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+          MYKRONOS_REF: ((mykronos-ref))
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                  echo "No ingestion token; skipping upload. The analysis above still ran and still gated."
+                  exit 0
+                fi
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                cd source
+                python -m mykronos.upload \
+                  --capability sast --tool psscriptanalyzer \
+                  --results-path ../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/personal-soc \
+                  --commit-sha "$(git rev-parse HEAD)" \
+                  --branch main \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false
 
   # -- Functional tests ----------------------------------------------------
   #
