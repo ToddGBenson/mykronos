@@ -72,6 +72,71 @@ REQUIRED_FLAGS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: `(capability, tool)` pairs the estate uploads. A pinned runner without an
+#: adapter for one of these accepts the scan run and then fails the upload:
+#:
+#:     ERROR No adapter for capability 'sast' with tool 'shellcheck'.
+#:           Supported for 'sast': codeql, semgrep.
+#:
+#: which is what keel's ShellCheck lane has done on every run since it was
+#: enabled. The adapter exists on `main` and in no tag -- `sast_shellcheck.py`
+#: landed 2026-09-09 and v8, the newest tag, is from 2026-08-30. The same is
+#: true of `sast_psscriptanalyzer.py`.
+#:
+#: This is the third way the pin goes stale and the one that was not checked.
+#: Modules, flags and raw-fetched scripts were; the registry was not, so a
+#: repository could enable an analyser, the runner could be unable to
+#: normalise its output, and this check stayed green. It did: pin-check
+#: succeeded at 2026-09-15 04:09 while keel's lane was failing.
+#:
+#: Add to this in the same commit that points a lane at a new tool -- the same
+#: discipline the lists above ask for, for the same reason.
+REQUIRED_ADAPTERS: tuple[tuple[str, str], ...] = (
+    # Concourse pipelines
+    ("ai", "mykronos-ai-checks"),
+    ("atlas", "osv-scanner"),
+    ("cloud", "prowler"),
+    ("containers", "trivy"),
+    ("dast", "zap"),
+    ("functional", "junit"),
+    ("iac", "checkov"),
+    ("qa", "junit"),
+    ("sast", "semgrep"),
+    ("secrets", "gitleaks"),
+    ("unit", "junit"),
+    # GitHub Actions workflow templates
+    ("sast", "codeql"),
+    ("sast", "shellcheck"),
+    ("sast", "psscriptanalyzer"),
+)
+
+
+def _missing_adapters() -> list[str]:
+    """Which REQUIRED_ADAPTERS the installed runner cannot normalise.
+
+    Asks the registry rather than listing what it should contain, so this
+    cannot drift from the code it is checking. A registry that will not import
+    is reported once rather than fifteen times -- the pin is unusable and the
+    per-pair detail would be noise.
+    """
+    try:
+        from mykronos.adapters import registry
+    except ImportError as exc:
+        return [f"the adapter registry will not import from the pinned runner ({exc})"]
+
+    missing = []
+    for capability, tool in REQUIRED_ADAPTERS:
+        try:
+            registry.get_adapter(capability, tool)
+        except Exception:
+            supported = ", ".join(registry.supported_tools(capability)) or "none"
+            missing.append(
+                f"no adapter for capability '{capability}' with tool '{tool}' "
+                f"(the pin supports: {supported})"
+            )
+    return missing
+
+
 def _installed_commit() -> str:
     """The commit the installed package was built from, if pip recorded one."""
     try:
@@ -179,6 +244,7 @@ def check(commit: str = "") -> list[str]:
         )
 
     problems.extend(_missing_scripts(commit))
+    problems.extend(_missing_adapters())
 
     return problems
 
@@ -206,13 +272,15 @@ def main(argv: list[str] | None = None) -> int:
         if can_check_scripts(commit):
             print(
                 f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
-                f"flags, and all {len(REQUIRED_SCRIPTS)} raw-fetched scripts."
+                f"flags, all {len(REQUIRED_SCRIPTS)} raw-fetched scripts, and all "
+                f"{len(REQUIRED_ADAPTERS)} (capability, tool) adapter pairs."
             )
         else:
             print(
-                f"The pin supports all {len(REQUIRED_MODULES)} runner modules and "
-                f"their flags. The {len(REQUIRED_SCRIPTS)} raw-fetched scripts were "
-                "NOT checked - the pinned commit could not be resolved here."
+                f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
+                f"flags, and all {len(REQUIRED_ADAPTERS)} adapter pairs. The "
+                f"{len(REQUIRED_SCRIPTS)} raw-fetched scripts were NOT checked - the "
+                "pinned commit could not be resolved here."
             )
         return 0
 
