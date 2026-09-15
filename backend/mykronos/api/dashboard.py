@@ -441,6 +441,16 @@ class FindingOut(BaseModel):
     #: are behaviourally different, and a bare null owner could be any of them.
     owner: str | None = None
     owner_source: str | None = None
+
+    #: Why a risk was accepted and when the acceptance lapses (spec 24 §3.2).
+    #: Absent from this model until now, so `GET /findings/{id}` reported
+    #: `status: accepted_risk` with no way to see the reason or the expiry --
+    #: and an acceptance whose expiry you cannot read is indistinguishable
+    #: from a permanent suppression. The lake has held both throughout; only
+    #: this surface was silent, which is how it misled a reader into recording
+    #: that an acceptance was undated when it was not (#378).
+    accepted_reason_code: str | None = None
+    accepted_until: date | None = None
     #: When this is due and who set that date (spec 24 §2). `due_source` is
     #: kev | policy | manual; null means no target applies to this severity.
     due_at: datetime | None = None

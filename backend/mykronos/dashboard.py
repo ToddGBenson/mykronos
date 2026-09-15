@@ -2493,6 +2493,11 @@ class DashboardQueries:
             "package_version",
             "version_basis",
             "fingerprint_version",
+            # Selected by `findings()` since spec 17 §5.1 and never here, so
+            # the detail endpoint -- the one you open to investigate a single
+            # finding -- was the only surface that could not follow a
+            # superseded row to its replacement.
+            "superseded_by",
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
@@ -2500,6 +2505,13 @@ class DashboardQueries:
             "owner_source",
             "due_at",
             "due_source",
+            # Why a risk was accepted and when the acceptance lapses. Omitted
+            # here until now, so the detail endpoint served
+            # `status: accepted_risk` with neither the reason nor the expiry
+            # beside it -- and an acceptance whose expiry cannot be read is
+            # indistinguishable from a permanent suppression (#378).
+            "accepted_reason_code",
+            "accepted_until",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
