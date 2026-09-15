@@ -932,143 +932,6 @@ answer because it only knows the ones it was told about.
 
 ---
 
-### B-054 — The image registry the deploy path pulls from takes anonymous writes
-
-**Size:** S **State:** closed — executed, verified 2026-09-11 **Verified:** 2026-09-03
-
-**EXECUTED AND VERIFIED 2026-09-11.** D-109's firewall rule is in place and
-enabled. Three inbound Block rules exist on port 5000 — `Block registry 5000
-from the LAN (B-054)` (twice, an exact duplicate) and `Mykronos registry 5000 -
-deny the LAN` — covering `192.168.0.0/24`. The build path still has its route:
-every Docker bridge on this host sits in 172.17–172.24, inside the
-`172.16.0.0/12` scope D-109 relies on, and the Concourse worker is on
-172.19.0.0/16 specifically.
-
-One caveat on the evidence, because it nearly produced a wrong answer: an
-anonymous `curl http://192.168.0.14:5000/v2/_catalog` still returns the
-repository list, and that is NOT a failure of the rule. The request originated
-**on the host**, which an inbound rule does not filter. A LAN host is the only
-test that means anything here, and re-verifying this from the host alone would
-read as still-open forever.
-
-The duplicate rule is untidy rather than harmful — it suggests the rule was
-applied more than once. Worth removing one, not worth a story.
-
-Still true and deliberately not done: `REGISTRY_AUTH=htpasswd` from Vault
-remains the defence-in-depth version D-109 names as the right follow-up if this
-host ever moves networks. Scope is a property of where the machine is;
-authentication is not.
-
-`mykronos-registry` (`registry:2`) listens on **0.0.0.0:5000**, plain HTTP, with
-**no `auth:` block in its configuration at all**. Read it back from the running
-container — `/etc/distribution/config.yml` declares `version`, `log`, `storage`,
-`http` and `health`, and nothing else. There is no authentication to fail.
-
-Anonymous read is demonstrable from any host on the network:
-
-    $ curl http://192.168.0.14:5000/v2/_catalog
-    {"repositories":["mykronos-backend","mykronos-frontend","thehub"]}
-
-**The write side is what makes this more than disclosure.** A registry with no
-`auth:` accepts pushes from anyone who can reach it, and something already runs
-what it serves: `thehub-demo-backend` is running
-`localhost:5000/thehub:7197a02837377eef0af70f14746102df33286de7` right now.
-Overwriting a tag that the demo or deploy path consumes is code execution on this
-host, from any device on the LAN, with no credential involved.
-
-**Contrast, which is why this reads as an oversight rather than a posture.** The
-same scan found MinIO on 9000 also LAN-reachable and correctly refusing an
-anonymous bucket listing with `403 AccessDenied`, and Vault absent from the LAN
-entirely (127.0.0.1 only), and the Mykronos API answering an unauthenticated
-request with `401` plus a full security header set. Everything else on this host
-is authenticated or loopback. The registry is the one thing that is neither.
-
-**No scanner in this platform could have found it.** It is not in a repository,
-so SAST, secrets and IaC never see it; it is not a dependency, so `containers`
-and `atlas` never see it; DAST scans applications, not a registry API. It took a
-port scan of the host, which is the capability the README records as **"Not
-started — the authorization model and the ingest path exist; no scanner does."**
-This is the argument for finishing that lane.
-
-**Correction, 2026-09-04: do not bind this to 127.0.0.1.** The first version of
-this entry proposed exactly that, and it would take the build down. The
-exposure is load-bearing and the compose file says so at the service:
-"Published on all interfaces because garden task containers reach it by host
-IP; they cannot resolve Docker service names." Confirmed in the pipeline —
-`set-thehub-pipeline.ps1:115` sets `$Registry = "192.168.0.14:5000"` and the
-kaniko task pushes to `${REGISTRY}/thehub:${SHA}`. Concourse reaches this
-registry at the **LAN address**, so no bind address can serve the build without
-also serving the network. The proposed fix and the working pipeline were
-mutually exclusive, which is worth more than the finding it was attached to.
-
-**Two fixes that actually work, in increasing order of effort.**
-
-*Firewall scope.* Concourse's garden containers arrive from the Docker bridge
-subnets, not from the LAN. On this host those are `172.17.0.0/16` (bridge),
-`172.19.0.0/16` (concourse), and `172.18/20/21/22/24.0.0/16` for the
-application stacks. A host rule permitting 5000 from `172.16.0.0/12` and
-loopback and denying it elsewhere closes LAN access with the build path intact.
-It is one rule and it changes no configuration any service reads.
-
-*Authentication.* `registry:2` takes `REGISTRY_AUTH=htpasswd`, which is the
-defence-in-depth version and survives a machine moving networks. It costs
-credentials in two more places: kaniko's `--destination` push, and the host's
-`docker login` before it pulls. Both can resolve from Vault, which already
-holds every other credential this pipeline uses.
-
-**Decided 2026-09-05 — D-109: close it by network scope.** A host rule
-permitting 5000 from `172.16.0.0/12` and loopback, denying it elsewhere.
-`REGISTRY_AUTH=htpasswd` from Vault is recorded as the follow-up rather than the
-first move, because scope is a property of where this machine sits and
-authentication survives it moving.
-
-**Written 2026-09-09 as `deploy/concourse/Set-RegistryScope.ps1`, and D-109's
-own wording would have taken the build down.** Implemented literally — allow
-`172.16/12` and loopback, block `Any` — the block wins: Windows Defender
-Firewall evaluates **block rules ahead of allow rules**, so a block on `Any`
-beats the allow beside it and kaniko's push dies along with the LAN access.
-That is the same trap the loopback correction above describes, one layer down,
-and it was caught by checking the precedence rather than by trying it.
-
-The intent has to be expressed as what is *denied*, so the script installs one
-inbound block rule scoped to this host's LAN prefix (`192.168.0.0/24`,
-computed from the host's own non-Docker addresses rather than hard-coded).
-Evidence that this leaves the build alone: every write in the registry's log
-arrived from `172.19.0.1`, the Concourse bridge gateway, and Windows does not
-filter loopback at all, so `localhost:5000` pulls are untouched either way.
-`-WhatIf` runs unelevated and prints the plan; `-Remove` undoes it.
-
-**What is left is one elevated command and two readings.** A firewall rule
-needs an administrator prompt this session does not have, and the acceptance
-criteria are deliberately both-or-nothing:
-
-    .\deploy\concourse\Set-RegistryScope.ps1 -WhatIf   # read the plan
-    .\deploy\concourse\Set-RegistryScope.ps1           # elevated
-
-then `curl http://192.168.0.14:5000/v2/_catalog` from another LAN host must
-fail, **and** a Concourse `build` job must still push. Either alone is a false
-pass: a registry nobody can reach is not the goal.
-
-The compose comment no longer claims the exposure is required, which was the
-third criterion, and it now records why the obvious rule shape is wrong.
-
-**Acceptance criteria**
-
-- `GET /v2/_catalog` from another host on the network fails, **and** a `build`
-  job still pushes successfully. Both, or the change is not done. **Waiting on
-  the elevated run.**
-- ~~Whichever route is taken, the compose comment stops saying the exposure is
-  required.~~ Done 2026-09-09: it names the bridge gateway every push has
-  actually come from, and why "block everything else" is the wrong rule.
-- ~~A decision is recorded either way.~~ D-109, amended 2026-09-09 with the
-  block-precedence correction.
-
-**Provenance:** DevSecOps assessment, 2026-09-03 (second sweep), from an nmap
-service scan of 192.168.0.14 run at the operator's request. Recorded as a
-declared surface on `mykronos` with the catalog response as its evidence.
-
----
-
 ### B-060 — Branch protection, read for the first time, against CIS §1.1
 
 **Size:** M **State:** open **Verified:** 2026-09-04
@@ -1253,102 +1116,6 @@ enforced" including the ones that were on.
 
 ---
 
-### B-064 — TheHub encrypts its most sensitive table with unauthenticated CBC
-
-**Size:** ~~M~~ **S** **State:** fixed in TheHub **Verified:** 2026-09-05,
-re-verified 2026-09-11
-
-> **THE MIGRATION HALF DOES NOT EXIST — re-measured 2026-09-11.**
-> `SELECT count(*) FROM intimacy_logs` → **0**. Zero rows, no oldest, no
-> newest. The sizing argument below ("every stored row has to be read under CBC
-> and rewritten… getting it wrong destroys data that by definition cannot be
-> regenerated") describes work that has no subject. There is no migration, no
-> dual-read transition to get right, and no irreplaceable data to destroy.
-> `grep -rl "modes.CBC" backend/ --include=*.py` returns one file. One file,
-> one table, zero rows — **size S, not M**. Do not re-scope this as an M on the
-> strength of the paragraph below; it was written before anyone counted.
->
-> Fixed in TheHub as story **#59310**: new writes are Fernet behind a
-> `fernet1:` version prefix, the read path still accepts legacy CBC rows, and
-> `intimacy_service.count_unmigrated_logs` MEASURES how many remain (surfaced
-> on `GET /api/intimacy/status` as `unmigrated_legacy_rows`) rather than
-> assuming the zero holds. The backfill AC below is **not met and is not
-> applicable** — there is nothing to backfill; `token_crypto.backfill_plaintext`
-> remains the shape to copy if a legacy row ever appears.
-
-`backend/services/intimacy_service.py` encrypts with AES-256-CBC and no
-authentication:
-
-```python
-cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-encryptor = cipher.encryptor()
-ciphertext = encryptor.update(padded) + encryptor.finalize()
-```
-
-CBC provides confidentiality and nothing else. Nothing in the record proves the
-ciphertext is the one the service wrote, so an attacker with write access to
-the row — a SQL-injection foothold, a stolen database credential, a backup
-restored from the wrong place, a compromised backup job — can modify stored
-ciphertext and the service will decrypt whatever comes back. PKCS7 unpadding on
-attacker-modified input is also the classic padding-oracle shape: decryption
-raises on a bad pad and succeeds on a good one, and that difference is enough
-to recover plaintext a byte at a time if it is observable in a response or a
-log.
-
-**`_hash_data` is not a fix for this and is not intended as one.** It is
-SHA-256 over the *plaintext*, for deduplication, stored beside the row. It
-authenticates nothing about the ciphertext, and an attacker who can rewrite the
-ciphertext can rewrite that column too.
-
-**This is the one finding in TheHub's SAST backlog that is real.** The other
-sixteen HIGH findings resolved as follows on 2026-09-05: twelve
-`avoid-sqlalchemy-text` are false positives (every caller-supplied value is a
-bound parameter; every interpolation is a module constant or an uncalled
-maintenance helper) and are dispositioned with the call path recorded per site;
-two `run-shell-injection` were real and are fixed in TheHub#291. These two are
-what is left, and they are on the table the application treats as its most
-sensitive.
-
-**The fix TheHub already has.** `backend/utils/token_crypto.py` uses Fernet,
-which is AES-128-CBC with an HMAC-SHA256 over the ciphertext, and it carries a
-`fernet1:` version prefix precisely so stored values can be migrated in place.
-The same prefix pattern applies here. AES-GCM is the other option and is
-stronger per byte; Fernet is the one this repository already operates, tests
-and understands.
-
-**Why this is filed rather than fixed in passing.** Changing the encryption of
-existing personal data is a migration, not an edit: every stored row has to be
-read under CBC and rewritten under the new scheme, the read path has to accept
-both during the transition, and getting it wrong destroys data that by
-definition cannot be regenerated. `token_crypto.backfill_plaintext` is the
-shape to copy — it verifies every row by decrypting the new value back and
-comparing before it commits, and aborts the whole batch on a mismatch. That is
-the standard this migration should meet, and it is more work than a scan
-finding should be closed with.
-
-**Acceptance criteria**
-
-- New writes use an authenticated construction (Fernet, or AES-GCM), with a
-  version prefix on the stored value.
-- The read path accepts both schemes for as long as unmigrated rows exist, and
-  a check reports how many remain rather than assuming zero.
-- A backfill migrates existing rows, verifying each by decrypting the rewritten
-  value and comparing before commit, aborting the batch on any mismatch.
-- Decryption failure is handled without a distinguishable padding error
-  reaching a response or a log line, so the migration does not leave a padding
-  oracle behind while it runs.
-- The two semgrep findings close on their own once the mode changes, which is
-  the check that this was fixed rather than dispositioned.
-
-**Provenance:** DevSecOps assessment, 2026-09-05, reading all 16 of TheHub's
-HIGH SAST findings by hand after the container backlog was dispositioned and
-stopped hiding them. Worth noting the order: these two were reachable only
-after 271 unfixable OS-package findings were accepted and twelve false
-positives were cleared. A backlog that is 93% noise does not hide its signal
-politely — it hides it completely.
-
----
-
 ### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done**
 
 **Size:** S **State:** open **Verified:** 2026-09-05
@@ -1509,7 +1276,28 @@ into entries here:
 
 ## Closed
 
-Fifty-two entries. The count below was stale at "nineteen": it covered
+**2026-09-14 — two, both of which had been finished for days and were still
+filed under Open.** B-054, where the image registry the deploy path pulls from
+accepted anonymous writes on port 5000: D-109's rule is in place and enabled,
+three inbound Block rules cover `192.168.0.0/24`, and the build path keeps its
+route because every Docker bridge on this host sits inside the `172.16.0.0/12`
+scope the rule relies on. Executed and verified 2026-09-11, with the caveat
+recorded there that an anonymous `curl` from this host still answers and is not
+evidence either way — a check from the host it protects is never filtered.
+Then B-064, where TheHub encrypted its most sensitive table with unauthenticated
+CBC and stored a digest of the plaintext beside it: fixed in TheHub, re-verified
+2026-09-11. The migration half of that entry turned out to have no subject —
+`SELECT count(*) FROM intimacy_logs` returned 0, so the dual-read transition it
+sized for was work with nothing to transition.
+
+Both entries' own **State** fields already said `closed` and `fixed in TheHub`
+while they sat above the line, which is the part worth recording rather than
+tidying away. An Open section holding finished work overstates what is
+outstanding — the same defect these retros keep describing in finding counts,
+happening in the file that tracks them. The full text of both is in git
+history at the commit before this one.
+
+Fifty-four entries. The count below was stale at "nineteen": it covered
 the 2026-08-31 and 2026-09-01 sweeps only, and never the seven pre-08-31
 entries (B-001 to B-007) or the seven that closed on 2026-09-03.
 
