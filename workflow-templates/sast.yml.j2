@@ -32,7 +32,7 @@
 
 {% block scan_steps %}
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@c4dd10e44af883a891fe31ced449bcb4a6728b9b  # v3.37.6
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d  # v3.37.9
         with:
           languages: ${{ matrix.language }}
           queries: << config.queries | default('security-extended') >>
@@ -51,10 +51,10 @@
 {%- endif %}
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@c4dd10e44af883a891fe31ced449bcb4a6728b9b  # v3.37.6
+        uses: github/codeql-action/autobuild@6f5948dfacef28e207b48d0905cf90c03365536d  # v3.37.9
 
       - name: Analyze
-        uses: github/codeql-action/analyze@c4dd10e44af883a891fe31ced449bcb4a6728b9b  # v3.37.6
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d  # v3.37.9
         with:
           category: "/language:${{ matrix.language }}"
           output: ${{ runner.temp }}/mykronos-results
