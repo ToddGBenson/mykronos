@@ -118,6 +118,13 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # exist before the one that does.
     "sast-shell": "sast",
     "sast-powershell": "sast",
+    # personal-soc's PowerShell analyser, which is named `lint` because it
+    # predates uploading anything — it gated on PSScriptAnalyzer errors for
+    # months before it reported (#390). Registered under its real name rather
+    # than renamed to `sast-powershell`: a rename orphans the job's build
+    # history in Concourse, and the mapping exists precisely so a job can be
+    # called whatever it is called and still be cross-checked.
+    "lint": "sast",
     "secrets": "secrets",
     "containers": "containers",
     "dast": "dast",
