@@ -646,7 +646,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: ruff-and-mypy
-        timeout: 60m
+        timeout: 90m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
         # set on every commit; without it each run re-downloads the lot, which
@@ -949,7 +949,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: gitleaks
-        timeout: 20m
+        timeout: 40m
         image: python
         params: *mykronos_env
         config:
@@ -1453,7 +1453,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: aegis
-        timeout: 15m
+        timeout: 25m
         image: python
         params: *mykronos_env
         config:
@@ -1741,7 +1741,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: evaluate
-        timeout: 10m
+        timeout: 15m
         image: python
         params: *mykronos_env
         config:

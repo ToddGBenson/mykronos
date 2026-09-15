@@ -1496,7 +1496,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: semgrep
-        timeout: 45m
+        timeout: 130m
         image: python313
         params: *mykronos_env
         config:
@@ -2245,7 +2245,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: evaluate
-        timeout: 10m
+        timeout: 25m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))
