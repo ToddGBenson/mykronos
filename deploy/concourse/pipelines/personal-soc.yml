@@ -1562,7 +1562,17 @@ jobs:
   # version yet must not sit in a serial group, because a build that can never
   # start still holds its place in the queue.
   - name: external-exposure
-    public: true
+    # NOT public. `public: true` exposes this job's BUILD LOGS to anonymous
+    # callers, and Concourse is published to the internet at
+    # blog.toddbenson.net (mykronos#348). This job's log is a reconnaissance
+    # report of a home network: host inventory, NAS NFS/SMB posture, and the
+    # Shodan view of the household public IP. There is no audience for whom
+    # that should be anonymous.
+    #
+    # Job STATE stays readable without credentials either way -- measured:
+    # a private job answers /jobs/<name> fine and returns 401 only on
+    # /builds/<id>/events. So this costs the platform nothing; it reads
+    # status, not logs (mykronos-concourse-is-readable-without-fly).
     on_failure: *slack_alert
     on_error:
       <<: *slack_alert
@@ -1638,7 +1648,17 @@ jobs:
   # a clean scan.
 
   - name: netassess-ingest
-    public: true
+    # NOT public. `public: true` exposes this job's BUILD LOGS to anonymous
+    # callers, and Concourse is published to the internet at
+    # blog.toddbenson.net (mykronos#348). This job's log is a reconnaissance
+    # report of a home network: host inventory, NAS NFS/SMB posture, and the
+    # Shodan view of the household public IP. There is no audience for whom
+    # that should be anonymous.
+    #
+    # Job STATE stays readable without credentials either way -- measured:
+    # a private job answers /jobs/<name> fine and returns 401 only on
+    # /builds/<id>/events. So this costs the platform nothing; it reads
+    # status, not logs (mykronos-concourse-is-readable-without-fly).
     serial_groups: [worker]
     on_failure: *slack_alert
     on_error:
@@ -1849,7 +1869,17 @@ jobs:
 
   # Clock-triggered: no serial group. See the note on external-exposure.
   - name: netassess-freshness
-    public: true
+    # NOT public. `public: true` exposes this job's BUILD LOGS to anonymous
+    # callers, and Concourse is published to the internet at
+    # blog.toddbenson.net (mykronos#348). This job's log is a reconnaissance
+    # report of a home network: host inventory, NAS NFS/SMB posture, and the
+    # Shodan view of the household public IP. There is no audience for whom
+    # that should be anonymous.
+    #
+    # Job STATE stays readable without credentials either way -- measured:
+    # a private job answers /jobs/<name> fine and returns 401 only on
+    # /builds/<id>/events. So this costs the platform nothing; it reads
+    # status, not logs (mykronos-concourse-is-readable-without-fly).
     on_failure: *slack_alert
     on_error:
       <<: *slack_alert
