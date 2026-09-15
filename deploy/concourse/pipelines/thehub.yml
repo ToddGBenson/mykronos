@@ -2442,9 +2442,27 @@ jobs:
                 # result - `passed: [deploy-demo]` has to mean demo is actually
                 # serving this SHA, not that a request for it was filed.
                 DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                # The comparison below strips CR and LF before comparing.
+                # The acknowledgement is written by a PowerShell poller on
+                # Windows, and piping a string to a native command there
+                # appends a carriage return and a newline. Command
+                # substitution strips the trailing newline and does NOT
+                # strip the carriage return, so the comparison could never
+                # match: the job waited its full budget and reported that
+                # the host had never deployed, while the host had deployed
+                # and acknowledged correctly. Five days of TheHub#343 were
+                # exactly this.
+                #
+                # Invisible unless read as bytes. The two objects render
+                # identically and differ by two: demo.deployed was 42 bytes
+                # and demo.requested 40, for the same 40-character SHA.
+                #
+                # Fixed on the reading side deliberately: a consumer of a
+                # pointer should tolerate line endings whatever wrote it,
+                # and this file is the consumer for both environments.
                 while :; do
                   if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
-                     && [ "$(cat deployed)" = "$SHA" ]; then
+                     && [ "$(tr -d '\r\n' < deployed)" = "$SHA" ]; then
                     echo "Host reports $ENVIRONMENT at $SHA"
                     break
                   fi
@@ -3929,9 +3947,27 @@ jobs:
                 # result - `passed: [deploy-demo]` has to mean demo is actually
                 # serving this SHA, not that a request for it was filed.
                 DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                # The comparison below strips CR and LF before comparing.
+                # The acknowledgement is written by a PowerShell poller on
+                # Windows, and piping a string to a native command there
+                # appends a carriage return and a newline. Command
+                # substitution strips the trailing newline and does NOT
+                # strip the carriage return, so the comparison could never
+                # match: the job waited its full budget and reported that
+                # the host had never deployed, while the host had deployed
+                # and acknowledged correctly. Five days of TheHub#343 were
+                # exactly this.
+                #
+                # Invisible unless read as bytes. The two objects render
+                # identically and differ by two: demo.deployed was 42 bytes
+                # and demo.requested 40, for the same 40-character SHA.
+                #
+                # Fixed on the reading side deliberately: a consumer of a
+                # pointer should tolerate line endings whatever wrote it,
+                # and this file is the consumer for both environments.
                 while :; do
                   if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
-                     && [ "$(cat deployed)" = "$SHA" ]; then
+                     && [ "$(tr -d '\r\n' < deployed)" = "$SHA" ]; then
                     echo "Host reports $ENVIRONMENT at $SHA"
                     break
                   fi
