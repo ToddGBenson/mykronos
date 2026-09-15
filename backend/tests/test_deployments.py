@@ -400,8 +400,9 @@ class TestTheProbeCanActuallyBeConfigured:
         """A stale revision behind a removed probe would leave the portfolio
         asserting what a repository runs on the strength of a probe nobody is
         making."""
-        from mykronos.db.models import RepoOnboarding
         from sqlalchemy import select
+
+        from mykronos.db.models import RepoOnboarding
 
         repo_id = self._repo_id(client)
         client.put(

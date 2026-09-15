@@ -819,6 +819,44 @@ jobs:
       # tasks, one job.
       - get: python
         attempts: *retry_fetch
+      # PS-2. Ask whether the results have anywhere to land before spending the
+      # analyser run finding out. A failure here is a real failure, not a skip:
+      # a scan whose results cannot be ingested produces the `never_reported`
+      # state rather than a finding, and producing one deliberately is worse
+      # than not starting.
+      #
+      # curlimages/curl rather than the `python` resource above: python:slim
+      # ships no curl, so probing on it would mean apt-get first, and the probe
+      # would cost more than the ten-minute scan it protects.
+      - task: preflight
+        timeout: 2m
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source: { repository: curlimages/curl, tag: "8.11.1" }
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                  echo "No ingestion token configured; the analyser still runs and still gates."
+                  exit 0
+                fi
+                # PS-12, in-task rather than `attempts:`. This probe CAN fail —
+                # a rejected token is an answer — so it must not sit behind a
+                # step-level retry that cannot tell "could not ask" from
+                # "asked and was refused". curl can: --retry covers a refused
+                # connection and a 5xx, and never re-tries the 401.
+                curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+                  --retry 4 --retry-delay 5 --retry-connrefused \
+                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                  "$MYKRONOS_URL/api/ingest/health" > /dev/null
+                echo "Mykronos is reachable and this token is accepted."
       - task: psscriptanalyzer
         # PS-7. 10m from 5 observed run(s): median 35s, slowest 48s.
         timeout: 10m
@@ -905,47 +943,63 @@ jobs:
                 }
                 Write-Host "No analyser errors. $($warnings.Count) warning(s) recorded above."
 
-      # personal-soc is 100% PowerShell and CodeQL implements none of it, so
-      # until now nothing had ever read this repository for a defect -- its
-      # three capabilities are secrets, iac and oracle (B-051, #260). The
-      # analysis above has run on every push the whole time and uploaded
-      # nothing; this is the reporting half.
-      #
-      # A separate task because the analyser needs pwsh and the uploader needs
-      # python. `--blocking false`: the gate above already decided, on errors,
-      # and a linter should not also hold the ingestion path.
-      - task: upload
-        timeout: 10m
-        image: python
-        params:
-          MYKRONOS_URL: ((mykronos-url))
-          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
-          MYKRONOS_REF: ((mykronos-ref))
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
-                  echo "No ingestion token; skipping upload. The analysis above still ran and still gated."
-                  exit 0
-                fi
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                cd source
-                python -m mykronos.upload \
-                  --capability sast --tool psscriptanalyzer \
-                  --results-path ../results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/personal-soc \
-                  --commit-sha "$(git rev-parse HEAD)" \
-                  --branch main \
-                  --workspace "$PWD" \
-                  --severity-threshold low --blocking false
+        # PS-3. `ensure:` rather than a following step, because the analyser
+        # above exits 1 on an Error-severity finding. As a sibling step the
+        # upload would be skipped exactly when there was most to report, and
+        # the lane would go quiet on its worst day -- the `never_reported`
+        # state the coverage cross-check exists to catch (spec 15 §4a.1).
+        #
+        # personal-soc is 100% PowerShell and CodeQL implements none of it, so
+        # until now nothing had ever read this repository for a defect -- its
+        # three capabilities are secrets, iac and oracle (B-051, #260). The
+        # analysis above has run on every push the whole time and uploaded
+        # nothing; this is the reporting half.
+        #
+        # A separate task because the analyser needs pwsh and the uploader
+        # needs python. `--blocking false`: the gate above already decided, on
+        # errors, and a linter should not also hold the ingestion path.
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params:
+            MYKRONOS_URL: ((mykronos-url))
+            MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+            MYKRONOS_REF: ((mykronos-ref))
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                    echo "No ingestion token; skipping upload. The analysis above still ran and still gated."
+                    exit 0
+                  fi
+                  # Running under `ensure:` means this also fires when the
+                  # analyser died before writing anything. Saying so beats
+                  # uploading an empty result set, which would read in the lake
+                  # as a clean scan rather than as a scan that never happened.
+                  if [ ! -s results/psscriptanalyzer.json ]; then
+                    echo "::error:: the analyser produced no results file — it failed before writing one."
+                    echo "          Not uploading: an empty upload would report this as a clean scan."
+                    exit 0
+                  fi
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  cd source
+                  python -m mykronos.upload \
+                    --capability sast --tool psscriptanalyzer \
+                    --results-path ../results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch main \
+                    --workspace "$PWD" \
+                    --severity-threshold low --blocking false
 
   # -- Functional tests ----------------------------------------------------
   #
