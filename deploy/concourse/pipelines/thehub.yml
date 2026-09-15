@@ -1331,9 +1331,32 @@ jobs:
                 # a backslash-continued command is joined onto it, which is how the
                 # second attempt commented out --destination and every flag after
                 # it: "you must provide --destination, or use --no-push".
+                # --build-arg HUB_BUILD_SHA: the same SHA that becomes the tag,
+                # inside the image as well as on it.
+                #
+                # Without it the published image was tagged with the commit and
+                # could not name it: `HUB_BUILD_SHA=unknown` in every image this
+                # job has ever produced. backend/Dockerfile has carried
+                # `ARG HUB_BUILD_SHA` -> `ENV HUB_BUILD_SHA` since SDLC-2 #48535,
+                # and compose passes it for prod; only this build did not.
+                #
+                # It was not cosmetic. `deploy-demo` deploys the published image
+                # and then waits for demo to report the commit it is serving.
+                # Demo answered `unknown` every time, so the job timed out after
+                # 25 minutes -- and oracle-gate, api-inventory, dast-demo and
+                # insider all sit behind it. They last ran 2026-09-10. TheHub
+                # merged roughly thirty pull requests after that date with its
+                # risk gate dark, and nothing said so (TheHub#343).
+                #
+                # A comment further down this file asserted "the image already
+                # carries HUB_BUILD_SHA as an env var for exactly this class of
+                # question". It did not, and that sentence is why nobody looked.
+                # It is corrected in this change.
                 /kaniko/executor \
                   --context source/backend \
                   --dockerfile source/backend/Dockerfile \
+                  --build-arg "HUB_BUILD_SHA=${SHA}" \
+                  --build-arg "HUB_BUILD_DIRTY=clean" \
                   --destination "${REGISTRY}/thehub:${SHA}" \
                   --insecure --skip-tls-verify \
                   --single-snapshot
@@ -3213,9 +3236,16 @@ jobs:
   # off-pipeline. So this reports the tip of ((thehub-branch)) at scan time,
   # which is "what the branch looked like when staging was scanned" and NOT
   # "what staging is running". Read it that way. The fix is an unauthenticated
-  # build-sha endpoint -- the image already carries HUB_BUILD_SHA as an env var
-  # for exactly this class of question -- and until that exists, saying so here
-  # beats a sha that silently means something different from the two jobs above.
+  # build-sha endpoint.
+  #
+  # This used to add "-- the image already carries HUB_BUILD_SHA as an env var
+  # for exactly this class of question --". That was false for every image this
+  # pipeline has ever published: the build tagged the image with the commit and
+  # never passed it as a build arg, so `HUB_BUILD_SHA` was `unknown` inside.
+  # The sentence is the reason nobody checked, and it cost five days of a dark
+  # risk gate (TheHub#343). The build arg is now passed in stage 2; until the
+  # endpoint exists, saying so here still beats a sha that silently means
+  # something different from the two jobs above.
   #
   # **This job reports only `success` to TheHub, like every other job here, and
   # that is a known defect rather than a choice.**
