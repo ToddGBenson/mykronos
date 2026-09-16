@@ -1145,6 +1145,33 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         for name, _ in installs
                     }
+                # Union the configured analyser with the ones that have
+                # actually reported (#415).
+                #
+                # `readability` takes several tools and says why -- "a shell
+                # analyser beside CodeQL is two lanes on one capability rather
+                # than a replacement" -- but this only ever handed it the one
+                # name in `enabled_tool`, so a second analyser that is running
+                # and uploading did not count.
+                #
+                # keel is the case: `shellcheck` reported twice on 2026-09-15,
+                # both clean, and the briefing still said "69% unread (Shell),
+                # analyser codeql". Telling somebody about a blind spot that
+                # has been closed is how a page stops being read.
+                observed: dict[str, set[str]] = {}
+                try:
+                    for repo_name, tool in catalog.query(
+                        "SELECT DISTINCT repo_full_name, tool_name FROM scan_runs "
+                        "WHERE lower(capability) = 'sast' AND tool_name IS NOT NULL "
+                        "AND scan_status = 'success'"
+                    ):
+                        observed.setdefault(str(repo_name), set()).add(str(tool))
+                except Exception:  # noqa: BLE001 - configuration alone still works
+                    logging.getLogger(__name__).debug("Could not read reporting SAST tools")
+                for repo_name, seen in observed.items():
+                    configured = sast_tools.get(repo_name)
+                    names = {str(configured)} if isinstance(configured, str) else set()
+                    sast_tools[repo_name] = sorted(names | seen)
                 for name, installation_id in installs:
                     counts = asyncio.run(
                         factory.for_installation(installation_id).languages(name)

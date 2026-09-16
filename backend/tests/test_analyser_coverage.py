@@ -112,6 +112,23 @@ class TestInTheBriefing:
     def test_the_configured_tool_is_used(self) -> None:
         assert briefing.unread_code({"keel": KEEL}, {"keel": "semgrep"}) == []
 
+    def test_a_second_analyser_beside_the_first_closes_the_gap(self) -> None:
+        """A shell analyser beside CodeQL is two lanes on one capability rather
+        than a replacement, and `readability` has always said so.
+
+        THE DEFECT THIS PINS is one layer up: the briefing only ever passed the
+        single name in `enabled_tool`, so a second analyser that was running
+        and uploading did not count. keel's `shellcheck` reported twice on
+        2026-09-15, both clean, and the briefing still announced "69% unread
+        (Shell), analyser codeql". Telling somebody about a blind spot that has
+        been closed is how a page stops being read.
+        """
+        assert briefing.unread_code({"keel": KEEL}, {"keel": "codeql"}), (
+            "codeql alone still cannot read keel's shell"
+        )
+
+        assert briefing.unread_code({"keel": KEEL}, {"keel": ["codeql", "shellcheck"]}) == []
+
     def test_no_language_data_reports_nothing(self) -> None:
         """A caller with no GitHub client passes nothing. Not knowing what a
         repository is made of is different from knowing it is analysed."""
