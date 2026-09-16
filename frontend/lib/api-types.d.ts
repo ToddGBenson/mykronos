@@ -533,6 +533,14 @@ export interface paths {
          *     needs a reason and a future date — spec 11 §4's reasons are what make the
          *     Knowledge Store worth anything, and a bulk path that skipped them would be
          *     the obvious way to stop having any.
+         *
+         *     `disposition` records a verdict rather than worklist state, and exists
+         *     because the findings that most need one arrive in bulk: a scanner rule that
+         *     is wrong is wrong for every finding it raised. Twenty-five open DAST
+         *     findings on this platform are one ZAP rule against one query parameter on
+         *     one page, and recording that took twenty-five identical requests — which is
+         *     why `review_classification` can still truthfully say 43 false positives have
+         *     ever been recorded and all of them are `sast` or `secrets` (#405).
          */
         post: operations["triage_batch_api_dashboard_triage_batch_post"];
         delete?: never;
@@ -2722,7 +2730,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "claim" | "release" | "snooze" | "wake";
+            action: "claim" | "release" | "snooze" | "wake" | "disposition";
             /** By */
             by?: string | null;
             /** Until */
@@ -2733,6 +2741,16 @@ export interface components {
              * @default
              */
             reason: string;
+            status?: components["schemas"]["FindingStatus"] | null;
+            /** Accepted Until */
+            accepted_until?: string | null;
+            /**
+             * Indefinite
+             * @default false
+             */
+            indefinite: boolean;
+            /** Accepted Reason Code */
+            accepted_reason_code?: ("no_vendor_fix" | "not_exploitable_here" | "compensating_control" | "cost_exceeds_risk" | "other") | null;
         };
         /** BatchResult */
         BatchResult: {
