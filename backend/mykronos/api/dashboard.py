@@ -4539,10 +4539,21 @@ async def risk_profile_proposal(
         )
         summary = surfaces.for_repo(session, repo_full_name) if onboarding else None
 
+    # Name and exposure, not a count: the exposure is the whole answer to
+    # `internet_facing`, and it used to be discarded one line before the
+    # builder needed it.
     declared = (
-        len(summary.assets) + len(summary.entry_points) + len(summary.trust_boundaries)
+        [
+            (row.name, row.exposure)
+            for group in (
+                summary.assets,
+                summary.entry_points,
+                summary.trust_boundaries,
+            )
+            for row in group
+        ]
         if summary is not None
-        else 0
+        else []
     )
 
     # The ownership ladder's own answer, rather than a second implementation of

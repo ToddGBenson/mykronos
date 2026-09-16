@@ -1689,6 +1689,99 @@ class TestThreatModel:
         assert body["supply_chain"] is None
 
 
+class TestRiskProfileProposal:
+    """The exposure on a declared surface is the answer, not its existence (#421).
+
+    The endpoint used to reduce the surfaces to a count before the builder saw
+    them, so every repository with any surface at all was proposed
+    internet-facing at `observed` confidence. The builder's own unit tests
+    passed an int and never exercised that reduction, which is precisely why
+    nothing caught it — so these tests go through the endpoint.
+    """
+
+    def _repo(self, client, admin_auth: dict[str, str]) -> str:
+        return onboard(client, admin_auth).json()["id"]
+
+    def _declare(
+        self, client, admin_auth: dict[str, str], repo_id: str, name: str, exposure: str
+    ) -> None:
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/surfaces",
+            json={"kind": "entry_point", "name": name, "exposure": exposure},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+
+    def _internet_facing(self, client, admin_auth: dict[str, str], repo_id: str) -> dict:
+        response = client.get(
+            f"/api/dashboard/repos/{repo_id}/risk-profile/proposal", headers=admin_auth
+        )
+        assert response.status_code == 200, response.text
+        return next(
+            p for p in response.json()["proposals"] if p["field"] == "internet_facing"
+        )
+
+    def test_surfaces_that_are_all_internal_propose_not_internet_facing(
+        self, client, admin_auth: dict[str, str]
+    ) -> None:
+        """mykronos's real shape: ten surfaces, none `internet`.
+
+        Its stored profile says false and is right; the proposal used to say
+        true and I nearly had it changed on that basis.
+        """
+        repo_id = self._repo(client, admin_auth)
+        self._declare(client, admin_auth, repo_id, "Platform API (tcp/8100)", "internal")
+        self._declare(client, admin_auth, repo_id, "Dashboard (tcp/3100)", "local")
+
+        internet = self._internet_facing(client, admin_auth, repo_id)
+
+        assert internet["value"] is False
+        assert internet["confidence"] == "observed"
+
+    def test_one_surface_declared_internet_proposes_internet_facing(
+        self, client, admin_auth: dict[str, str]
+    ) -> None:
+        repo_id = self._repo(client, admin_auth)
+        self._declare(client, admin_auth, repo_id, "Platform API (tcp/8100)", "internal")
+        self._declare(client, admin_auth, repo_id, "Production app (tcp/8000)", "internet")
+
+        internet = self._internet_facing(client, admin_auth, repo_id)
+
+        assert internet["value"] is True
+        assert internet["confidence"] == "observed"
+
+    def test_the_evidence_names_the_surface_it_relied_on(
+        self, client, admin_auth: dict[str, str]
+    ) -> None:
+        """So a reader can disagree with the evidence rather than the machine.
+
+        personal-soc's one `internet` surface is outbound lookups to HIBP and
+        Shodan. Naming it is what lets somebody notice that; a count does not.
+        """
+        repo_id = self._repo(client, admin_auth)
+        self._declare(
+            client, admin_auth, repo_id, "Third-party lookups (HIBP, Shodan)", "internet"
+        )
+
+        internet = self._internet_facing(client, admin_auth, repo_id)
+
+        assert "Third-party lookups (HIBP, Shodan)" in internet["evidence"]
+
+    def test_an_unclassified_surface_leaves_the_question_open(
+        self, client, admin_auth: dict[str, str]
+    ) -> None:
+        repo_id = self._repo(client, admin_auth)
+        self._declare(client, admin_auth, repo_id, "Platform API (tcp/8100)", "internal")
+        self._declare(client, admin_auth, repo_id, "Legacy callback", "unknown")
+
+        internet = self._internet_facing(client, admin_auth, repo_id)
+
+        assert internet["value"] is None
+        assert internet["confidence"] == "unknown"
+        assert "Legacy callback" in internet["evidence"]
+        assert internet["what_would_settle_it"]
+
+
 class TestSbomDownload:
     """spec 18 §8.2: the archived SBOM itself, not just its trust-score row."""
 
