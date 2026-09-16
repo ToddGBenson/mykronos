@@ -29,6 +29,20 @@
     nothing to pull until a promote has happened - which reads as a broken
     script unless it says so.
 
+    `-Tag` is the way out of that. Every push publishes `:<sha>`, so the
+    artifact is always there even when `:latest` has not moved; before the
+    parameter existed those tags were unreachable from here and the only
+    deployable image was one promote had blessed (#402).
+
+.PARAMETER Tag
+    The published image tag to deploy. Defaults to `latest`.
+
+    Pass a commit sha to deploy that exact build - and to roll back, which is
+    the same command with the previous sha. When a sha is given the deploy
+    reads `/healthz` afterwards and says whether the running commit is the one
+    requested, because "healthy" and "running what you asked for" are different
+    facts and only the second one is the deploy's job.
+
 .PARAMETER MigrateFrom
     Copy an existing lake and operational database into the volume before
     starting. Do this once, on the first cutover from host processes: without
@@ -45,6 +59,19 @@ param(
     # `$Registry/$name` join below is unchanged. Pass `localhost:5000` to pull
     # from the old LAN registry while both are still publishing.
     [string]$Registry = "ghcr.io/toddgbenson",
+    # Which published image to deploy. `latest` by default, so every existing
+    # invocation behaves exactly as it did.
+    #
+    # The pipeline tags every image with its commit sha and moves `:latest`
+    # only on promote (D-047). Before this parameter existed the per-commit
+    # tags were unreachable from here, so the only deployable artifact was one
+    # that promote had moved -- and on 2026-09-15 that left fourteen merged
+    # commits built, tagged, sitting in the registry and undeployable (#402).
+    #
+    # It is also what makes rollback a command. `-Tag <previous sha>` is the
+    # whole procedure; without it, going back meant finding a `:latest` that
+    # pointed at the old build, which is to say it meant nothing.
+    [string]$Tag = "latest",
     [string]$MigrateFrom,
     [switch]$NoStart
 )
@@ -61,21 +88,34 @@ function Read-EnvValue {
     return $line.Line.Split('=', 2)[1].Trim()
 }
 
-Write-Host "Pulling images from $Registry..." -ForegroundColor Cyan
+Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
 foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
-    docker pull "$Registry/$name`:latest"
+    docker pull "$Registry/$name`:$Tag"
     if ($LASTEXITCODE -ne 0) {
         # Named causes rather than "could not pull". Each of these fails the
         # same way at the daemon and needs a different thing done about it,
         # and the first cutover to GHCR is exactly when somebody will meet
         # one of them for the first time.
         $lines = @(
-            "Could not pull $Registry/$name`:latest.",
-            "",
-            "  * Has delivery.yml promoted yet? It publishes :<sha> on every",
-            "    push and moves :latest only after the production",
-            "    environment's approval (D-047). Before the first promote",
-            "    there is no :latest to pull.",
+            "Could not pull $Registry/$name`:$Tag.",
+            ""
+        )
+        if ($Tag -eq "latest") {
+            $lines += @(
+                "  * Has delivery.yml promoted yet? It publishes :<sha> on every",
+                "    push and moves :latest only after the production",
+                "    environment's approval (D-047). Before the first promote",
+                "    there is no :latest to pull -- but the per-commit tag is",
+                "    already there. Pass -Tag <sha> to deploy it."
+            )
+        } else {
+            $lines += @(
+                "  * Is that a commit the pipeline built? Only commits whose",
+                "    publish-backend job succeeded have an image. A merged",
+                "    commit whose build failed or never ran has no tag."
+            )
+        }
+        $lines += @(
             "  * Is the package public? A GHCR package is private by default",
             "    even in a public repository. Either make it public in the",
             "    package settings, or run: docker login ghcr.io",
@@ -84,7 +124,11 @@ foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
         )
         throw ($lines -join [Environment]::NewLine)
     }
-    docker tag "$Registry/$name`:latest" "$name`:latest"
+    # Retagged to `:latest` locally because compose defaults to
+    # `mykronos-backend:latest` and takes no tag of its own. The local tag is
+    # the deploy's own pointer, not the registry's -- which is the whole reason
+    # this works without touching the compose file or the env file.
+    docker tag "$Registry/$name`:$Tag" "$name`:latest"
 }
 
 # The App private key stays on the host and is bind-mounted read-only. Spec 12
@@ -152,6 +196,35 @@ try {
     } while (((Get-Date) -lt $deadline) -and (($backend -ne "healthy") -or ($frontend -ne "healthy")))
 
     if ($backend -ne "healthy") { throw "Backend did not become healthy: docker compose logs backend" }
+
+    # Healthy is not the same fact as "running what you asked for". A stale
+    # image answers /healthz perfectly well, which is how production came to be
+    # eight days old behind entirely green indicators (#361). The image carries
+    # its commit (#363), so the deploy can check its own work rather than
+    # report success and leave the question open.
+    #
+    # Never fatal when it cannot be answered: an older image that predates
+    # MYKRONOS_BUILD_SHA reports no sha, and refusing to finish a deploy over a
+    # missing field would be worse than saying so.
+    if ($Tag -ne "latest") {
+        $running = $null
+        try {
+            $running = (Invoke-RestMethod -Uri "http://127.0.0.1:8100/healthz" -TimeoutSec 15).build.sha
+        } catch {
+            Write-Host "Could not read /healthz to confirm the running commit." -ForegroundColor Yellow
+        }
+        if (-not $running) {
+            Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
+        } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
+            Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
+        } else {
+            # Not a throw. The stack is up and healthy; what failed is the
+            # deploy's intent, and the operator needs both facts.
+            Write-Host "MISMATCH: asked for $Tag, /healthz reports $running." -ForegroundColor Red
+            Write-Host "          The stack is healthy but it is not the artifact you asked for." -ForegroundColor Red
+        }
+    }
+
     Write-Host "`nDeployed. http://localhost:3100 and http://localhost:8100" -ForegroundColor Green
 
     # The briefing, every time, because "it deployed" is not the same fact as
