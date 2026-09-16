@@ -329,11 +329,16 @@ anchors:
     # makes it do -- was killed at the same instant it would have failed, and
     # Concourse reported `timeout exceeded` instead of curl reporting why.
     #
-    # thehub/cloud-posture is what that costs: 6.9 MB of build log containing
-    # zero error lines, an opaque timeout, and a lane paused for 34 days with
-    # nothing in it to diagnose. The retries are right and worth keeping -- they
-    # are what distinguishes "could not ask" from "asked and was refused" -- so
-    # the timeout moves instead, to twice the budget rather than equal to it.
+    # Latent rather than observed: no build has been traced to this yet. I
+    # thought thehub/cloud-posture had been, and it had not -- that failure was
+    # `get: prowler` hanging, confirmed from the build plan, and its preflight
+    # finished normally. Fixing it anyway because a step whose work is allowed
+    # exactly as long as the step itself will eventually be killed mid-sentence,
+    # and the sentence is the only diagnostic a probe produces.
+    #
+    # The retries are right and stay: they are what distinguishes "could not
+    # ask" from "asked and was refused", which is the distinction PS-2 exists
+    # for. So the timeout moves instead, to twice the budget rather than equal.
     timeout: 4m
     params: *mykronos_env
     config:
