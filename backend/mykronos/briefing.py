@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
 
 from mykronos import guidance
@@ -435,10 +435,59 @@ class ClassSummary:
 
 
 @dataclass
+class PausedLane:
+    """A CI job somebody switched off (#401).
+
+    Distinct from every other list here because it is the only one sourced from
+    the CI system rather than from the lake. A paused job produces no scan runs
+    at all, so from the lake it is indistinguishable from a lane that was never
+    configured -- which is exactly why four of them sat paused for thirty-two
+    days while every indicator stayed green.
+
+    Not keyed by capability, deliberately. Coverage is computed per capability
+    and a capability is satisfied by any one of its jobs, so a paused lane with
+    a working sibling is invisible at that level. This reports the job.
+    """
+
+    pipeline: str
+    job: str
+    #: The build that was running when it stopped -- usually the failure that
+    #: prompted somebody to pause it, which is the first thing to look at.
+    last_status: str | None = None
+    last_finished_at: datetime | None = None
+    build_url: str | None = None
+
+    @property
+    def days_paused(self) -> float | None:
+        """Since the last build, which is the closest knowable proxy.
+
+        Concourse does not record *when* a job was paused, so this is a floor:
+        the job has been off at least this long. Reported as "since" rather
+        than "for" in the rendering, because overstating it would invite an
+        argument about the number instead of about the paused lane.
+        """
+        if self.last_finished_at is None:
+            return None
+        from mykronos.schemas import utcnow
+
+        end = self.last_finished_at
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        return (utcnow().replace(tzinfo=UTC) - end).total_seconds() / 86400
+
+
+@dataclass
 class Briefing:
     generated_at: datetime
     total_open: int
     stalled: list[StalledLane] = field(default_factory=list)
+    #: CI jobs that are switched off (#401). Its own list because it comes from
+    #: the CI system rather than the lake, and because the fix is "turn it back
+    #: on and find out why it failed" rather than anything about findings.
+    paused: list[PausedLane] = field(default_factory=list)
+    #: True when the CI system could not be asked. Distinct from an empty
+    #: `paused` list, which means it was asked and nothing is off.
+    paused_unknown: bool = False
     #: Lanes that are reporting and not covering (B-046). Deliberately its own
     #: list rather than another `reason` on `StalledLane`: those lanes are not
     #: producing successful scans and these are, so the sentence, the number
@@ -914,6 +963,7 @@ def build(
     default_branches: dict[str, str] | None = None,
     languages: dict[str, dict[str, int]] | None = None,
     sast_tools: dict[str, str | list[str]] | None = None,
+    paused_jobs: list[PausedLane] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -971,6 +1021,14 @@ def build(
             stale_lanes(catalog, now=stamp, default_branches=default_branches), asset_id
         ),
         unread=_only(unread_code(languages, sast_tools), asset_id),
+        # Not scoped by `asset_id`: a `PausedLane` names a pipeline and a job,
+        # and the mapping from pipeline to repository is the CI system's, not
+        # the lake's. Filtering it here on a repository name would silently drop
+        # every paused lane from a scoped briefing — the same shape of omission
+        # this section exists to end. A scoped view shows the estate's paused
+        # lanes, which is over-reporting, and that is the safe direction.
+        paused=list(paused_jobs or []),
+        paused_unknown=paused_jobs is None,
         awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
@@ -1069,6 +1127,42 @@ def render(briefing: Briefing) -> str:
             subsequent_indent="  ",
         )
         lines.append("")
+
+    if briefing.paused:
+        lines += [
+            "LANES THAT ARE SWITCHED OFF",
+            "  Paused in the CI system. These produce no scan runs at all, so",
+            "  nothing above can see them: a paused lane is indistinguishable",
+            "  from one that was never configured, and a capability covered by",
+            "  a sibling job still reads green.",
+            "",
+        ]
+        for off in sorted(briefing.paused, key=lambda p: (p.pipeline, p.job)):
+            days = off.days_paused
+            # "since", not "for": Concourse does not record when a job was
+            # paused, only when it last built. The number is a floor and the
+            # wording should not claim more than that.
+            when = (
+                f"no build since {off.last_finished_at:%Y-%m-%d} ({days:.0f} days)"
+                if off.last_finished_at and days is not None
+                else "has never finished a build"
+            )
+            ended = f", last build {off.last_status}" if off.last_status else ""
+            lines.append(f"  {off.pipeline}/{off.job}")
+            lines.append(f"      paused — {when}{ended}")
+            if off.build_url:
+                lines.append(f"      {off.build_url}")
+        lines.append("")
+    elif briefing.paused_unknown:
+        # An empty list means "asked, nothing is off". This means "could not
+        # ask", and printing nothing would make the two identical — which is
+        # the defect the section exists to fix, one level up.
+        lines += [
+            "  Could not read the CI system, so whether any lane is paused is",
+            "  unknown. A paused lane reports nothing and looks like a lane",
+            "  that was never configured.",
+            "",
+        ]
 
     if briefing.stale:
         lines += [

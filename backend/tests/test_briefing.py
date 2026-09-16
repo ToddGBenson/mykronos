@@ -548,3 +548,79 @@ class TestBlockedLanes:
         rendered = briefing.render(briefing.build(catalog))
 
         assert "unit is red, so this lane cannot start" in rendered
+
+
+class TestLanesThatAreSwitchedOff:
+    """Paused CI jobs (#401).
+
+    THE DEFECT THIS PINS. On 2026-09-15 four security lanes had been paused
+    since mid-August -- `cloud-posture`, `breach-check`, `demo-and-dast` and
+    `functional-dast`, each failing once and switched off within four days of
+    each other. Every indicator stayed green for thirty-two days.
+
+    A paused job produces no scan runs at all, so from the lake it is
+    indistinguishable from a capability nobody enabled. Coverage is computed
+    per capability and a capability is satisfied by any one of its jobs, so
+    even a lane with a working sibling reads green. The state was already
+    fetched and already modelled; nothing read it.
+    """
+
+    @staticmethod
+    def _lane(**kw: object) -> briefing.PausedLane:
+        base: dict[str, object] = {"pipeline": "thehub", "job": "cloud-posture"}
+        base.update(kw)
+        return briefing.PausedLane(**base)  # type: ignore[arg-type]
+
+    def test_a_paused_lane_is_named(self, catalog) -> None:
+        report = briefing.build(
+            catalog,
+            paused_jobs=[
+                self._lane(
+                    last_status="failed",
+                    last_finished_at=_utcnow() - timedelta(days=32),
+                )
+            ],
+        )
+
+        rendered = briefing.render(report)
+
+        assert "LANES THAT ARE SWITCHED OFF" in rendered
+        assert "thehub/cloud-posture" in rendered
+        assert "32 days" in rendered
+        assert "last build failed" in rendered
+
+    def test_a_lane_that_never_ran_says_so(self, catalog) -> None:
+        """`breach-check` has build #1 and no others. "0 days" would be a lie
+        in the reassuring direction."""
+        report = briefing.build(
+            catalog, paused_jobs=[self._lane(pipeline="personal-soc", job="breach-check")]
+        )
+
+        rendered = briefing.render(report)
+
+        assert "has never finished a build" in rendered
+        assert "days" not in rendered.split("has never finished a build")[0][-40:]
+
+    def test_nothing_paused_prints_no_section(self, catalog) -> None:
+        rendered = briefing.render(briefing.build(catalog, paused_jobs=[]))
+
+        assert "LANES THAT ARE SWITCHED OFF" not in rendered
+
+    def test_could_not_ask_does_not_read_as_nothing_paused(self, catalog) -> None:
+        """The whole failure, one level up: an unreachable CI system must not
+        render identically to a CI system with no paused lanes."""
+        unknown = briefing.render(briefing.build(catalog, paused_jobs=None))
+        none_paused = briefing.render(briefing.build(catalog, paused_jobs=[]))
+
+        assert "whether any lane is paused is" in unknown
+        assert unknown != none_paused
+
+    def test_it_is_not_dropped_from_a_scoped_briefing(self, catalog) -> None:
+        """A `PausedLane` names a pipeline, not a repository. Filtering it on
+        `asset_id` would silently drop every paused lane from a scoped view --
+        the same omission this section exists to end."""
+        report = briefing.build(
+            catalog, asset_id="ToddGBenson/mykronos", paused_jobs=[self._lane()]
+        )
+
+        assert [lane.job for lane in report.paused] == ["cloud-posture"]
