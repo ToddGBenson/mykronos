@@ -112,10 +112,31 @@ class TestTheDispositionContract:
         catalog: Catalog,
         run_compaction: Any,
     ) -> None:
-        seed(client, auth, run_compaction)
+        # `low`, because an indefinite acceptance stopped being available at
+        # critical and high (docs/acceptance-checklist.md). The contract this
+        # asserts is unchanged — indefinite is allowed when stated explicitly —
+        # and a low finding in a component nobody will touch is exactly the
+        # case it is for.
+        seed(client, auth, run_compaction, severity="low")
         response = accept(client, admin_auth, only_finding(catalog), indefinite=True)
         assert response.status_code == 200
         assert state(catalog) == ("accepted_risk", None, "no_vendor_fix")
+
+    def test_indefinite_is_refused_where_the_premise_must_expire(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """An acceptance with no end has no premise that can expire, so nothing
+        will ever bring it back. Reasonable for a low finding; not for a
+        critical."""
+        seed(client, auth, run_compaction, severity="critical")
+        response = accept(client, admin_auth, only_finding(catalog), indefinite=True)
+        assert response.status_code == 422
+        assert "indefinite" in response.json()["detail"].lower()
 
     def test_a_past_date_is_refused(
         self,
@@ -233,7 +254,7 @@ class TestExpiry:
         catalog: Catalog,
         run_compaction: Any,
     ) -> None:
-        seed(client, auth, run_compaction)
+        seed(client, auth, run_compaction, severity="low")
         assert accept(
             client, admin_auth, only_finding(catalog), indefinite=True
         ).status_code == 200
@@ -309,12 +330,15 @@ class TestAFixShipping:
         post_findings(client, auth, [dependency_finding()])
         run_compaction()
         finding_id = only_finding(catalog)
+        # A date rather than `indefinite`: what is under test here is the
+        # sweep re-opening on a shipped fix, and an indefinite acceptance is no
+        # longer available at this severity (docs/acceptance-checklist.md).
         response = accept(
             client,
             admin_auth,
             finding_id,
             accepted_reason_code=reason_code,
-            indefinite=True,
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
         )
         assert response.status_code == 200, response.text
         return finding_id
@@ -507,3 +531,131 @@ class TestTheDetailEndpointShowsTheAcceptance:
         assert "superseded_by" in record
         assert "accepted_reason_code" in record
         assert "accepted_until" in record
+
+
+class TestTheAcceptanceChecklist:
+    """The items of `docs/acceptance-checklist.md` a machine can check.
+
+    Most of the checklist is judgement and lives in the reason field. These
+    four are the ones the platform already holds the evidence for, so leaving
+    them to judgement would mean writing a register that is wrong on the day it
+    is written rather than at its review date.
+    """
+
+    def test_a_critical_may_not_be_parked_for_a_year(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """An acceptance is a decision to carry a risk for a stated period, and
+        the period has to bear some relation to how bad the thing is."""
+        seed(client, auth, run_compaction, severity="critical")
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            accepted_until=(today() + timedelta(days=330)).isoformat(),
+        )
+
+        assert response.status_code == 422
+        assert "at most 30" in response.json()["detail"]
+
+    def test_the_same_window_is_fine_for_a_low_finding(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """The rule is proportionate, not blanket. A low finding in a component
+        nobody will touch is exactly what a long acceptance is for."""
+        seed(client, auth, run_compaction, severity="low")
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            accepted_until=(today() + timedelta(days=330)).isoformat(),
+        )
+
+        assert response.status_code == 200, response.text
+
+    def test_a_critical_acceptance_needs_words_not_only_a_code(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        seed(client, auth, run_compaction, severity="critical")
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            reason="",
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
+        )
+
+        assert response.status_code == 422
+        assert "reason" in response.json()["detail"].lower()
+
+    def test_no_vendor_fix_is_refused_when_the_scan_names_one(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """The one premise a scanner can contradict. `sweep_acceptances`
+        already re-opens this six weeks later; refusing it at the front stops
+        the register being wrong from the first day."""
+        seed(
+            client,
+            auth,
+            run_compaction,
+            severity="high",
+            package_name="lodash",
+            raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+        )
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            accepted_reason_code="no_vendor_fix",
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
+        )
+
+        assert response.status_code == 409
+        assert "4.17.22" in response.json()["detail"]
+
+    def test_the_same_finding_may_be_accepted_on_grounds_that_are_true(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """Refusing the false premise must not refuse the decision. A fix
+        existing does not contradict "not exploitable here"."""
+        seed(
+            client,
+            auth,
+            run_compaction,
+            severity="high",
+            package_name="lodash",
+            raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+        )
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            accepted_reason_code="not_exploitable_here",
+            reason="the parser is never reached from an entry point",
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
+        )
+
+        assert response.status_code == 200, response.text
+
+    def test_cost_exceeds_risk_is_not_available_for_a_critical(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """A critical whose fix costs more than the risk is a conversation
+        about the architecture, not a status change."""
+        seed(client, auth, run_compaction, severity="critical")
+
+        response = accept(
+            client,
+            admin_auth,
+            only_finding(catalog),
+            accepted_reason_code="cost_exceeds_risk",
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
+        )
+
+        assert response.status_code == 422
+        assert "architecture" in response.json()["detail"]
