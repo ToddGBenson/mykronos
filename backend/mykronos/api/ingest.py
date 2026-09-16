@@ -545,6 +545,8 @@ async def ingest_findings(
             }
         )
 
+    _warn_on_collapse(rows, capability, token.repo_full_name, batch.scan_run_id)
+
     request.app.state.buffer.append("findings", rows)
 
     # One summary per batch, never one per finding (spec 16 §14). A scan that
@@ -580,6 +582,66 @@ async def ingest_findings(
 
     return IngestAccepted(accepted=len(rows), scan_run_id=batch.scan_run_id)
 
+
+def _warn_on_collapse(
+    rows: list[dict[str, Any]], capability: str, repo_full_name: str, scan_run_id: str
+) -> None:
+    """Say when two submissions in one payload became one finding (#397).
+
+    Two things produce a repeated `finding_id` in a single batch, and the
+    platform cannot tell them apart:
+
+    - a tool reported the same thing twice, which is common and harmless;
+    - two *different* findings share a fingerprint and one is about to be
+      overwritten.
+
+    It does not need to tell them apart. It needs to stop being silent about
+    the category. **Distinct titles is the signal** -- across every adapter in
+    this estate, only ZAP produced collapse groups whose titles differed
+    (#395), and that one column separates the defect from the noise.
+
+    Deliberately a warning and never a rejection. ZAP enumerates a site root as
+    both `http://host` and `http://host/`; both normalise to `/` and merging
+    them is correct. Refusing on collapse would fail honest scans. Counting
+    them costs one log line in the common case and makes the pathological case
+    impossible to miss.
+    """
+    seen: dict[str, list[str]] = {}
+    for row in rows:
+        seen.setdefault(str(row["finding_id"]), []).append(str(row.get("title") or ""))
+    groups = {fid: titles for fid, titles in seen.items() if len(titles) > 1}
+    if not groups:
+        return
+
+    lost = sum(len(titles) - 1 for titles in groups.values())
+    differing = {fid: titles for fid, titles in groups.items() if len(set(titles)) > 1}
+
+    # `scrub` because titles are scanner output crossing into a log line.
+    detail = "; ".join(
+        f"{len(set(titles))} distinct: " + " / ".join(sorted(set(titles))[:3])
+        for titles in list(differing.values())[:3]
+    )
+    if differing:
+        logger.warning(
+            "%s/%s scan %s: %s submission(s) collapsed into %s finding(s), and %s "
+            "group(s) merged DIFFERENT findings - %s",
+            scrub(repo_full_name),
+            scrub(capability),
+            scrub(scan_run_id),
+            len(rows),
+            len(rows) - lost,
+            len(differing),
+            scrub(detail),
+        )
+    else:
+        # Same title, same place, twice. The fingerprint doing its job.
+        logger.info(
+            "%s/%s scan %s: %s duplicate submission(s) merged; no titles differed.",
+            scrub(repo_full_name),
+            scrub(capability),
+            scrub(scan_run_id),
+            lost,
+        )
 
 @router.post("/raw", response_model=RawAccepted)
 async def ingest_raw_output(
