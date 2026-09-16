@@ -829,7 +829,20 @@ jobs:
       # ships no curl, so probing on it would mean apt-get first, and the probe
       # would cost more than the ten-minute scan it protects.
       - task: preflight
-        timeout: 2m
+        # 4m, not 2m, and the arithmetic is the reason (#417).
+        #
+        # The curl below is allowed 5 attempts x 20s plus 4 x 5s of delay = exactly
+        # 120 seconds. The step timeout was also 120 seconds, so a probe that used
+        # its whole retry budget -- which is precisely what an unreachable platform
+        # makes it do -- was killed at the same instant it would have failed, and
+        # Concourse reported `timeout exceeded` instead of curl reporting why.
+        #
+        # thehub/cloud-posture is what that costs: 6.9 MB of build log containing
+        # zero error lines, an opaque timeout, and a lane paused for 34 days with
+        # nothing in it to diagnose. The retries are right and worth keeping -- they
+        # are what distinguishes "could not ask" from "asked and was refused" -- so
+        # the timeout moves instead, to twice the budget rather than equal to it.
+        timeout: 4m
         params:
           MYKRONOS_URL: ((mykronos-url))
           MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
