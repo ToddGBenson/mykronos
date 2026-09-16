@@ -268,12 +268,18 @@ class TestAcceptedRisk:
         assert "accepted.unqualified" in terms
         assert terms["accepted.unqualified"] > 0
 
-    def test_a_real_decision_costs_nothing(
+    def test_a_real_decision_is_not_charged_for_being_unmanaged(
         self, client, auth, catalog, run_compaction, engine
     ) -> None:
-        """Grounds recorded and a future review date. This is the acceptance
-        the exclusion from the open counts exists for, and scoring it would
-        punish the team that did the paperwork."""
+        """Grounds recorded and a future review date, so neither of the two
+        penalties applies. Charging those here would punish the team that did
+        the paperwork, which is what the exclusion from the open counts is
+        for.
+
+        It is charged `accepted.residual` instead, and that is a different
+        claim — see the class below. Doing the paperwork still pays: the
+        residual weight for a critical is 1.0 against 40 open.
+        """
         seed(client, auth, run_compaction, [critical(0)])
         (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
         self._accept(
@@ -284,6 +290,56 @@ class TestAcceptedRisk:
 
         assert "accepted.unqualified" not in terms
         assert "accepted.expired" not in terms
+
+
+class TestResidualRisk:
+    """A well-formed acceptance still costs something.
+
+    THE HOLE THIS CLOSES. The two penalties above only charge for acceptances
+    that are not really decisions. An acceptance with a code and a future date
+    contributed exactly zero — so on an estate where every acceptance is
+    well-formed, which this one is, the whole accepted backlog was worth 0.0 to
+    every score. Twelve accepted criticals on TheHub, and the risk equation
+    could not see one of them. A status change was a way to zero out risk.
+    """
+
+    def _accept(self, *args, **kwargs):
+        return TestAcceptedRisk._accept(self, *args, **kwargs)
+
+    def _terms(self, decision) -> dict[str, float]:
+        return TestAcceptedRisk._terms(self, decision)
+
+    def test_a_carried_risk_still_scores(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        seed(client, auth, run_compaction, [critical(0)])
+        (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
+        self._accept(
+            catalog, finding_id, until="2099-01-01", reason="no_vendor_fix"
+        )
+
+        terms = self._terms(engine.evaluate(REPO))
+
+        assert terms.get("accepted.residual", 0) > 0
+
+    def test_it_costs_far_less_than_leaving_it_open(
+        self, client, auth, catalog, run_compaction, engine
+    ) -> None:
+        """The whole design in one assertion. Accepting must be worth doing —
+        a consciously carried risk is not the same as one nobody has looked at
+        — and must not be worth doing *because it makes the number go away*.
+        """
+        seed(client, auth, run_compaction, [critical(0)])
+        open_score = engine.evaluate(REPO).overall_risk_score
+
+        (finding_id,) = catalog.query("SELECT finding_id FROM findings")[0]
+        self._accept(
+            catalog, finding_id, until="2099-01-01", reason="no_vendor_fix"
+        )
+        accepted_score = engine.evaluate(REPO).overall_risk_score
+
+        assert accepted_score < open_score
+        assert accepted_score > 0
 
     def test_an_expired_acceptance_costs_more(
         self, client, auth, catalog, run_compaction, engine

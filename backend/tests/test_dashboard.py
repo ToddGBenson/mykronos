@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -1885,13 +1885,17 @@ class TestVulnerabilityManagement:
         run_compaction()
         finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
 
+        # Inside the window a critical may be accepted for
+        # (docs/acceptance-checklist.md). The date is incidental to what this
+        # test is about; being allowed to set it is not.
+        until = (date.today() + timedelta(days=20)).isoformat()
         client.patch(
             f"/api/dashboard/findings/{finding_id}/status",
             json={
                 "status": "accepted_risk",
                 "reason": "no upstream patch yet",
                 "accepted_reason_code": "no_vendor_fix",
-                "accepted_until": "2027-01-01",
+                "accepted_until": until,
             },
             headers=admin_auth,
         )
@@ -1903,7 +1907,7 @@ class TestVulnerabilityManagement:
         detail = page["accepted_risk_detail"]
         assert len(detail) == 1
         assert detail[0]["accepted_reason_code"] == "no_vendor_fix"
-        assert str(detail[0]["accepted_until"]).startswith("2027-01-01")
+        assert str(detail[0]["accepted_until"]).startswith(until)
         assert detail[0]["finding_id"] == finding_id
 
     def test_an_acceptance_whose_premise_expired_is_flagged_fixable(
@@ -1921,24 +1925,40 @@ class TestVulnerabilityManagement:
             [
                 finding_payload(
                     package_name="lodash",
-                    # The advisory's fix travels in the raw record, not as a
-                    # column -- which is where the sweep reads it from too.
-                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                    raw_finding_json={"ruleId": "CWE-89"},
                 )
             ],
         )
         run_compaction()
         finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
 
+        # Accepted while no fix is known — the API refuses `no_vendor_fix` when
+        # the scan already names one, so this is also the only order in which
+        # the state under test can arise.
         client.patch(
             f"/api/dashboard/findings/{finding_id}/status",
             json={
                 "status": "accepted_risk",
                 "reason": "no upstream patch",
                 "accepted_reason_code": "no_vendor_fix",
-                "accepted_until": "2027-01-01",
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
             },
             headers=admin_auth,
+        )
+        run_compaction()
+
+        # Then the advisory ships one. The fix travels in the raw record, not
+        # as a column -- which is where the sweep reads it from too.
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    package_name="lodash",
+                    raw_finding_json={"ruleId": "CWE-89", "fixed_version": "4.17.22"},
+                )
+            ],
         )
         run_compaction()
 
@@ -1974,7 +1994,7 @@ class TestVulnerabilityManagement:
                 "status": "accepted_risk",
                 "reason": "the parser is never reached from an entry point",
                 "accepted_reason_code": "not_exploitable_here",
-                "accepted_until": "2027-01-01",
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
             },
             headers=admin_auth,
         )

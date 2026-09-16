@@ -3556,6 +3556,125 @@ async def review_classification(
     )
 
 
+#: Longest an acceptance may run, by severity (docs/acceptance-checklist.md).
+#:
+#: Roughly four times `remediation_targets` in the Oracle policy: long enough
+#: that an acceptance is a decision rather than a deferral, short enough that a
+#: critical cannot be parked until next year. An acceptance is a decision to
+#: carry a risk *for a stated period*, and the period has to bear some relation
+#: to how bad the thing is -- accepting a critical for eleven months is not a
+#: decision with a premise, it is a way of not having the conversation.
+MAX_ACCEPTANCE_DAYS: dict[str, int] = {
+    "critical": 30,
+    "high": 90,
+    "medium": 180,
+    "low": 365,
+}
+
+#: Severities where an acceptance must end, and must say why in words. An
+#: acceptance with no end has no premise that can expire, so nothing can ever
+#: bring it back -- reasonable for a low finding in a component nobody will
+#: touch, not for a critical.
+ACCEPTANCE_NEEDS_AN_END = frozenset({"critical", "high"})
+
+
+def _check_acceptance_is_earned(
+    existing: dict[str, Any], body: StatusChange, catalog: Any, finding_id: str
+) -> None:
+    """The checklist, for the items a machine can check.
+
+    `docs/acceptance-checklist.md` is the whole list; most of it is judgement
+    and lives in the reason field. These four are the ones the platform holds
+    the evidence for, so leaving them to judgement would mean writing a
+    register that is wrong on the day it is written.
+    """
+    severity = str(existing.get("severity") or "").strip().lower()
+
+    # The reason text, required at the severities where a bare code is not a
+    # decision anybody can review later. Below critical/high it is still
+    # recorded, and still marked low-confidence when absent.
+    if severity in ACCEPTANCE_NEEDS_AN_END and not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Accepting a {severity} finding requires a reason in words, not "
+                "only a code. The code says which kind of claim you are making; "
+                "the words say why it is true for this finding, and the review "
+                "date exists so somebody will try to check them."
+            ),
+        )
+
+    if body.indefinite and severity in ACCEPTANCE_NEEDS_AN_END:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"An indefinite acceptance is not available for a {severity} "
+                "finding. An acceptance with no end has no premise that can "
+                "expire, so nothing will ever bring it back. Set "
+                "`accepted_until` instead — at most "
+                f"{MAX_ACCEPTANCE_DAYS[severity]} days for {severity}."
+            ),
+        )
+
+    limit = MAX_ACCEPTANCE_DAYS.get(severity)
+    if limit is not None and body.accepted_until is not None:
+        days = (body.accepted_until - utcnow().date()).days
+        if days > limit:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"`accepted_until` is {days} days away; a {severity} finding "
+                    f"may be accepted for at most {limit}. Carry it for a shorter "
+                    "period and look again, or fix it — an acceptance far longer "
+                    "than the remediation target is a deferral wearing a "
+                    "decision's clothes."
+                ),
+            )
+
+    code = str(body.accepted_reason_code or "")
+
+    if code == "cost_exceeds_risk" and severity == "critical":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "`cost_exceeds_risk` is not available for a critical finding. A "
+                "critical whose fix costs more than the risk is a conversation "
+                "about the architecture, not a status change. If the risk is "
+                "genuinely carried, say what makes it survivable — "
+                "`compensating_control` or `not_exploitable_here` — and show the "
+                "control."
+            ),
+        )
+
+    # The one premise a scanner can contradict. `sweep_acceptances` already
+    # re-opens a `no_vendor_fix` acceptance when a fix later appears; this is
+    # the same rule applied at the front rather than six weeks later, because
+    # the alternative is writing down a premise the platform can already see
+    # is false.
+    if code == "no_vendor_fix":
+        try:
+            rows = catalog.query(
+                "SELECT coalesce("
+                "json_extract_string(raw_finding_json, '$.fixed_version'), '') "
+                "FROM findings WHERE finding_id = ? LIMIT 1",
+                [finding_id],
+            )
+        except Exception:  # noqa: BLE001 — a lake that cannot answer must not
+            rows = []      # block a disposition; the sweep still catches it.
+        fixed_version = str(rows[0][0]).strip() if rows and rows[0] else ""
+        if fixed_version:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"`no_vendor_fix` says no patch exists, and the scan for this "
+                    f"finding names one: {fixed_version}. Accepting it would put a "
+                    "premise in the register that is already false. Take the fix, "
+                    "or accept it on grounds that are true — "
+                    "`cost_exceeds_risk` if the upgrade is the problem."
+                ),
+            )
+
+
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)
 async def set_finding_status(
     request: Request, finding_id: str, body: StatusChange, principal: PrincipalDep
@@ -3624,6 +3743,7 @@ async def set_finding_status(
                     "acceptance immediately."
                 ),
             )
+        _check_acceptance_is_earned(existing, body, catalog, finding_id)
     elif body.accepted_until is not None or body.accepted_reason_code is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

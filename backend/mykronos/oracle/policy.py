@@ -9,7 +9,7 @@ rather than silently producing wrong risk decisions for a week.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -61,6 +61,26 @@ class AcceptedRiskPolicy:
     #: Both are capped, so a large historic backlog cannot swamp the score the
     #: way the composite gate D-083 retired did.
     cap: float
+    #: What a *well-formed, live* acceptance still costs, per severity, on the
+    #: same log2 curve the open findings use.
+    #:
+    #: Until this existed the answer was nothing, and that is the hole. The two
+    #: weights above only charge for acceptances that are not really decisions;
+    #: an acceptance with a code and a future date contributed exactly zero. On
+    #: this estate every one of the 671 acceptances is well-formed, so the
+    #: entire accepted backlog -- including twelve criticals -- was worth 0.0 to
+    #: every score. A status change was a way to zero out risk.
+    #:
+    #: A consciously carried risk should cost *less* than one nobody has looked
+    #: at, which is what these being a fraction of `findings.weights` expresses.
+    #: It should not cost nothing: the vulnerability is still there, and the
+    #: only difference is that somebody knows.
+    residual: dict[str, float] = field(default_factory=dict)
+    #: Separate cap from the one above. These two answer different questions --
+    #: "how much unmanaged acceptance is there" and "how much risk is being
+    #: carried on purpose" -- and one cap over both would let a tidy register
+    #: hide a large one, or the reverse.
+    residual_cap: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -507,6 +527,13 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
             expired=_number(accepted_raw.get("expired", 0), "accepted_risk.expired"),
             cap=_number(accepted_raw.get("cap", 0), "accepted_risk.cap"),
+            residual={
+                str(sev): _number(weight, f"accepted_risk.residual.{sev}")
+                for sev, weight in (accepted_raw.get("residual") or {}).items()
+            },
+            residual_cap=_number(
+                accepted_raw.get("residual_cap", 0), "accepted_risk.residual_cap"
+            ),
         ),
         age=AgePolicy(
             over_30_days_critical=_number(

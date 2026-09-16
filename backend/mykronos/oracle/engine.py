@@ -1505,6 +1505,36 @@ class OracleEngine:
             "expired": int(expired or 0),
         }
 
+    def _accepted_live_by_severity(self, repo_full_name: str) -> dict[str, int]:
+        """Well-formed, unexpired acceptances, per severity.
+
+        The complement of `_accepted_risk`: that counts the acceptances that are
+        not really decisions, this counts the ones that are. Both are needed,
+        because they are charged for different things — one for being
+        unmanaged, this one for the risk still being there.
+
+        `info` is excluded for the same reason it is weighted 0 in
+        `findings.weights`: it is ingested for trend data and never contributes
+        to risk, and an accepted `info` finding is not residual risk.
+        """
+        if not self.catalog.all_files("findings"):
+            return {}
+        rows = self.catalog.query(
+            """
+            SELECT lower(severity), count(*)
+            FROM findings
+            WHERE asset_id = ?
+              AND status = 'accepted_risk'
+              AND lower(severity) <> 'info'
+              AND accepted_reason_code IS NOT NULL
+              AND trim(accepted_reason_code) <> ''
+              AND (accepted_until IS NULL OR accepted_until >= current_date)
+            GROUP BY 1
+            """,
+            [repo_full_name],
+        )
+        return {str(sev): int(count or 0) for sev, count in rows if sev}
+
     def _blast_radius(self, repo_full_name: str) -> tuple[list[str], dict[str, int] | None]:
         """This repo's finding packages, and the portfolio map (spec 19 §2.4).
 
@@ -1835,6 +1865,60 @@ class OracleEngine:
                     },
                 )
             )
+
+        # 2b. Residual risk: what a *well-formed* acceptance still costs.
+        #
+        #     The two terms above only charge for acceptances that are not
+        #     really decisions. An acceptance with a code and a future date
+        #     contributed exactly nothing, so on an estate where every
+        #     acceptance is well-formed — which this one is, all 671 of them —
+        #     the entire accepted backlog was worth 0.0, twelve criticals
+        #     included. A status change was a way to zero out risk.
+        #
+        #     Charged on the same log2 curve as the open findings rather than
+        #     per finding: 342 accepted container findings are not 342 times
+        #     the risk of one, for the same reason 342 open ones are not, and a
+        #     linear term would make a large historic backlog swamp everything
+        #     else the score is trying to say.
+        residual_weights = accepted_policy.residual
+        if residual_weights:
+            live = self._accepted_live_by_severity(repo_full_name)
+            raw = 0.0
+            residual_parts: list[str] = []
+            for severity, count in sorted(live.items()):
+                weight = residual_weights.get(severity, 0.0)
+                if not count or not weight:
+                    continue
+                amount = weight * math.log2(1 + count)
+                raw += amount
+                residual_parts.append(
+                    f"{count} {severity} × {weight:g} → {amount:.1f}"
+                )
+            if raw > 0:
+                cap = accepted_policy.residual_cap
+                contribution = min(raw, cap) if cap else raw
+                capped = bool(cap) and raw > cap
+                total_live = sum(live.values())
+                terms.append(
+                    Term(
+                        key="accepted.residual",
+                        label=(
+                            f"{total_live} risk(s) carried on purpose, still open "
+                            "in the code"
+                        ),
+                        contribution=contribution,
+                        detail=(
+                            "; ".join(residual_parts)
+                            + f" = {raw:.1f}"
+                            + (f", capped at {cap:g}" if capped else "")
+                        ),
+                        inputs={
+                            "by_severity": live,
+                            "weights": residual_weights,
+                            "capped": capped,
+                        },
+                    )
+                )
 
         # 3. Insider risk (spec 06). Only for a pull-request gate, and only
         #    about that pull request — see _insider_risk.
