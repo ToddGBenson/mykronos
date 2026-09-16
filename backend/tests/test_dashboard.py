@@ -521,7 +521,7 @@ class TestStatusWriteBack:
                 "status": "accepted_risk",
                 "reason": "staging only",
                 "accepted_reason_code": "not_exploitable_here",
-                "indefinite": True,
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
             },
             headers=admin_auth,
         )
@@ -699,7 +699,7 @@ class TestOpenFindings:
                 "status": "accepted_risk",
                 "reason": "behind the VPN",
                 "accepted_reason_code": "compensating_control",
-                "indefinite": True,
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
             },
             headers=admin_auth,
         )
@@ -722,7 +722,7 @@ class TestOpenFindings:
                 "status": "accepted_risk",
                 "reason": "behind the VPN",
                 "accepted_reason_code": "compensating_control",
-                "indefinite": True,
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
             },
             headers=admin_auth,
         )
