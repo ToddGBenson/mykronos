@@ -187,6 +187,118 @@ class TestWhatMustNotBeReported:
         assert [lane.capability for lane in lanes(catalog)] == []
 
 
+class TestSilenceInAQuietRepository:
+    """The mirror of this file's trap, in the other section (B-258).
+
+    `stale_lanes` refuses to call a quiet repository a pinned lane. `stalled_lanes`
+    made exactly that mistake with silence: measured 2026-09-16, two of the three
+    lanes it reported were `personal-soc`'s `iac` and `secrets`, which last ran
+    three minutes after that repository's final commit and had correctly done
+    nothing for ten days.
+    """
+
+    def stalled(self, catalog):
+        return briefing.stalled_lanes(catalog)
+
+    def test_a_silent_lane_in_a_quiet_repository_is_not_stalled(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """Nobody pushed. Both lanes are idle and correct, and neither is news."""
+        tok = token(client)
+        # The repository moved once, both lanes followed it, and then everybody
+        # stopped pushing: a daily cadence followed by twenty-eight days of
+        # nothing. Unambiguously "silent" by the cadence rule, and
+        # unambiguously fine.
+        for days in (35, 34):
+            scan(client, tok, "unit", _utcnow() - timedelta(days=days), "aaaaaaa")
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "aaaaaaa")
+        for days in (31, 30, 29, 28):
+            scan(client, tok, "unit", _utcnow() - timedelta(days=days), "bbbbbbb")
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "bbbbbbb")
+        run_compaction()
+
+        assert self.stalled(catalog) == []
+
+    def test_a_lane_left_behind_by_its_siblings_is_still_reported(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """The case that must survive the fix.
+
+        TheHub's `dast` sat on `524c71c0` while nine sibling lanes had moved to
+        `5dd2d55e`. That is the one genuinely broken lane in the estate and the
+        whole section exists for it.
+        """
+        tok = token(client)
+        for days in (31, 30, 29, 28):
+            scan(client, tok, "unit", _utcnow() - timedelta(days=days), "aaaaaaa")
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "aaaaaaa")
+        # iac follows the repository onto a new commit; unit never does.
+        for days in (3, 2, 1):
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "bbbbbbb")
+        run_compaction()
+
+
+        assert [lane.capability for lane in self.stalled(catalog)] == ["unit"]
+
+    def test_a_failing_lane_is_reported_however_quiet_the_repository(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """Quiet explains silence. It never explains a failure.
+
+        A lane that ran and failed has a job somebody can go and read, so the
+        movement gate must not reach it.
+        """
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(days=35), "aaaaaaa")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=35), "aaaaaaa")
+        for days in (31, 30, 29):
+            scan(client, tok, "unit", _utcnow() - timedelta(days=days), "bbbbbbb")
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "bbbbbbb")
+        scan(client, tok, "unit", _utcnow() - timedelta(days=28), "bbbbbbb", status="failure")
+        run_compaction()
+
+        reported = {lane.capability: lane.reason for lane in self.stalled(catalog)}
+        assert reported.get("unit") == "failing"
+
+    def test_a_lane_that_has_never_succeeded_is_not_silenced(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """No successful run means no commit to compare.
+
+        "Never worked" is a stronger claim than "quiet", and the abstention has
+        to err towards reporting.
+        """
+        tok = token(client)
+        scan(client, tok, "iac", _utcnow() - timedelta(days=35), "aaaaaaa")
+        for days in (31, 30, 29, 28):
+            scan(client, tok, "iac", _utcnow() - timedelta(days=days), "bbbbbbb")
+        scan(client, tok, "unit", _utcnow() - timedelta(days=28), "bbbbbbb", status="failure")
+        run_compaction()
+
+        assert "unit" in {lane.capability for lane in self.stalled(catalog)}
+
+    def test_the_movement_gate_reads_when_a_commit_first_appeared(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """Not the commit on the newest run.
+
+        `stale_lanes` makes this argument for the pinned case and it holds here
+        for the same reason: if the head were read off the most recent run, a
+        lane re-scanning an old tree today would declare the repository
+        unmoved and silence its own siblings.
+        """
+        tok = token(client)
+        scan(client, tok, "iac", _utcnow() - timedelta(days=20), "aaaaaaa")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=6), "bbbbbbb")
+        # A late run of the OLD commit, after the new one was already known.
+        scan(client, tok, "iac", _utcnow() - timedelta(days=1), "aaaaaaa")
+        scan(client, tok, "unit", _utcnow() - timedelta(days=20), "aaaaaaa")
+        run_compaction()
+
+        moved = briefing._repo_moved_since(catalog)
+        assert moved[(REPO, "unit")] is True
+
+
 class TestBranchDrift:
     def test_a_lane_on_the_wrong_branch_is_reported(
         self, client, catalog, run_compaction
