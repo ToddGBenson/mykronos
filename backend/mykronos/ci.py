@@ -402,6 +402,45 @@ class ConcourseClient:
             jobs=[self._job(raw, url) for raw in payload if isinstance(raw, dict)],
         )
 
+    def paused_jobs(self) -> list[tuple[str, JobStatus]] | None:
+        """Every paused job in every visible pipeline, or None if unreachable.
+
+        Swept across pipelines rather than per repository, and deliberately
+        **not** filtered through `CAPABILITY_BY_JOB` or a repository's enabled
+        capabilities. Coverage is computed per capability and a capability is
+        satisfied by any one of its jobs, so pausing one of three DAST lanes
+        leaves the capability reading green and the paused job unexamined.
+        Four security lanes sat paused for thirty-two days that way (#401) --
+        `cloud-posture`, `breach-check`, `demo-and-dast` and `functional-dast`,
+        each hidden by a different version of the same hole: a working sibling,
+        a capability nobody enabled, or producing no scan runs at all and so
+        having no home in that mapping.
+
+        A paused job is a control somebody switched off, which is worth
+        reporting on its own terms whatever else is covering for it.
+
+        `None` rather than `[]` when Concourse cannot be reached, because
+        "nothing is paused" and "could not ask" must not render the same -- that
+        is the reporting failure this method exists to end, reproduced one
+        level up.
+        """
+        names = self.pipelines()
+        if names is None:
+            return None
+        out: list[tuple[str, JobStatus]] = []
+        for pipeline in names:
+            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+            if not isinstance(payload, list):
+                # One unreadable pipeline does not invalidate the others, but it
+                # does mean this answer is partial. Logged by `_get` already.
+                continue
+            for raw in payload:
+                if not isinstance(raw, dict) or not raw.get("paused"):
+                    continue
+                out.append((pipeline, self._job(raw, url)))
+        return out
+
     def trigger_job(self, pipeline: str, job: str, *, token: str) -> bool:
         """Start a new build of `job` now (spec 17 §2.5), rather than
         waiting for the next commit the pipeline's own resource polls for.

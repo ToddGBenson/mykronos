@@ -1155,11 +1155,46 @@ def main(argv: list[str] | None = None) -> int:
                     "No GitHub client for the briefing language read"
                 )
 
+            # Paused CI jobs (#401). Read here rather than in `build()` for the
+            # same reason languages are: the briefing builds from the lake, and
+            # a paused job leaves no trace in it — no scan runs, nothing to
+            # distinguish it from a capability nobody enabled. Four security
+            # lanes were off for thirty-two days behind exactly that gap.
+            #
+            # `None` on any failure, which renders as "could not ask" rather
+            # than as "nothing is paused". Those must not look the same.
+            paused_jobs: list[briefing_report.PausedLane] | None = None
+            try:
+                ci_client = ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                )
+                if ci_client.configured:
+                    found = ci_client.paused_jobs()
+                    paused_jobs = (
+                        None
+                        if found is None
+                        else [
+                            briefing_report.PausedLane(
+                                pipeline=pipeline,
+                                job=job.name,
+                                last_status=job.status,
+                                last_finished_at=job.finished_at,
+                                build_url=job.build_url,
+                            )
+                            for pipeline, job in found
+                        ]
+                    )
+            except Exception:  # noqa: BLE001 - a briefing must not die on CI
+                logging.getLogger(__name__).debug("Could not read paused CI jobs")
+
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
                 languages=languages,
                 sast_tools=sast_tools,
+                paused_jobs=paused_jobs,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
