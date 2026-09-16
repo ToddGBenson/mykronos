@@ -235,7 +235,7 @@ class BatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     finding_ids: list[str] = Field(min_length=1, max_length=100)
-    action: Literal["claim", "release", "snooze", "wake"]
+    action: Literal["claim", "release", "snooze", "wake", "disposition"]
     by: str | None = None
     until: date | None = None
     reason: str = Field(
@@ -246,6 +246,18 @@ class BatchRequest(BaseModel):
             "a way to skip the reason field — see the endpoint."
         ),
     )
+    #: `disposition` only. The verdict to record on every finding in the set.
+    #:
+    #: A scanner rule that is wrong is wrong for every finding it raised, so the
+    #: verdict genuinely belongs to the set rather than to each row. Until this
+    #: existed the only route was one request per finding, and the docstring on
+    #: `review_classification` records what that cost: 43 false positives ever
+    #: recorded, every one of them `sast` or `secrets`, because those arrive
+    #: singly and DAST arrives twenty-five at a time from one cause (#405).
+    status: FindingStatus | None = None
+    accepted_until: date | None = None
+    indefinite: bool = False
+    accepted_reason_code: AcceptanceReason | None = None
 
 
 class BatchResult(BaseModel):
@@ -1488,6 +1500,64 @@ async def wake_finding(
     return TriageStateOut(**worklist.as_dict(state))
 
 
+async def _batch_disposition(
+    request: Request, body: BatchRequest, principal: PrincipalDep
+) -> BatchResult:
+    """One verdict, recorded against every finding it is about (#405).
+
+    **Delegates to `set_finding_status` per finding rather than writing rows
+    itself.** That path already does the update, the audit entry, the knowledge
+    capture and the retro signal, and a second copy here would be a second
+    thing to keep in step. This endpoint is a shorter route to the same
+    decision, not a different one -- the same argument `review_classification`
+    makes for itself.
+
+    So this does **not** weaken "no machine may disposition on its own". It is
+    one person's verdict applied to the set of findings that verdict is
+    actually about, which is closer to what a reviewer means than twenty-five
+    identical answers typed one at a time.
+
+    The reason stays mandatory, for the reason the batch endpoint already gives
+    about snooze: a bulk path that skipped it would be the obvious way to stop
+    having any. It matters more here, not less -- one reason covering
+    twenty-five findings is a better Knowledge Store entry than twenty-five
+    copies, but only if it is required.
+    """
+    if body.status is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="`status` is required to disposition a batch.",
+        )
+    if not body.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Dispositioning a batch needs a reason. One reason covering the "
+                "whole set is the point of this route; no reason at all is not."
+            ),
+        )
+
+    applied: list[str] = []
+    refused: dict[str, str] = {}
+    change = StatusChange(
+        status=body.status,
+        reason=body.reason,
+        accepted_until=body.accepted_until,
+        indefinite=body.indefinite,
+        accepted_reason_code=body.accepted_reason_code,
+    )
+    for finding_id in body.finding_ids:
+        try:
+            await set_finding_status(request, finding_id, change, principal)
+            applied.append(finding_id)
+        except HTTPException as exc:
+            # Per row, like the worklist actions above: one finding somebody
+            # else already dispositioned, or one id that does not exist, must
+            # not discard the verdict on the other twenty-four.
+            refused[finding_id] = str(exc.detail)
+    return BatchResult(applied=applied, refused=refused)
+
+
 @router.post("/triage/batch", response_model=BatchResult)
 async def triage_batch(
     request: Request, body: BatchRequest, principal: PrincipalDep
@@ -1501,8 +1571,24 @@ async def triage_batch(
     needs a reason and a future date — spec 11 §4's reasons are what make the
     Knowledge Store worth anything, and a bulk path that skipped them would be
     the obvious way to stop having any.
+
+    `disposition` records a verdict rather than worklist state, and exists
+    because the findings that most need one arrive in bulk: a scanner rule that
+    is wrong is wrong for every finding it raised. Twenty-five open DAST
+    findings on this platform are one ZAP rule against one query parameter on
+    one page, and recording that took twenty-five identical requests — which is
+    why `review_classification` can still truthfully say 43 false positives have
+    ever been recorded and all of them are `sast` or `secrets` (#405).
     """
     _require_writer(principal, "Batch triage")
+
+    if body.action == "disposition":
+        # Its own path, not another branch in the loop below: the worklist
+        # actions take a session and this one delegates to the disposition
+        # endpoint, which opens its own. Threading one through would make the
+        # batch route a second implementation of a decision that already has
+        # one, which is the thing `review_classification` deliberately avoided.
+        return await _batch_disposition(request, body, principal)
 
     applied: list[str] = []
     refused: dict[str, str] = {}

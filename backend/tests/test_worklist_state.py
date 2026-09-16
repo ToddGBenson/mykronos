@@ -387,3 +387,127 @@ class TestOffboarding:
             removed = worklist.purge_for_repo(session, REPO)
 
         assert removed == 2
+
+
+class TestBatchDisposition:
+    """One verdict over the findings it is actually about (#405).
+
+    THE GAP THIS CLOSES. Twenty-five open DAST findings on this platform are
+    one ZAP rule against one query parameter on one page. Recording that single
+    verdict took twenty-five identical requests, because batch covered worklist
+    state and not dispositions -- which is why `review_classification` can still
+    truthfully say 43 false positives have ever been recorded and every one of
+    them is `sast` or `secrets`. The class of finding that arrives in bulk was
+    the one with no bulk answer.
+
+    The tests that matter most here are the two that assert it did NOT become a
+    shortcut: a batch cannot skip the reason, and a batch cannot disposition
+    without naming a status.
+    """
+
+    def test_one_verdict_applies_to_every_finding(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        ids = seed(client, admin_auth, auth, run_compaction, count=3)
+
+        r = client.post(
+            "/api/dashboard/triage/batch",
+            json={
+                "finding_ids": ids,
+                "action": "disposition",
+                "status": "false_positive",
+                "reason": "ZAP-10031 on `tab`: allowlist-validated, React-escaped.",
+            },
+            headers=admin_auth,
+        )
+
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()["applied"]) == sorted(ids)
+        assert r.json()["refused"] == {}
+
+    def test_the_verdict_is_actually_recorded(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """A batch that reports `applied` and changes nothing would be the
+        worst outcome here: the backlog looks triaged and is not."""
+        ids = seed(client, admin_auth, auth, run_compaction, count=2)
+        client.post(
+            "/api/dashboard/triage/batch",
+            json={
+                "finding_ids": ids,
+                "action": "disposition",
+                "status": "false_positive",
+                "reason": "one rule, one parameter, one verdict",
+            },
+            headers=admin_auth,
+        )
+
+        for finding_id in ids:
+            body = client.get(
+                f"/api/dashboard/findings/{finding_id}", headers=admin_auth
+            ).json()
+            assert body["status"] == "false_positive"
+
+    def test_a_batch_cannot_skip_the_reason(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        """The batch endpoint's own argument about snooze, applied here: a bulk
+        path that skipped reasons is how you stop having any."""
+        ids = seed(client, admin_auth, auth, run_compaction, count=2)
+
+        r = client.post(
+            "/api/dashboard/triage/batch",
+            json={"finding_ids": ids, "action": "disposition", "status": "false_positive"},
+            headers=admin_auth,
+        )
+
+        assert r.status_code == 422
+        assert "reason" in r.text.lower()
+
+    def test_a_batch_cannot_disposition_without_a_status(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        ids = seed(client, admin_auth, auth, run_compaction, count=2)
+
+        r = client.post(
+            "/api/dashboard/triage/batch",
+            json={"finding_ids": ids, "action": "disposition", "reason": "because"},
+            headers=admin_auth,
+        )
+
+        assert r.status_code == 422
+        assert "status" in r.text.lower()
+
+    def test_an_unknown_id_does_not_discard_the_rest(
+        self, client: TestClient, admin_auth, auth, run_compaction
+    ) -> None:
+        ids = seed(client, admin_auth, auth, run_compaction, count=2)
+
+        r = client.post(
+            "/api/dashboard/triage/batch",
+            json={
+                "finding_ids": [*ids, "0" * 16],
+                "action": "disposition",
+                "status": "false_positive",
+                "reason": "one rule, one verdict",
+            },
+            headers=admin_auth,
+        )
+
+        assert sorted(r.json()["applied"]) == sorted(ids)
+        assert list(r.json()["refused"]) == ["0" * 16]
+
+    def test_a_viewer_cannot(self, client: TestClient, auth, admin_auth, run_compaction) -> None:
+        ids = seed(client, admin_auth, auth, run_compaction, count=1)
+
+        r = client.post(
+            "/api/dashboard/triage/batch",
+            json={
+                "finding_ids": ids,
+                "action": "disposition",
+                "status": "false_positive",
+                "reason": "nope",
+            },
+        )
+
+        assert r.status_code in (401, 403)
