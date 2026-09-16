@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -100,6 +101,17 @@ def _record_run(db: Any, name: str, interval: int, error: str | None) -> None:
         logger.warning("Could not record the outcome of job %r", name)
 
 
+#: How wide to spread the first run of each scheduled job across, in seconds.
+#:
+#: Every job now runs once shortly after startup instead of after a full
+#: interval (#409). Firing twelve of them at t=0 would be its own outage --
+#: several rewrite the same `findings` partitions, and that collision is what
+#: took the acceptance sweep down for three days -- so each picks a random
+#: offset in this window. Ninety seconds is long enough to decongest a boot and
+#: short enough that a daily job still runs on a container that lives an hour.
+_STARTUP_SPREAD_SECONDS = 90.0
+
+
 async def _every(
     name: str, interval: int, run: Callable[[], Awaitable[None]], db: Any = None
 ) -> None:
@@ -116,8 +128,23 @@ async def _every(
     in a log nobody tails. So each outcome is written down as well as logged,
     which is what the platform health surface reads.
     """
+    # A short jittered delay, then run — rather than sleeping a whole interval
+    # first (#409).
+    #
+    # Sleeping the interval first means a job does nothing for the first
+    # `interval` of a container's life. For an hourly job that is a detail. For
+    # a daily one on a container redeployed several times a day it is fatal:
+    # every restart resets the clock, so a job whose interval exceeds the mean
+    # uptime converges on never running at all. Six jobs here are daily and one
+    # of them is `rotation`, the ingestion-token sweep. Measured 2026-09-16:
+    # fifteen hours of uptime and not one daily job had run.
+    #
+    # Jittered, and spread over a window rather than all at zero, because
+    # twelve jobs firing in the same second on boot is its own outage — and
+    # several of them rewrite the same `findings` partitions, which is the
+    # collision that took the acceptance sweep down for three days.
+    await asyncio.sleep(_STARTUP_SPREAD_SECONDS * random.random())
     while True:
-        await asyncio.sleep(interval)
         try:
             await run()
         except asyncio.CancelledError:
@@ -129,6 +156,7 @@ async def _every(
         else:
             if db is not None:
                 _record_run(db, name, interval, None)
+        await asyncio.sleep(interval)
 
 
 async def _compaction_loop(app: FastAPI, interval: int) -> None:
@@ -374,7 +402,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         async def _acceptances() -> None:
             # In a thread: it rewrites partitions, same as the other sweeps.
-            await asyncio.to_thread(sweep_acceptances, app.state.catalog)
+            #
+            # Retried, because it shares those partitions with `absences`,
+            # `carry-forward` and the compaction loop, and DuckDB answers a
+            # concurrent rewrite with a write-write conflict on the `findings`
+            # view. On a daily job one such collision costs a whole day: this
+            # sweep last succeeded on 2026-09-13 and its next attempt lost to
+            # exactly that, leaving two acceptances live whose premise a scan
+            # had already contradicted (#409). The conflict is transient by
+            # definition, so losing a day to it is a choice rather than a
+            # constraint.
+            result = None
+            for attempt in range(3):
+                try:
+                    result = await asyncio.to_thread(
+                        sweep_acceptances, app.state.catalog
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 — retried, then raised
+                    if "conflict" not in str(exc).lower() or attempt == 2:
+                        raise
+                    logger.info(
+                        "Acceptance sweep hit a write conflict; retrying (%s/3)",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(5 * (attempt + 1))
+            # Logged, the way governance is. The counts were already computed
+            # and thrown away, so a sweep that expired nothing and one that had
+            # not run for three days produced identical evidence: none.
+            if result is not None:
+                summary = result.summary()
+                if result.expired or result.reopened_by_fix:
+                    logger.warning("Acceptance sweep: %s", summary)
+                else:
+                    logger.info("Acceptance sweep: %s", summary)
 
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and
