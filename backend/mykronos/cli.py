@@ -36,6 +36,7 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -1189,12 +1190,39 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a briefing must not die on CI
                 logging.getLogger(__name__).debug("Could not read paused CI jobs")
 
+            # Job health (#409). Read here rather than in `build()` for the
+            # same reason as the rest: the briefing builds from the lake, and
+            # `job_runs` is in the operational database. The assessment itself
+            # belongs to `platform_health`, which the API surface already uses
+            # -- a second copy of "is this job late" is a second thing to keep
+            # in step.
+            #
+            # `None` on failure, which renders as "could not read" rather than
+            # as "everything is running". The acceptance sweep failed for four
+            # days with its record sitting correct and unread.
+            unhealthy_jobs: list[Any] | None = None
+            try:
+                from mykronos import platform_health
+                from mykronos.db.models import JobRun
+                from mykronos.schemas import utcnow as _utcnow
+
+                now = _utcnow()
+                with db.session() as session:
+                    job_rows = list(
+                        session.execute(select(JobRun).order_by(JobRun.name)).scalars()
+                    )
+                assessed = [platform_health.assess_job(r, now=now) for r in job_rows]
+                unhealthy_jobs = [j for j in assessed if j.status != "ok"]
+            except Exception:  # noqa: BLE001 - a briefing must not die on this
+                logging.getLogger(__name__).debug("Could not read job health")
+
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
                 languages=languages,
                 sast_tools=sast_tools,
                 paused_jobs=paused_jobs,
+                unhealthy_jobs=unhealthy_jobs,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))

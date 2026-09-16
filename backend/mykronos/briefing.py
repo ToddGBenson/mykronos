@@ -481,6 +481,20 @@ class Briefing:
     generated_at: datetime
     total_open: int
     stalled: list[StalledLane] = field(default_factory=list)
+    #: Scheduled jobs that are failing, late, or have never run (#409). Typed
+    #: loosely because the assessment belongs to `platform_health.assess_job`
+    #: and importing it here would point the briefing at the API layer; the
+    #: caller does the assessing and hands the result over, the same way it
+    #: does for languages and paused lanes.
+    #:
+    #: Its own list because a broken job is not a broken lane and not a
+    #: finding: the fix is "find out why it threw", and nothing else on this
+    #: page would ever mention it. The acceptance sweep failed for four days
+    #: with the evidence sitting correct and unread in `job_runs`.
+    unhealthy_jobs: list[Any] = field(default_factory=list)
+    #: True when job health could not be read at all. Distinct from an empty
+    #: list, which means it was read and everything is running.
+    jobs_unknown: bool = False
     #: CI jobs that are switched off (#401). Its own list because it comes from
     #: the CI system rather than the lake, and because the fix is "turn it back
     #: on and find out why it failed" rather than anything about findings.
@@ -964,6 +978,7 @@ def build(
     languages: dict[str, dict[str, int]] | None = None,
     sast_tools: dict[str, str | list[str]] | None = None,
     paused_jobs: list[PausedLane] | None = None,
+    unhealthy_jobs: list[Any] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1029,6 +1044,12 @@ def build(
         # lanes, which is over-reporting, and that is the safe direction.
         paused=list(paused_jobs or []),
         paused_unknown=paused_jobs is None,
+        # Not scoped by `asset_id` either: a scheduled job belongs to the
+        # platform, not to a repository, so a scoped briefing showing the
+        # estate's broken jobs is over-reporting and that is the safe
+        # direction.
+        unhealthy_jobs=list(unhealthy_jobs or []),
+        jobs_unknown=unhealthy_jobs is None,
         awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
@@ -1161,6 +1182,39 @@ def render(briefing: Briefing) -> str:
             "  Could not read the CI system, so whether any lane is paused is",
             "  unknown. A paused lane reports nothing and looks like a lane",
             "  that was never configured.",
+            "",
+        ]
+
+    if briefing.unhealthy_jobs:
+        lines += [
+            "SCHEDULED JOBS THAT ARE NOT RUNNING",
+            "  The platform's own sweeps. A job that throws on every tick looks,",
+            "  from outside, exactly like one that has never had a problem --",
+            "  it retries, so nothing accumulates except the thing it was",
+            "  supposed to be doing.",
+            "",
+        ]
+        for job in sorted(
+            briefing.unhealthy_jobs, key=lambda j: (str(j.status), str(j.name))
+        ):
+            lines.append(f"  {job.name}  — {job.status}")
+            if job.detail:
+                lines.append(f"      {str(job.detail)[:104]}")
+            if getattr(job, "last_succeeded_at", None):
+                lines.append(
+                    f"      last succeeded {job.last_succeeded_at:%Y-%m-%d %H:%M}"
+                )
+            # The failure count is deliberately *not* repeated here:
+            # `assess_job` already leads its detail with "N consecutive
+            # failures:", and saying it twice makes the number look like two
+            # different facts. Worth knowing when reading it, though, that on a
+            # daily job the counter cannot climb -- one attempt a day means 2
+            # is two days, not two minutes.
+        lines.append("")
+    elif briefing.jobs_unknown:
+        lines += [
+            "  Job health could not be read, so whether the platform's own",
+            "  sweeps are running is unknown.",
             "",
         ]
 
