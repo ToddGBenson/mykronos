@@ -157,3 +157,51 @@ class TestWithdrawing:
             surface = surfaces.declare(session, REPO, kind="asset", name="Theirs")
             assert surfaces.remove(session, "example-org/other", surface.id) is False
             assert surfaces.for_repo(session, REPO).total == 1
+
+
+class TestWhatCanContradictAnExposure:
+    """`CONTRADICTED_BY` is read by nothing yet, so these pin its meaning.
+
+    The constant is a design statement waiting for a consumer, and its first
+    version was wrong in a way that would only have surfaced once somebody
+    built against it: it named `dast` for all three exposures, and dast can
+    contradict none of them.
+    """
+
+    def test_dast_cannot_contradict_any_exposure(self) -> None:
+        """The inference `risk_profile_builder` exists to refuse.
+
+        A DAST lane commonly runs inside CI against an ephemeral stack — which
+        is what this platform's own lane does — so a successful scan proves an
+        HTTP surface exists, not that anyone outside can reach it.
+        """
+        # A plain string value would iterate as characters and make this test
+        # unable to fail — which is exactly what the old `{"internal": "dast"}`
+        # shape did when this was first written.
+        named: set[str] = set()
+        for tools in surfaces.CONTRADICTED_BY.values():
+            assert not isinstance(tools, str), "values must be a tuple, not a bare string"
+            named.update(tools)
+        assert "dast" not in named
+
+    def test_internet_has_no_contradictor(self) -> None:
+        """Unreachability is not observable.
+
+        A scan that failed to reach something has not shown that the internet
+        cannot, so an entry here would invite exactly that inference.
+        """
+        assert "internet" not in surfaces.CONTRADICTED_BY
+
+    def test_internal_and_local_are_contradicted_from_outside(self) -> None:
+        """Both need evidence gathered outside the network, or a config that
+        says the port is published."""
+        for exposure in ("internal", "local"):
+            assert surfaces.CONTRADICTED_BY[exposure] == ("network", "published_ingress")
+
+    def test_unknown_is_not_a_claim_so_nothing_contradicts_it(self) -> None:
+        """`unknown` is the absence of an answer, not a wrong one."""
+        assert "unknown" not in surfaces.CONTRADICTED_BY
+
+    def test_every_key_is_a_real_exposure(self) -> None:
+        """A key outside the vocabulary would be a check that can never fire."""
+        assert set(surfaces.CONTRADICTED_BY) <= set(surfaces.EXPOSURES)
