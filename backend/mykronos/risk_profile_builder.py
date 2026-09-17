@@ -25,6 +25,21 @@ platform's own DAST runs against an ephemeral compose stack inside CI, so a
 successful scan proves an HTTP surface *exists*, not that anybody outside can
 reach it. The proposal says so, and points at what would settle it.
 
+**And it taught it again, the hard way.** The first version of this module
+refused that inference in one branch and then made a looser one in the branch
+above it: *any* declared surface, of any kind, at any exposure, proposed
+`internet_facing: true` at `observed` confidence. It reduced the surfaces to a
+count before reading them, and the field that answers the question —
+`RepoSurface.exposure`, one of `internet | internal | local | unknown` — was on
+every row it counted. On this estate that fired on three repositories and was
+wrong on two of them: `mykronos` declares ten surfaces, five `internal` and
+five `local`, none `internet`; `personal-soc` declares one `internet` surface
+that is *outbound* calls to HIBP and Shodan. Both had a profile saying `false`,
+and both were right. A proposal is only worth the reading of its evidence, so
+the evidence now names the surfaces rather than counting them — `1 declared
+surface(s) carry exposure internet: Third-party lookups (HIBP, Shodan, ipify)`
+lets a reader see the mistake; `3 attack surface(s) declared` does not.
+
 The most useful thing this returns is therefore not the proposals. It is
 `what_would_settle_it` — the empty form becomes a short list of evidence to go
 and get.
@@ -33,6 +48,7 @@ and get.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -107,11 +123,29 @@ def _secret_rules(catalog: Any, repo_full_name: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+#: Exposures that are a person's answer rather than the absence of one.
+#: `unknown` is deliberately not here — see `surfaces.EXPOSURE_ORDER`, which
+#: sorts it directly under `internet` for the same reason.
+EXPOSURES_KNOWN = frozenset({"internet", "internal", "local"})
+
+
+def _name_list(names: Sequence[str], limit: int = 3) -> str:
+    """Name the surfaces, so a reader can disagree with the evidence.
+
+    This is the part that matters. "3 attack surface(s) declared" gives a
+    reader nothing to check; "Third-party lookups (HIBP, Shodan, ipify)"
+    invites them to notice it is outbound traffic and not an exposure at all.
+    """
+    shown = ", ".join(names[:limit])
+    rest = len(names) - limit
+    return f"{shown} (+{rest} more)" if rest > 0 else shown
+
+
 def propose(
     catalog: Any,
     repo_full_name: str,
     *,
-    declared_surfaces: int = 0,
+    declared_surfaces: Sequence[tuple[str, str]] = (),
     owner: str | None = None,
     owner_source: str | None = None,
     already_confirmed: bool = False,
@@ -125,16 +159,55 @@ def propose(
     dast = _dast_runs(catalog, repo_full_name)
     network = _network_findings(catalog, repo_full_name)
 
-    if declared_surfaces:
+    exposed = [name for name, exposure in declared_surfaces if exposure == "internet"]
+    unclassified = [
+        name for name, exposure in declared_surfaces if exposure not in EXPOSURES_KNOWN
+    ]
+
+    if exposed:
         out.proposals.append(
             Proposal(
                 field="internet_facing",
                 value=True,
                 confidence="observed",
                 evidence=(
-                    f"{declared_surfaces} attack surface(s) declared for this "
-                    "repository. A declared surface is somebody's statement "
-                    "about the system and outranks anything inferred here."
+                    f"{len(exposed)} declared surface(s) carry exposure "
+                    f"`internet`: {_name_list(exposed)}. A declared exposure is "
+                    "somebody's statement about the system and outranks "
+                    "anything inferred here."
+                ),
+            )
+        )
+    elif declared_surfaces and unclassified:
+        out.proposals.append(
+            Proposal(
+                field="internet_facing",
+                value=None,
+                confidence="unknown",
+                evidence=(
+                    f"{len(declared_surfaces)} surface(s) declared, none with "
+                    f"exposure `internet`, but {len(unclassified)} left "
+                    f"unclassified: {_name_list(unclassified)}. An "
+                    "unclassified entry point is an open question about "
+                    "whether the internet can reach it, not a quiet no."
+                ),
+                what_would_settle_it=(
+                    "Set the exposure on those surfaces. Every other surface "
+                    "here is already classified, so this is the short list."
+                ),
+            )
+        )
+    elif declared_surfaces:
+        # The answer the old count could not express, and the more common one.
+        out.proposals.append(
+            Proposal(
+                field="internet_facing",
+                value=False,
+                confidence="observed",
+                evidence=(
+                    f"All {len(declared_surfaces)} declared surface(s) are "
+                    "`internal` or `local`, and none is `internet`. Somebody "
+                    "classified every one of them."
                 ),
             )
         )

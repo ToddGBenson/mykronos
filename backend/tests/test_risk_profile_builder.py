@@ -56,13 +56,95 @@ class TestInternetFacing:
         assert "ephemeral" in internet.evidence
         assert internet.what_would_settle_it
 
-    def test_a_declared_surface_settles_it(self) -> None:
-        """Somebody's statement about the system outranks any inference."""
-        out = builder.propose(_Catalog(dast=35), REPO, declared_surfaces=2)
+    def test_a_surface_declared_internet_settles_it(self) -> None:
+        """Somebody's statement about the system outranks any inference.
+
+        The statement is the *exposure*, though, not the existence of the row.
+        """
+        out = builder.propose(
+            _Catalog(dast=35),
+            REPO,
+            declared_surfaces=[("Production app (tcp/8000)", "internet")],
+        )
 
         internet = _field(out, "internet_facing")
         assert internet.value is True
         assert internet.confidence == "observed"
+        assert "Production app (tcp/8000)" in internet.evidence
+
+    def test_surfaces_that_are_all_internal_propose_false(self) -> None:
+        """The answer the old count could not express, and the common one.
+
+        Ten surfaces all classified `internal` or `local` is the strongest
+        evidence this module can have that a system is *not* internet-facing.
+        The first version read that as ten reasons to say it was.
+        """
+        out = builder.propose(
+            _Catalog(dast=35),
+            REPO,
+            declared_surfaces=[
+                ("Platform API (tcp/8100)", "internal"),
+                ("Data lake", "local"),
+            ],
+        )
+
+        internet = _field(out, "internet_facing")
+        assert internet.value is False
+        assert internet.confidence == "observed"
+
+    def test_an_unclassified_surface_is_an_open_question(self) -> None:
+        """`unknown` exposure is not a quiet no.
+
+        An unclassified entry point is an open question about whether the
+        internet can reach it, so the proposal refuses and names the rows to
+        go and classify.
+        """
+        out = builder.propose(
+            _Catalog(),
+            REPO,
+            declared_surfaces=[
+                ("Platform API (tcp/8100)", "internal"),
+                ("Legacy callback receiver", "unknown"),
+            ],
+        )
+
+        internet = _field(out, "internet_facing")
+        assert internet.value is None
+        assert internet.confidence == "unknown"
+        assert "Legacy callback receiver" in internet.evidence
+        assert internet.what_would_settle_it
+
+    def test_outbound_egress_is_visible_in_the_evidence(self) -> None:
+        """The regression that motivated this (#421).
+
+        personal-soc's one `internet` surface is outbound calls to HIBP and
+        Shodan. The proposal is still `True` — a person classified it
+        `internet` and this module does not overrule a person — but the
+        evidence must name it, because "1 attack surface(s) declared" gave the
+        reader nothing to disagree with and I recommended acting on it.
+        """
+        out = builder.propose(
+            _Catalog(),
+            REPO,
+            declared_surfaces=[
+                ("Saved Wi-Fi profiles", "local"),
+                ("Third-party lookups (HIBP, Shodan, ipify)", "internet"),
+            ],
+        )
+
+        internet = _field(out, "internet_facing")
+        assert "Third-party lookups (HIBP, Shodan, ipify)" in internet.evidence
+
+    def test_a_declared_internal_surface_outranks_an_answering_port(self) -> None:
+        """Ordering: a person's classification beats a network finding."""
+        out = builder.propose(
+            _Catalog(network=3),
+            REPO,
+            declared_surfaces=[("Platform API (tcp/8100)", "internal")],
+        )
+
+        internet = _field(out, "internet_facing")
+        assert internet.value is False
 
     def test_an_answering_port_settles_it(self) -> None:
         out = builder.propose(_Catalog(network=3), REPO)
