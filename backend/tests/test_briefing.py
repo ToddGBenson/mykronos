@@ -21,6 +21,33 @@ def _scan(client, auth, run_id: str, findings: list[dict], *, status: str = "suc
     post_findings(client, auth, findings, scan_run_id=run_id)
 
 
+def _only_finding(catalog) -> str:
+    return str(catalog.query("SELECT finding_id FROM findings")[0][0])
+
+
+def _accept(client, admin_auth, finding_id: str) -> None:
+    """Disposition the finding the way a person does, through the endpoint."""
+    response = client.patch(
+        f"/api/dashboard/findings/{finding_id}/status",
+        json={
+            "status": "accepted_risk",
+            "reason": "no upstream patch",
+            "accepted_reason_code": "no_vendor_fix",
+            "accepted_until": (_utcnow().date() + timedelta(days=30)).isoformat(),
+        },
+        headers=admin_auth,
+    )
+    assert response.status_code == 200, response.text
+
+
+def _set_status(catalog, finding_id: str, status: str) -> None:
+    """For dispositions the endpoint reaches awkwardly. Writes through the
+    helper the endpoint itself uses, so the row is shaped like a real one."""
+    from mykronos.lake.mutate import locate_findings, update_findings
+
+    update_findings(catalog, locate_findings(catalog, [finding_id]), "status = ?", [status])
+
+
 class TestStalledLanes:
     """The section the module exists for."""
 
@@ -267,6 +294,72 @@ class TestAwaitingClosure:
         delivered = len(reconcile_absences(catalog).fixed)
 
         assert promised == delivered == 1, "the page promised what the sweep delivers"
+
+    def test_an_acceptance_on_its_way_out_is_counted(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """#437. This filtered `status = 'open'` with a literal while importing
+        its neighbouring constants, so when B-071 taught absence to close an
+        `accepted_risk` finding too, the mirror stopped matching.
+
+        An acceptance ending is the closure most worth seeing coming: it is the
+        platform ending a decision a person made, and "it already happened" is
+        strictly worse news than "it is two scans away".
+        """
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _accept(client, admin_auth, _only_finding(catalog))
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        report = briefing.build(catalog)
+
+        assert report.closing_soon == 1
+        assert report.awaiting[0].scans_needed == 0
+
+    def test_it_agrees_with_the_sweep_about_an_acceptance_too(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """The parity that matters, restated for the status B-071 added.
+
+        `total_open` does not count an acceptance, so nothing else in the
+        report would have noticed the gap — only asking the sweep what it
+        would actually do exposes it.
+        """
+        from mykronos.lake import reconcile_absences
+
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _accept(client, admin_auth, _only_finding(catalog))
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        promised = briefing.build(catalog).closing_soon
+        outcome = reconcile_absences(catalog)
+
+        assert promised == len(outcome.fixed) == 1
+        assert outcome.fixed_acceptances == 1
+
+    def test_a_false_positive_going_quiet_is_not_promised(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """`CLOSEABLE_STATUSES` is a judgement, not a widening, and the mirror
+        inherits the whole of it.
+
+        A report somebody declared bogus going quiet is the scanner agreeing,
+        not a remediation. Absence never closes it, so promising the closure
+        here would be the same lie one surface earlier.
+        """
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _set_status(catalog, _only_finding(catalog), "false_positive")
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        assert briefing.build(catalog).closing_soon == 0
 
     def test_a_lane_with_one_scan_promises_nothing(
         self, client, auth, catalog, run_compaction

@@ -528,23 +528,45 @@ class Briefing:
 
 
 def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
-    """Open findings absent from their lane's most recent successful scan.
+    """Closeable findings absent from their lane's most recent successful scan.
 
     Deliberately mirrors `reconcile_absences` rather than approximating it: the
-    same `CONFIRMING_STATUSES`, the same "not among the most recent runs" test,
-    the same `asset_id`/`repo_full_name` join. A page that promised something
-    would close on a different rule from the one that closes it would be worse
-    than not saying anything.
+    same `CONFIRMING_STATUSES`, the same `CLOSEABLE_STATUSES`, the same "not
+    among the most recent runs" test, the same `asset_id`/`repo_full_name`
+    join. A page that promised something would close on a different rule from
+    the one that closes it would be worse than not saying anything.
 
-    The difference is only that this counts what is *on its way* out, where
-    reconcile acts on what has already arrived.
+    `CLOSEABLE_STATUSES` is imported for the same reason the other two are, and
+    it was a literal `'open'` until #437. B-071 taught absence to close an
+    `accepted_risk` finding as well, and this went on counting only `open`
+    ones — so an acceptance two absences from ending closed without ever
+    appearing in "closing soon". That is the one closure most worth seeing
+    coming: it ends a decision a person made, and discovering it afterwards is
+    strictly worse than being told it is due.
+
+    **Known divergence, left in place on purpose (#437).** `reconcile_absences`
+    partitions its recent runs by `(repo, capability, branch, tool_name)`; this
+    partitions by `(repo, capability)` alone. So the two can still disagree
+    about which runs count — on a repository scanned on several branches, or on
+    a capability two tools share (`extra_analysers`, B-051), this can promise a
+    closure the sweep will not make. Aligning it is a larger change than
+    importing a constant and is tracked separately rather than smuggled in
+    here.
+
+    The difference in *kind* is only that this counts what is on its way out,
+    where reconcile acts on what has already arrived.
     """
-    from mykronos.lake.reconcile import CONFIRMING_STATUSES, REQUIRED_ABSENCES
+    from mykronos.lake.reconcile import (
+        CLOSEABLE_STATUSES,
+        CONFIRMING_STATUSES,
+        REQUIRED_ABSENCES,
+    )
 
     if not catalog.all_files("findings") or not catalog.all_files("scan_runs"):
         return []
 
     statuses = ", ".join(f"'{s}'" for s in CONFIRMING_STATUSES)
+    closeable = ", ".join(f"'{s}'" for s in CLOSEABLE_STATUSES)
     rows = catalog.query(
         f"""
         WITH recent AS (
@@ -565,7 +587,7 @@ def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
         FROM findings f
         JOIN depth d
           ON d.repo_full_name = f.asset_id AND d.capability = f.capability
-        WHERE f.status = 'open'
+        WHERE f.status IN ({closeable})
           AND f.last_seen_scan_run_id NOT IN (
               SELECT r.scan_run_id FROM recent r
               WHERE r.repo_full_name = f.asset_id AND r.capability = f.capability
