@@ -512,6 +512,110 @@ class TestZapSubAlerts:
         assert result.scan_status is ScanStatus.PARTIAL_FAILURE
 
 
+class TestZapRouteIdentity:
+    """#274: identity is the route, not the concrete URL.
+
+    Keying on the URL made a finding's identity move whenever the target
+    changed the URL for a reason unrelated to the finding, so every scan
+    minted new findings and the absence rule closed the previous ones as
+    `fixed`. 94% of the estate's DAST findings were recorded `fixed` and
+    `ZAP-10031` alone had 891 identities at 891 URLs.
+
+    Both ephemeral forms are exercised here, because a fix for either one
+    alone leaves the other churning.
+    """
+
+    @staticmethod
+    def _identity(finding: Any) -> str:
+        return compute_finding_id(
+            repo_full_name=REPO,
+            capability="dast",
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+        )[0]
+
+    def _finding(self, uri: str) -> Any:
+        return zap_normalize(
+            zap_report(instances=[{"uri": uri, "method": "GET"}]), context("dast")
+        ).findings[0]
+
+    def test_a_cache_busting_query_string_does_not_mint_a_new_finding(self) -> None:
+        """The form the issue diagnosed: `?v=<commit sha>` on a built asset,
+        which changes on every deploy of the scanned application."""
+        before = self._finding("https://staging.example.com/frontend/js/app.js?v=0cfaa2dba462")
+        after = self._finding("https://staging.example.com/frontend/js/app.js?v=772c9fc080f9")
+
+        assert before.file_path == "/frontend/js/app.js"
+        assert self._identity(before) == self._identity(after)
+
+    def test_an_ephemeral_uuid_path_segment_does_not_mint_a_new_finding(self) -> None:
+        """The form a query-string fix cannot reach: the DAST lane scans a
+        stack reseeded with fresh row ids on every run, so the repo uuid in
+        the path is different every scan."""
+        before = self._finding("http://frontend:3100/repos/0b1377ac-12ff-424e-b569-0f0b7e53b101")
+        after = self._finding("http://frontend:3100/repos/146d0529-c96f-4bf4-b6bc-32e04eb5e202")
+
+        assert before.file_path == "/repos/{id}"
+        assert self._identity(before) == self._identity(after)
+
+    def test_both_forms_at_once_collapse_to_one_route(self) -> None:
+        """An ephemeral segment *and* an ephemeral query on the same URL."""
+        first = self._finding("http://frontend:3100/repos/0b1377ac-12ff-424e-b569-0f0b7e53b101?tab=findings&severity=high")
+        second = self._finding("http://frontend:3100/repos/146d0529-c96f-4bf4-b6bc-32e04eb5e202?tab=ci")
+
+        assert first.file_path == "/repos/{id}"
+        assert self._identity(first) == self._identity(second)
+
+    def test_the_parameter_subset_the_spider_happened_to_visit_is_not_identity(
+        self,
+    ) -> None:
+        """Measured on the estate: keeping parameter *names* — even with the
+        values stripped — left 40-odd identities on one route, because the
+        spider reaches a different subset of the filters on each run."""
+        assert self._identity(self._finding("http://x.test/triage?kev_only=1")) == self._identity(
+            self._finding("http://x.test/triage?kev_only=1&min_epss=0.5&order=epss")
+        )
+
+    def test_two_different_routes_stay_two_findings(self) -> None:
+        """Guard on the other failure: over-normalising would hide a finding
+        by merging it into an unrelated one."""
+        assert self._identity(self._finding("http://x.test/repos")) != self._identity(
+            self._finding("http://x.test/triage")
+        )
+        assert self._identity(
+            self._finding("http://x.test/api/dashboard/repos/0b1377ac-12ff-424e-b569-0f0b7e53b101/ci")
+        ) != self._identity(
+            self._finding(
+                "http://x.test/api/dashboard/repos/0b1377ac-12ff-424e-b569-0f0b7e53b101/findings"
+            )
+        )
+
+    def test_a_meaningful_segment_is_never_mistaken_for_an_id(self) -> None:
+        """Guard: only a whole-segment uuid or a whole-segment hex run of
+        twelve or more is templated. Short words, words that merely contain
+        hex characters, and filenames keep their names."""
+        for path in (
+            "/decisions",
+            "/frontend/css/bundle.css",
+            "/api/dashboard/portfolio",
+            "/facade",
+            "/beefed",
+            "/v2/accede",
+        ):
+            assert self._finding(f"http://x.test{path}").file_path == path
+
+    def test_the_concrete_uri_is_still_recorded(self) -> None:
+        """The URL stops being identity; it does not stop being evidence."""
+        uri = "http://frontend:3100/repos/0b1377ac-12ff-424e-b569-0f0b7e53b101?tab=findings"
+        finding = self._finding(uri)
+
+        assert finding.file_path == "/repos/{id}"
+        assert (finding.raw_finding_json or {})["instance"]["uri"] == uri
+
+
 # ---------------------------------------------------------------------------
 # Cloud
 # ---------------------------------------------------------------------------
