@@ -1704,7 +1704,11 @@ class CiReportingOut(BaseModel):
             "there is no successful build to measure the lake against - "
             "distinct from not_run, which used to absorb it and reads as "
             "'nobody has triggered this yet'. not_run: the job exists and "
-            "has never run."
+            "has never run. unknown: the pipeline runs this job and nothing "
+            "records what it produces, so no claim can be made about it - it "
+            "is neither mapped to a capability nor written down as producing "
+            "none, and until one of those is true nothing is watching it "
+            "(B-59330). `capability` reads 'unknown' on these rows."
         )
     )
 

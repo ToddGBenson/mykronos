@@ -244,8 +244,24 @@ class Reporting:
     against, and this is "did the lane run at all".
     """
 
+    unmapped: bool = False
+    """Nothing says what capability this job produces (B-59330).
+
+    The row exists precisely because the question cannot be answered. Every
+    other state here is a statement about a lane whose purpose is known;
+    this one says the purpose itself is unrecorded, so no amount of green
+    builds underneath it means anything.
+    """
+
     @property
     def state(self) -> str:
+        # First, ahead of `paused` and `failed`, because it is not a worse
+        # version of either - it is the statement that this row's other
+        # fields cannot be interpreted. A job nobody has mapped has no
+        # capability to be silent about, so "failed" or "paused" would be
+        # answering a question that was never asked.
+        if self.unmapped:
+            return "unknown"
         # Before `last_build_failed`, and deliberately: a paused job's last
         # build is usually the failure that prompted somebody to pause it, so
         # reporting `failed` would keep telling a reader to repair a lane that
@@ -1166,13 +1182,100 @@ def compare(before: list[StageCoverage], after: list[StageCoverage]) -> list[Par
 _DID_NOT_SUCCEED: frozenset[str] = frozenset({"failed", "errored", "aborted"})
 
 
+#: The capability an UNKNOWN row is filed under.
+#:
+#: Not a stage, and deliberately absent from `ALL_STAGES`: `coverage()` walks
+#: that tuple, so an unmapped job cannot masquerade as a capability nor
+#: displace a real one. It travels as a `Reporting` row instead, which is the
+#: surface the CI page renders job-by-job.
+UNMAPPED_CAPABILITY = "unknown"
+
+
+#: Jobs that are unmapped ON PURPOSE, and why each one is (B-59330).
+#:
+#: THE DEFECT THIS EXISTS FOR. `reconcile()` used to `continue` on any job
+#: absent from `CAPABILITY_BY_JOB`, so the cross-check was an allowlist with a
+#: silent default: a job was unmonitored until somebody remembered to map it,
+#: and nothing anywhere said a job had been skipped. On 2026-09-07 five keel
+#: jobs errored against a sealed Vault and stayed red for three days with
+#: nothing escalating. The detector would have fired -- `_DID_NOT_SUCCEED`
+#: covers `errored` exactly -- and it was simply not pointed at those jobs.
+#:
+#: Mapping keel fixes that occurrence. This fixes the class: anything not
+#: named here is reported as `unknown` rather than dropped, so the cost of
+#: forgetting is a visible row instead of a lane nobody is watching.
+#:
+#: AN ENTRY IS A CLAIM, NOT A PARDON, and `test_ci_job_audit.py` holds it to
+#: two properties rather than trusting the sentence: every job in every
+#: pipeline is mapped or named here, and no job named here invokes
+#: `python -m mykronos.upload`. The second is the one that matters over time.
+#: `unit` sat on the old hard-coded skip list until D-046 gave it a ScanRun,
+#: and nothing noticed it had started reporting -- an acknowledgement that
+#: silently stops being true is how the allowlist failed in the first place.
+#:
+#: So these record what each job does TODAY. A job here that starts uploading
+#: should turn this file red, and the fix is a line in `CAPABILITY_BY_JOB`.
+ACKNOWLEDGED_UNMAPPED_JOBS: dict[str, str] = {
+    # Build and delivery. Nothing scans; there is no lake record to be absent.
+    "build": "builds the image, runs no scanner and uploads nothing",
+    "publish-backend": "pushes the backend image to the registry, produces no findings",
+    "publish-frontend": "pushes the frontend image to the registry, produces no findings",
+    "promote": "retags an image that is already built, runs no scanner",
+    "deploy-demo": "deploys a built image to the demo environment, scans nothing",
+    "deploy-prod": "deploys a built image to production, scans nothing",
+    "package": "bundles the skills release and publishes it to MinIO, scans nothing",
+    # The pipeline's own upkeep.
+    "set-pipeline": "re-applies this pipeline's own configuration (#454), scans nothing",
+    "pin-check": (
+        "asserts the pinned runner still has the modules the lanes call; it "
+        "fails the build rather than filing a finding"
+    ),
+    # Driven from inside Mykronos, and argued at length above
+    # `CAPABILITY_BY_JOB` and beside `NON_SCANNING`/`GATE_JOBS`.
+    "insider": (
+        "Aegis assesses a pull request and posts to /api/ingest/aegis; these "
+        "pipelines run on pushes, where there is correctly no assessment"
+    ),
+    "oracle": "the Oracle gate asks for a decision and produces no scan run (B-061)",
+    "oracle-gate": "the Oracle gate asks for a decision and produces no scan run (B-061)",
+    "remediate": "Patchwork opens fix pull requests; `NON_SCANNING` already exempts it",
+    # Gates and alerters. Each fails its build or posts to Slack on what it
+    # finds; none of them writes to the lake, which is why a capability would
+    # be the wrong thing to expect of them.
+    "guard": "personal-soc's no-personal-data gate; it fails the build, it does not file",
+    "skill-integrity": "checks SKILL.md references before delivery; fails the build, files nothing",
+    "doc-drift": "compares the docs against the tree; fails the build, files nothing",
+    "external-exposure": "reads the Shodan view of the household IP and alerts; uploads nothing",
+    "netassess-ingest": (
+        "verifies and diffs the network scan published to MinIO and alerts on "
+        "the difference; it writes no scan run of its own"
+    ),
+    "netassess-freshness": (
+        "ages the newest network scan and alerts when it is stale; files nothing"
+    ),
+    "breach-check": "queries HIBP for the monitored addresses and alerts; uploads nothing",
+}
+
+
 def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
 
-    Only jobs in `CAPABILITY_BY_JOB` are checked. `build` and
-    `publish-backend` produce no findings and their absence from the lake is
-    not a fault.
+    A job in `CAPABILITY_BY_JOB` is checked against its capability. A job in
+    `ACKNOWLEDGED_UNMAPPED_JOBS` is skipped, because somebody has written down
+    that it produces nothing. **Anything else is reported as `unknown`** — it
+    is not skipped, and that is the point (B-59330).
+
+    The old shape was an allowlist with a silent default: `continue` on
+    anything unmapped, and no record that a job had been passed over. That
+    makes every job anybody ever adds to any pipeline unmonitored until
+    somebody remembers this table exists, and keeps the omission invisible
+    while it lasts. Five keel jobs errored on a sealed Vault on 2026-09-07 and
+    stayed red for three days behind exactly that silence.
+
+    `unknown` is not a judgement about the lane. It says the platform cannot
+    say whether the lane is healthy, which is a different and more honest
+    thing than saying nothing at all.
 
     A job may produce several capabilities: demo-and-dast runs the functional
     suite through ZAP's proxy and then scans, so one build uploads both
@@ -1183,10 +1286,30 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
     seen: set[str] = set()
     out: list[Reporting] = []
     for job in jobs:
-        capabilities = CAPABILITY_BY_JOB.get(job.name)
-        if capabilities is None or job.name in seen:
+        if job.name in seen:
             continue
+        # Marked before the mapping is consulted, not after. The old order
+        # only remembered jobs it had a capability for, so a pipeline listing
+        # an unmapped job twice would now report it twice.
         seen.add(job.name)
+        capabilities = CAPABILITY_BY_JOB.get(job.name)
+        if capabilities is None:
+            if job.name in ACKNOWLEDGED_UNMAPPED_JOBS:
+                continue
+            out.append(
+                Reporting(
+                    job=job.name,
+                    capability=UNMAPPED_CAPABILITY,
+                    # Both deliberately unset. There is no capability to have
+                    # scanned, so a timestamp here would invite a comparison
+                    # that has no meaning; `state` returns `unknown` before it
+                    # reaches them.
+                    built_at=None,
+                    scanned_at=None,
+                    unmapped=True,
+                )
+            )
+            continue
         if isinstance(capabilities, str):
             capabilities = (capabilities,)
         for capability in capabilities:
