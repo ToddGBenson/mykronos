@@ -433,6 +433,32 @@ class GitHubClient(Protocol):
         opening a second one (spec 17 §7.2) — the caller looks the issue up
         by `TriageStory.id`, this just applies the new content to it."""
 
+    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
+        """Say something new on an existing issue without rewriting it (#432).
+
+        Distinct from `update_issue` on purpose. Editing the body replaces
+        what the issue said; a disposition — fixed, dismissed, accepted — is
+        an event with a date, and the record of when the platform learned it
+        is the point. Closing an issue with no comment leaves a reader no way
+        to tell a resolution from a tidy-up."""
+
+    async def close_issue(
+        self, repo_full_name: str, number: int, *, reason: str = "completed"
+    ) -> None:
+        """Close an issue whose finding is settled (#432).
+
+        `reason` is GitHub's `state_reason`: `completed` for a finding a scan
+        confirmed fixed, `not_planned` for one dispositioned as a false
+        positive. An acceptance is never closed here — see
+        `groom.OPEN_DISPOSITIONS`."""
+
+    async def issue_state(self, repo_full_name: str, number: int) -> str | None:
+        """`open`, `closed`, or `None` if the issue is gone.
+
+        Read, never assumed: whether a recurrence may land on an existing
+        issue depends on that issue still being open, and it can have been
+        closed by a person this platform never told."""
+
 
 # ---------------------------------------------------------------------------
 # Fake
@@ -851,6 +877,34 @@ class FakeGitHubClient:
             issue["body"] = body
         if labels is not None:
             issue["labels"] = list(labels)
+
+    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
+        self.calls.append(("comment_on_issue", f"{repo_full_name}#{number}"))
+        self._require("issues", "write", "Commenting on an issue")
+        self._issue(repo_full_name, number).setdefault("comments", []).append(body)
+
+    async def close_issue(
+        self, repo_full_name: str, number: int, *, reason: str = "completed"
+    ) -> None:
+        self.calls.append(("close_issue", f"{repo_full_name}#{number}"))
+        self._require("issues", "write", "Closing an issue")
+        issue = self._issue(repo_full_name, number)
+        issue["state"] = "closed"
+        issue["state_reason"] = reason
+
+    async def issue_state(self, repo_full_name: str, number: int) -> str | None:
+        self.calls.append(("issue_state", f"{repo_full_name}#{number}"))
+        self._require("issues", "read", "Reading an issue")
+        repo = self._repo(repo_full_name)
+        issue = next((i for i in repo.issues if i["number"] == number), None)
+        return None if issue is None else str(issue.get("state") or "open")
+
+    def _issue(self, repo_full_name: str, number: int) -> dict[str, Any]:
+        repo = self._repo(repo_full_name)
+        issue = next((i for i in repo.issues if i["number"] == number), None)
+        if issue is None:
+            raise GitHubError(f"Issue #{number} not found on {repo_full_name}", status=404)
+        return issue
 
 
 # ---------------------------------------------------------------------------
@@ -1517,3 +1571,32 @@ class RestGitHubClient:
         if not payload:
             return
         await self._json("PATCH", f"/repos/{repo_full_name}/issues/{number}", json=payload)
+
+    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
+        await self._json(
+            "POST", f"/repos/{repo_full_name}/issues/{number}/comments", json={"body": body}
+        )
+
+    async def close_issue(
+        self, repo_full_name: str, number: int, *, reason: str = "completed"
+    ) -> None:
+        await self._json(
+            "PATCH",
+            f"/repos/{repo_full_name}/issues/{number}",
+            json={"state": "closed", "state_reason": reason},
+        )
+
+    async def issue_state(self, repo_full_name: str, number: int) -> str | None:
+        response = await self._request("GET", f"/repos/{repo_full_name}/issues/{number}")
+        if response.status_code == 404:
+            # An issue that was deleted or transferred is an answer, not a
+            # failure — same reading as `get_branch_protection`'s 404. A 403
+            # still raises: "we were not allowed to look" must never render
+            # as "there is no issue".
+            return None
+        if response.status_code >= 400:
+            raise GitHubError(
+                f"Could not read {repo_full_name}#{number}: {response.text[:400]}",
+                status=response.status_code,
+            )
+        return str(response.json().get("state") or "open")

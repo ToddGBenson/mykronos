@@ -90,7 +90,9 @@ async def _open_or_update(request: Request, actor: str, story: TriageStory) -> G
         )
 
     try:
-        outcome = await open_or_update_story(request.app.state.db, github, actor, story)
+        outcome = await open_or_update_story(
+            request.app.state.db, github, request.app.state.catalog, actor, story
+        )
     except GitHubError as exc:
         logger.warning(
             "Grooming %s %s failed: %s", story.subject_type, scrub(story.subject_id), exc
