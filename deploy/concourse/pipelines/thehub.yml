@@ -162,7 +162,16 @@ resources:
   - name: zap
     type: registry-image
     icon: spider
-    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.16.1" }
+    # 2.17.0, the same exact tag `deploy/demo/docker-compose.yml` pins for the
+    # mykronos DAST lane (D-114/B-053). Two pins of one tool at two versions
+    # means a passive rule that exists in one release and not the other is a
+    # class of finding one half of the estate cannot produce, and nothing says
+    # so -- the gap surfaced only because ZAP filed `ZAP-10116` about itself
+    # (#272). Exact, never `stable` or a weekly tag: D-114 ruled floating
+    # versions out, and a scanner that changes under you cannot be compared
+    # against its own previous run. `ZAP_VERSION` in `functional-dast` below
+    # is the other half of this pin; a test asserts the two agree.
+    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.17.0" }
 
   - name: playwright
     type: registry-image
@@ -3687,7 +3696,12 @@ jobs:
           # No HUB_API_TOKEN: the demo compose sets it empty, which disables
           # the API gate. global-setup.js warns and carries on, and inventing
           # a credential the environment does not check would be theatre.
-          ZAP_VERSION: "2.16.1"
+          # The tarball half of the `zap` resource pin above, and the same
+          # version on purpose: this job installs ZAP from the GitHub release
+          # rather than running the image, so two numbers describe one tool and
+          # a bump that moved only one would leave the estate scanning at two
+          # different versions again (#272). A test asserts they agree.
+          ZAP_VERSION: "2.17.0"
           SPIDER_MAX_MINUTES: "10"
           ASCAN_MAX_MINUTES: "30"
           MIN_SEEDED_URLS: "5"

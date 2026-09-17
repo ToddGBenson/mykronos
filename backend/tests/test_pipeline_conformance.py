@@ -533,3 +533,92 @@ def test_the_committed_vars_say_what_the_apply_script_applies(stem: str) -> None
         f"{APPLY_SCRIPT[stem]} writes {missing}, which vars/{stem}.yml does not carry, so a "
         f"self-apply would drop them"
     )
+
+
+# --- One scanner, one version ------------------------------------------------
+
+DEMO_COMPOSE = REPO_ROOT / "deploy" / "demo" / "docker-compose.yml"
+ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy"
+EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _zap_pins() -> dict[str, str]:
+    """Every committed statement of which ZAP the estate scans with.
+
+    Three shapes, because ZAP is installed three ways: a Concourse
+    `registry-image` resource (TheHub's baseline lanes), a `ZAP_VERSION` task
+    param (TheHub's `functional-dast` lane, which unpacks the GitHub release
+    tarball into a task cache), and a compose `image:` (the demo stack the
+    mykronos DAST lane proxies through). Keyed by where it was read, so a
+    failure names the line to edit rather than the fact of a disagreement.
+    """
+    pins: dict[str, str] = {}
+
+    def walk(node: object, where: str) -> None:
+        if isinstance(node, dict):
+            source = node.get("source")
+            if (
+                node.get("name") == "zap"
+                and isinstance(source, dict)
+                and source.get("repository") == ZAP_IMAGE
+            ):
+                pins[f"{where}:zap resource tag"] = str(source.get("tag"))
+            for key, value in node.items():
+                if key == "ZAP_VERSION":
+                    pins[f"{where}:ZAP_VERSION"] = str(value)
+                else:
+                    walk(value, where)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, where)
+
+    for path in checker.pipelines():
+        walk(yaml.safe_load(path.read_text(encoding="utf-8")), path.name)
+
+    compose = yaml.safe_load(DEMO_COMPOSE.read_text(encoding="utf-8"))
+    for name, service in (compose.get("services") or {}).items():
+        image = str(service.get("image", ""))
+        if image.startswith(f"{ZAP_IMAGE}:"):
+            pins[f"deploy/demo/docker-compose.yml:{name}"] = image.split(":", 1)[1]
+
+    return pins
+
+
+def test_the_estate_scans_with_one_zap() -> None:
+    """TheHub ran 2.16.1 while mykronos ran 2.17.0, and nothing said so (#272).
+
+    Passive scan rules are added and fixed per release, so two pins at two
+    versions mean a rule that exists in one and not the other is a class of
+    finding half the estate cannot produce — and a scanner that looked with
+    fewer rules reports the same green as one that looked with all of them.
+
+    The gap survived a release and surfaced only because ZAP filed
+    `ZAP-10116` "ZAP is Out of Date" about *itself*, into a product backlog,
+    where it read as a low defect in TheHub rather than as an estate-wide
+    coverage hole. A bump is three edits across two files, so this is what
+    notices when only some of them move.
+    """
+    pins = _zap_pins()
+
+    assert len(pins) >= 3, (
+        f"expected the zap resource, ZAP_VERSION and the demo compose image; found {pins}. "
+        "If a pin moved, move this test with it rather than letting it stop looking."
+    )
+
+    versions = sorted(set(pins.values()))
+    assert len(versions) == 1, (
+        f"the estate pins ZAP at {versions}, so one half scans with rules the other lacks: {pins}"
+    )
+
+
+def test_every_zap_pin_is_an_exact_version() -> None:
+    """`stable` and the weekly tags float, which D-114 ruled out.
+
+    A scanner that changes underneath a lane cannot be compared against its own
+    previous run, and a finding that appears is then indistinguishable from a
+    rule that arrived.
+    """
+    floating = {
+        where: value for where, value in _zap_pins().items() if not EXACT_VERSION.match(value)
+    }
+    assert not floating, f"these ZAP pins float rather than naming a release: {floating}"
