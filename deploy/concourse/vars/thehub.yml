@@ -1,0 +1,44 @@
+# Non-secret vars for `pipelines/thehub.yml`. See README.md in this directory.
+#
+# Transcribed from the vars array and the `param()` defaults in
+# `deploy/concourse/set-thehub-pipeline.ps1`; a test asserts the two still
+# agree.
+#
+# `github-token` and the four `azure-*` values are deliberately absent, and
+# what that costs is written out in the `set-pipeline` job's comment in
+# pipelines/thehub.yml. Read it before applying that job.
+
+# `develop`, not `main`, and the default is where that decision lives.
+# B-045 closed by passing `-Branch develop` at apply time and leaving the
+# script default at `main`; the next unrelated apply silently moved TheHub back
+# to `main`. A value carried in an operator's memory is a value that reverts.
+thehub-branch: develop
+
+# Quoted: the pipeline reads it as a string, and an unquoted `true` is a YAML
+# boolean that would not compare equal to anything the job tests.
+thehub-oracle-blocking: 'true'
+
+registry: 192.168.0.14:5000
+prowler-version: '5.5.0'
+scan-timezone: America/Phoenix
+
+# 8002 for demo (docker-compose.demo.yml publishes "8002:8000"), 8081 for
+# staging (the nginx serving the SPA, which is where the missing security
+# headers are). Host IP throughout: a garden task container's localhost is its
+# own, not this machine's.
+thehub-demo-url: http://192.168.0.14:8002
+thehub-prod-url: http://192.168.0.14:8000
+thehub-staging-url: http://192.168.0.14:8081
+
+# TheHub's own API, where this pipeline reports its stages back to.
+thehub-url: http://192.168.0.14:8000
+thehub-release-bucket: thehub-releases
+
+# Headroom over a demo rebuild from empty volumes: poll interval, stack
+# recreate, 273 migrations, seed. 15 was the old budget and the job failed
+# intermittently while the deploy underneath it succeeded.
+deploy-timeout-minutes: 25
+
+minio-endpoint: http://192.168.0.14:9000
+mykronos-url: http://192.168.0.14:8100
+mykronos-ref: v7

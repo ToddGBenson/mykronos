@@ -1,0 +1,23 @@
+# Non-secret vars for `pipelines/mykronos.yml`. See README.md in this directory.
+#
+# Every value here is transcribed from the vars array in
+# `deploy/concourse/set-pipeline.ps1`, and a test asserts the two still agree.
+# Nothing in this file is a credential: the four that are
+# (mykronos-ingestion-token, mykronos-gate-token, minio-access-key,
+# minio-secret-key) and the two Slack values resolve from Vault at build time.
+
+# Host IP, not a Docker name: garden task containers resolve through the public
+# servers set in compose and have never heard of `mykronos` or `minio`.
+mykronos-url: http://192.168.0.14:8100
+
+# The pinned uploader tag. `pin-check` is what notices when it goes stale;
+# moving it means moving it in set-pipeline.ps1 and here, in one commit.
+mykronos-ref: v7
+
+# The branch every upload reports (PS-6), rather than each lane naming the
+# default branch as a literal.
+scanned-branch: main
+
+minio-endpoint: http://192.168.0.14:9000
+registry: 192.168.0.14:5000
+demo-host: 192.168.0.14
