@@ -603,6 +603,11 @@ class RoutingResult:
 
     stories_opened: int = 0
     stories_updated: int = 0
+    #: Issues closed because their finding is `fixed` or `false_positive`,
+    #: and issues commented on and deliberately left open because their
+    #: finding is `accepted_risk` (#432).
+    issues_closed: int = 0
+    acceptances_noted: int = 0
     left_to_patchwork: int = 0
     #: Findings Patchwork has not looked at yet, in a repo where it will.
     #: Skipped this cycle rather than raced — the next sweep sees whatever
@@ -613,6 +618,8 @@ class RoutingResult:
     def summary(self) -> str:
         return (
             f"{self.stories_opened} opened, {self.stories_updated} updated, "
+            f"{self.issues_closed} closed, "
+            f"{self.acceptances_noted} acceptances noted, "
             f"{self.left_to_patchwork} left to Patchwork, "
             f"{self.awaiting_patchwork} awaiting Patchwork, "
             f"{len(self.failed)} failed"
@@ -670,7 +677,7 @@ async def route_open_findings(
     so re-routing a subject updates its issue instead of opening a second one.
     """
     from mykronos.dashboard import DashboardQueries
-    from mykronos.groom import open_or_update_story
+    from mykronos.groom import open_or_update_story, sync_story_dispositions
     from mykronos.triage_story import gather_finding_story
 
     queries = DashboardQueries(catalog)
@@ -693,6 +700,28 @@ async def route_open_findings(
         # never None (`github/factory.py`), the same assumption
         # `close_superseded_fixes` above already makes.
         github = github_factory.for_installation(installation_id)
+
+        # The other half of routing (#432): filing an issue when a finding
+        # appears and never touching it again is what left 15 of 16 auto-filed
+        # issues describing findings the platform had already closed. Run here
+        # rather than as its own scheduled job because this is the pass that
+        # already holds a client per installation, and because opening and
+        # closing the same backlog on two different intervals is how the two
+        # halves drift apart.
+        try:
+            synced = await sync_story_dispositions(
+                db,
+                github,
+                catalog,
+                repo_full_name=repo_full_name,
+                actor="mykronos:auto-routing",
+            )
+            result.issues_closed += synced.closed
+            result.acceptances_noted += synced.left_open
+            result.failed += synced.failed
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not sync issue dispositions for %s: %s", repo_full_name, exc)
+            result.failed.append((repo_full_name, str(exc)))
 
         try:
             stages = _patchwork_stages(catalog, repo_full_name)
@@ -727,7 +756,7 @@ async def route_open_findings(
                         continue
                     story = gather_finding_story(catalog, session, store, finding)
                 outcome = await open_or_update_story(
-                    db, github, "mykronos:auto-routing", story
+                    db, github, catalog, "mykronos:auto-routing", story
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -741,7 +770,7 @@ async def route_open_findings(
             else:
                 result.stories_updated += 1
 
-    if result.stories_opened or result.failed:
+    if result.stories_opened or result.issues_closed or result.failed:
         logger.info("Auto-routing sweep: %s", result.summary())
     return result
 

@@ -415,6 +415,16 @@ class GroomedStory(Base):
     github_issue_number: Mapped[int] = mapped_column(Integer)
     github_issue_url: Mapped[str] = mapped_column(String(512))
     dev_ready: Mapped[bool] = mapped_column(Boolean)
+    #: The finding disposition this issue has already been told about
+    #: (`groom.sync_story_dispositions`, #432). Null until the finding leaves
+    #: `open`, and reset to null by a re-groom.
+    #:
+    #: Recorded rather than inferred from the issue's state because an
+    #: `accepted_risk` issue is deliberately left open — so "the issue is
+    #: still open" cannot distinguish an acceptance nobody has commented on
+    #: from one commented on every night since. What must not repeat is the
+    #: statement, so the statement is what gets stored.
+    synced_disposition: Mapped[str | None] = mapped_column(String(32), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
