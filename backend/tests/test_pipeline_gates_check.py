@@ -209,7 +209,24 @@ class TestTheConfiguredSource:
         )
         gates = checker.gates(ours)
 
-        assert gates["insider"]["source"] == ["api-inventory", "dast-demo", "oracle-gate"], (
-            "the promotion gate B-055 restored must stay restored"
+        # `[oracle-gate]` alone, and this is not the B-055 regression coming
+        # back (#59100). B-055 was our copy of this file silently losing the
+        # widening #55167 made, while `deploy-prod` still existed -- so a
+        # commit whose demo DAST had failed stayed eligible for production.
+        #
+        # Path B is retired (ADR 0072). `deploy-prod`, `api-inventory` and
+        # `dast-demo` are deleted, not demoted: the latter two read a demo
+        # environment that no longer exists. `insider` gates nothing now
+        # because there is nothing downstream of it to gate, so pinning the
+        # three-job list here would pin a gate to jobs the pipeline does not
+        # contain -- which `test_a_job_missing_from_theirs_is_named_separately`
+        # would then report as drift against TheHub's copy forever.
+        #
+        # What is still asserted is the thing this test exists for: the
+        # extractor finds a real gate in the real file. If delivery returns to
+        # Concourse, #55167's reasoning is restated above `insider` in the
+        # pipeline and this assertion tightens with it.
+        assert gates["insider"]["source"] == ["oracle-gate"], (
+            "insider must still be reached through oracle-gate, not off source directly"
         )
         assert sum(1 for job in gates.values() if job) >= 10
