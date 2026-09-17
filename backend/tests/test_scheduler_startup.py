@@ -1,4 +1,4 @@
-"""Does a scheduled job ever actually run? (#409)
+"""Does a scheduled job ever actually run, and does a retried one say so? (#409)
 
 THE DEFECT THIS PINS. `_every` slept for a whole interval before its first
 call, so a job did nothing for the first `interval` of a container's life. For
@@ -14,10 +14,20 @@ are on 86400s and one of them is `rotation`, the ingestion-token sweep.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
-from mykronos.main import _STARTUP_SPREAD_SECONDS, _every
+from mykronos.main import (
+    _STARTUP_SPREAD_SECONDS,
+    _every,
+    run_acceptance_sweep,
+)
+
+
+async def _no_sleep(seconds: float) -> None:
+    """The backoff, without the wall clock."""
+    return None
 
 
 @pytest.mark.asyncio
@@ -91,3 +101,114 @@ class TestTheFirstRun:
             await _every("job", 3_600, run)
 
         assert calls >= 2, "a failure must not end the loop"
+
+
+#: The exact text DuckDB produced on the failing run, from `job_runs.last_error`
+#: on the operational database.
+CONFLICT = (
+    'TransactionContext Error: Catalog write-write conflict on alter with '
+    '"Schema\\0main\\0main\\0View\\0main\\0findings"'
+)
+
+
+@pytest.mark.asyncio
+class TestTheAcceptanceRetry:
+    """The other half of #409: the sweep collides with the jobs that share its
+    partitions, and one collision costs a daily job a whole day."""
+
+    async def test_a_retry_is_visible_to_whoever_reads_the_logs(
+        self, monkeypatch, caplog
+    ) -> None:
+        """THE DEFECT THIS PINS. A conflict that is retried away leaves no
+        trace anywhere else: `_record_run` clears `last_error` and returns
+        `consecutive_failures` to 0 on the eventual success, so `job_runs` says
+        the sweep was fine. This line is the only evidence it happened, and at
+        INFO it was not evidence either — the deployed logger sits at WARNING
+        (measured on the running container, effective level 30).
+
+        #409 is three days of the platform not saying a control had stopped. A
+        sweep silently retrying twice every day is the same fact arriving the
+        same way.
+        """
+        attempts = 0
+
+        def sweep(catalog):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(CONFLICT)
+            return "swept"
+
+        monkeypatch.setattr("mykronos.main.sweep_acceptances", sweep)
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+        with caplog.at_level(logging.DEBUG, logger="mykronos.main"):
+            assert await run_acceptance_sweep(object()) == "swept"
+
+        retries = [r for r in caplog.records if "write conflict" in r.getMessage()]
+        assert retries, "a retried conflict must be logged at all"
+        assert retries[0].levelno >= logging.WARNING, (
+            "below WARNING the deployed platform does not print it, so a "
+            "collision that is retried away is invisible everywhere"
+        )
+
+    async def test_a_conflict_is_retried_rather_than_costing_a_day(
+        self, monkeypatch
+    ) -> None:
+        """Regression guard. The sweep is daily, so one lost attempt is one
+        lost day — which is what left two acceptances live whose premise a scan
+        had already contradicted."""
+        attempts = 0
+
+        def sweep(catalog):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise RuntimeError(CONFLICT)
+            return "swept"
+
+        monkeypatch.setattr("mykronos.main.sweep_acceptances", sweep)
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+        assert await run_acceptance_sweep(object()) == "swept"
+        assert attempts == 3
+
+    async def test_something_that_is_not_a_conflict_raises_at_once(
+        self, monkeypatch
+    ) -> None:
+        """Regression guard. A retry loop wide enough to swallow a real bug
+        would be worse than the bug: it would turn a broken sweep into three
+        broken sweeps and one log line."""
+        attempts = 0
+
+        def sweep(catalog):
+            nonlocal attempts
+            attempts += 1
+            raise ValueError("findings partition is unreadable")
+
+        monkeypatch.setattr("mykronos.main.sweep_acceptances", sweep)
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+        with pytest.raises(ValueError):
+            await run_acceptance_sweep(object())
+        assert attempts == 1, "only a conflict is retryable"
+
+    async def test_a_conflict_every_time_still_reaches_job_runs(
+        self, monkeypatch
+    ) -> None:
+        """Regression guard. Giving up has to raise, because `_every` is what
+        writes the failure to `job_runs` — swallowing it would restore exactly
+        the silence #409 is about."""
+        attempts = 0
+
+        def sweep(catalog):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError(CONFLICT)
+
+        monkeypatch.setattr("mykronos.main.sweep_acceptances", sweep)
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+        with pytest.raises(RuntimeError):
+            await run_acceptance_sweep(object())
+        assert attempts == 3

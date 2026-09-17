@@ -42,6 +42,7 @@ from mykronos.github.factory import (
 from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
+    AcceptanceSweepResult,
     close_superseded_fixes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -157,6 +158,61 @@ async def _every(
             if db is not None:
                 _record_run(db, name, interval, None)
         await asyncio.sleep(interval)
+
+
+#: How many times the acceptance sweep will re-run into a write conflict
+#: before giving the day up.
+_WRITE_CONFLICT_ATTEMPTS = 3
+
+
+async def run_acceptance_sweep(
+    catalog: Catalog, *, attempts: int = _WRITE_CONFLICT_ATTEMPTS
+) -> AcceptanceSweepResult | None:
+    """Run the acceptance sweep, surviving a concurrent rewrite (#409).
+
+    In a thread: it rewrites partitions, same as the other sweeps.
+
+    **Why a retry is safe here, which is not obvious.** The failure this
+    absorbs is DuckDB's `Catalog write-write conflict on alter with
+    "...View...findings"` — a conflict on the *view definition*, raised from
+    `Catalog.refresh_views()` when another writer's `connect()` overlaps this
+    one. It is metadata, not rows: nothing is left half-written by it. And
+    `sweep_acceptances` re-reads every `accepted_risk` row from scratch on each
+    attempt, then writes under `only_if_status='accepted_risk'`, so a row some
+    other job has already moved is skipped rather than overwritten. A retry
+    therefore cannot turn a collision into a lost update — which is the one
+    thing that would make retrying worse than losing the day.
+
+    It shares those partitions with `absences`, `carry-forward` and the
+    compaction loop, and on a daily job one collision costs a whole day: this
+    sweep last succeeded on 2026-09-13 and its next attempt lost to exactly
+    that, leaving two acceptances live whose premise a scan had already
+    contradicted (#409).
+
+    **And the retry says so, at warning.** `_record_run` clears `last_error`
+    and returns `consecutive_failures` to 0 on the eventual success, so a
+    collision that was retried away leaves no trace in `job_runs` at all; this
+    line is the only evidence it happened. At INFO it was no evidence either —
+    the deployed logger sits at WARNING, measured on the running container. A
+    sweep quietly retrying twice every day is the platform needing these jobs
+    serialised, and #409 is what three days of the platform not saying so
+    costs.
+    """
+    for attempt in range(attempts):
+        try:
+            return await asyncio.to_thread(sweep_acceptances, catalog)
+        except Exception as exc:  # noqa: BLE001 — retried, then raised
+            if "conflict" not in str(exc).lower() or attempt == attempts - 1:
+                raise
+            logger.warning(
+                "Acceptance sweep hit a write conflict; retrying (%s/%s). It "
+                "shares the `findings` partitions with absences, carry-forward "
+                "and compaction; if this recurs they need serialising.",
+                attempt + 1,
+                attempts,
+            )
+            await asyncio.sleep(5 * (attempt + 1))
+    return None  # pragma: no cover - unreachable; the loop returns or raises
 
 
 async def _compaction_loop(app: FastAPI, interval: int) -> None:
@@ -401,32 +457,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await send_digests(app.state.catalog, app.state.notifier)
 
         async def _acceptances() -> None:
-            # In a thread: it rewrites partitions, same as the other sweeps.
-            #
-            # Retried, because it shares those partitions with `absences`,
-            # `carry-forward` and the compaction loop, and DuckDB answers a
-            # concurrent rewrite with a write-write conflict on the `findings`
-            # view. On a daily job one such collision costs a whole day: this
-            # sweep last succeeded on 2026-09-13 and its next attempt lost to
-            # exactly that, leaving two acceptances live whose premise a scan
-            # had already contradicted (#409). The conflict is transient by
-            # definition, so losing a day to it is a choice rather than a
-            # constraint.
-            result = None
-            for attempt in range(3):
-                try:
-                    result = await asyncio.to_thread(
-                        sweep_acceptances, app.state.catalog
-                    )
-                    break
-                except Exception as exc:  # noqa: BLE001 — retried, then raised
-                    if "conflict" not in str(exc).lower() or attempt == 2:
-                        raise
-                    logger.info(
-                        "Acceptance sweep hit a write conflict; retrying (%s/3)",
-                        attempt + 1,
-                    )
-                    await asyncio.sleep(5 * (attempt + 1))
+            result = await run_acceptance_sweep(app.state.catalog)
             # Logged, the way governance is. The counts were already computed
             # and thrown away, so a sweep that expired nothing and one that had
             # not run for three days produced identical evidence: none.
