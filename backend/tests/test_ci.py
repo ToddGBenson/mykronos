@@ -20,6 +20,8 @@ from mykronos.ci import (
     GATE_JOBS,
     ConcourseClient,
     JobStatus,
+    Reporting,
+    compare,
     coverage,
     pipeline_name_for,
     reconcile,
@@ -557,6 +559,147 @@ class TestStageCoverage:
     def test_the_quality_stages_are_covered(self) -> None:
         assert "unit" in ALL_STAGES
         assert "functional" in ALL_STAGES
+
+
+class TestACapabilityServedByTwoLanes:
+    """B-380. `sast` is served by CodeQL and ShellCheck on the same repository,
+    `dast` by four jobs on TheHub, `unit` by `unit` and the weekly `coverage`
+    lane. `coverage()` kept one `Reporting` row per capability and the one it
+    kept was whichever the CI system listed last, so a broken lane vanished if
+    a working sibling happened to come after it.
+
+    Measured on the estate 2026-09-17, on `keel` under GitHub Actions:
+
+        sast-shell=failed, sast=reporting   ->   reporting
+
+    `Mykronos sast-shell` has run twice in its life and failed both times.
+    `parity` called `sast` an improvement over Concourse on the strength of it.
+    """
+
+    BUILT = datetime(2026, 9, 15, 3, 36, tzinfo=UTC)
+
+    @classmethod
+    def _lane(cls, job: str, capability: str, state: str) -> Reporting:
+        if state in ("failed", "paused"):
+            return Reporting(
+                job=job,
+                capability=capability,
+                built_at=None,
+                scanned_at=cls.BUILT,
+                last_build_failed=state == "failed",
+                paused=state == "paused",
+            )
+        if state == "not_run":
+            return Reporting(
+                job=job, capability=capability, built_at=None, scanned_at=cls.BUILT
+            )
+        scanned = {
+            "reporting": cls.BUILT,
+            "silent": datetime(2026, 8, 1, tzinfo=UTC),
+            "never_reported": None,
+        }[state]
+        return Reporting(
+            job=job, capability=capability, built_at=cls.BUILT, scanned_at=scanned
+        )
+
+    def _sast(self, *lanes: Reporting) -> object:
+        rows = coverage({"sast"}, list(lanes))
+        return next(r for r in rows if r.stage == "sast")
+
+    def test_a_failing_lane_is_not_hidden_by_a_reporting_sibling(self) -> None:
+        """keel's live shape, in the order GitHub reports the workflows."""
+        sast = self._sast(
+            self._lane("sast-shell", "sast", "failed"),
+            self._lane("sast", "sast", "reporting"),
+        )
+
+        assert sast.state == "failed"
+
+    def test_the_verdict_does_not_depend_on_the_order_the_jobs_arrive_in(
+        self,
+    ) -> None:
+        """The defect was not that the wrong lane won. It was that which lane
+        won was a property of the CI system's list order and not of the
+        repository, so reordering two workflows changed the answer."""
+        broken = self._lane("sast-shell", "sast", "failed")
+        working = self._lane("sast", "sast", "reporting")
+
+        assert self._sast(broken, working).state == "failed"
+        assert self._sast(working, broken).state == "failed"
+
+    def test_every_lane_is_named_rather_than_discarded(self) -> None:
+        """`failed` on its own does not say that CodeQL is reporting perfectly
+        well beside the lane that is not. The reader should not have to trust
+        the collapse."""
+        sast = self._sast(
+            self._lane("sast-shell", "sast", "failed"),
+            self._lane("sast", "sast", "reporting"),
+        )
+
+        assert sast.lanes == (("sast-shell", "failed"), ("sast", "reporting"))
+
+    def test_lanes_that_all_report_still_report(self) -> None:
+        """TheHub's `qa`, served by `api-inventory` and `qa`. Weakest-lane must
+        not mean "any sibling makes it a problem"."""
+        rows = coverage(
+            {"qa"},
+            [
+                self._lane("api-inventory", "qa", "reporting"),
+                self._lane("qa", "qa", "reporting"),
+            ],
+        )
+        qa = next(r for r in rows if r.stage == "qa")
+
+        assert qa.state == "reporting"
+        assert qa.problem is False
+        assert qa.lanes == (("api-inventory", "reporting"), ("qa", "reporting"))
+
+    def test_a_capability_with_one_lane_carries_no_lane_list(self) -> None:
+        """Nothing was collapsed, so there is nothing to show beside `state`."""
+        sast = self._sast(self._lane("sast", "sast", "reporting"))
+
+        assert sast.state == "reporting"
+        assert sast.lanes == ()
+
+    def test_the_label_names_the_lane_worth_acting_on(self) -> None:
+        """TheHub's `dast`, as Concourse lists it. Taking the first uncovered
+        lane would headline `paused` — a lane somebody switched off on purpose —
+        over `dast-staging`, which is failing today. Neither changes the
+        verdict; both are uncovered and so is the capability."""
+        rows = coverage(
+            {"dast"},
+            [
+                self._lane("functional-dast", "dast", "paused"),
+                self._lane("dast-demo", "dast", "reporting"),
+                self._lane("dast-prod", "dast", "reporting"),
+                self._lane("dast-staging", "dast", "failed"),
+            ],
+        )
+        dast = next(r for r in rows if r.stage == "dast")
+
+        assert dast.state == "failed"
+        assert dast.lanes[0] == ("functional-dast", "paused")
+
+    def test_parity_stops_calling_a_half_broken_capability_an_improvement(
+        self,
+    ) -> None:
+        """What the collapse cost in the one place it authorises an action.
+        `mykronos parity ToddGBenson/keel` read `sast: silent -> reporting =
+        improved` while the ShellCheck lane under Actions had never once
+        succeeded."""
+        before = coverage({"sast"}, [self._lane("sast", "sast", "silent")])
+        after = coverage(
+            {"sast"},
+            [
+                self._lane("sast-shell", "sast", "failed"),
+                self._lane("sast", "sast", "reporting"),
+            ],
+        )
+
+        [sast] = [row for row in compare(before, after) if row.capability == "sast"]
+
+        assert sast.after == "failed"
+        assert sast.verdict == "no better"
 
 
 class TestAegisIsLookedUpWhereItActuallyWrites:

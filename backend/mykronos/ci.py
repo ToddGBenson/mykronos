@@ -799,6 +799,15 @@ class StageCoverage:
     stage: str
     enabled: bool
     state: str
+    lanes: tuple[tuple[str, str], ...] = ()
+    """Every job that produces this capability, in the order the CI reported
+    them, as `(job, state)`.
+
+    Empty for a stage no job produces, and — deliberately — for a stage with
+    exactly one, because there is nothing there a reader does not already have
+    from `state`. It is populated only where the collapse below had to make a
+    choice, which is the case worth being able to check.
+    """
 
     @property
     def problem(self) -> bool:
@@ -855,8 +864,55 @@ def coverage(
     blocked nothing is still a gate that ran, and has no run to point at.
     An empty set reads as "no jobs seen", which is what an unreachable CI
     already produces for every scanning capability too.
+
+    **A capability served by several jobs is only as covered as its weakest
+    lane (B-380).** This used to be `{row.capability: row for row in
+    reporting}`, so a capability with more than one producing job reported
+    whichever job the CI system happened to list *last* — and the rest were
+    discarded without a word. Measured 2026-09-17, that is not hypothetical:
+
+    ```
+    keel / actions / sast   sast-shell=failed, sast=reporting   -> reporting
+    ```
+
+    `keel` runs ShellCheck beside CodeQL because CodeQL implements no shell
+    language (B-051), and both upload `sast`. The ShellCheck lane has run twice
+    in its life, 2026-09-15, and failed both times. The capability reported
+    `reporting`, `parity` called it `improved` over Concourse, and the count
+    underneath the table said four capabilities were covered. Reorder the
+    workflows and the same estate would have reported `failed` — the verdict
+    depended on list order, which is not a property of the repository.
+
+    So the covered/not-covered verdict is now taken from *every* lane: one that
+    is not covered makes the capability not covered, whatever its siblings are
+    doing. That is strictly the stricter direction, and deliberately — a
+    capability reads as answering only when everything asked to answer does.
+
+    Which *label* to show when several lanes are uncovered is a separate
+    question and is settled by `_MOST_ACTIONABLE`, which decides nothing. The
+    verdict is already fixed by the paragraph above; this only picks the word.
+    `lanes` carries the rest, so nothing is dropped in silence.
     """
-    by_capability = {row.capability: row for row in reporting}
+    # Distinct names throughout: `row` and `rows` are both bound further down
+    # and reusing either makes mypy infer the wrong type — the same trap
+    # `cli.py`'s parity branch already documents.
+    ordered: dict[str, list[Reporting]] = {}
+    for lane in reporting:
+        ordered.setdefault(lane.capability, []).append(lane)
+
+    by_capability: dict[str, Reporting] = {}
+    lanes_by_capability: dict[str, tuple[tuple[str, str], ...]] = {}
+    for capability, lanes in ordered.items():
+        uncovered = [lane for lane in lanes if not _covers(lane.state)]
+        by_capability[capability] = (
+            min(uncovered, key=lambda lane: _actionability(lane.state))
+            if uncovered
+            else lanes[0]
+        )
+        if len(lanes) > 1:
+            lanes_by_capability[capability] = tuple(
+                (lane.job, lane.state) for lane in lanes
+            )
 
     out: list[StageCoverage] = []
     for stage in ALL_STAGES:
@@ -895,15 +951,27 @@ def coverage(
             out.append(StageCoverage(stage, enabled=True, state="no_job"))
             continue
 
-        out.append(StageCoverage(stage, enabled=True, state=row.state))
+        out.append(
+            StageCoverage(
+                stage,
+                enabled=True,
+                state=row.state,
+                lanes=lanes_by_capability.get(stage, ()),
+            )
+        )
 
     return out
 
 
 #: Whether a capability state constitutes *coverage* — findings from that
-#: capability actually reaching the lake. Used only to decide whether the
-#: Actions side is worse than the Concourse side; never rendered, because this
-#: is a comparison aid and not a fact about a repository.
+#: capability actually reaching the lake. Never rendered: it is a judgement
+#: about a state, not a state a repository is in.
+#:
+#: Read in two places, and they are the same question asked across two axes.
+#: `Parity.regressed` asks it across CI systems — is the new side worse than
+#: the old one. `coverage()` asks it across the lanes of one capability — is
+#: any lane serving this capability not covered (B-380). Both need one
+#: definition of "covered" and neither may invent a second.
 #:
 #: Two tiers, not a gradient. This was a seven-step ranking, and the ordering
 #: inside the uncovered tier was invented rather than observed: `not_run` sat
@@ -935,6 +1003,45 @@ _COVERED: frozenset[str] = frozenset({"reporting", "event_driven"})
 
 def _covers(state: str) -> bool:
     return state in _COVERED
+
+
+#: Which of several *equally uncovered* lanes gives a capability its label.
+#:
+#: Not a coverage ranking, and it must never become one — that mistake is
+#: recorded above `_COVERED`: an ordering inside the uncovered tier once let
+#: "ran and reported nothing" -> "has never run at all" be announced as an
+#: improvement. This decides nothing. By the time it is consulted the verdict
+#: is already fixed: `coverage()` has established that some lane is uncovered
+#: and therefore that the capability is, and all that is left is which of the
+#: siblings' words to print above `lanes`.
+#:
+#: Ordered by what a person does next, most to least. `silent` and
+#: `never_reported` mean a job ran and its results are not in the lake, which
+#: is the failure this whole cross-check exists for. `failed` is a red build to
+#: go and read. `not_run` is a lane that has not come round yet. `paused` is
+#: last because somebody switched it off on purpose, and it is the one state
+#: here that may be nothing to act on at all.
+#:
+#: TheHub's `dast` is why it is not simply "the first uncovered lane": its four
+#: lanes are `functional-dast=paused, dast-demo=reporting, dast-prod=reporting,
+#: dast-staging=failed`, and taking the first would headline the one that was
+#: switched off deliberately over the one that is failing today.
+#:
+#: An unrecognised state sorts last rather than raising. A new lane state is a
+#: reason to extend this list, never a reason for the CI panel to 500.
+_MOST_ACTIONABLE: tuple[str, ...] = (
+    "silent",
+    "never_reported",
+    "failed",
+    "not_run",
+    "paused",
+)
+
+
+def _actionability(state: str) -> int:
+    return _MOST_ACTIONABLE.index(state) if state in _MOST_ACTIONABLE else len(
+        _MOST_ACTIONABLE
+    )
 
 
 #: Capabilities whose two lanes do not reach the same thing, and the sentence
