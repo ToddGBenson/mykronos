@@ -279,9 +279,11 @@ def test_every_apt_task_forces_ipv4_first() -> None:
     error, and concatenating a job's scripts would hide that.
     """
     missing: list[str] = []
+    inspected: dict[str, int] = {}
 
     for path in checker.pipelines():
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        inspected[path.name] = 0
         for job in document["jobs"]:
             scripts: list[str] = []
 
@@ -301,6 +303,7 @@ def test_every_apt_task_forces_ipv4_first() -> None:
                 apt = [i for i, line in enumerate(lines) if _runs_apt(line)]
                 if not apt:
                     continue
+                inspected[path.name] += 1
                 drop_in = [
                     i
                     for i, line in enumerate(lines)
@@ -313,6 +316,25 @@ def test_every_apt_task_forces_ipv4_first() -> None:
                         f"{path.name}:{job['name']} writes the IPv4 drop-in after its first "
                         f"apt-get, which is after the connection it was meant to fix"
                     )
+
+    # A check that found nothing to check is indistinguishable from a check
+    # that passed, and this one walks four layers to find its subjects --
+    # `pipelines()`, `jobs`, `_walk`, and an inline `run.args` block scalar.
+    # Any of them narrowing (a task moving to `run.path`, a pipeline dropping
+    # out of the glob) empties `missing` and turns this green while asserting
+    # nothing. So the discovery is asserted alongside the property: 144 scripts
+    # run apt today, 22/13/109 across the three pipelines.
+    assert all(inspected.values()), (
+        "This test inspected no apt-running script in "
+        + ", ".join(name for name, count in inspected.items() if not count)
+        + " -- discovery broke, so a green result here means nothing. "
+        f"Found: {inspected}"
+    )
+    assert sum(inspected.values()) >= 100, (
+        f"Only {sum(inspected.values())} apt-running scripts were found, against "
+        "144 when this was written. A drop that large is discovery breaking, not "
+        f"lanes being removed. Found: {inspected}"
+    )
 
     assert not missing, "\n".join(
         [
