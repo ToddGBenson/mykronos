@@ -601,6 +601,76 @@ def _open_by_capability(catalog: Catalog) -> dict[tuple[str, str], int]:
     return {(str(repo), str(capability)): int(n) for repo, capability, n in rows}
 
 
+def _repo_moved_since(catalog: Catalog) -> dict[tuple[str, str], bool]:
+    """Per lane: has the repository moved since this lane last succeeded?
+
+    Silence only means something if there was something to scan. A lane whose
+    repository nobody has pushed to is not stalled, it is idle, and the two are
+    indistinguishable from wall-clock alone -- which is why `stalled_lanes` has
+    been reporting `personal-soc`'s `iac` and `secrets` every day since
+    2026-09-06, when that repository's last commit landed three minutes before
+    its last scan (B-258).
+
+    The movement signal is the one `stale_lanes` already established, used for
+    the opposite question: the repository's head is *the commit that appeared
+    most recently across all its lanes*, never the commit on the most recent
+    run. Reading it off the newest run would let a lane that is not running
+    define the repository as not having moved, which is precisely the case this
+    exists to see through.
+
+    Two deliberate abstentions, both erring towards reporting:
+
+    * a lane with no successful run has no commit to compare, so it is treated
+      as moved and stays reported -- "never worked" is a stronger claim than
+      "quiet" and should not be silenced by this;
+    * a repository with fewer than two distinct commits in the lake offers
+      nothing to establish movement from, so it is treated as moved and stays
+      reported. This is the opposite abstention to `stale_lanes`, deliberately:
+      there, wrongly reporting a pin is the noisy failure; here, wrongly
+      silencing a lane hides an outage, and the safe direction flips with it.
+      Every repository in this estate carries between 12 and 382 distinct
+      commits, so the case is a synthetic one.
+    """
+    if not catalog.all_files("scan_runs"):
+        return {}
+
+    rows = catalog.query(
+        """
+        SELECT repo_full_name, capability, scan_status,
+               coalesce(commit_sha, '') AS commit_sha,
+               coalesce(completed_at, started_at) AS ran_at
+        FROM scan_runs
+        WHERE commit_sha IS NOT NULL AND commit_sha <> ''
+        ORDER BY repo_full_name, ran_at DESC
+        """
+    )
+
+    #: When each commit of a repository was FIRST seen by any lane.
+    first_seen: dict[str, dict[str, Any]] = {}
+    #: Each lane's most recent successful (commit, time).
+    last_ok: dict[tuple[str, str], tuple[str, Any]] = {}
+    for repo, capability, scan_status, commit_sha, ran_at in rows:
+        repo, capability = str(repo), str(capability)
+        commit_sha = str(commit_sha)
+        seen = first_seen.setdefault(repo, {})
+        if commit_sha not in seen or ran_at < seen[commit_sha]:
+            seen[commit_sha] = ran_at
+        if str(scan_status) == "success":
+            # Rows arrive newest-first, so the first success wins.
+            last_ok.setdefault((repo, capability), (commit_sha, ran_at))
+
+    moved: dict[tuple[str, str], bool] = {}
+    for (repo, capability), (commit_sha, ran_at) in last_ok.items():
+        seen = first_seen.get(repo, {})
+        if len(seen) < 2:
+            moved[(repo, capability)] = True
+            continue
+        moved[(repo, capability)] = any(
+            sha != commit_sha and at > ran_at for sha, at in seen.items()
+        )
+    return moved
+
+
 def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[StalledLane]:
     """Lanes that cannot close findings, failing or silent.
 
@@ -613,6 +683,16 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
     single number would either miss a stopped daily lane or cry wolf at every
     weekly one. Five days of silence is an outage for one and a Tuesday for
     the other.
+
+    **And silence is only evidence if there was something to scan.** Most lanes
+    here trigger on commits, so a quiet repository produces a lane that looks
+    identical to a dead one from wall-clock alone. Measured 2026-09-16, two of
+    the three lanes this reported were quiet repositories: `personal-soc`'s
+    `iac` and `secrets` last ran three minutes after that repository's last
+    commit and had correctly done nothing since. `_repo_moved_since` is the
+    gate, and it reuses the head `stale_lanes` already computes rather than
+    asking GitHub -- the lake knows the repository moved the moment any sibling
+    lane scans a newer commit.
     """
     from mykronos.schemas import utcnow
 
@@ -644,6 +724,7 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
         )
 
     open_counts = _open_by_capability(catalog)
+    moved = _repo_moved_since(catalog)
     stalled: list[StalledLane] = []
     for (repo, capability), runs in by_lane.items():
         failures = 0
@@ -679,6 +760,14 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
                 if newest_status != "success" and newest_at >= runs[0][2]:
                     blocked_by = upstream
                     break
+
+        # Silence in a repository that has not moved is idleness, not a stall.
+        # Checked last, because the two things it must not reach are both
+        # decided above: a lane that ran and FAILED has a job somebody can go
+        # and read, and a lane held up by a red upstream is news whether or not
+        # anybody pushed. Quiet explains silence and neither of those.
+        if not failures and not blocked_by and not moved.get((repo, capability), True):
+            continue
 
         stalled.append(
             StalledLane(
