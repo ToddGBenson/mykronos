@@ -9,6 +9,7 @@ hand, so what is asserted is what a real scan would produce.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 from mykronos import briefing
 from mykronos.schemas import utcnow as _utcnow
