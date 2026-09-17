@@ -6,10 +6,17 @@ about it is shaped by two constraints: it must be reproducible by hand, and it
 must never be able to explain itself using an input it did not record.
 """
 
-from mykronos.oracle.engine import Decision, OracleEngine, Term, render_reasoning
+from mykronos.oracle.engine import (
+    NOT_ASSESSED,
+    Decision,
+    OracleEngine,
+    Term,
+    render_reasoning,
+)
 from mykronos.oracle.policy import Policy, PolicyError, cached_policy, load_policy, parse_policy
 
 __all__ = [
+    "NOT_ASSESSED",
     "Decision",
     "OracleEngine",
     "Policy",
