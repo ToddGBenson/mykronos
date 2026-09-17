@@ -63,24 +63,34 @@ def pipeline_name_for(repo_full_name: str) -> str:
     return repo_full_name.rsplit("/", 1)[-1].lower()
 
 
-#: Which capability a job's results should arrive under.
+#: The Concourse pipelines this platform writes, by the name Concourse knows
+#: them by — which is what `pipeline_name_for()` returns for their repository.
+MYKRONOS = "mykronos"
+THEHUB = "thehub"
+PERSONAL_SOC = "personal-soc"
+KEEL = "keel"
+
+#: The pseudo-pipeline every GitHub Actions lane belongs to, and the one place
+#: a name may legitimately mean the same thing everywhere (B-59988).
 #:
-#: A heuristic, and named as one. Job names are chosen by whoever writes the
-#: pipeline and nothing enforces this; a job absent from here is simply not
-#: cross-checked, which is the safe direction to be wrong in. `dependencies`
-#: uploads as `atlas` and `cloud-posture` as `cloud`, both of which have been
-#: mistaken for coverage gaps.
+#: A Concourse pipeline is written by hand, so `sast` means whatever the person
+#: who typed it meant. Actions workflows are not: the Workflow Installer
+#: generates them from one template registry, so `mykronos-sast.yml` is the
+#: same file in every repository that has it, and `ActionsClient._job_name_for`
+#: resolves it through that registry before this map is consulted at all. The
+#: names are global because the generator is, which is a fact about how they
+#: are produced rather than an exemption granted to them.
 #:
-#: **`insider` is deliberately absent.** Aegis assesses a pull request, not a
-#: commit, and these pipelines trigger on pushes to main - where there is
-#: usually no pull request and therefore correctly no assessment. The job
-#: succeeds having recorded nothing, on purpose: submitting an assessment
-#: with no reviews, no base ref and no description would score 0/100 for
-#: exactly the case Aegis exists to notice. Cross-checking it reported every
-#: green insider job as a silent failure, which was this check being wrong
-#: about what the job is for.
-def jobs_for_capability(capability: str) -> list[str]:
-    """Which Concourse job(s) plausibly produce this capability, best first.
+#: So Actions jobs carry ONE identity rather than one per repository. That is
+#: the deliberate answer to "what pipeline is an Actions job on", and the
+#: alternative — keying Actions by repository — would require an entry per
+#: repository for names the installer guarantees are identical.
+ACTIONS = "github-actions"
+
+
+def jobs_for_capability(pipeline: str, capability: str) -> list[str]:
+    """Which job(s) on THIS pipeline plausibly produce this capability, best
+    first.
 
     The reverse of `CAPABILITY_BY_JOB`, and a heuristic in the same spirit and
     for the same reason as the mapping it derives from: a pipeline that names
@@ -92,63 +102,126 @@ def jobs_for_capability(capability: str) -> list[str]:
     second private copy would be a second thing to update when a job is
     renamed, and the first one to be forgotten.
 
-    **Ordered, and the order is load-bearing.** Both callers trigger the first
-    job that answers, so a capability produced by several jobs has to name the
-    obvious one first. `unit` is produced by `unit` and by `coverage`, the
-    weekly lane that runs the same suite with tracing on (D-121); sorting
-    alphabetically would make "re-run unit" start the slow one. The
-    capability's own name goes first where it is a job, then the rest in a
-    stable order.
+    **Scoped by pipeline since B-59988, and this one had teeth.** Both callers
+    take the first job that answers and START A BUILD of it. Unscoped, this
+    returned every job name mapped to the capability anywhere in the estate —
+    so "re-run sast" on personal-soc offered `sast` (a job personal-soc does
+    not have) and `mykronos-sast` (keel's), and only reached `lint`, the job
+    that actually produces personal-soc's sast, after two 404s. Triggering a
+    build on the wrong pipeline was prevented only by the pipeline argument the
+    CALLER passes to `trigger_job`, which is a different pipeline from the one
+    these names came from.
+
+    **Ordered, and the order is load-bearing.** A capability produced by
+    several jobs has to name the obvious one first. `unit` is produced by
+    `unit` and by `coverage`, the weekly lane that runs the same suite with
+    tracing on (D-121); sorting alphabetically would make "re-run unit" start
+    the slow one. The capability's own name goes first where it is a job on
+    this pipeline, then the rest in a stable order.
+
+    An unknown pipeline falls back to the capability's own name rather than to
+    nothing, which is what an unmapped pipeline did before this was scoped:
+    one 404 instead of an empty list, and the same "safe direction" the
+    docstring above claims.
     """
-    jobs = _JOBS_BY_CAPABILITY.get(capability, {capability})
+    jobs = _JOBS_BY_CAPABILITY.get((pipeline, capability)) or {capability}
     return sorted(jobs, key=lambda job: (job != capability, job))
 
 
-CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
-    "sast": "sast",
+#: Which capability a job's results should arrive under, ON WHICH PIPELINE.
+#:
+#: A heuristic, and named as one. Job names are chosen by whoever writes the
+#: pipeline and nothing enforces this; a job absent from here is REPORTED as
+#: `unknown` rather than skipped (B-59330). `dependencies` uploads as `atlas`
+#: and `cloud-posture` as `cloud`, both of which have been mistaken for
+#: coverage gaps.
+#:
+#: **Keyed on `(pipeline, job)` since B-59988, and the unscoped version was
+#: actively wrong.** A job name used to mean the same thing everywhere, so
+#: keel's stub jobs called `sast`, `secrets`, `iac` and `lint` - 158-437 bytes
+#: each, invoking no scanner - were credited with the uploads keel's real,
+#: differently-named lanes (`mykronos-sast`, `mykronos-secrets`) made. Their
+#: green builds lined up against those lanes' scan runs and read `reporting`:
+#: a job that does nothing, reported as covering a capability, because a
+#: sibling uploaded.
+#:
+#: Scoping had to be the KEY rather than a filter somewhere downstream. The
+#: collision could not be reached from the acknowledgement list either -
+#: acknowledging `sast` globally would have un-monitored the real `sast` lane
+#: in mykronos and thehub, which is the same defect pointed at two working
+#: pipelines.
+#:
+#: **Every pipeline set below was READ, not guessed** - parsed out of
+#: `deploy/concourse/pipelines/*.yml` for the three local pipelines, and off
+#: the running server with `fly get-pipeline -p keel` for keel's, whose
+#: pipeline lives in keel's own repo. `test_ci_job_audit.py` holds the three
+#: local ones to that, in both directions.
+#:
+#: **`insider` is deliberately absent.** Aegis assesses a pull request, not a
+#: commit, and these pipelines trigger on pushes to main - where there is
+#: usually no pull request and therefore correctly no assessment. The job
+#: succeeds having recorded nothing, on purpose: submitting an assessment
+#: with no reviews, no base ref and no description would score 0/100 for
+#: exactly the case Aegis exists to notice. Cross-checking it reported every
+#: green insider job as a silent failure, which was this check being wrong
+#: about what the job is for.
+#:
+#: Declared as (pipelines, job, capability) triples rather than written out
+#: once per pipeline, because several of these genuinely run on more than one
+#: and three hand-copied entries are three things to keep in step - the drift
+#: this module keeps finding. A job name may appear more than once with
+#: different pipelines and a different capability; nothing needs that yet, and
+#: the shape allows it because the whole point of scoping is that a name is
+#: free to mean two things.
+_CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...]], ...] = (
+    ((MYKRONOS, THEHUB, ACTIONS), "sast", "sast"),
     # A second `sast` lane, not a second capability (B-051). CodeQL implements
     # no shell language, so a shell-heavy repository runs ShellCheck beside it
-    # and both upload `sast` — which the cross-check has always supported,
+    # and both upload `sast` - which the cross-check has always supported,
     # since it maps jobs to capabilities rather than the reverse.
     # `sast-shell`, not `mykronos-sast-shell`: `ActionsClient._job_name_for`
     # resolves a workflow through the template registry first, so the Actions
     # lane already arrives here under its registry key. Adding the filename
-    # stem as well would put it in `jobs_for_capability("sast")`, and the
-    # "scan now" button would try to trigger a Concourse job that does not
+    # stem as well would put it in `jobs_for_capability(ACTIONS, "sast")`, and
+    # the "scan now" button would try to trigger a Concourse job that does not
     # exist before the one that does.
-    "sast-shell": "sast",
-    "sast-powershell": "sast",
+    ((ACTIONS,), "sast-shell", "sast"),
+    ((ACTIONS,), "sast-powershell", "sast"),
     # personal-soc's PowerShell analyser, which is named `lint` because it
-    # predates uploading anything — it gated on PSScriptAnalyzer errors for
+    # predates uploading anything - it gated on PSScriptAnalyzer errors for
     # months before it reported (#390). Registered under its real name rather
     # than renamed to `sast-powershell`: a rename orphans the job's build
     # history in Concourse, and the mapping exists precisely so a job can be
     # called whatever it is called and still be cross-checked.
-    "lint": "sast",
-    "secrets": "secrets",
-    "containers": "containers",
-    "dast": "dast",
-    "iac": "iac",
-    "dependencies": "atlas",
-    "atlas": "atlas",
-    "cloud-posture": "cloud",
-    "cloud": "cloud",
+    #
+    # Scoped to personal-soc, and this entry shows why scoping was needed in
+    # both directions: keel also has a job called `lint`, and keel's is a
+    # stub. Unscoped, keel's stub inherited this meaning.
+    ((PERSONAL_SOC,), "lint", "sast"),
+    ((MYKRONOS, PERSONAL_SOC, THEHUB, ACTIONS), "secrets", "secrets"),
+    ((MYKRONOS, THEHUB, ACTIONS), "containers", "containers"),
+    ((ACTIONS,), "dast", "dast"),
+    ((MYKRONOS, PERSONAL_SOC, THEHUB, ACTIONS), "iac", "iac"),
+    ((MYKRONOS, THEHUB), "dependencies", "atlas"),
+    ((ACTIONS,), "atlas", "atlas"),
+    ((THEHUB,), "cloud-posture", "cloud"),
+    ((ACTIONS,), "cloud", "cloud"),
     # Quality stages (D-046). They report a run and no findings, so the
     # cross-check is the only thing that can tell whether they reported at
     # all - there is no finding count to notice the absence of.
-    "unit": "unit",
+    ((MYKRONOS, THEHUB, ACTIONS), "unit", "unit"),
     # The weekly coverage lane runs the same suite with tracing on and uploads
     # as `unit`, because the coverage belongs to the lane a person reads it
     # against (D-121). Registered so the cross-check can see it; ordered after
     # `unit` by `jobs_for_capability`, so "re-run unit" does not start the
     # slow one.
-    "coverage": "unit",
-    "qa": "qa",
-    "qa-spec-links": "qa",
-    "ai": "ai",
-    "ai-checks": "ai",
-    "functional": "functional",
-    "demo-and-dast": ("functional", "dast"),
+    ((MYKRONOS,), "coverage", "unit"),
+    ((THEHUB, ACTIONS), "qa", "qa"),
+    ((MYKRONOS,), "qa-spec-links", "qa"),
+    ((MYKRONOS, ACTIONS), "ai", "ai"),
+    ((ACTIONS,), "ai-checks", "ai"),
+    ((PERSONAL_SOC, ACTIONS), "functional", "functional"),
+    ((MYKRONOS, ACTIONS), "demo-and-dast", ("functional", "dast")),
     # PS-1. These four ran green on every build and reported nothing, so the
     # cross-check had nothing to compare and said nothing about them. They
     # report now, and a job that reports has to be checked or the reporting
@@ -158,24 +231,24 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # alongside `qa-spec-links`: the capability has one registered adapter
     # (`adapters/registry.py`), quality stages carry no findings (D-046), and
     # so several runs per commit is a richer answer rather than a collision.
-    "lint-and-types": "qa",
-    "frontend": "qa",
-    "api-inventory": "qa",
-    "prompt-evals": "ai",
+    ((MYKRONOS,), "lint-and-types", "qa"),
+    ((MYKRONOS,), "frontend", "qa"),
+    ((THEHUB,), "api-inventory", "qa"),
+    ((THEHUB,), "prompt-evals", "ai"),
     # thehub's dast lanes, which were never named here. `functional-dast`
     # runs the Playwright suite through ZAP's proxy and then scans - one
-    # build, two uploads, each answering for itself (spec 15 §4a.1).
-    "dast-demo": "dast",
-    "dast-prod": "dast",
+    # build, two uploads, each answering for itself (spec 15 4a.1).
+    ((THEHUB,), "dast-demo", "dast"),
+    ((THEHUB,), "dast-prod", "dast"),
     # `dast-staging` scans the standing staging environment on a daily timer
     # rather than after a deploy, because staging is deployed out of band. That
     # makes registering it matter more than for its two siblings, not less: a
     # timer-triggered lane has no upstream build to be conspicuous by its
     # absence, so the coverage cross-check is the only thing that can notice it
     # has stopped.
-    "dast-staging": "dast",
-    "functional-dast": ("functional", "dast"),
-    "ai-models": "ai",
+    ((THEHUB,), "dast-staging", "dast"),
+    ((THEHUB,), "functional-dast", ("functional", "dast")),
+    ((THEHUB,), "ai-models", "ai"),
     # keel's three uploading lanes (B-59330). keel's pipeline lives in keel's
     # own repo, so these were read off the running server with
     # `fly get-pipeline -p keel` rather than from a file here - which is why
@@ -186,48 +259,65 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     # not one inferred from the job name. `mykronos-atlas` is the case that
     # makes the distinction worth stating: it runs `osv-scan` with
     # `TOOL: osv-scanner` and uploads `atlas`, and a reader going by the name
-    # would have guessed a capability called "atlas" for the wrong reason or
-    # "sca" for a job that is not called that.
+    # would have guessed "sca" - which is the name of one of keel's stubs.
     #
-    # Only three of keel's 26 jobs upload anything. The other 23 are stubs,
-    # and they are deliberately NOT acknowledged below - see the note on
-    # `ACKNOWLEDGED_UNMAPPED_JOBS` for why a stub named `container-scan` must
-    # not be written down as a job that correctly produces nothing.
-    "mykronos-sast": "sast",
-    "mykronos-secrets": "secrets",
-    "mykronos-atlas": "atlas",
-}
+    # Only three of keel's 26 jobs upload anything. The other 23 are stubs and
+    # are deliberately neither mapped nor acknowledged, so they report
+    # `unknown` - see the note on `ACKNOWLEDGED_UNMAPPED_JOBS`.
+    ((KEEL,), "mykronos-sast", "sast"),
+    ((KEEL,), "mykronos-secrets", "secrets"),
+    ((KEEL,), "mykronos-atlas", "atlas"),
+)
 
 
-#: A JOB NAME MEANS THE SAME THING IN EVERY PIPELINE, AND IT SHOULD NOT.
+def _scoped(
+    declarations: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...]], ...],
+) -> dict[tuple[str, str], str | tuple[str, ...]]:
+    """Expand the declarations into the `(pipeline, job)` table lookups use.
+
+    A duplicate key raises rather than being silently resolved, because "which
+    of the two wins" would be decided by the order of the rows - and a table
+    whose meaning depends on its row order is the shape this whole exercise is
+    about.
+    """
+    out: dict[tuple[str, str], str | tuple[str, ...]] = {}
+    for pipelines, job, capability in declarations:
+        for pipeline in pipelines:
+            if (pipeline, job) in out:
+                raise ValueError(f"{job!r} is declared twice for pipeline {pipeline!r}")
+            out[(pipeline, job)] = capability
+    return out
+
+
+#: `(pipeline, job)` -> capability. Derived; declare in
+#: `_CAPABILITY_DECLARATIONS` above.
+CAPABILITY_BY_JOB: dict[tuple[str, str], str | tuple[str, ...]] = _scoped(
+    _CAPABILITY_DECLARATIONS
+)
+
+
+#: keel's stub jobs whose names a real lane elsewhere also uses (B-59988).
 #:
-#: `CAPABILITY_BY_JOB` is keyed on the job name alone. `reconcile()` is called
-#: with one repository's jobs at a time, so the lookup is scoped to a
-#: repository by accident of the call, but the TABLE is global: a job called
-#: `sast` maps to the `sast` capability wherever it runs, whatever it does.
+#: THE DEFECT THESE FOUR NAMED, now fixed by the key above rather than only
+#: described. `CAPABILITY_BY_JOB` used to be keyed on the job name alone, so a
+#: name meant the same thing on every pipeline. keel's stubs called `sast`,
+#: `secrets`, `iac` and `lint` - 158-437 bytes each, invoking no scanner -
+#: inherited the meaning of the real jobs of those names on mykronos, thehub
+#: and personal-soc. Measured 2026-09-17: keel's real uploads arrive from
+#: `mykronos-sast` and `mykronos-secrets`, the lake held recent `sast` and
+#: `secrets` runs, and the stubs' green builds lined up against those runs and
+#: read `reporting`. A job that does nothing, reported as covering a
+#: capability, because a differently-named sibling uploaded.
 #:
-#: Measured on keel, 2026-09-17. Four of its 23 stub jobs - `sast`, `secrets`,
-#: `iac` and `lint` - carry names this table already maps. They invoke no
-#: scanner and upload nothing, and they are credited anyway: keel's real
-#: uploads arrive from `mykronos-sast` and `mykronos-secrets`, the lake has
-#: recent `sast` and `secrets` runs, and the stubs' green builds line up
-#: against those runs and read `reporting`. A job that does nothing is
-#: reported as covering a capability because a differently-named sibling
-#: uploaded.
+#: Kept as a named set after the fix, because it is what the regression test
+#: points at. The property worth holding is not "these four are absent" but
+#: that each is absent for KEEL and present for the pipeline that really runs
+#: it - a map that had simply lost them would satisfy the first and not the
+#: second. `test_ci_job_audit.py` asserts both directions.
 #:
-#: That is a false green of the exact kind this module exists to remove, and
-#: it is NOT fixed by the unmapped-job reporting beside it: these jobs are
-#: mapped, so they are never `unknown`. It cannot be fixed from the
-#: acknowledgement list either - acknowledging `sast` here would un-monitor
-#: the real `sast` lane in mykronos, thehub and personal-soc, which is the
-#: same defect pointed at three working pipelines.
-#:
-#: The fix is a pipeline-scoped key, which changes this table's shape, every
-#: lookup in `reconcile()`, and `ActionsClient._job_name_for`. That is a
-#: larger change than the one this note was found during, so it is written
-#: down here and reported rather than half-done: `test_ci_job_audit.py` pins
-#: the collision so it cannot be discovered twice.
-COLLIDING_KEEL_STUBS: frozenset[str] = frozenset({"sast", "secrets", "iac", "lint"})
+#: Delete this when keel's stubs are deleted, and not before: the names are a
+#: property of keel's pipeline, not of this table.
+KEEL_STUBS_THAT_LOOK_MAPPED: frozenset[str] = frozenset({"sast", "secrets", "iac", "lint"})
 
 #: How far a successful build may lead its capability's newest scan run before
 #: the results count as missing. Generous on purpose: a job's build finishes
@@ -236,10 +326,16 @@ COLLIDING_KEEL_STUBS: frozenset[str] = frozenset({"sast", "secrets", "iac", "lin
 REPORTING_GRACE_SECONDS = 3600
 
 
-_JOBS_BY_CAPABILITY: dict[str, set[str]] = {}
-for _job_name, _caps in CAPABILITY_BY_JOB.items():
+#: `(pipeline, capability)` -> the jobs on THAT pipeline producing it.
+#:
+#: Keyed by the pair for the same reason `CAPABILITY_BY_JOB` is: the reverse
+#: of a scoped table has to carry the scope, or `jobs_for_capability` hands a
+#: caller the name of a job that belongs to some other pipeline and the
+#: caller starts a build of it.
+_JOBS_BY_CAPABILITY: dict[tuple[str, str], set[str]] = {}
+for (_pipeline, _job_name), _caps in CAPABILITY_BY_JOB.items():
     for _cap in _caps if isinstance(_caps, tuple) else (_caps,):
-        _JOBS_BY_CAPABILITY.setdefault(_cap, set()).add(_job_name)
+        _JOBS_BY_CAPABILITY.setdefault((_pipeline, _cap), set()).add(_job_name)
 
 
 def _utc(moment: datetime | None) -> datetime | None:
@@ -803,7 +899,14 @@ class ActionsClient:
         if capability is not None:
             return capability
         stem = file_name.rsplit(".", 1)[0]
-        return stem if stem in CAPABILITY_BY_JOB else None
+        # `ACTIONS`, not the repository, and that is the deliberate answer to
+        # "what pipeline is an Actions job on" rather than a default (B-59988).
+        # These names come out of the Workflow Installer's template registry,
+        # so `mykronos-sast.yml` is the same generated file in every repository
+        # that has one - global because the generator is. Keying them per
+        # repository would demand an identical entry per repository, and the
+        # first repository somebody forgot would go dark.
+        return stem if (ACTIONS, stem) in CAPABILITY_BY_JOB else None
 
     async def status_for(self, repo_full_name: str) -> PipelineStatus:
         """Workflow state for one repository. Never raises."""
@@ -1361,56 +1464,145 @@ UNMAPPED_CAPABILITY = "unknown"
 #:
 #: So these record what each job does TODAY. A job here that starts uploading
 #: should turn this file red, and the fix is a line in `CAPABILITY_BY_JOB`.
-ACKNOWLEDGED_UNMAPPED_JOBS: dict[str, str] = {
+_UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # Build and delivery. Nothing scans; there is no lake record to be absent.
-    "build": "builds the image, runs no scanner and uploads nothing",
-    "publish-backend": "pushes the backend image to the registry, produces no findings",
-    "publish-frontend": "pushes the frontend image to the registry, produces no findings",
-    "promote": "retags an image that is already built, runs no scanner",
-    "deploy-demo": "deploys a built image to the demo environment, scans nothing",
-    "deploy-prod": "deploys a built image to production, scans nothing",
-    "package": "bundles the skills release and publishes it to MinIO, scans nothing",
+    ((MYKRONOS, THEHUB), "build", "builds the image, runs no scanner and uploads nothing"),
+    (
+        (MYKRONOS,),
+        "publish-backend",
+        "pushes the backend image to the registry, produces no findings",
+    ),
+    (
+        (MYKRONOS,),
+        "publish-frontend",
+        "pushes the frontend image to the registry, produces no findings",
+    ),
+    ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
+    ((THEHUB,), "deploy-demo", "deploys a built image to the demo environment, scans nothing"),
+    ((THEHUB,), "deploy-prod", "deploys a built image to production, scans nothing"),
+    (
+        (PERSONAL_SOC,),
+        "package",
+        "bundles the skills release and publishes it to MinIO, scans nothing",
+    ),
     # The pipeline's own upkeep.
-    "set-pipeline": "re-applies this pipeline's own configuration (#454), scans nothing",
-    "pin-check": (
+    (
+        (MYKRONOS, PERSONAL_SOC, THEHUB),
+        "set-pipeline",
+        "re-applies this pipeline's own configuration (#454), scans nothing",
+    ),
+    (
+        (MYKRONOS,),
+        "pin-check",
         "asserts the pinned runner still has the modules the lanes call; it "
-        "fails the build rather than filing a finding"
+        "fails the build rather than filing a finding",
     ),
     # Driven from inside Mykronos, and argued at length above
     # `CAPABILITY_BY_JOB` and beside `NON_SCANNING`/`GATE_JOBS`.
-    "insider": (
+    (
+        (MYKRONOS, THEHUB),
+        "insider",
         "Aegis assesses a pull request and posts to /api/ingest/aegis; these "
-        "pipelines run on pushes, where there is correctly no assessment"
+        "pipelines run on pushes, where there is correctly no assessment",
     ),
-    "oracle": "the Oracle gate asks for a decision and produces no scan run (B-061)",
-    "oracle-gate": "the Oracle gate asks for a decision and produces no scan run (B-061)",
-    "remediate": "Patchwork opens fix pull requests; `NON_SCANNING` already exempts it",
+    (
+        (PERSONAL_SOC,),
+        "oracle",
+        "the Oracle gate asks for a decision and produces no scan run (B-061)",
+    ),
+    (
+        (MYKRONOS, THEHUB),
+        "oracle-gate",
+        "the Oracle gate asks for a decision and produces no scan run (B-061)",
+    ),
+    (
+        (MYKRONOS, THEHUB),
+        "remediate",
+        "Patchwork opens fix pull requests; `NON_SCANNING` already exempts it",
+    ),
     # Gates and alerters. Each fails its build or posts to Slack on what it
     # finds; none of them writes to the lake, which is why a capability would
     # be the wrong thing to expect of them.
-    "guard": "personal-soc's no-personal-data gate; it fails the build, it does not file",
-    "skill-integrity": "checks SKILL.md references before delivery; fails the build, files nothing",
-    "doc-drift": "compares the docs against the tree; fails the build, files nothing",
-    "external-exposure": "reads the Shodan view of the household IP and alerts; uploads nothing",
-    "netassess-ingest": (
+    (
+        (PERSONAL_SOC,),
+        "guard",
+        "personal-soc's no-personal-data gate; it fails the build, it does not file",
+    ),
+    (
+        (PERSONAL_SOC,),
+        "skill-integrity",
+        "checks SKILL.md references before delivery; fails the build, files nothing",
+    ),
+    (
+        (PERSONAL_SOC,),
+        "doc-drift",
+        "compares the docs against the tree; fails the build, files nothing",
+    ),
+    (
+        (PERSONAL_SOC,),
+        "external-exposure",
+        "reads the Shodan view of the household IP and alerts; uploads nothing",
+    ),
+    (
+        (PERSONAL_SOC,),
+        "netassess-ingest",
         "verifies and diffs the network scan published to MinIO and alerts on "
-        "the difference; it writes no scan run of its own"
+        "the difference; it writes no scan run of its own",
     ),
-    "netassess-freshness": (
-        "ages the newest network scan and alerts when it is stale; files nothing"
+    (
+        (PERSONAL_SOC,),
+        "netassess-freshness",
+        "ages the newest network scan and alerts when it is stale; files nothing",
     ),
-    "breach-check": "queries HIBP for the monitored addresses and alerts; uploads nothing",
+    (
+        (PERSONAL_SOC,),
+        "breach-check",
+        "queries HIBP for the monitored addresses and alerts; uploads nothing",
+    ),
+)
+
+
+#: `(pipeline, job)` -> why that job produces nothing. Derived; declare in
+#: `_UNMAPPED_DECLARATIONS` above.
+#:
+#: Scoped alongside `CAPABILITY_BY_JOB` (B-59988), and for the same reason
+#: rather than for symmetry. An unscoped acknowledgement is a claim about a
+#: NAME, and `build` on keel is not the job this repository looked at when it
+#: wrote "builds the image, runs no scanner": keel's is a 158-byte stub that
+#: nothing here can read. Keeping one global entry would have gone on excusing
+#: a job on a pipeline nobody checked, which is the allowlist-with-a-silent-
+#: default shape one level along.
+ACKNOWLEDGED_UNMAPPED_JOBS: dict[tuple[str, str], str] = {
+    (pipeline, job): reason
+    for pipelines, job, reason in _UNMAPPED_DECLARATIONS
+    for pipeline in pipelines
 }
 
 
-def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[Reporting]:
+def reconcile(
+    pipeline: str, jobs: list[JobStatus], last_scan_at: dict[str, datetime]
+) -> list[Reporting]:
     """Line each scanning job up against the newest scan run it should have
     produced (spec 15 §4a).
 
-    A job in `CAPABILITY_BY_JOB` is checked against its capability. A job in
-    `ACKNOWLEDGED_UNMAPPED_JOBS` is skipped, because somebody has written down
-    that it produces nothing. **Anything else is reported as `unknown`** — it
-    is not skipped, and that is the point (B-59330).
+    `pipeline` is which pipeline these jobs came from - `pipeline_name_for()`
+    for a Concourse repository, `ACTIONS` for a GitHub Actions one. It is the
+    first half of both lookups below and is required rather than defaulted,
+    because a default would be a job name meaning the same thing everywhere,
+    which is the defect B-59988 removed.
+
+    A job in `CAPABILITY_BY_JOB` for THIS pipeline is checked against its
+    capability. A job in `ACKNOWLEDGED_UNMAPPED_JOBS` for this pipeline is
+    skipped, because somebody has written down that it produces nothing.
+    **Anything else is reported as `unknown`** — it is not skipped, and that is
+    the point (B-59330).
+
+    Scoping deliberately produces MORE `unknown` rows, and they are not noise.
+    keel's stub jobs called `sast`, `secrets`, `iac` and `lint` used to inherit
+    the meaning of the real jobs of those names on other pipelines, and were
+    credited with uploads they had nothing to do with. They now match nothing
+    and say so: a job named after a control, running no control, reported as
+    unrecognised rather than silently counted as coverage.
 
     The old shape was an allowlist with a silent default: `continue` on
     anything unmapped, and no record that a job had been passed over. That
@@ -1438,9 +1630,9 @@ def reconcile(jobs: list[JobStatus], last_scan_at: dict[str, datetime]) -> list[
         # only remembered jobs it had a capability for, so a pipeline listing
         # an unmapped job twice would now report it twice.
         seen.add(job.name)
-        capabilities = CAPABILITY_BY_JOB.get(job.name)
+        capabilities = CAPABILITY_BY_JOB.get((pipeline, job.name))
         if capabilities is None:
-            if job.name in ACKNOWLEDGED_UNMAPPED_JOBS:
+            if (pipeline, job.name) in ACKNOWLEDGED_UNMAPPED_JOBS:
                 continue
             out.append(
                 Reporting(

@@ -20,7 +20,7 @@ from mykronos.adapters.base import ScanContext
 from mykronos.adapters.registry import get_adapter, supported_tools
 from mykronos.adapters.sast_shellcheck import normalize
 from mykronos.analysers import readability
-from mykronos.ci import CAPABILITY_BY_JOB
+from mykronos.ci import ACTIONS, CAPABILITY_BY_JOB
 from mykronos.installer import TemplateLibrary
 from mykronos.schemas import ScanStatus, Severity
 
@@ -180,9 +180,9 @@ class TestTheLane:
         already named `sast-shell`. Adding the stem as well would put it in
         `jobs_for_capability("sast")`, where the "scan now" button would try
         to trigger a Concourse job that does not exist."""
-        assert CAPABILITY_BY_JOB["sast"] == "sast"
-        assert CAPABILITY_BY_JOB["sast-shell"] == "sast"
-        assert "mykronos-sast-shell" not in CAPABILITY_BY_JOB
+        assert CAPABILITY_BY_JOB[(ACTIONS, "sast")] == "sast"
+        assert CAPABILITY_BY_JOB[(ACTIONS, "sast-shell")] == "sast"
+        assert (ACTIONS, "mykronos-sast-shell") not in CAPABILITY_BY_JOB
 
     def test_the_two_workflows_do_not_collide(self) -> None:
         """One capability, two workflows: the names, job ids and concurrency

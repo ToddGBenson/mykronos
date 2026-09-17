@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mykronos.ci import (
+    ACTIONS,
     ActionsClient,
     PipelineStatus,
     Reporting,
@@ -205,7 +206,7 @@ class TestFeedsTheCrossCheck:
         )
         status = await client.status_for(REPO)
 
-        reported = reconcile(status.jobs, {"sast": built})
+        reported = reconcile(ACTIONS, status.jobs, {"sast": built})
         stages = {c.stage: c.state for c in coverage({"sast"}, reported)}
 
         assert stages["sast"] == "reporting"
@@ -220,7 +221,7 @@ class TestFeedsTheCrossCheck:
         )
         status = await client.status_for(REPO)
 
-        reported = reconcile(status.jobs, {})
+        reported = reconcile(ACTIONS, status.jobs, {})
         stages = {c.stage: c.state for c in coverage({"sast"}, reported)}
 
         assert stages["sast"] == "never_reported"
@@ -230,7 +231,7 @@ class TestFeedsTheCrossCheck:
         client = _client(files={".github/workflows/mykronos-sast.yml": "..."})
         status = await client.status_for(REPO)
 
-        reported = reconcile(status.jobs, {})
+        reported = reconcile(ACTIONS, status.jobs, {})
         stages = {c.stage: c.state for c in coverage({"sast", "dast"}, reported)}
 
         assert stages["dast"] == "no_job"
@@ -243,7 +244,7 @@ class TestFeedsTheCrossCheck:
         client = _client(files={".github/workflows/mykronos-sast.yml": "..."})
         status = await client.status_for(REPO)
 
-        reported = reconcile(status.jobs, {})
+        reported = reconcile(ACTIONS, status.jobs, {})
         stages = {c.stage: c.state for c in coverage({"sast", "aegis"}, reported)}
 
         assert stages["aegis"] == "event_driven"
@@ -339,7 +340,7 @@ class TestRepoOwnedWorkflows:
         )
         status = await client.status_for(REPO)
 
-        reported = reconcile(status.jobs, {"functional": built, "dast": built})
+        reported = reconcile(ACTIONS, status.jobs, {"functional": built, "dast": built})
         stages = {c.stage: c.state for c in coverage({"functional", "dast"}, reported)}
 
         assert stages["functional"] == "reporting"
@@ -519,7 +520,7 @@ class TestParityRefusesAnUnreadableSide:
             unavailable="Concourse did not answer, so its state is unknown.",
         )
 
-        rows = coverage({"sast", "unit"}, reconcile(unreadable.jobs, {}))
+        rows = coverage({"sast", "unit"}, reconcile(ACTIONS, unreadable.jobs, {}))
 
         assert {row.state for row in rows if row.stage in {"sast", "unit"}} == {"no_job"}
 
@@ -527,7 +528,7 @@ class TestParityRefusesAnUnreadableSide:
         """The flattering verdict, demonstrated. Every real capability beats
         `no_job`, so nothing is ever "worse" than a system nobody could
         reach."""
-        unreadable = coverage({"sast"}, reconcile([], {}))
+        unreadable = coverage({"sast"}, reconcile(ACTIONS, [], {}))
         healthy = coverage({"sast"}, [Reporting("sast", "sast", None, None)])
         healthy = [
             StageCoverage(stage=row.stage, enabled=row.enabled, state="reporting")
