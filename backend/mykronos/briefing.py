@@ -477,6 +477,46 @@ class PausedLane:
 
 
 @dataclass
+class FailingLane:
+    """A CI job that is failing and that nobody switched off (#306).
+
+    The gap this fills is exact. `personal-soc/netassess-ingest` had **one
+    success in ten builds**, failing on its timer since 2026-08-13, and the
+    briefing did not mention it once in seventy-eight lines -- because it
+    qualified for no section. Not switched off: unpaused and running. Not a
+    stalled lane: those key on lanes tied to open findings, and this one
+    produces *evidence*, never a finding. Not an unread language, not an open
+    finding, not auto-remediable.
+
+    Which means the four lanes of #401 were reportable for one reason only:
+    somebody had already noticed them and paused them. **Pausing is what made
+    them visible.** A lane failing honestly on a schedule that nobody got round
+    to switching off is in a strictly worse state -- a paused lane represents a
+    decision, and this represents nothing at all -- and it had no home here.
+    """
+
+    pipeline: str
+    job: str
+    last_status: str | None = None
+    last_finished_at: datetime | None = None
+    build_url: str | None = None
+
+    @property
+    def days_since(self) -> float | None:
+        """Since the last finished build. Unlike `PausedLane.days_paused` this
+        is not a floor on anything -- the job is running, so this is simply how
+        stale its most recent answer is."""
+        if self.last_finished_at is None:
+            return None
+        from mykronos.schemas import utcnow
+
+        end = self.last_finished_at
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        return (utcnow().replace(tzinfo=UTC) - end).total_seconds() / 86400
+
+
+@dataclass
 class Briefing:
     generated_at: datetime
     total_open: int
@@ -502,6 +542,14 @@ class Briefing:
     #: True when the CI system could not be asked. Distinct from an empty
     #: `paused` list, which means it was asked and nothing is off.
     paused_unknown: bool = False
+    #: CI jobs that are failing and that nobody paused (#306). Separate from
+    #: `paused` because the two say different things: a paused lane is a
+    #: decision somebody made and the fix is "turn it back on", while this is
+    #: a lane nobody has looked at and the fix is "find out why it throws".
+    failing: list[FailingLane] = field(default_factory=list)
+    #: True when the CI system could not be asked. Distinct from an empty
+    #: `failing` list, which means it was asked and nothing is failing.
+    failing_unknown: bool = False
     #: Lanes that are reporting and not covering (B-046). Deliberately its own
     #: list rather than another `reason` on `StalledLane`: those lanes are not
     #: producing successful scans and these are, so the sentence, the number
@@ -1089,6 +1137,7 @@ def build(
     languages: dict[str, dict[str, int]] | None = None,
     sast_tools: dict[str, str | list[str]] | None = None,
     paused_jobs: list[PausedLane] | None = None,
+    failing_jobs: list[FailingLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
@@ -1155,6 +1204,8 @@ def build(
         # lanes, which is over-reporting, and that is the safe direction.
         paused=list(paused_jobs or []),
         paused_unknown=paused_jobs is None,
+        failing=list(failing_jobs or []),
+        failing_unknown=failing_jobs is None,
         # Not scoped by `asset_id` either: a scheduled job belongs to the
         # platform, not to a repository, so a scoped briefing showing the
         # estate's broken jobs is over-reporting and that is the safe
@@ -1259,6 +1310,35 @@ def render(briefing: Briefing) -> str:
             subsequent_indent="  ",
         )
         lines.append("")
+
+    if briefing.failing:
+        lines += [
+            "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF",
+            "  Running on their schedule and not succeeding. Worse than the",
+            "  section below, not better: a paused lane is a decision somebody",
+            "  made, and this is a lane nobody has looked at. One of these had",
+            "  one success in ten builds across five weeks.",
+            "",
+        ]
+        for bad in sorted(briefing.failing, key=lambda f: (f.pipeline, f.job)):
+            days = bad.days_since
+            when = (
+                f"last build {bad.last_finished_at:%Y-%m-%d} ({days:.0f} days ago)"
+                if bad.last_finished_at and days is not None
+                else "has never finished a build"
+            )
+            lines.append(f"  {bad.pipeline}/{bad.job}")
+            lines.append(f"      {bad.last_status} — {when}")
+            if bad.build_url:
+                lines.append(f"      {bad.build_url}")
+        lines.append("")
+    elif briefing.failing_unknown:
+        lines += [
+            "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF",
+            "  Could not ask the CI system. This is not the same as nothing",
+            "  failing, and must not read like it.",
+            "",
+        ]
 
     if briefing.paused:
         lines += [

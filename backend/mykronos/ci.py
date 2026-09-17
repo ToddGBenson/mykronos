@@ -457,6 +457,63 @@ class ConcourseClient:
                 out.append((pipeline, self._job(raw, url)))
         return out
 
+    #: Build statuses that mean the job ran and did not succeed.
+    #:
+    #: `aborted` is deliberately absent. An abort is somebody cancelling, which
+    #: is a decision with a person behind it -- the same reason a paused lane is
+    #: reported separately rather than as a failure. `errored` IS here: that is
+    #: the lane breaking before it got as far as a result, which is exactly the
+    #: case this list exists for.
+    FAILED_STATUSES = frozenset({"failed", "errored"})
+
+    def failing_jobs(self) -> list[tuple[str, JobStatus]] | None:
+        """Every job whose last finished build failed and which nobody paused.
+
+        The gap between this and `paused_jobs` is where `netassess-ingest` sat
+        for five weeks: **one success in ten builds**, failing on its timer
+        since 2026-08-13, and absent from all five sections of the briefing.
+
+        It qualified for none of them. Not switched off -- it is unpaused and
+        running. Not a stalled lane -- those are keyed on lanes tied to open
+        findings, and this one produces *evidence* (the `network` upload of
+        #306), never a finding. Not an unread language, not an open finding,
+        not something auto-remediation could take.
+
+        So the four lanes #401 found were visible for one reason only:
+        **somebody had already noticed them and switched them off.** Pausing is
+        what made them reportable. A lane that fails honestly on a schedule,
+        and that nobody ever got round to pausing, is in a strictly worse state
+        and had no home on the page at all -- a paused lane represents a
+        decision, and this represents nothing.
+
+        Paused jobs are excluded rather than listed twice: `paused_jobs`
+        already reports those and its rendering says something different about
+        them ("turn it back on") than this one does ("find out why it throws").
+
+        Not filtered by capability, for the reason `paused_jobs` gives at
+        length: a capability is satisfied by any one of its jobs, so a failing
+        lane with a working sibling reads green at that level.
+
+        `None` rather than `[]` when Concourse cannot be reached. "Nothing is
+        failing" and "could not ask" must not render the same.
+        """
+        names = self.pipelines()
+        if names is None:
+            return None
+        out: list[tuple[str, JobStatus]] = []
+        for pipeline in names:
+            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+            if not isinstance(payload, list):
+                continue
+            for raw in payload:
+                if not isinstance(raw, dict) or raw.get("paused"):
+                    continue
+                job = self._job(raw, url)
+                if (job.status or "") in self.FAILED_STATUSES:
+                    out.append((pipeline, job))
+        return out
+
     def trigger_job(self, pipeline: str, job: str, *, token: str) -> bool:
         """Start a new build of `job` now (spec 17 §2.5), rather than
         waiting for the next commit the pipeline's own resource polls for.

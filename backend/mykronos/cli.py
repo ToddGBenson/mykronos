@@ -1237,6 +1237,41 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a briefing must not die on CI
                 logging.getLogger(__name__).debug("Could not read paused CI jobs")
 
+            # Failing CI jobs nobody paused (#306). Read beside the paused
+            # sweep because it is the same call to the same endpoint; kept a
+            # separate list because the two mean different things and the
+            # rendering says different things about them.
+            #
+            # `netassess-ingest` had one success in ten builds over five weeks
+            # and appeared in none of the briefing's five sections, because
+            # every one of them keys on a lane being switched off or on a
+            # finding — and a failing evidence lane is neither.
+            failing_jobs: list[briefing_report.FailingLane] | None = None
+            try:
+                ci_client = ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                )
+                if ci_client.configured:
+                    bad = ci_client.failing_jobs()
+                    failing_jobs = (
+                        None
+                        if bad is None
+                        else [
+                            briefing_report.FailingLane(
+                                pipeline=pipeline,
+                                job=job.name,
+                                last_status=job.status,
+                                last_finished_at=job.finished_at,
+                                build_url=job.build_url,
+                            )
+                            for pipeline, job in bad
+                        ]
+                    )
+            except Exception:  # noqa: BLE001 - a briefing must not die on CI
+                logging.getLogger(__name__).debug("Could not read failing CI jobs")
+
             # Job health (#409). Read here rather than in `build()` for the
             # same reason as the rest: the briefing builds from the lake, and
             # `job_runs` is in the operational database. The assessment itself
@@ -1269,6 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
                 languages=languages,
                 sast_tools=sast_tools,
                 paused_jobs=paused_jobs,
+                failing_jobs=failing_jobs,
                 unhealthy_jobs=unhealthy_jobs,
             )
             if args.json:
