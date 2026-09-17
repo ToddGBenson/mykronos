@@ -13,9 +13,11 @@ see docs/DECISIONS.md D-012.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mykronos.fingerprint import FINGERPRINT_V1_LINE, compute_finding_id
 from mykronos.schemas import FindingSubmission, ScanStatus, TriggeredBy
 
 logger = logging.getLogger(__name__)
@@ -88,3 +90,58 @@ class AdapterResult:
         if self.skipped:
             body += f" ({self.skipped} unparseable result(s) skipped)"
         return body
+
+
+def identity_version(finding: FindingSubmission, context: ScanContext) -> str:
+    """The fingerprint version ingestion will stamp on this finding.
+
+    Asks `compute_finding_id` rather than restating its dispatch table, so an
+    adapter cannot disagree with the API about what identity a finding gets.
+    Restating it is what produced #325: the adapter layer decided "no code
+    snippet" meant "positional", which is one of three anchors and not the
+    rule.
+    """
+    _, version = compute_finding_id(
+        repo_full_name=context.repo_full_name,
+        capability=context.capability,
+        rule_id=finding.rule_id,
+        file_path=finding.file_path,
+        symbol=finding.symbol,
+        code_snippet=finding.code_snippet,
+        line_start=finding.line_start,
+        package_name=finding.package_name,
+        address=finding.address,
+        port=finding.port,
+        title=finding.title,
+    )
+    return version
+
+
+def warn_if_identity_degrades(
+    outcome: AdapterResult,
+    findings: Iterable[FindingSubmission],
+    context: ScanContext,
+) -> int:
+    """Warn about the findings that really will be keyed on a line number.
+
+    **Call this after the adapter has finished enriching, never before.** The
+    fingerprint reads `package_name`, and an adapter that fills that field in
+    after parsing — `containers_trivy`, `atlas_osv` — has not set it yet while
+    the parser is running. Asking too early is #325: every container scan
+    announced that all of its findings would churn while every one of them was
+    stored against a stable package key.
+
+    Returns the count so a caller can act on it as well as report it.
+    """
+    degraded = sum(
+        1 for finding in findings if identity_version(finding, context) == FINGERPRINT_V1_LINE
+    )
+    if degraded:
+        # Visible now, rather than as an unexplained trend break later.
+        outcome.warn(
+            f"{degraded} finding(s) have no package, snippet or symbol to anchor "
+            "identity and will use positional identity (fingerprint v1-line). "
+            "Those findings churn when unrelated lines shift above them — see "
+            "spec 05 §5."
+        )
+    return degraded

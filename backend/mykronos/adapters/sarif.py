@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from mykronos.adapters.base import AdapterResult, ScanContext
+from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.snippet import best_snippet
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
@@ -204,8 +204,14 @@ def sarif_to_findings(
     context: ScanContext,
     *,
     result: AdapterResult | None = None,
+    warn_degraded: bool = True,
 ) -> AdapterResult:
-    """Convert a SARIF document into `FindingSubmission` records."""
+    """Convert a SARIF document into `FindingSubmission` records.
+
+    `warn_degraded=False` for an adapter that enriches after parsing. The
+    churn warning reads `package_name`, which such an adapter has not filled
+    in yet; it owns calling `warn_if_identity_degrades` once it has. See #325.
+    """
     outcome = result or AdapterResult()
 
     try:
@@ -231,7 +237,11 @@ def sarif_to_findings(
         # A genuinely empty SARIF is a real result: scanned, found nothing.
         return outcome
 
-    snippet_sources: dict[str, int] = {}
+    # Only what *this* call parsed. `result=` lets a caller accumulate several
+    # documents into one outcome (CodeQL writes one SARIF per language), and
+    # counting `outcome.findings` would re-count every earlier file's findings
+    # on every subsequent one.
+    produced: list[FindingSubmission] = []
     suppressed_rules: list[str] = []
 
     for run in runs:
@@ -245,7 +255,7 @@ def sarif_to_findings(
                 outcome.skipped += 1
                 continue
             try:
-                finding, source = _convert_result(raw_result, rules, context)
+                finding = _convert_result(raw_result, rules, context)
             except Exception as exc:  # noqa: BLE001 - one bad result must not sink the batch
                 logger.debug("Skipping unparseable SARIF result: %s", exc)
                 outcome.skipped += 1
@@ -258,7 +268,7 @@ def sarif_to_findings(
             if _is_suppressed(raw_result):
                 suppressed_rules.append(str(raw_result.get("ruleId") or "?"))
                 continue
-            snippet_sources[source] = snippet_sources.get(source, 0) + 1
+            produced.append(finding)
             outcome.findings.append(finding)
 
     if suppressed_rules:
@@ -278,14 +288,8 @@ def sarif_to_findings(
             f"repository and not ingested: {counted}"
         )
 
-    degraded = snippet_sources.get("none", 0)
-    if degraded:
-        # Visible now, rather than as an unexplained trend break later.
-        outcome.warn(
-            f"{degraded} finding(s) had no code snippet and will use positional "
-            "identity (fingerprint v1-line). Those findings churn when unrelated "
-            "lines shift above them — see spec 05 §5."
-        )
+    if warn_degraded:
+        warn_if_identity_degrades(outcome, produced, context)
     if outcome.skipped:
         outcome.warn(f"{outcome.skipped} SARIF result(s) could not be parsed and were skipped")
         outcome.scan_status = ScanStatus.PARTIAL_FAILURE
@@ -316,7 +320,7 @@ def _convert_result(
     raw: dict[str, Any],
     rules: dict[str, dict[str, Any]],
     context: ScanContext,
-) -> tuple[FindingSubmission | None, str]:
+) -> FindingSubmission | None:
     rule_id = str(raw.get("ruleId") or "").strip()
     if not rule_id:
         rule = None
@@ -326,7 +330,7 @@ def _convert_result(
             rule = ordered[index] if 0 <= index < len(ordered) else None
         rule_id = str((rule or {}).get("id") or "").strip()
         if not rule_id:
-            return None, "none"
+            return None
     else:
         rule = rules.get(rule_id)
 
@@ -346,7 +350,7 @@ def _convert_result(
     start_line = region.get("startLine")
     end_line = region.get("endLine") or start_line
 
-    snippet, symbol, source = best_snippet(
+    snippet, symbol, _source = best_snippet(
         context_region_snippet=(context_region.get("snippet") or {}).get("text"),
         region_snippet=(region.get("snippet") or {}).get("text"),
         workspace=context.workspace,
@@ -362,20 +366,17 @@ def _convert_result(
         if named:
             symbol = str(named)[:500]
 
-    return (
-        FindingSubmission(
-            rule_id=rule_id[:255],
-            title=title,
-            description=description,
-            severity=severity,
-            cvss_score=score,
-            file_path=file_path,
-            line_start=start_line if isinstance(start_line, int) else None,
-            line_end=end_line if isinstance(end_line, int) else None,
-            symbol=symbol,
-            code_snippet=snippet,
-            cwe_ids=_cwe_ids(rule, raw),
-            raw_finding_json=raw,
-        ),
-        source,
+    return FindingSubmission(
+        rule_id=rule_id[:255],
+        title=title,
+        description=description,
+        severity=severity,
+        cvss_score=score,
+        file_path=file_path,
+        line_start=start_line if isinstance(start_line, int) else None,
+        line_end=end_line if isinstance(end_line, int) else None,
+        symbol=symbol,
+        code_snippet=snippet,
+        cwe_ids=_cwe_ids(rule, raw),
+        raw_finding_json=raw,
     )

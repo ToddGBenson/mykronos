@@ -132,9 +132,13 @@ def best_snippet(
     """Resolve the snippet and symbol for one finding.
 
     Returns ``(snippet, symbol, source)`` where `source` names which tier
-    supplied the snippet — reported so a run that quietly fell back to
-    positional identity is visible in the step summary rather than only in a
-    trend line six weeks later.
+    supplied the snippet.
+
+    `source` is diagnostic only. It used to drive the churn warning, and that
+    was #325: "no snippet" is not the condition identity degrades on — a
+    package name or a symbol anchors a finding just as well, and a finding
+    with no file at all is keyed on rule and title. The warning now asks
+    `compute_finding_id` instead, via `base.warn_if_identity_degrades`.
     """
     lines = read_source_lines(workspace, file_path or "")
     symbol = infer_symbol(lines, start_line)
