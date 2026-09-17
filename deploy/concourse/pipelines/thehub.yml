@@ -2606,9 +2606,38 @@ jobs:
                   fi
                   if [ "$(date +%s)" -ge "$DEADLINE" ]; then
                     echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
-                    echo "          The pointer is published and still stands. This means the"
-                    echo "          host-side poller is not running, or it failed and rolled back:"
-                    echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    echo "          The pointer is published and still stands."
+                    # Report what was read, rather than assert a cause nothing
+                    # checked. This message used to state that the host-side
+                    # poller was not running or had rolled back, and name the
+                    # scheduled task to go and look at. For deploy-demo #82
+                    # through #88 that was false in every word: the poller ran
+                    # on every cycle, deployed, and acknowledged - and the
+                    # acknowledgement was unreadable because of the CR
+                    # described above (#388). The job had already fetched the
+                    # object that says so and printed a guess instead, which
+                    # is why TheHub#343 was filed against the demo container's
+                    # build stamp, and why two more days went into that
+                    # container before anybody read the bytes.
+                    #
+                    # Absent and present need opposite actions, and the object
+                    # is what tells them apart: absent means nothing has ever
+                    # acknowledged this environment; present means the host is
+                    # acknowledging, for some commit that is not this one.
+                    if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1; then
+                      echo "          $ENVIRONMENT.deployed exists and reads '$(tr -d '\r\n' < deployed)'"
+                      echo "          in $(wc -c < deployed | tr -d ' ') bytes - a bare 40-character SHA is 40."
+                      echo "          The host IS acknowledging, at a commit that is not this one."
+                      echo "          Read deploy/thehub/registry-pull-deploy.log for the deploy it"
+                      echo "          last completed. A byte count above the SHA's own length means"
+                      echo "          the acknowledgement carries line endings, which this comparison"
+                      echo "          already strips - so the difference above is a real commit gap."
+                    else
+                      echo "          $ENVIRONMENT.deployed does not exist: nothing has acknowledged"
+                      echo "          a deploy of this environment at all. That, and only that, is"
+                      echo "          the case where the host-side poller is genuinely not running:"
+                      echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    fi
                     exit 1
                   fi
                   sleep 20
@@ -4133,9 +4162,38 @@ jobs:
                   fi
                   if [ "$(date +%s)" -ge "$DEADLINE" ]; then
                     echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
-                    echo "          The pointer is published and still stands. This means the"
-                    echo "          host-side poller is not running, or it failed and rolled back:"
-                    echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    echo "          The pointer is published and still stands."
+                    # Report what was read, rather than assert a cause nothing
+                    # checked. This message used to state that the host-side
+                    # poller was not running or had rolled back, and name the
+                    # scheduled task to go and look at. For deploy-demo #82
+                    # through #88 that was false in every word: the poller ran
+                    # on every cycle, deployed, and acknowledged - and the
+                    # acknowledgement was unreadable because of the CR
+                    # described above (#388). The job had already fetched the
+                    # object that says so and printed a guess instead, which
+                    # is why TheHub#343 was filed against the demo container's
+                    # build stamp, and why two more days went into that
+                    # container before anybody read the bytes.
+                    #
+                    # Absent and present need opposite actions, and the object
+                    # is what tells them apart: absent means nothing has ever
+                    # acknowledged this environment; present means the host is
+                    # acknowledging, for some commit that is not this one.
+                    if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1; then
+                      echo "          $ENVIRONMENT.deployed exists and reads '$(tr -d '\r\n' < deployed)'"
+                      echo "          in $(wc -c < deployed | tr -d ' ') bytes - a bare 40-character SHA is 40."
+                      echo "          The host IS acknowledging, at a commit that is not this one."
+                      echo "          Read deploy/thehub/registry-pull-deploy.log for the deploy it"
+                      echo "          last completed. A byte count above the SHA's own length means"
+                      echo "          the acknowledgement carries line endings, which this comparison"
+                      echo "          already strips - so the difference above is a real commit gap."
+                    else
+                      echo "          $ENVIRONMENT.deployed does not exist: nothing has acknowledged"
+                      echo "          a deploy of this environment at all. That, and only that, is"
+                      echo "          the case where the host-side poller is genuinely not running:"
+                      echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    fi
                     exit 1
                   fi
                   sleep 20
