@@ -263,6 +263,18 @@ literal, supplied through `--load-vars-from` and readable by anyone who can run
 credentials. It never prints a value: the applied config holds resolved secrets,
 and a drift report that leaked them would be the worse problem.
 
+**Detecting drift is the belt; not drifting is the braces.** All three
+pipelines now carry a `set-pipeline` job that applies themselves from `main`
+(#355) — the shape keel has run for twenty-one builds without drifting. It
+needs no Concourse token, because the job is already inside Concourse, where
+`/api/v1/.../config` returns 401 anonymously and the drift check does not. It
+carries two costs, both written out beside each job: a pipeline applied by hand
+from a branch or with a non-default script parameter is reverted the next time
+the job runs, and a `((var))` that is in neither `deploy/concourse/vars/` nor
+Vault resolves to nothing after the apply — which, for a var a *resource* reads,
+is how a self-applying pipeline locks itself out. `tests/test_pipeline_conformance.py`
+asserts the second cannot happen by accident.
+
 ### PS-12 — Retry the fetch, never the verdict
 
 D-123. `attempts:` may appear only on a step whose non-success is necessarily

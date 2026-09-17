@@ -19,6 +19,7 @@ cannot fail is the thing it exists to prevent.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -289,3 +290,246 @@ def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     problems, _ = checker.check_pipeline(broken)
     assert any("PS-2" in problem and "sast" in problem for problem in problems), problems
     assert any("PS-7" in problem and "sast" in problem for problem in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# The `set-pipeline` job, and the vars that make it safe (#355)
+# ---------------------------------------------------------------------------
+#
+# Seven commits sat merged and inert because applying a pipeline was a thing
+# somebody had to remember. `set_pipeline: self` closes that, and introduces one
+# failure mode worth more than a comment: `fly set-pipeline --load-vars-from`
+# interpolates client side (D-043), so the *running* pipeline is the committed
+# YAML plus a vars file that exists only inside a PowerShell script. A self-apply
+# that does not reproduce those vars applies a different pipeline -- and for
+# thehub the first casualty is `source`, whose `branch:` is one of them, which
+# takes every job down including the one that could put it back.
+#
+# So these assert three things: the job is there, it can supply every var the
+# pipeline uses, and the committed copy of those vars still equals what the
+# apply script writes.
+
+VARS_DIR = REPO_ROOT / "deploy" / "concourse" / "vars"
+CONCOURSE_DIR = REPO_ROOT / "deploy" / "concourse"
+
+#: pipeline stem -> the script that applies it by hand today.
+APPLY_SCRIPT = {
+    "mykronos": "set-pipeline.ps1",
+    "personal-soc": "set-personal-soc-pipeline.ps1",
+    "thehub": "set-thehub-pipeline.ps1",
+}
+
+#: Resolved from Vault at build time for every pipeline, so absent from both the
+#: apply scripts' vars files and the committed ones. Neither script writes them
+#: and both say why in a comment beside the omission.
+TEAM_VAULT_VARS = frozenset({"slack-bot-token", "slack-alert-channel"})
+
+#: Per-pipeline Vault vars that no `Add-Secret` call names.
+EXTRA_VAULT_VARS = {
+    # "The key itself is in Vault (concourse/main/thehub/source-deploy-key), so
+    # it never appears in `fly get-pipeline` output" -- pipelines/thehub.yml.
+    "thehub": frozenset({"source-deploy-key"}),
+}
+
+#: Vars a `set_pipeline` step cannot supply and Vault does not hold, so the
+#: first automatic apply takes them away from the jobs that read them. Each is
+#: argued in that pipeline's `set-pipeline` comment; this list is what stops one
+#: being added quietly, and what goes red when one is finally closed.
+UNRESOLVED_AFTER_SELF_APPLY = {
+    "mykronos": frozenset(),
+    "personal-soc": frozenset({"hibp-api-key", "monitor-emails"}),
+    "thehub": frozenset(
+        {
+            "github-token",
+            "azure-client-id",
+            "azure-client-secret",
+            "azure-tenant-id",
+            "azure-subscription-id",
+        }
+    ),
+}
+
+
+def _set_pipeline_job(document: dict) -> dict:
+    for job in document["jobs"]:
+        if job["name"] == "set-pipeline":
+            return job
+    raise AssertionError("no set-pipeline job")
+
+
+def _vars_used(document: object) -> set[str]:
+    """Every `((var))` in the parsed pipeline.
+
+    Parsed rather than grepped: these files describe vars they no longer use in
+    comments, and a grep would report the explanation as a requirement.
+    """
+    found: set[str] = set()
+
+    def visit(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                visit(key)
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+        elif isinstance(node, str):
+            found.update(re.findall(r"\(\(([A-Za-z0-9_.-]+)\)\)", node))
+
+    visit(document)
+    return found
+
+
+def _script_vars(stem: str) -> dict[str, str]:
+    """`"<name>: <value>"` entries from an apply script's vars array.
+
+    The value is resolved one step: a `$Param` reference becomes that
+    parameter's default, which is where this repository keeps the decision --
+    B-045 passed `-Branch develop` at apply time, left the default at `main`,
+    and the next unrelated apply silently moved TheHub back. Anything computed
+    at run time (`$(Read-EnvValueOptional ...)`, a minted token) resolves to the
+    sentinel `<runtime>` and is expected to be absent from the committed file
+    rather than guessed at.
+    """
+    text = (CONCOURSE_DIR / APPLY_SCRIPT[stem]).read_text(encoding="utf-8")
+    resolved: dict[str, str] = {}
+    for name, raw in re.findall(r'^\s*"([a-z0-9-]+):\s*(.*?)",?\s*$', text, re.MULTILINE):
+        value = raw.strip()
+        if value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+        if value.startswith("$("):
+            resolved[name] = "<runtime>"
+            continue
+        reference = re.fullmatch(r"\$(\w+)", value)
+        if reference:
+            default = re.search(
+                rf'\[(?:string|int)\]\${reference.group(1)}\s*=\s*(?:"([^"]*)"|(\d+))',
+                text,
+            )
+            resolved[name] = "<runtime>" if not default else (default.group(1) or default.group(2))
+            continue
+        resolved[name] = value
+    return resolved
+
+
+def _vault_vars(stem: str) -> set[str]:
+    """Names this pipeline's apply script probes Vault for before falling back.
+
+    Two shapes, because the three scripts grew apart: `set-pipeline.ps1` keeps a
+    `$fallbacks` table of `"name" = { ... }`, the other two call `Add-Secret
+    -Name "name"`. Both mean the same thing -- present in Vault, left out of the
+    vars file, resolved at build time -- so both are read here rather than one
+    being the canonical form.
+    """
+    text = (CONCOURSE_DIR / APPLY_SCRIPT[stem]).read_text(encoding="utf-8")
+    named = set(re.findall(r'^Add-Secret\s+-Name\s+"([a-z0-9-]+)"', text, re.MULTILINE))
+    named |= set(re.findall(r'^\s*"([a-z0-9-]+)"\s*=\s*\{', text, re.MULTILINE))
+    return named | set(TEAM_VAULT_VARS) | set(EXTRA_VAULT_VARS.get(stem, ()))
+
+
+@pytest.mark.parametrize("path", checker.pipelines(), ids=lambda p: p.name)
+def test_every_pipeline_applies_itself(path: Path) -> None:
+    """#355: seven merged commits, none of them running.
+
+    keel has had this for twenty-one builds and has not drifted; these three had
+    no `set_pipeline:` step between them, so every pipeline fix waited on
+    somebody remembering a PowerShell script. One of the seven was a live
+    information disclosure, fixed in `main` for two days and still serving.
+    """
+    stem = path.stem
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    job = _set_pipeline_job(document)
+
+    fetch = [step for step in job["plan"] if step.get("get") == "pipelines"]
+    assert fetch, f"{path.name}:set-pipeline does not fetch the pipeline repository"
+    assert fetch[0].get("trigger") is True, (
+        f"{path.name}:set-pipeline fetches without `trigger: true`, which leaves a job "
+        f"somebody still has to remember"
+    )
+
+    applies = [step for step in job["plan"] if "set_pipeline" in step]
+    assert applies, f"{path.name}:set-pipeline has no set_pipeline step"
+    assert applies[0]["set_pipeline"] == "self"
+    assert applies[0]["file"] == f"pipelines/deploy/concourse/pipelines/{stem}.yml"
+    assert applies[0]["var_files"] == [f"pipelines/deploy/concourse/vars/{stem}.yml"]
+
+    # The difference from keel, and the thing easiest to get wrong: keel's
+    # pipeline lives in keel's own repo, so its `repo` resource is already the
+    # right one. These three live in mykronos while `source` points at the
+    # application they scan.
+    resources = {resource["name"]: resource for resource in document["resources"]}
+    assert "pipelines" in resources, f"{path.name} has no resource for the mykronos repo"
+    assert resources["pipelines"]["source"]["uri"] == "https://github.com/ToddGBenson/mykronos.git"
+    assert resources["pipelines"]["source"]["branch"] == "main"
+
+
+@pytest.mark.parametrize("stem", sorted(APPLY_SCRIPT), ids=str)
+def test_the_self_apply_can_supply_every_var(stem: str) -> None:
+    """The lockout, asserted rather than commented.
+
+    A `((var))` the committed vars file does not carry and Vault does not hold
+    resolves to nothing after a self-apply. For most that costs one job; for
+    `thehub.yml`'s `((thehub-branch))` it costs `source`, every job behind it,
+    and this job with them -- which is exactly how keel's self-applying pipeline
+    locked itself out once already.
+
+    A new var added to a pipeline with nowhere to come from fails here, in the
+    `unit` lane, rather than on the worker after the apply.
+    """
+    document = yaml.safe_load((checker.PIPELINE_DIR / f"{stem}.yml").read_text(encoding="utf-8"))
+    committed = yaml.safe_load((VARS_DIR / f"{stem}.yml").read_text(encoding="utf-8"))
+
+    homeless = _vars_used(document) - set(committed) - _vault_vars(stem)
+
+    assert homeless == UNRESOLVED_AFTER_SELF_APPLY[stem], (
+        f"{stem}.yml: vars with no home after a self-apply are {sorted(homeless)}, but "
+        f"UNRESOLVED_AFTER_SELF_APPLY records {sorted(UNRESOLVED_AFTER_SELF_APPLY[stem])}. "
+        f"Add it to deploy/concourse/vars/{stem}.yml, put it in Vault, or record the "
+        f"cost in the pipeline's set-pipeline comment and here."
+    )
+
+
+@pytest.mark.parametrize("stem", sorted(APPLY_SCRIPT), ids=str)
+def test_the_committed_vars_say_what_the_apply_script_applies(stem: str) -> None:
+    """Two copies of one configuration, held together by this.
+
+    `deploy/concourse/vars/<stem>.yml` exists so the `set-pipeline` job can
+    re-supply what `fly set-pipeline --load-vars-from` interpolates client side.
+    That makes it a second copy of values the apply script also holds, and a
+    second copy nothing compares is a self-applying pipeline quietly reverting
+    an operator: `mykronos-ref` bumped in the script alone would be downgraded
+    again on the next commit to any pipeline file.
+    """
+    committed = yaml.safe_load((VARS_DIR / f"{stem}.yml").read_text(encoding="utf-8"))
+    scripted = _script_vars(stem)
+
+    assert scripted, f"no vars parsed out of {APPLY_SCRIPT[stem]} -- has its shape changed?"
+
+    disagree = {
+        name: (str(value), str(committed[name]))
+        for name, value in scripted.items()
+        if name in committed and str(committed[name]) != str(value)
+    }
+    assert not disagree, (
+        f"{APPLY_SCRIPT[stem]} and vars/{stem}.yml disagree; the next self-apply would "
+        f"impose the second (script, committed): {disagree}"
+    )
+
+    # And the other direction: a value the script computes at run time cannot be
+    # committed, so committing one would mean committing a guess.
+    guessed = sorted(
+        name for name, value in scripted.items() if value == "<runtime>" and name in committed
+    )
+    assert not guessed, (
+        f"vars/{stem}.yml commits values {APPLY_SCRIPT[stem]} computes at run time: {guessed}"
+    )
+
+    missing = sorted(
+        name
+        for name, value in scripted.items()
+        if value != "<runtime>" and name not in committed and name not in _vault_vars(stem)
+    )
+    assert not missing, (
+        f"{APPLY_SCRIPT[stem]} writes {missing}, which vars/{stem}.yml does not carry, so a "
+        f"self-apply would drop them"
+    )

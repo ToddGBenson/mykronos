@@ -43,6 +43,12 @@ groups:
   - name: runtime
     jobs: [demo-and-dast, remediate]
 
+  # Its own group, and not folded into an existing one: Concourse hides a job
+  # that is in no group, and the job that applies this pipeline is the last one
+  # anybody should have to go looking for.
+  - name: pipeline
+    jobs: [set-pipeline]
+
 resource_types:
   - name: registry-image
     type: registry-image
@@ -126,6 +132,28 @@ resources:
       regexp: sbom-(.*).cdx.json
       access_key_id: ((minio-access-key))
       secret_access_key: ((minio-secret-key))
+
+  # The same repository `source` points at, deliberately fetched twice.
+  #
+  # This pipeline is the one case where keel's shape would have worked as-is --
+  # the file and the code are in one repo. It gets its own resource anyway, for
+  # two reasons. `source` triggers the gated quality lanes and carries no
+  # `paths:`, so reusing it would re-apply the pipeline on every commit to
+  # anything; and a `get: source` with `trigger: true` and no `passed:` is what
+  # PS-4 exists to catch, so reusing it would mean writing an exemption into
+  # the conformance checker for a job that does not need one.
+  #
+  # Identical to thehub.yml's and personal-soc.yml's, which is the point: one
+  # shape to read, in three files.
+  - name: pipelines
+    type: git
+    icon: source-branch
+    source:
+      uri: https://github.com/ToddGBenson/mykronos.git
+      branch: main
+      paths:
+        - deploy/concourse/pipelines/
+        - deploy/concourse/vars/
 
 anchors:
   # -- PS-12: retry the fetch, never the verdict ---------------------------
@@ -371,6 +399,77 @@ anchors:
             echo "Mykronos is reachable and this token is accepted."
 
 jobs:
+
+  # -- THE PIPELINE UPDATES ITSELF ----------------------------------------
+  #
+  # Ported from keel's `ci/pipeline.yml`. keel is the one pipeline of the four
+  # that has this, and the one that does not drift. Without it, every change to
+  # this file waits for somebody to remember `set-pipeline.ps1`, and the
+  # running pipeline silently falls behind the file that is supposed to define
+  # it -- invisibly, because the UI shows a pipeline and nothing says it is
+  # seven commits behind git. #355 counted seven such commits merged and inert
+  # across the three pipelines, one of them a live information disclosure.
+  #
+  # First in the file, because it is what makes every other job in it
+  # trustworthy.
+  #
+  # -- THE TRAP: THIS JOB REVERTS ANYTHING APPLIED BY HAND ----------------
+  #
+  # `set_pipeline: self` applies the file FROM THE REPO INPUT, and that input
+  # is pinned to `branch: main`. So a pipeline applied by hand from a branch --
+  # or with a non-default script parameter -- survives only until this job next
+  # runs. It then rewrites the pipeline back to main's copy, with main's vars.
+  #
+  # That bit keel hard once, and the account is worth carrying across verbatim:
+  # the fix for a broken git resource lived on a branch, this job reverted the
+  # pipeline to main's broken version, and the repo resource stopped
+  # authenticating -- so nothing could run, including this job, which is what
+  # stopped the revert loop rather than any deliberate design.
+  #
+  # A self-applying pipeline can lock itself out. The path to it here runs
+  # through `var_files`: `wheel` and `sbom` take their credentials from Vault
+  # but their endpoint from ((minio-endpoint)), and every scanning lane
+  # installs the uploader at ((mykronos-ref)). Delete a var from that file and
+  # the things that read it stop, this job can stop with them, and the only way
+  # back in is a hand `fly set-pipeline` from a machine with a working
+  # Concourse token.
+  #
+  # Main IS the definition; that is the point, not a defect. To try a pipeline
+  # change on a branch, set it under a DIFFERENT pipeline name, or pause this
+  # job for the duration. Do not expect a hand-applied config to stick.
+  #
+  # -- var_files ----------------------------------------------------------
+  #
+  # `fly set-pipeline --load-vars-from` interpolates client side (D-043), so
+  # the running pipeline is this file PLUS a vars file that exists only inside
+  # set-pipeline.ps1. Re-applying without those vars would not re-apply the
+  # same pipeline; it would apply a different one. `vars/mykronos.yml` is that
+  # file's non-secret half, committed so this job can supply it.
+  #
+  # This is the only one of the three where that half is the whole. All six
+  # vars the script writes are addresses and pins; all four of its credentials
+  # already go through Vault (`Add-Secret`), as do the two Slack values. So
+  # nothing is lost by applying this job here, which is not true of thehub.yml
+  # or personal-soc.yml -- see the same comment in those files before applying
+  # them.
+  #
+  # Not `public: true`, unlike keel's. `ecfec31` (#386) removed `public` from
+  # personal-soc's netassess jobs four days ago because anonymous readers could
+  # read the build logs; a `set_pipeline` step prints the configuration it
+  # applied, and there is no reason to start that habit again here.
+  - name: set-pipeline
+    plan:
+      - get: pipelines
+        trigger: true
+        attempts: *retry_fetch
+      - set_pipeline: self
+        file: pipelines/deploy/concourse/pipelines/mykronos.yml
+        var_files: [pipelines/deploy/concourse/vars/mykronos.yml]
+    on_failure: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
+
   # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
   #
   # In parallel, and a failure in any one stops everything downstream. There

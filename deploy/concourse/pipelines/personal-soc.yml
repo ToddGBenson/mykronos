@@ -65,6 +65,12 @@ groups:
   - name: release
     jobs: [package]
 
+  # Its own group, and not folded into an existing one: Concourse hides a job
+  # that is in no group, and the job that applies this pipeline is the last one
+  # anybody should have to go looking for.
+  - name: pipeline
+    jobs: [set-pipeline]
+
 resource_types:
   - name: registry-image
     type: registry-image
@@ -124,6 +130,32 @@ resources:
       regexp: runs/netassess-(.*).zip
       access_key_id: ((minio-access-key))
       secret_access_key: ((minio-secret-key))
+
+  # The repository this FILE lives in, which is not the repository this
+  # pipeline scans. That is the one thing keel's set-pipeline job does not have
+  # to think about: keel's pipeline sits in keel's own repo, so its `repo`
+  # resource is already the right one. Here `source` is personal-soc and the
+  # pipeline definition is somewhere else, so applying this file needs a second
+  # resource and it has to be this one.
+  #
+  # Unauthenticated HTTPS, and it needs nothing more: ToddGBenson/mykronos is
+  # public. This is the same URI mykronos.yml's own `source` resource uses, and
+  # the same one every lane in this file already installs the uploader from at
+  # ((mykronos-ref)) -- so a credential problem here would already be a
+  # credential problem in three other places.
+  #
+  # `paths:` so that a commit touching neither the pipelines nor their vars
+  # does not re-apply anything. Without it every mykronos commit would trigger
+  # a set-pipeline in all three pipelines.
+  - name: pipelines
+    type: git
+    icon: source-branch
+    source:
+      uri: https://github.com/ToddGBenson/mykronos.git
+      branch: main
+      paths:
+        - deploy/concourse/pipelines/
+        - deploy/concourse/vars/
 
 anchors:
   # -- PS-12: retry the fetch, never the verdict ---------------------------
@@ -275,6 +307,86 @@ anchors:
             exit 0
 
 jobs:
+
+  # -- THE PIPELINE UPDATES ITSELF ----------------------------------------
+  #
+  # Ported from keel's `ci/pipeline.yml`. keel is the one pipeline of the four
+  # that has this, and the one that does not drift. Without it, every change to
+  # this file waits for somebody to remember `set-personal-soc-pipeline.ps1`,
+  # and the running pipeline silently falls behind the file that is supposed to
+  # define it -- invisibly, because the UI shows a pipeline and nothing says it
+  # is seven commits behind git.
+  #
+  # This pipeline is the sharpest case #355 found. `ecfec31` (#386) removed
+  # `public: true` from the netassess jobs because their build logs are a
+  # reconnaissance report of a home network, and it was measured still
+  # anonymously readable two days after merging, for no reason other than that
+  # nobody re-applied. Applying this pipeline WAS the whole remediation.
+  #
+  # First in the file, because it is what makes every other job in it
+  # trustworthy.
+  #
+  # -- THE TRAP: THIS JOB REVERTS ANYTHING APPLIED BY HAND ----------------
+  #
+  # `set_pipeline: self` applies the file FROM THE REPO INPUT, and that input
+  # is pinned to `branch: main`. So a pipeline applied by hand from a branch --
+  # or with a non-default script parameter, `-TimeZone`, `-MaxScanAgeDays` --
+  # survives only until this job next runs. It then rewrites the pipeline back
+  # to main's copy, with main's vars.
+  #
+  # That bit keel hard once, and the account is worth carrying across verbatim:
+  # the fix for a broken git resource lived on a branch, this job reverted the
+  # pipeline to main's broken version, and the repo resource stopped
+  # authenticating -- so nothing could run, including this job, which is what
+  # stopped the revert loop rather than any deliberate design.
+  #
+  # A self-applying pipeline can lock itself out. The path to it here runs
+  # through `var_files`: the timer resources below take `location:` from
+  # ((scan-timezone)) and the netassess bucket from ((netassess-bucket)), both
+  # supplied by that file. Delete a var from it and the resources that read it
+  # stop, this job can stop with them, and the only way back in is a hand
+  # `fly set-pipeline` from a machine with a working Concourse token.
+  #
+  # Main IS the definition; that is the point, not a defect. To try a pipeline
+  # change on a branch, set it under a DIFFERENT pipeline name, or pause this
+  # job for the duration. Do not expect a hand-applied config to stick.
+  #
+  # -- var_files, AND THE TWO VARS THAT ARE NOT IN IT ---------------------
+  #
+  # `fly set-pipeline --load-vars-from` interpolates client side (D-043), so
+  # the running pipeline is this file PLUS a vars file that exists only inside
+  # set-personal-soc-pipeline.ps1. Re-applying without those vars would not
+  # re-apply the same pipeline; it would apply a different one.
+  # `vars/personal-soc.yml` is the non-secret half of that file, committed so
+  # this job can supply it. Every secret still resolves from Vault at build
+  # time and none of them is here.
+  #
+  # Two are in neither place, and the first automatic run of this job takes
+  # them away from the one job that reads them:
+  #
+  #   hibp-api-key, monitor-emails -> `breach-check`. Both are written into the
+  #     applied config as literals today, which the script's own PS-9 comment
+  #     three lines above them says is the thing Vault exists to stop. Import
+  #     them (`Import-EnvSecretsToVault.ps1`) before applying this job, and
+  #     this is closed. Left as-is, `breach-check` errors on an unresolvable
+  #     var instead of failing with the explanation it is written to give.
+  #
+  # Not `public: true`, unlike keel's. This is the pipeline `ecfec31` took
+  # `public` away from, four days ago, for reading anonymously as a map of a
+  # home network. A `set_pipeline` step prints the configuration it applied.
+  - name: set-pipeline
+    plan:
+      - get: pipelines
+        trigger: true
+        attempts: *retry_fetch
+      - set_pipeline: self
+        file: pipelines/deploy/concourse/pipelines/personal-soc.yml
+        var_files: [pipelines/deploy/concourse/vars/personal-soc.yml]
+    on_failure: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
+
   # `serial_groups: [worker]` on every job that installs a toolchain before it
   # does any work. One Linux worker runs this pipeline, TheHub's and mykronos';
   # seven of TheHub's jobs fanning out on one commit took the box to 1.1 GB

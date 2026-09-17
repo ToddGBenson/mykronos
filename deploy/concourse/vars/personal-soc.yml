@@ -1,0 +1,30 @@
+# Non-secret vars for `pipelines/personal-soc.yml`. See README.md in this
+# directory.
+#
+# Transcribed from the vars array and the `param()` defaults in
+# `deploy/concourse/set-personal-soc-pipeline.ps1`; a test asserts the two
+# still agree.
+#
+# `hibp-api-key` and `monitor-emails` are deliberately absent. Both are written
+# into the applied config as literals today, both are secrets by PS-9's
+# definition, and neither is in Vault — so until they are, a self-apply leaves
+# `breach-check` with two variables nothing can resolve. That is stated in the
+# `set-pipeline` job's comment as a precondition rather than papered over with
+# an empty string here, which would turn a lane that fails loudly into one that
+# reports nothing and looks fine.
+
+scan-timezone: America/Phoenix
+minio-endpoint: http://192.168.0.14:9000
+
+netassess-bucket: netassess-runs
+# Ten, not seven: a weekly scan that slips a day or reboots mid-window is not a
+# dead one.
+netassess-max-age-days: 10
+
+monitor-bucket: personal-monitor-runs
+
+skills-release-bucket: personal-soc-releases
+skills-install-timeout-minutes: 8
+
+mykronos-url: http://192.168.0.14:8100
+mykronos-ref: v7
