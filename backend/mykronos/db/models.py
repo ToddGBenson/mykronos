@@ -306,15 +306,33 @@ class IngestionToken(Base):
     #: When a superseded token stops being accepted. Null unless superseded.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
-    #: Whether this token's plaintext actually reached the repo's Actions
-    #: secret. False means the repo does not have it yet.
+    #: Whether this token's plaintext is known to have reached whatever
+    #: scans with it. False means nothing has confirmed delivery yet.
     #:
     #: Without this, a rotation that succeeded locally but failed to write the
     #: secret would look complete: the new token is active with a fresh
     #: 90-day clock, so it is not due for rotation, nothing retries — and the
     #: repo's CI breaks silently when the superseded token's overlap expires.
     #: The rotation job retries any active token that is not yet synced.
+    #:
+    #: It used to be set by exactly one event — a successful GitHub Actions
+    #: secret write — which made it a tripwire a Concourse-scanned repository
+    #: could never reset (#263). `ToddGBenson/TheHub` carried it permanently
+    #: while uploading successfully several times a day. Delivery is now also
+    #: recorded from ingestion, so the flag has a path back to true for a repo
+    #: this platform cannot write a secret to.
     secret_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    #: When delivery was last confirmed, and nothing about *how*: both writers
+    #: set it, and the distinction that matters to a reader is confirmed
+    #: versus not (#263).
+    #:
+    #: Recorded separately from the flag because a bare `True` asserts more
+    #: than it measured — "delivered" with no moment attached cannot be aged,
+    #: cannot be told apart from a value set at onboarding, and gives a
+    #: briefing nothing to print. Null for a token confirmed before this
+    #: column existed, which is why the flag remains the thing queried.
+    delivery_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     label: Mapped[str] = mapped_column(String(255), default="")
 
