@@ -51,12 +51,35 @@ EXPOSURE_ORDER = ("internet", "unknown", "internal", "local")
 #: reads as "nothing important here".
 SENSITIVITIES = ("pii", "financial", "credentials", "source", "public", "unknown")
 
-#: Which capability could contradict a claim about exposure. A surface
-#: declared `internal` that DAST reached from outside is a contradiction the
-#: platform can detect — the same move `RepoControl.verified_by_capability`
-#: makes, and the reason this is worth recording as structure rather than
-#: prose.
-CONTRADICTED_BY = {"internet": "dast", "internal": "dast", "local": "dast"}
+#: What could contradict a claim about exposure, by the claim being made.
+#: The same move `RepoControl.verified_by_capability` makes, and worth holding
+#: as structure rather than prose for the same reason.
+#:
+#: **This named `dast` for all three and dast can contradict none of them.**
+#: `risk_profile_builder`'s docstring already explains why: a DAST lane
+#: commonly runs inside CI against an ephemeral stack — which is exactly what
+#: this platform's own lane does — so a successful scan proves an HTTP surface
+#: *exists*, not that anybody outside can reach it. Wiring the old value up as
+#: written would have manufactured a contradiction against every surface in
+#: this estate declared `internal`, which is most of them.
+#:
+#: What can actually do the job:
+#:
+#: * `network` — a port that answers a scan run from **outside** the network is
+#:   not `internal` and not `local`. This is evidence the lake does not yet
+#:   hold (#306), so the check waits on it.
+#: * `published_ingress` — a reverse proxy or tunnel config naming the port is
+#:   a *statement* that it is published, not an inference, and it is readable
+#:   today. TheHub declares `Demo backend (tcp/8002)` as `internal` while
+#:   `~/.cloudflared/config.yml` publishes that exact port (#348).
+#:
+#: `internet` has no key, deliberately. Unreachability is not observable: a
+#: scan that fails to reach something has not shown the internet cannot, and
+#: an entry here would invite exactly that inference.
+CONTRADICTED_BY = {
+    "internal": ("network", "published_ingress"),
+    "local": ("network", "published_ingress"),
+}
 
 
 class SurfaceError(ValueError):
