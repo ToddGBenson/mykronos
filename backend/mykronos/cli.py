@@ -1209,6 +1209,17 @@ def main(argv: list[str] | None = None) -> int:
                         select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
                     ).all()
                 }
+                # How each repository's scans are dispatched (#278). The
+                # stalled-lane section printed `POST .../scan` for every one of
+                # them without ever reading this, and that request answers 503
+                # on a Concourse-scanned repository unless the deployment holds
+                # an API token -- which is most of this estate.
+                scanned_by = {
+                    str(name): str(how or "")
+                    for name, how in session.execute(
+                        select(RepoOnboarding.github_repo_full_name, RepoOnboarding.scanned_by)
+                    ).all()
+                }
             # Languages are read from GitHub, so the terminal briefing needs a
             # client to report B-051's gap. Without one it reports nothing
             # there, which is the honest degradation: not knowing what a
@@ -1383,6 +1394,8 @@ def main(argv: list[str] | None = None) -> int:
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
+                scanned_by=scanned_by,
+                concourse_token=bool(settings.concourse_api_token),
                 languages=languages,
                 sast_tools=sast_tools,
                 paused_jobs=paused_jobs,

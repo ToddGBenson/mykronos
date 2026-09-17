@@ -5592,6 +5592,11 @@ export interface components {
             days_since_run: number;
             /** Usual Gap Days */
             usual_gap_days: number;
+            /**
+             * Dispatch Refusal
+             * @default
+             */
+            dispatch_refusal: string;
             action: components["schemas"]["BriefingActionOut"];
         };
         /** StatusChange */
