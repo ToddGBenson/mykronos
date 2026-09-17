@@ -41,10 +41,17 @@ CHECK_RUN_NAME = "Mykronos / risk decision"
 #: it is `neutral`: advisory by default is the platform-wide stance (spec 09
 #: §6), and a red check nobody agreed to is how a security tool gets switched
 #: off in its first week.
+#:
+#: `not_assessed` is `neutral` and never `success`. A green check on a
+#: repository nothing has scanned is the absence of evidence wearing the badge
+#: of evidence (issue #341) — and it is not `failure` either, because nothing
+#: has been found to fail on. Neutral is the honest shape: the check ran, and
+#: it has nothing to tell you.
 _CONCLUSION = {
     "go": "success",
     "review_recommended": "neutral",
     "no_go": "neutral",
+    "not_assessed": "neutral",
 }
 
 
@@ -156,6 +163,19 @@ def render_check_run_summary(
         decision.reasoning,
         "",
     ]
+
+    # Above the arithmetic, for the same reason `introduced` is: a table of
+    # zeroes on a repository nothing has scanned is the most misleading thing
+    # this check can show, and the reader needs to know that before they read
+    # it (issue #341).
+    if snapshot.get("evidence", {}).get("go_withheld"):
+        lines += [
+            "> **Not assessed — nothing has scanned this repository.** The "
+            "score below is the absence of evidence, not evidence of safety. "
+            "No `go` is recorded, because an unscanned repository must not be "
+            "indistinguishable from a clean one.",
+            "",
+        ]
 
     if introduced is not None:
         lines += _introduced_section(introduced)

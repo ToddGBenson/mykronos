@@ -44,6 +44,38 @@ logger = logging.getLogger(__name__)
 
 DECISION_TYPES = ("pr_gate", "release_gate", "portfolio")
 
+#: The verdict for a repository nothing has ever looked at (issue #341).
+#:
+#: Not a fourth risk band — it sits outside the score entirely. `go`,
+#: `review_recommended` and `no_go` are all claims about measured risk; this one
+#: says the measurement does not exist. A repository with no ingestion token, no
+#: scan run and no code scored `0/100, go` every day beside the repositories
+#: that are actually scanned, and nothing in the output distinguished the two.
+#: That is the absence of evidence rendering as evidence of safety, which is the
+#: one direction a security platform must never be wrong in — the same rule
+#: `surfaces.py` states for `unknown` exposure and `risk_profile_builder.py`
+#: states for an absent profile field.
+#:
+#: Deliberately *never* a downgrade. It replaces `go` and nothing else: if the
+#: score reached a real band, something was found, and a missing scan run is not
+#: a reason to quieten it.
+NOT_ASSESSED = "not_assessed"
+
+#: Scan statuses that count as a capability having *looked*.
+#:
+#: `failure` is excluded on purpose. A lane that crashed produced no observation
+#: of the tree, so counting it would make a permanently broken scanner
+#: indistinguishable from a clean repository — the same bug one level down.
+#: `no_applicable_targets` *is* included: "there is no Python here" is a real
+#: answer about the repository, produced by a tool that ran.
+#:
+#: What this deliberately does not judge is whether the capabilities that
+#: reported were the right ones for this tree. A PowerShell repository read only
+#: by a Python analyser has evidence — thin, misleading evidence — and that is
+#: issue #318's question, not this one. This answers only the limit case: has
+#: anything at all ever reported.
+REPORTING_SCAN_STATUSES = ("success", "partial_failure", "no_applicable_targets")
+
 #: Every category present in `inputs_snapshot` whether or not it has anything
 #: to say (spec 09 §9). Defined once so `render_reasoning` here and
 #: `render_check_run_summary` (oracle/service.py) cannot list a different set
@@ -966,6 +998,84 @@ class OracleEngine:
 
     # -- inputs ---------------------------------------------------------
 
+    def _evidence(self, repo_full_name: str) -> dict[str, Any]:
+        """Has anything ever looked at this repository (issue #341).
+
+        The one input here that is not about risk. Every other category answers
+        "what was found"; this one answers "was anything in a position to find
+        it", and without it a zero means two incompatible things — a tree that
+        was read and was clean, and a tree nothing has ever opened.
+
+        Measured on `scan_runs` rather than on findings. Findings are what a
+        scan *produced*, so an empty findings table is precisely the ambiguity
+        being resolved and cannot resolve it. A scan run is the record that a
+        tool ran against this repository at all, which is the fact in question.
+
+        Deliberately repository-wide and not scoped to the commit under
+        decision, including for a gate. "No capability has ever reported here"
+        is a standing property of the repository, and narrowing it to one commit
+        would make a gate report `not_assessed` on every first push to a branch
+        that has simply not been scanned yet.
+        """
+        rows = self.catalog.query(
+            """
+            SELECT capability, scan_status, count(*), max(started_at)
+            FROM scan_runs
+            WHERE repo_full_name = ?
+            GROUP BY capability, scan_status
+            """,
+            [repo_full_name],
+        )
+
+        total = 0
+        reporting = 0
+        reported_by: set[str] = set()
+        last_seen: datetime | None = None
+        for capability, status, count, started_at in rows:
+            total += int(count)
+            if str(status) not in REPORTING_SCAN_STATUSES:
+                continue
+            reporting += int(count)
+            reported_by.add(str(capability))
+            if isinstance(started_at, datetime) and (
+                last_seen is None or started_at > last_seen
+            ):
+                last_seen = started_at
+
+        available = reporting > 0
+        if available:
+            reason = (
+                f"{reporting} scan run(s) reported here, from: "
+                + ", ".join(sorted(reported_by))
+                + "."
+            )
+        elif total:
+            reason = (
+                f"{total} scan run(s) exist for this repository and every one of "
+                "them failed, so nothing has actually read the tree. A lane that "
+                "cannot run is not a lane that found nothing."
+            )
+        else:
+            reason = (
+                "No capability has ever reported a scan run for this repository. "
+                "Nothing has looked at it, so there is nothing it could have "
+                "been found to have."
+            )
+
+        return {
+            "available": available,
+            "scan_runs": total,
+            "reporting_scan_runs": reporting,
+            "capabilities_reported": sorted(reported_by),
+            "last_scan_at": last_seen.isoformat() if last_seen else None,
+            # Set in `evaluate`, which is the only place that knows what the
+            # score would otherwise have said. Kept in the snapshot rather than
+            # re-derived by `render_reasoning`, so the sentence and the verdict
+            # cannot disagree about whether this decision withheld a `go`.
+            "go_withheld": False,
+            "reason": reason,
+        }
+
     def _finding_counts(
         self, repo_full_name: str, *, for_gate: bool, dampened: list[str] | None = None
     ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
@@ -1711,6 +1821,10 @@ class OracleEngine:
         self._as_of = as_of or utcnow()
         for_gate = decision_type in ("pr_gate", "release_gate")
 
+        # Read before anything is scored, because it decides what a zero at the
+        # end of it is allowed to mean (issue #341).
+        evidence = self._evidence(repo_full_name)
+
         # Which rules this repo has earned the right to quieten (spec 11
         # §6.1). Looked up before the counts so the query can split each
         # severity band into dampened and undampened in one pass.
@@ -2104,6 +2218,18 @@ class OracleEngine:
         raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
+        # The verdict, and the one place a score is allowed not to be the whole
+        # answer (issue #341). `go` is a recommendation to ship; it should
+        # require evidence rather than merely the absence of contrary evidence,
+        # and on a repository nothing has ever scanned there is no evidence
+        # either way. Only `go` is replaced: a score that reached a real band
+        # was reached by findings, so something did look, and a missing scan run
+        # is never a reason to quieten a verdict.
+        recommendation = self.policy.recommendation_for(score)
+        if recommendation == "go" and not evidence["available"]:
+            recommendation = NOT_ASSESSED
+            evidence["go_withheld"] = True
+
         # 10. What would make this go (spec 26 §1). Computed only when it has
         #     something to say: a repository already at `go` gets an empty
         #     path that says so, rather than a list of work with no purpose.
@@ -2116,6 +2242,23 @@ class OracleEngine:
                 raw_score=raw_score,
                 policy=self.policy,
             )
+        elif evidence["go_withheld"]:
+            # "Nothing to clear" is true and reads as praise. On a repository
+            # nothing has scanned it is true for the wrong reason, and this is
+            # the field a reader opens to find out what to do next.
+            path = {
+                "available": False,
+                "steps": [],
+                "findings_not_listed": 0,
+                "reaches": NOT_ASSESSED,
+                "reachable": False,
+                "note": (
+                    "There is no path to green because there is no assessment. "
+                    "Nothing has scanned this repository, so an empty worklist "
+                    "here means nobody has looked, not that nothing was found. "
+                    "Give it a way to report before reading its score."
+                ),
+            }
         else:
             path = {
                 "available": True,
@@ -2146,6 +2289,7 @@ class OracleEngine:
             posture_snapshot=posture_snapshot,
             forecast=self._forecast(repo_full_name, raw_score),
             path_to_green=path,
+            evidence=evidence,
         )
 
         decision = Decision(
@@ -2156,7 +2300,7 @@ class OracleEngine:
             pr_number=pr_number,
             release_tag=release_tag,
             overall_risk_score=score,
-            recommendation=self.policy.recommendation_for(score),
+            recommendation=recommendation,
             reasoning=render_reasoning(snapshot),
             inputs_snapshot=snapshot,
             policy_version=self.policy.version,
@@ -2192,6 +2336,7 @@ class OracleEngine:
         posture_snapshot: dict[str, Any] | None = None,
         forecast: dict[str, Any] | None = None,
         path_to_green: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -2210,6 +2355,26 @@ class OracleEngine:
                 "capabilities_excluded": (
                     list(self.policy.capabilities_excluded_from_gates) if for_gate else []
                 ),
+            },
+            # Whether anything has ever looked (issue #341). Deliberately not
+            # one of MODIFIER_CATEGORIES: it contributes nothing to the score
+            # and is not a category that could have been "consulted and found
+            # nothing" — it is the question of whether the consultation
+            # happened at all, and it sits above `findings` because it decides
+            # what the counts below are allowed to mean.
+            "evidence": evidence
+            or {
+                "available": False,
+                "scan_runs": 0,
+                "reporting_scan_runs": 0,
+                "capabilities_reported": [],
+                "last_scan_at": None,
+                # False, not True: a snapshot built without an evidence lookup
+                # has not established that anything is missing, and defaulting
+                # the flag on would make `render_reasoning` announce a verdict
+                # this decision never reached.
+                "go_withheld": False,
+                "reason": "Not computed for this decision.",
             },
             "findings": {
                 "counts_by_severity": {
@@ -2302,7 +2467,17 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     thresholds = snapshot["thresholds"]
     terms = snapshot["terms"]
 
-    if score >= thresholds["no_go"]:
+    # `.get` rather than `[...]`: decisions stored before this category existed
+    # are re-rendered by the API and must keep saying what they said. An old
+    # snapshot has no evidence block, which is not a claim that nothing looked.
+    evidence = snapshot.get("evidence") or {}
+    withheld = bool(evidence.get("go_withheld"))
+
+    if withheld:
+        # Not a band, so it does not lead with the number. The number is the
+        # thing this sentence exists to disown.
+        opening = "Not assessed."
+    elif score >= thresholds["no_go"]:
         opening = f"No-go at {score}/100."
     elif score >= thresholds["review_recommended"]:
         opening = f"Review recommended at {score}/100."
@@ -2314,6 +2489,17 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     # unconditional "every other category is unavailable" was wrong exactly
     # in that case — restated to say what is actually known, not guessed.
     unavailable = [name for name in MODIFIER_CATEGORIES if not snapshot[name]["available"]]
+
+    if withheld:
+        sentence = (
+            f"{opening} {evidence['reason']} Its score of {score}/100 is the "
+            "absence of evidence, not evidence of safety, so no `go` is "
+            "recorded here — an unscanned repository must not be "
+            "indistinguishable from a clean one."
+        )
+        if unavailable:
+            sentence += " Not yet consulted: " + ", ".join(unavailable) + "."
+        return sentence
 
     if not terms:
         sentence = (
