@@ -817,10 +817,14 @@ class ControlDrift(Base):
     # which a drift guard in the schema tests checks rather than trusts.
     repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
     control_key: Mapped[str] = mapped_column(String(64), default="")
-    #: `on` | `off` | `partial` | `unknown`, the same four states the control
-    #: itself has. A transition *to* `unknown` is a read that failed, not a
-    #: control that was removed, and the two must never be conflated: one is a
-    #: permissions problem and the other is a security regression.
+    #: `on` | `off` | `partial` — three of the control's four states, never
+    #: `unknown`. A transition crossing `unknown` is a read that failed or a
+    #: read that recovered, not a control that moved, and the two must never be
+    #: conflated: one is a permissions problem and the other is a security
+    #: regression. No such row is written since #264; rows written before it
+    #: are filtered out by `governance.recent_drift`. The column default stays
+    #: `unknown` because `add_missing_columns` needs one and no constructor
+    #: ever uses it.
     from_state: Mapped[str] = mapped_column(String(16), default="unknown")
     to_state: Mapped[str] = mapped_column(String(16), default="unknown")
     observed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

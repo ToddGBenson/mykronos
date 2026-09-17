@@ -1282,14 +1282,29 @@ class GovernanceSweepResult:
     drifted: int = 0
     #: The transitions themselves, worst kind first, for the caller to log.
     changes: list[str] = field(default_factory=list)
+    #: Controls inside a readable repository that could not be resolved this
+    #: pass, or could not be resolved last pass. Counted separately from
+    #: `drifted` and never logged at `warning` (#264): a failed read is not a
+    #: control coming off. Counted at all, rather than dropped, so a read that
+    #: fails every six hours forever is visible somewhere.
+    unreadable_controls: int = 0
+    #: `repo control_key`, for the caller to name in the log.
+    unreadable_reads: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        if not self.drifted:
-            return f"{self.read} read, {self.unreadable} unreadable, nothing changed"
-        return (
-            f"{self.read} read, {self.unreadable} unreadable, "
-            f"{self.drifted} control(s) changed: {'; '.join(self.changes)}"
-        )
+        parts = [f"{self.read} read", f"{self.unreadable} unreadable"]
+        if self.drifted:
+            parts.append(
+                f"{self.drifted} control(s) changed: {'; '.join(self.changes)}"
+            )
+        else:
+            parts.append("nothing changed")
+        if self.unreadable_controls:
+            parts.append(
+                f"could not read {self.unreadable_controls} control(s): "
+                f"{'; '.join(self.unreadable_reads)}"
+            )
+        return ", ".join(parts)
 
 
 async def sweep_governance(
@@ -1351,12 +1366,21 @@ async def sweep_governance(
 
         result.read += 1
         with db.session() as session:
-            for change in governance_module.remember(session, posture):
+            report = governance_module.remember(session, posture)
+            for change in report.drift:
                 result.drifted += 1
                 result.changes.append(
                     f"{change.repo_full_name} {change.control_key} "
                     f"{change.from_state}->{change.to_state}"
                 )
+            # A control the read could not resolve is counted here and nowhere
+            # near `drifted`, so it can never reach the `warning` branch in
+            # `main.py` (#264). `posture.readable` is about the repository; a
+            # repository can be readable and one control inside it not be, and
+            # that gap is what filed both of this estate's governance alerts.
+            for key in report.unreadable:
+                result.unreadable_controls += 1
+                result.unreadable_reads.append(f"{repo.github_repo_full_name} {key}")
             session.commit()
 
     return result

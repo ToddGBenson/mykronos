@@ -475,6 +475,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Logged at warning only when something moved. A control coming off
             # is the one governance event worth waking somebody for; "nothing
             # changed" every six hours is how a log stops being read.
+            #
+            # `result.unreadable_controls` deliberately does not reach this
+            # branch (#264). Both governance warnings this estate has ever sent
+            # were failed reads of `codeowners_coverage`, and rationing only
+            # works if what gets through is real. They still appear in the
+            # summary, at `info`.
             if result.drifted:
                 logger.warning("Governance sweep: %s", result.summary())
             else:

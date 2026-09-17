@@ -41,6 +41,7 @@ colleagues, and spec 06 §9 already decided that question.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -680,7 +681,33 @@ def merge_counts(
 STALE_AFTER_DAYS = 14
 
 
-def remember(session: Session, governance: Governance) -> list[ControlDrift]:
+@dataclass
+class DriftReport:
+    """What one stored reading found: what moved, and what it could not see.
+
+    Two lists rather than one, because #264: a control the read could not
+    resolve was returned in the same list as a control that changed, and the
+    sweep logged both at `warning` in the same sentence. "I could not ask" and
+    "the answer is no" must never render identically.
+    """
+
+    #: Controls that moved between two *known* states. Real governance events.
+    drift: list[ControlDrift] = field(default_factory=list)
+    #: Control keys whose reading crossed `unknown` in either direction. Not
+    #: regressions; still reported, so a permanently failing read is not silent.
+    unreadable: list[str] = field(default_factory=list)
+
+    def __iter__(self) -> Iterator[ControlDrift]:
+        """Iterating a report yields only the real drift.
+
+        So `for change in remember(...)` reads as it always did, and a caller
+        that has not been taught about the new field cannot accidentally treat
+        a failed read as an event — the unreadable list is opt-in.
+        """
+        return iter(self.drift)
+
+
+def remember(session: Session, governance: Governance) -> DriftReport:
     """Store the reading so Oracle can score it, and record what changed.
 
     Oracle cannot make an HTTP call — it scores from the lake and the
@@ -694,6 +721,16 @@ def remember(session: Session, governance: Governance) -> list[ControlDrift]:
     the score did. Each change becomes one `ControlDrift` row — an event,
     because somebody caused it.
 
+    **`unknown` is not a state it remembers.** A control that reads `unknown`
+    leaves the stored state alone, so the row holds the last state each control
+    was actually *known* to be in (#264). Without that, a read failure would
+    overwrite `on` with `unknown`, and a repository that dropped its review
+    requirement while the read was broken would come back as `unknown -> off` —
+    which this module would then have to either report (a claim about when it
+    happened that is not true) or suppress (a real regression lost). Holding
+    the last known state means the comparison that finally catches it is
+    `on -> off`, which is what happened.
+
     Returns the drift it recorded, so a caller sweeping every repository can
     report what it found. Nothing is written for a first reading: with no prior
     states there is no transition, and inventing one from `unknown` would file
@@ -706,35 +743,65 @@ def remember(session: Session, governance: Governance) -> list[ControlDrift]:
         session.add(row)
 
     observed = {control.key: control.state for control in governance.controls}
-    drift = [] if first_reading else _drift(session, row, observed)
+    report = DriftReport() if first_reading else _drift(session, row, observed)
 
     row.governance_score = score(governance)
     row.source = governance.source
     row.controls_read = sum(1 for c in governance.controls if c.known)
-    row.control_states = observed
+    row.control_states = _last_known(row.control_states or {}, observed)
     row.read_at = governance.read_at or utcnow()
     session.flush()
-    return drift
+    return report
+
+
+def _last_known(previous: dict[str, str], observed: dict[str, str]) -> dict[str, str]:
+    """The states to store: this reading, with unreadable controls held over.
+
+    A control observed as `unknown` keeps whatever it was last known to be, so
+    the stored row is "the last state each control was actually in" rather than
+    "the last thing the API said". See `remember` for why (#264).
+    """
+    states = dict(observed)
+    for key, state in observed.items():
+        if state == UNKNOWN and previous.get(key, UNKNOWN) != UNKNOWN:
+            states[key] = previous[key]
+    return states
 
 
 def _drift(
     session: Session, row: RepoGovernance, observed: dict[str, str]
-) -> list[ControlDrift]:
+) -> DriftReport:
     """Which controls moved since the last read.
 
     Only controls present in *both* readings. A control that has appeared or
     disappeared from the reading is a change in what the App could see, not a
     change in how the repository is governed, and filing it as drift would
     report a permissions grant as a security event.
+
+    **And only transitions between two known states.** A control present with
+    the state `unknown` used to be just another value here, so `on -> unknown`
+    filed as drift and reached the operator at `warning`, in the channel
+    reserved for a control coming off — contradicting the docstring on
+    `sweep_governance`, which says in as many words that a control becoming
+    `unknown` is a read that failed. Both governance alerts this estate has
+    ever produced were that bug: keel and binnacle, `codeowners_coverage
+    on->unknown`, 2026-09-05 and 2026-09-09, with a 4,468-byte CODEOWNERS in
+    place on both repositories throughout and both controls reading `on`,
+    `value=1.0` when checked live (#264). The recovery is excluded for the same
+    reason: `unknown -> on` is a read that started working, not a control
+    somebody switched on.
     """
     previous = row.control_states or {}
+    report = DriftReport()
     if not previous:
-        return []
+        return report
 
-    drift: list[ControlDrift] = []
     for key, state in observed.items():
         was = previous.get(key)
         if was is None or was == state:
+            continue
+        if state == UNKNOWN or was == UNKNOWN:
+            report.unreadable.append(key)
             continue
         entry = ControlDrift(
             repo_full_name=row.repo_full_name,
@@ -743,24 +810,50 @@ def _drift(
             to_state=state,
         )
         session.add(entry)
-        drift.append(entry)
+        report.drift.append(entry)
 
-    if drift:
+    if report.unreadable:
+        # Visible, but at `info` and in its own sentence. A read that keeps
+        # failing must not be silent; it must also not arrive in the words
+        # reserved for a control coming off.
+        logger.info(
+            "Governance controls unreadable on %s: %s",
+            row.repo_full_name,
+            ", ".join(sorted(report.unreadable)),
+        )
+    if report.drift:
         # Warned, not just stored. A control coming off is the one governance
         # event worth reaching an operator who is not looking at the console.
         logger.warning(
             "Control drift on %s: %s",
             row.repo_full_name,
-            ", ".join(f"{d.control_key} {d.from_state}->{d.to_state}" for d in drift),
+            ", ".join(
+                f"{d.control_key} {d.from_state}->{d.to_state}" for d in report.drift
+            ),
         )
-    return drift
+    return report
 
 
 def recent_drift(
     session: Session, repo_full_name: str | None = None, *, limit: int = 50
 ) -> list[ControlDrift]:
-    """Control changes, newest first. `None` for the whole estate."""
-    statement = select(ControlDrift).order_by(ControlDrift.observed_at.desc())
+    """Control changes, newest first. `None` for the whole estate.
+
+    **Rows that cross `unknown` are excluded, including ones already stored.**
+    This is the backfill for #264: two `codeowners_coverage on->unknown` rows
+    are on disk for keel and binnacle (2026-09-05 and 2026-09-09) and both were
+    read failures, not history. Both governance alerts this estate has ever
+    produced were those rows, so leaving them in the record would leave it
+    entirely made of them. Filtered on read rather than deleted: the row is
+    still true — the read did fail then — it is just not a governance event,
+    and there is no data-migration path here to delete it with. `_drift` no
+    longer writes any, so this only ever has to catch what predates the fix.
+    """
+    statement = (
+        select(ControlDrift)
+        .where(ControlDrift.from_state != UNKNOWN, ControlDrift.to_state != UNKNOWN)
+        .order_by(ControlDrift.observed_at.desc())
+    )
     if repo_full_name is not None:
         statement = statement.where(ControlDrift.repo_full_name == repo_full_name)
     return list(session.execute(statement.limit(limit)).scalars())
