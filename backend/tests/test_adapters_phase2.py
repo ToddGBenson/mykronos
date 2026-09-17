@@ -276,6 +276,144 @@ class TestZap:
         assert result.scan_status is ScanStatus.SUCCESS
 
 
+class TestZapSubAlerts:
+    """`alertRef`, not `pluginid`, is what tells two alerts of one plugin apart.
+
+    Taken from the real 2026-09-14 ZAP report against TheHub (raw archive
+    `7923a732-7c52-475f-8d05-197e70452f77/zap.json`), which contains three
+    Medium alerts under pluginid 10055, all cweid 693, each with four
+    instances. Keying identity on `pluginid` made all three the same finding,
+    and the array-order survivor — `style-src` — is the only one the platform
+    has ever reported.
+    """
+
+    #: pluginid, alertRef, name — verbatim from that report.
+    CSP_ALERTS = [
+        ("10055", "10055-4", "CSP: Wildcard Directive"),
+        ("10055", "10055-5", "CSP: script-src unsafe-inline"),
+        ("10055", "10055-6", "CSP: style-src unsafe-inline"),
+    ]
+
+    @staticmethod
+    def _report(alerts: list[dict[str, Any]]) -> bytes:
+        site = {"@name": "http://192.168.0.14:8081", "alerts": alerts}
+        return json.dumps({"site": [site]}).encode()
+
+    @classmethod
+    def _csp_report(cls) -> bytes:
+        return cls._report(
+            [
+                {
+                    "pluginid": pluginid,
+                    "alertRef": alert_ref,
+                    "alert": name,
+                    "riskcode": "2",
+                    "desc": "The CSP is permissive.",
+                    "solution": "Tighten it.",
+                    "cweid": "693",
+                    "instances": [
+                        {"uri": "http://192.168.0.14:8081/robots.txt", "method": "GET"}
+                    ],
+                }
+                for pluginid, alert_ref, name in cls.CSP_ALERTS
+            ]
+        )
+
+    @staticmethod
+    def _identity(finding: Any) -> str:
+        return compute_finding_id(
+            repo_full_name=REPO,
+            capability="dast",
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+        )[0]
+
+    def test_rule_id_prefers_alert_ref(self) -> None:
+        result = zap_normalize(self._csp_report(), context("dast"))
+
+        assert sorted(f.rule_id for f in result.findings) == [
+            "ZAP-10055-4-CWE-693",
+            "ZAP-10055-5-CWE-693",
+            "ZAP-10055-6-CWE-693",
+        ]
+
+    def test_sub_alerts_on_one_url_do_not_collapse_to_one_finding(self) -> None:
+        """Three alerts, one URL, three finding_ids.
+
+        `title` is not a `compute_finding_id` input for a finding that has a
+        `file_path`, and title was the only field distinguishing these three.
+        Same rule_id therefore meant same finding_id: two of the three
+        submissions were overwritten on write, after the adapter had already
+        counted them as produced.
+        """
+        result = zap_normalize(self._csp_report(), context("dast"))
+
+        assert len(result.findings) == 3
+        assert len({self._identity(f) for f in result.findings}) == 3
+
+    def test_the_script_src_alert_survives(self) -> None:
+        """The specific loss behind #285: ZAP reported it, we dropped it."""
+        result = zap_normalize(self._csp_report(), context("dast"))
+
+        script_src = [f for f in result.findings if "script-src" in f.title]
+        assert len(script_src) == 1
+        assert script_src[0].rule_id == "ZAP-10055-5-CWE-693"
+
+    def test_a_plugin_with_no_sub_alerts_is_unchanged(self) -> None:
+        """Regression guard: ZAP sets `alertRef` to the pluginid when a plugin
+        raises a single alert (90003 and 10116 in the same report), so those
+        rule_ids — and the finding_ids keyed on them — must not move."""
+        report = self._report(
+            [
+                {
+                    "pluginid": "90003",
+                    "alertRef": "90003",
+                    "alert": "Sub Resource Integrity Attribute Missing",
+                    "riskcode": "2",
+                    "cweid": "345",
+                    "instances": [{"uri": "http://192.168.0.14:8081/", "method": "GET"}],
+                }
+            ]
+        )
+        assert zap_normalize(report, context("dast")).findings[0].rule_id == "ZAP-90003-CWE-345"
+
+    def test_an_absent_alert_ref_falls_back_to_pluginid(self) -> None:
+        """Regression guard: `alertRef` predates ZAP 2.11 and older reports,
+        or another tool's ZAP-shaped JSON, may not carry it at all."""
+        report = self._report(
+            [
+                {
+                    "pluginid": "10038",
+                    "alert": "Content Security Policy Header Not Set",
+                    "riskcode": "2",
+                    "cweid": "693",
+                    "instances": [{"uri": "http://192.168.0.14:8081/", "method": "GET"}],
+                }
+            ]
+        )
+        assert zap_normalize(report, context("dast")).findings[0].rule_id == "ZAP-10038-CWE-693"
+
+    def test_an_alert_with_neither_identifier_is_skipped_not_guessed(self) -> None:
+        """Regression guard: no identifier at all is still unusable input."""
+        report = self._report(
+            [
+                {
+                    "alert": "Something",
+                    "riskcode": "2",
+                    "instances": [{"uri": "http://192.168.0.14:8081/", "method": "GET"}],
+                }
+            ]
+        )
+        result = zap_normalize(report, context("dast"))
+
+        assert result.findings == []
+        assert result.skipped == 1
+        assert result.scan_status is ScanStatus.PARTIAL_FAILURE
+
+
 # ---------------------------------------------------------------------------
 # Cloud
 # ---------------------------------------------------------------------------
