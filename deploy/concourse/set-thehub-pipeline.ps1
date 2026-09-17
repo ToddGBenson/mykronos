@@ -562,18 +562,22 @@ if ($azureClientId -and $azureSubscriptionId) {
     Write-Host "cloud-posture paused: no Azure principal, so it has nothing to scan." -ForegroundColor Yellow
 }
 
-# functional-dast is paused until the scan has a resource budget it can live
-# within (D-053). ZAP's active scan was measured at 548% CPU / 7 GiB on the
-# host that also runs production; while it scanned, production timed out.
-# Enforced here, not just by hand: a fly pause is state, and state that only
-# an operator remembers gets undone by the next re-apply - which is exactly
-# what happened on 2026-08-15, when a re-apply for a token rotation quietly
-# rescheduled a queued DAST build. Remove this block when D-053 is closed.
-& $fly --target $Target pause-job --job "$Pipeline/functional-dast" | Out-Null
-Write-Host "functional-dast paused: D-053, no resource budget for the scan yet." -ForegroundColor Yellow
+# There used to be a `pause-job functional-dast` here, enforcing D-053 on every
+# apply so that a re-apply could not quietly reschedule a queued DAST build --
+# which is what happened on 2026-08-15. The job is gone with Path B (#59100):
+# it drove the demo environment through ZAP's proxy, and there is no demo
+# environment. `fly pause-job` on a job that does not exist is an error, so the
+# block is removed rather than left to fail every apply.
+#
+# D-053 is NOT closed by this. The finding it records -- an active ZAP scan at
+# 548% CPU / 7 GiB on the host that also runs production -- is about the scan,
+# not about the job that happened to run it. Anything that reintroduces an
+# active scan here inherits the same constraint and needs the same resource
+# budget before it is unpaused.
 
-Write-Host "`nDelivering branch '$Branch'." -ForegroundColor Green
-Write-Host "  demo: $DemoUrl (automatic, once Oracle clears it)"
-Write-Host "  prod: $ProdUrl (waits for you to trigger deploy-prod)"
+Write-Host "`nScanning branch '$Branch'." -ForegroundColor Green
+Write-Host "  This pipeline does not deploy. ADR 0072 chose Path A: production"
+Write-Host "  is shipped by TheHub's own scripts/deploy.sh from 'develop'."
+Write-Host "  prod: $ProdUrl (dast-prod, on the daily timer)"
 Write-Host "  staging: $StagingUrl (dast-staging, on the daily timer)"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

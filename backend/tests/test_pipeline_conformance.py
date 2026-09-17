@@ -545,12 +545,20 @@ EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 def _zap_pins() -> dict[str, str]:
     """Every committed statement of which ZAP the estate scans with.
 
-    Three shapes, because ZAP is installed three ways: a Concourse
-    `registry-image` resource (TheHub's baseline lanes), a `ZAP_VERSION` task
-    param (TheHub's `functional-dast` lane, which unpacks the GitHub release
-    tarball into a task cache), and a compose `image:` (the demo stack the
-    mykronos DAST lane proxies through). Keyed by where it was read, so a
-    failure names the line to edit rather than the fact of a disagreement.
+    Two shapes today, and the walker still looks for three. ZAP is installed as
+    a Concourse `registry-image` resource (TheHub's baseline lanes) and as a
+    compose `image:` (the demo stack the mykronos DAST lane proxies through).
+
+    The third shape was a `ZAP_VERSION` task param, which unpacked the GitHub
+    release tarball into a task cache. Its only user was TheHub's
+    `functional-dast`, removed with Path B in #59100 because it drove the demo
+    environment. The `ZAP_VERSION` branch below is deliberately kept rather
+    than deleted with it: the tarball install is the shape a lane reaches for
+    when it needs ZAP inside another image, so the next one to do it is
+    collected automatically instead of being a pin nobody is comparing.
+
+    Keyed by where it was read, so a failure names the line to edit rather than
+    the fact of a disagreement.
     """
     pins: dict[str, str] = {}
 
@@ -600,8 +608,15 @@ def test_the_estate_scans_with_one_zap() -> None:
     """
     pins = _zap_pins()
 
-    assert len(pins) >= 3, (
-        f"expected the zap resource, ZAP_VERSION and the demo compose image; found {pins}. "
+    # Two, not three, since #59100: the `ZAP_VERSION` tarball pin went with
+    # `functional-dast`, whose target was the retired demo environment. Lowered
+    # deliberately and with the count still asserted, because the failure this
+    # guards against is the check quietly finding nothing and passing -- which
+    # is what a missing pin looks like from here. `_zap_pins` still collects
+    # `ZAP_VERSION` wherever one reappears, so this floor rises again on its
+    # own the moment a lane installs ZAP from the tarball.
+    assert len(pins) >= 2, (
+        f"expected the zap resource and the demo compose image; found {pins}. "
         "If a pin moved, move this test with it rather than letting it stop looking."
     )
 

@@ -233,12 +233,14 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # so several runs per commit is a richer answer rather than a collision.
     ((MYKRONOS,), "lint-and-types", "qa"),
     ((MYKRONOS,), "frontend", "qa"),
-    ((THEHUB,), "api-inventory", "qa"),
     ((THEHUB,), "prompt-evals", "ai"),
-    # thehub's dast lanes, which were never named here. `functional-dast`
-    # runs the Playwright suite through ZAP's proxy and then scans - one
-    # build, two uploads, each answering for itself (spec 15 4a.1).
-    ((THEHUB,), "dast-demo", "dast"),
+    # thehub's `api-inventory` was declared here until #59100. It regenerated
+    # the OpenAPI inventory against the RUNNING demo instance, so it went with
+    # the demo environment when Path B was retired (ADR 0072).
+    #
+    # thehub's dast lanes. `dast-demo` was here too and went the same way: it
+    # scanned ((thehub-demo-url)), and with no demo it would have reported on
+    # whatever the host last served.
     ((THEHUB,), "dast-prod", "dast"),
     # `dast-staging` scans the standing staging environment on a daily timer
     # rather than after a deploy, because staging is deployed out of band. That
@@ -247,7 +249,12 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # absence, so the coverage cross-check is the only thing that can notice it
     # has stopped.
     ((THEHUB,), "dast-staging", "dast"),
-    ((THEHUB,), "functional-dast", ("functional", "dast")),
+    # `functional-dast` was the third entry here, the one lane declaring two
+    # capabilities from one build. It drove the demo environment through ZAP's
+    # proxy and was removed with Path B (#59100). `functional` now has no
+    # declaring lane in any pipeline here, which is a real coverage loss and is
+    # left visible as one rather than papered over with a lane that would
+    # report on nothing.
     ((THEHUB,), "ai-models", "ai"),
     # keel's three uploading lanes (B-59330). keel's pipeline lives in keel's
     # own repo, so these were read off the running server with
@@ -1478,8 +1485,15 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "pushes the frontend image to the registry, produces no findings",
     ),
     ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
-    ((THEHUB,), "deploy-demo", "deploys a built image to the demo environment, scans nothing"),
-    ((THEHUB,), "deploy-prod", "deploys a built image to production, scans nothing"),
+    # thehub's `deploy-demo` and `deploy-prod` were here until #59100. Path B
+    # -- main -> Concourse -> registry -> a host poller -- is retired
+    # (ADR 0072) and both jobs are deleted from thehub.yml.
+    # `test_every_acknowledgement_names_a_job_that_exists` requires every
+    # (pipeline, job) here to still exist in that pipeline: an
+    # acknowledgement that outlives its job starts excusing a future one
+    # that reuses the name, and "deploy-prod" is about as reusable as a
+    # name gets. mykronos keeps its own delivery jobs above; only thehub's
+    # two are removed.
     (
         (PERSONAL_SOC,),
         "package",
