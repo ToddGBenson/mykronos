@@ -9,6 +9,10 @@ changes when the endpoint does, which is the correct behaviour.
 ZAP groups by alert with a list of instances. One alert affecting five URLs is
 five findings here, not one: they are fixed and tracked separately, and
 collapsing them would make "how many are left" unanswerable.
+
+For the same reason the rule identity comes from `alertRef`, not `pluginid`:
+several alerts can share a plugin *and* a CWE, and only `alertRef` tells them
+apart.
 """
 
 from __future__ import annotations
@@ -79,7 +83,17 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                 result.skipped += 1
                 continue
 
-            rule_id = str(alert.get("pluginid") or alert.get("alertRef") or "").strip()
+            # `alertRef` first, `pluginid` only as the fallback. ZAP uses
+            # `alertRef` to distinguish sub-alerts of one plugin — 10055-4
+            # ("CSP: Wildcard Directive"), 10055-5 ("script-src unsafe-inline")
+            # and 10055-6 ("style-src unsafe-inline") all carry pluginid 10055
+            # and cweid 693. Keying on `pluginid` gave all three the same
+            # rule_id, and since `title` is not a `compute_finding_id` input
+            # for a finding with a `file_path`, three distinct alerts against
+            # one URL collapsed to one finding_id and the last one serialised
+            # won. Where a plugin has no sub-alerts `alertRef` equals the
+            # pluginid, so single-alert plugins are unaffected.
+            rule_id = str(alert.get("alertRef") or alert.get("pluginid") or "").strip()
             name = str(alert.get("alert") or "").strip()
             if not rule_id or not name:
                 result.skipped += 1
