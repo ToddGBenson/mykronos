@@ -2555,7 +2555,164 @@ jobs:
                   exit 1
                 fi
 
-  # == Stage 5: DAST against the standing environments ======================
+  # == Stage 5: deliver to demo =============================================
+  - name: deploy-demo
+    public: true
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: success, TARGET_ENV: demo }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: aborted, TARGET_ENV: demo }
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        trigger: true
+        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
+      - get: python
+        attempts: *retry_fetch
+      - task: request-deploy
+        timeout: 45m
+        image: python
+        params:
+          MINIO_ENDPOINT: ((minio-endpoint))
+          MINIO_ACCESS_KEY: ((minio-access-key))
+          MINIO_SECRET_KEY: ((minio-secret-key))
+          RELEASE_BUCKET: ((thehub-release-bucket))
+          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
+          TARGET_URL: ((thehub-demo-url))
+          ENVIRONMENT: demo
+          # Pinned and verified where it is fetched. dl.min.io now returns
+          # 410 Gone -- MinIO archived the open-source client -- so the
+          # release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
+                chmod +x /usr/local/bin/mc
+                SCHEME=${MINIO_ENDPOINT%%://*}
+                HOSTPORT=${MINIO_ENDPOINT#*://}
+                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
+
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
+                echo "Requesting $ENVIRONMENT deploy of $SHA"
+
+                # Concourse publishes a pointer. It does not connect to the
+                # deploy host, and the host has no listener for it to connect
+                # to - the same one-way handoff the image registry already
+                # gives us, and the reason docker-compose.yml chose a registry
+                # over mounting the Docker socket. Nothing this job can do
+                # restarts a service.
+                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                printf '%s' "$SHA" > requested
+                mc --quiet cp requested "store/$RELEASE_BUCKET/$ENVIRONMENT.requested"
+
+                # Then wait to be told it happened. Fire-and-forget would let
+                # DAST probe the previous build and report it as this commit's
+                # result - `passed: [deploy-demo]` has to mean demo is actually
+                # serving this SHA, not that a request for it was filed.
+                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                # The comparison below strips CR and LF before comparing.
+                # The acknowledgement is written by a PowerShell poller on
+                # Windows, and piping a string to a native command there
+                # appends a carriage return and a newline. Command
+                # substitution strips the trailing newline and does NOT
+                # strip the carriage return, so the comparison could never
+                # match: the job waited its full budget and reported that
+                # the host had never deployed, while the host had deployed
+                # and acknowledged correctly. Five days of TheHub#343 were
+                # exactly this.
+                #
+                # Invisible unless read as bytes. The two objects render
+                # identically and differ by two: demo.deployed was 42 bytes
+                # and demo.requested 40, for the same 40-character SHA.
+                #
+                # Fixed on the reading side deliberately: a consumer of a
+                # pointer should tolerate line endings whatever wrote it,
+                # and this file is the consumer for both environments.
+                while :; do
+                  if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
+                     && [ "$(tr -d '\r\n' < deployed)" = "$SHA" ]; then
+                    echo "Host reports $ENVIRONMENT at $SHA"
+                    break
+                  fi
+                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                    echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
+                    echo "          The pointer is published and still stands."
+                    # Report what was read, rather than assert a cause nothing
+                    # checked. This message used to state that the host-side
+                    # poller was not running or had rolled back, and name the
+                    # scheduled task to go and look at. For deploy-demo #82
+                    # through #88 that was false in every word: the poller ran
+                    # on every cycle, deployed, and acknowledged - and the
+                    # acknowledgement was unreadable because of the CR
+                    # described above (#388). The job had already fetched the
+                    # object that says so and printed a guess instead, which
+                    # is why TheHub#343 was filed against the demo container's
+                    # build stamp, and why two more days went into that
+                    # container before anybody read the bytes.
+                    #
+                    # Absent and present need opposite actions, and the object
+                    # is what tells them apart: absent means nothing has ever
+                    # acknowledged this environment; present means the host is
+                    # acknowledging, for some commit that is not this one.
+                    if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1; then
+                      echo "          $ENVIRONMENT.deployed exists and reads '$(tr -d '\r\n' < deployed)'"
+                      echo "          in $(wc -c < deployed | tr -d ' ') bytes - a bare 40-character SHA is 40."
+                      echo "          The host IS acknowledging, at a commit that is not this one."
+                      echo "          Read deploy/thehub/registry-pull-deploy.log for the deploy it"
+                      echo "          last completed. A byte count above the SHA's own length means"
+                      echo "          the acknowledgement carries line endings, which this comparison"
+                      echo "          already strips - so the difference above is a real commit gap."
+                    else
+                      echo "          $ENVIRONMENT.deployed does not exist: nothing has acknowledged"
+                      echo "          a deploy of this environment at all. That, and only that, is"
+                      echo "          the case where the host-side poller is genuinely not running:"
+                      echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    fi
+                    exit 1
+                  fi
+                  sleep 20
+                done
+
+                # Confirmed from outside the host as well as inside it. The
+                # host script health-checks the containers; this checks that
+                # the environment answers over the network the way a user
+                # reaches it, which is a different claim.
+                echo "Confirming ${TARGET_URL} serves the new build..."
+                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
+                  --retry-all-errors -o /dev/null "$TARGET_URL"
+                echo "$ENVIRONMENT is serving ${SHA}"
+
+  # == Stage 6: DAST against the lower environment ==========================
   #
   # Was "Stage 6: DAST against the lower environment", where the lower
   # environment meant demo. Demo is gone with Path B (#59100), so what is left
@@ -3313,6 +3470,573 @@ jobs:
                   exit 1
                 }
                 echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
+
+  # -- Functional tests, then DAST seeded by their traffic -----------------
+  #
+  # The old lane ran zap-baseline against demo: a spider and the passive
+  # rules. That finds what an anonymous crawler can reach, which for this
+  # application is the login page and very little else. Everything behind
+  # authentication -- which is the entire product -- was never scanned, and
+  # the lane went green saying so.
+  #
+  # So the functional suite runs first, through ZAP as a proxy. Playwright
+  # signs in and drives real journeys, ZAP records every request, and only
+  # then does it spider outward and actively attack what it has learned.
+  # The order matters: capture, then spider, then scan.
+  #
+  # All three phases live in one job because they share one ZAP process, and
+  # a Concourse task cannot hand a running daemon to the next one.
+  - name: functional-dast
+    public: true
+    serial_groups: [worker]
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: success, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: failed, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: errored, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional, STATUS: aborted, TARGET_ENV: demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod }
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        trigger: true
+        passed: [deploy-demo]
+      - get: python
+        attempts: *retry_fetch
+      - get: playwright
+        attempts: *retry_fetch
+      - *preflight
+      - task: functional-and-scan
+        image: playwright
+        # 120m, not 90m: build #7 ran the whole chain -- ZAP up, 60 URLs
+        # seeded, spec imported, spider, active scan -- and Concourse killed
+        # it at 90m mid-active-scan. The proxied functional suite alone is
+        # ~50m (every request pays ZAP's interception latency), the active
+        # scan is capped at 30m, and ZAP startup plus the spider need room on
+        # top. 80m of work in a 90m box has no margin; 120m does. The active
+        # scan's own 30m cap still bounds the part that pressures production.
+        timeout: 120m
+        params:
+          TARGET_URL: ((thehub-demo-url))
+          # No HUB_API_TOKEN: the demo compose sets it empty, which disables
+          # the API gate. global-setup.js warns and carries on, and inventing
+          # a credential the environment does not check would be theatre.
+          # The tarball half of the `zap` resource pin above, and the same
+          # version on purpose: this job installs ZAP from the GitHub release
+          # rather than running the image, so two numbers describe one tool and
+          # a bump that moved only one would leave the estate scanning at two
+          # different versions again (#272). A test asserts they agree.
+          ZAP_VERSION: "2.17.0"
+          SPIDER_MAX_MINUTES: "10"
+          ASCAN_MAX_MINUTES: "30"
+          MIN_SEEDED_URLS: "5"
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }, { name: functional }]
+          caches: [{ path: /zapcache }]
+          run:
+            path: bash
+            args:
+              - -c
+              - |
+                set -uo pipefail
+
+                OUT="$PWD/results"
+                FUNC="$PWD/functional"
+                mkdir -p "$OUT" "$FUNC"
+
+                ZAP_PORT=8090
+                ZAP_BASE="http://127.0.0.1:${ZAP_PORT}"
+                ZAP_KEY="concourse-${BUILD_ID:-0}-$$"
+                ZAP_DIR="/zapcache/ZAP_${ZAP_VERSION}"
+
+                # Reachability first, for the reason the baseline lane had it:
+                # a scan of a host that is not answering produces a report with
+                # no alerts, which on the dashboard is indistinguishable from a
+                # clean scan (L0001).
+                #
+                # Retried, not one-shot. A single curl on a heavily contended
+                # worker failed here while the demo backend was up and serving
+                # 200 from every other vantage -- the worker's load reported as
+                # the target's outage. The deploy job's own health check
+                # already retries five times for exactly this; this now matches
+                # it. --retry-all-errors so a connection refused during a
+                # restart is retried, not just HTTP codes.
+                if ! curl --fail --silent --max-time 30 \
+                     --retry 5 --retry-delay 6 --retry-all-errors \
+                     -o /dev/null "$TARGET_URL"; then
+                  echo "::error::$TARGET_URL is not answering after 5 retries. Refusing to report an empty scan as a clean one."
+                  exit 1
+                fi
+
+                apt-get update -qq
+                apt-get install -y -qq openjdk-21-jre-headless jq >/dev/null
+
+                # ZAP into a task cache. The tarball is ~250MB and does not
+                # change between builds; downloading it every run would cost
+                # more than the scan.
+                if [ ! -x "${ZAP_DIR}/zap.sh" ]; then
+                  echo "Fetching ZAP ${ZAP_VERSION} (cached for later builds)..."
+                  mkdir -p /zapcache
+                  curl -sSfL -o /tmp/zap.tgz \
+                    "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz"
+                  tar -xzf /tmp/zap.tgz -C /zapcache
+                  rm -f /tmp/zap.tgz
+                fi
+                test -x "${ZAP_DIR}/zap.sh" || {
+                  echo "::error::ZAP did not unpack to ${ZAP_DIR}"
+                  ls -1 /zapcache || true
+                  exit 1
+                }
+
+                # -- ZAP as a proxy, not as a scanner (yet) ------------------
+                #
+                # Daemon mode so it sits in front of the browser and records
+                # what the tests do. The scan comes later, against the tree
+                # this traffic builds.
+                # -silent, and the two marketplace switches, because the
+                # first run proved they matter: ZAP tried to auto-install
+                # add-ons from its marketplace at startup, recursed through
+                # checkAndInstallAddOnsNotInstalled, and never answered the
+                # readiness poll inside five minutes -- so the whole DAST lane
+                # timed out on "ZAP did not start" with the scan never begun.
+                #
+                # A CI ZAP must not reach the internet to become usable. The
+                # add-ons it needs (spider, ascan, openapi) ship inside the
+                # release tarball already; the marketplace call is pure
+                # startup tax on a box that may not even have the route.
+                "${ZAP_DIR}/zap.sh" -daemon -host 127.0.0.1 -port "${ZAP_PORT}" \
+                  -silent \
+                  -config api.key="${ZAP_KEY}" \
+                  -config api.addrs.addr.name=.* \
+                  -config api.addrs.addr.regex=true \
+                  -config database.recoverylog=false \
+                  -config start.checkForUpdates=false \
+                  -config autoupdate.installAddonsOnStart=false \
+                  > /tmp/zap.log 2>&1 &
+
+                ready=0
+                for _ in $(seq 1 60); do
+                  if curl -sf "${ZAP_BASE}/JSON/core/view/version/?apikey=${ZAP_KEY}" >/dev/null 2>&1; then
+                    ready=1
+                    break
+                  fi
+                  sleep 5
+                done
+                if [ "$ready" -ne 1 ]; then
+                  echo "::error::ZAP did not start within 5 minutes."
+                  tail -40 /tmp/zap.log || true
+                  exit 1
+                fi
+                echo "ZAP is up on ${ZAP_BASE}"
+
+                zap_api() {
+                  local path="$1"
+                  shift
+                  curl -sf -G "${ZAP_BASE}${path}" --data-urlencode "apikey=${ZAP_KEY}" "$@"
+                }
+
+                # -- Stage 1: functional tests, through the proxy ------------
+                #
+                # This is the part that makes the scan worth running. A spider
+                # follows links; it does not know how to sign in, which button
+                # opens the briefing, or what a valid POST body looks like.
+                # These tests do, so every request they make lands in ZAP's
+                # site tree and the active scan afterwards attacks the real
+                # surface instead of the subset a crawler can reach.
+                cd source
+
+                npm --prefix tests/e2e ci --no-audit --no-fund >/dev/null 2>&1 \
+                  || npm --prefix tests/e2e install --no-audit --no-fund >/dev/null
+
+                export BASE_URL="$TARGET_URL"
+                export ZAP_PROXY="${ZAP_BASE}"
+
+                # cwd is the repository root on purpose: global-setup.js writes
+                # tests/e2e/auth-state.json relative to it, and the config
+                # reads it back from the same relative path.
+                # JUnit alongside the human-readable reporter. Nothing
+                # reads the XML yet; the tests capability and its adapter
+                # are being built separately. The suite runs here and
+                # nowhere else though, so writing it now means wiring the
+                # upload later is one line rather than another full run to
+                # regenerate what this job already had in its hands.
+                export PLAYWRIGHT_JUNIT_OUTPUT_NAME="$FUNC/junit.xml"
+                ./tests/e2e/node_modules/.bin/playwright test \
+                  --config tests/e2e/playwright.config.js --reporter=line,junit
+                FUNC_RC=$?
+                cd ..
+
+                echo "$FUNC_RC" > "$FUNC/exit-code"
+                if [ "$FUNC_RC" -eq 0 ]; then
+                  echo "Functional suite passed."
+                else
+                  echo "::warning::Functional suite exited $FUNC_RC. Scanning the traffic it did produce; the job fails at the end."
+                fi
+
+                # Whether the tests passed or failed, they must have reached
+                # ZAP. If they did not, the proxy wiring is broken and
+                # everything below degrades into a bare unauthenticated
+                # spider -- which would still produce a plausible report.
+                # That is the failure worth refusing.
+                SEEDED=$(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length')
+                SEEDED=${SEEDED:-0}
+                echo "Functional traffic seeded ${SEEDED} URL(s) into ZAP."
+                if [ "$SEEDED" -lt "$MIN_SEEDED_URLS" ]; then
+                  echo "::error::Only ${SEEDED} URL(s) reached ZAP (expected at least ${MIN_SEEDED_URLS})."
+                  echo "::error::The suite ran without using the proxy, so this would be an unseeded scan wearing a seeded scan's name."
+                  exit 1
+                fi
+
+                # -- Stage 1b: the API surface, from its own spec -------------
+                #
+                # The functional suite gives ZAP depth: authenticated,
+                # stateful journeys no crawler could reproduce. It does not
+                # give breadth -- the e2e specs touch a small fraction of the
+                # ~1,739 operations the inventory lists. Importing the spec
+                # adds every declared operation, so the active scan reaches
+                # endpoints no browser journey happened to visit.
+                #
+                # Not a substitute for the traffic above, and not substituted
+                # by it: the spec knows every path and nothing about how to
+                # reach a valid state; the tests know the opposite.
+                IMPORTED=0
+                if zap_api "/JSON/openapi/action/importUrl/" \
+                     --data-urlencode "url=${TARGET_URL}/openapi.json" \
+                     --data-urlencode "hostOverride=${TARGET_URL}" >/dev/null 2>&1; then
+                  IMPORTED=1
+                  echo "Imported ${TARGET_URL}/openapi.json into ZAP."
+                else
+                  # The add-on ships with the full ZAP distribution but is not
+                  # guaranteed. Said out loud rather than left as a quietly
+                  # narrower scan that still reports as a full one.
+                  echo "::warning::ZAP would not import the OpenAPI document."
+                  echo "::warning::Scanning functional traffic only - spec-only endpoints are NOT covered."
+                fi
+
+                AFTER_SPEC=$(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length')
+                echo "ZAP knows ${AFTER_SPEC:-0} URL(s) after traffic + spec import."
+
+                # -- Stage 2: spider -----------------------------------------
+                #
+                # Seeded by the above rather than starting cold: ZAP already
+                # knows these URLs, so the spider extends the map outward from
+                # pages the tests proved are reachable.
+                zap_api "/JSON/spider/action/setOptionMaxDuration/" \
+                  --data-urlencode "Integer=${SPIDER_MAX_MINUTES}" >/dev/null
+
+                SPIDER_ID=$(zap_api "/JSON/spider/action/scan/" \
+                  --data-urlencode "url=${TARGET_URL}" \
+                  --data-urlencode "recurse=true" | jq -r '.scan // empty')
+                if [ -z "$SPIDER_ID" ]; then
+                  echo "::error::ZAP refused to start the spider."
+                  exit 1
+                fi
+
+                echo "Spider ${SPIDER_ID} running..."
+                while :; do
+                  ST=$(zap_api "/JSON/spider/view/status/" --data-urlencode "scanId=${SPIDER_ID}" | jq -r '.status // "0"')
+                  [ "$ST" = "100" ] && break
+                  sleep 10
+                done
+                echo "Spider complete. ZAP now knows $(zap_api "/JSON/core/view/urls/" --data-urlencode "baseurl=${TARGET_URL}" | jq '.urls | length') URL(s)."
+
+                # -- Stage 3: active scan ------------------------------------
+                #
+                # This one sends attacks. It is pointed at demo, which the
+                # deploy rebuilt from the compose file and reseeded moments
+                # ago, so the damage it does is thrown away before the next
+                # run rather than accumulating in an environment people use.
+                zap_api "/JSON/ascan/action/setOptionMaxScanDurationInMins/" \
+                  --data-urlencode "Integer=${ASCAN_MAX_MINUTES}" >/dev/null
+
+                ASCAN_ID=$(zap_api "/JSON/ascan/action/scan/" \
+                  --data-urlencode "url=${TARGET_URL}" \
+                  --data-urlencode "recurse=true" | jq -r '.scan // empty')
+                if [ -z "$ASCAN_ID" ]; then
+                  echo "::error::ZAP refused to start the active scan."
+                  exit 1
+                fi
+
+                echo "Active scan ${ASCAN_ID} running (capped at ${ASCAN_MAX_MINUTES}m)..."
+                while :; do
+                  ST=$(zap_api "/JSON/ascan/view/status/" --data-urlencode "scanId=${ASCAN_ID}" | jq -r '.status // "0"')
+                  [ "$ST" = "100" ] && break
+                  sleep 15
+                done
+                echo "Active scan complete."
+
+                # -- The report ----------------------------------------------
+                curl -sf -G "${ZAP_BASE}/OTHER/core/other/jsonreport/" \
+                  --data-urlencode "apikey=${ZAP_KEY}" -o "${OUT}/zap.json"
+
+                test -s "${OUT}/zap.json" || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+                echo "ZAP reported $(jq '[.site[]?.alerts[]?] | length' "${OUT}/zap.json" 2>/dev/null || echo '?') alert(s)"
+
+                zap_api "/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
+                exit 0
+        # PS-3: `ensure`, so the upload runs whether the scan above
+        # succeeded or not. Concourse creates a declared output volume before
+        # the task runs, so a scanner that died leaves an empty `results` --
+        # which `adapters/registry.py` reports as a *failed scan*, and which is
+        # the honest answer. As a plain following step this never ran on a bad
+        # build, and the capability went `never_reported`: identical, in the
+        # lake, to a capability nobody enabled (L0003).
+        ensure:
+          task: upload
+          timeout: 15m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  python -m mykronos.upload \
+                    --capability dast --tool zap \
+                    --results-path results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false
+
+                  # The one line the junit.xml was written in anticipation of:
+                  # the functional run reaches Mykronos as a ScanRun with no
+                  # findings (D-046), so "the suite passed" and "the suite never
+                  # ran" stop looking identical from the platform's side.
+                  python -m mykronos.upload \
+                    --capability functional --tool junit \
+                    --results-path functional \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                    --severity-threshold low --blocking false || true
+
+      # The functional suite's job in THIS lane is to seed ZAP with real
+      # authenticated traffic, and it does that even when individual tests
+      # fail -- a test that times out on assertion 3 has already driven
+      # navigation, login and the requests before it. So a red suite does not
+      # fail the DAST lane: the scan it produced (guarded by MIN_SEEDED_URLS
+      # upstream, which is the real "did the proxy work" check) is valid on
+      # its own, and the run's whole point is that evidence.
+      #
+      # This is a deliberate change from the first design, which failed the
+      # lane on the suite's exit code. That conflated two jobs -- seed ZAP,
+      # and gate on functionality -- and the proxy makes the second unreliable
+      # here: every request pays interception latency, the suite runs ~10x
+      # slower, and timeout failures say more about the proxy than the product.
+      # The functional PASS RATE is still reported, not swallowed: it goes to
+      # TheHub as the `functional` stage above and is printed here, so a real
+      # regression is visible without a proxy-latency timeout stopping a
+      # security scan that succeeded.
+      - task: functional-report
+        timeout: 10m
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: functional }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                RC=$(cat functional/exit-code)
+                if [ "$RC" -ne 0 ]; then
+                  echo "::warning::Functional suite exited $RC through the proxy."
+                  echo "The DAST scan it seeded completed and was uploaded; that is this lane's deliverable."
+                  echo "Functional pass/fail is reported as the 'functional' stage on TheHub's lifecycle board."
+                  echo "For an unproxied functional gate, see the unit lane -- not a proxy-latency run."
+                else
+                  echo "Functional suite passed cleanly through the proxy."
+                fi
+  - name: deploy-prod
+    public: true
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: finish, STATUS: aborted, TARGET_ENV: prod }
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        passed: [insider]
+      - get: python
+        attempts: *retry_fetch
+      - task: request-deploy
+        timeout: 30m
+        image: python
+        params:
+          MINIO_ENDPOINT: ((minio-endpoint))
+          MINIO_ACCESS_KEY: ((minio-access-key))
+          MINIO_SECRET_KEY: ((minio-secret-key))
+          RELEASE_BUCKET: ((thehub-release-bucket))
+          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
+          TARGET_URL: ((thehub-prod-url))
+          ENVIRONMENT: prod
+          # Pinned and verified where it is fetched. dl.min.io now returns
+          # 410 Gone -- MinIO archived the open-source client -- so the
+          # release asset on GitHub is the only served copy.
+          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
+          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                # dl.min.io returns 410 Gone: MinIO archived the open-source
+                # client and stopped serving it, so `curl -f` fails and this
+                # task dies before it starts. Pinned GitHub release instead,
+                # verified -- a fetched binary is code.
+                curl -sSfL -o /usr/local/bin/mc \
+                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
+                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
+                chmod +x /usr/local/bin/mc
+                SCHEME=${MINIO_ENDPOINT%%://*}
+                HOSTPORT=${MINIO_ENDPOINT#*://}
+                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
+
+                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
+                echo "Requesting $ENVIRONMENT deploy of $SHA"
+
+                # Concourse publishes a pointer. It does not connect to the
+                # deploy host, and the host has no listener for it to connect
+                # to - the same one-way handoff the image registry already
+                # gives us, and the reason docker-compose.yml chose a registry
+                # over mounting the Docker socket. Nothing this job can do
+                # restarts a service.
+                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                printf '%s' "$SHA" > requested
+                mc --quiet cp requested "store/$RELEASE_BUCKET/$ENVIRONMENT.requested"
+
+                # Then wait to be told it happened. Fire-and-forget would let
+                # DAST probe the previous build and report it as this commit's
+                # result - `passed: [deploy-demo]` has to mean demo is actually
+                # serving this SHA, not that a request for it was filed.
+                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
+                # The comparison below strips CR and LF before comparing.
+                # The acknowledgement is written by a PowerShell poller on
+                # Windows, and piping a string to a native command there
+                # appends a carriage return and a newline. Command
+                # substitution strips the trailing newline and does NOT
+                # strip the carriage return, so the comparison could never
+                # match: the job waited its full budget and reported that
+                # the host had never deployed, while the host had deployed
+                # and acknowledged correctly. Five days of TheHub#343 were
+                # exactly this.
+                #
+                # Invisible unless read as bytes. The two objects render
+                # identically and differ by two: demo.deployed was 42 bytes
+                # and demo.requested 40, for the same 40-character SHA.
+                #
+                # Fixed on the reading side deliberately: a consumer of a
+                # pointer should tolerate line endings whatever wrote it,
+                # and this file is the consumer for both environments.
+                while :; do
+                  if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
+                     && [ "$(tr -d '\r\n' < deployed)" = "$SHA" ]; then
+                    echo "Host reports $ENVIRONMENT at $SHA"
+                    break
+                  fi
+                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+                    echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
+                    echo "          The pointer is published and still stands."
+                    # Report what was read, rather than assert a cause nothing
+                    # checked. This message used to state that the host-side
+                    # poller was not running or had rolled back, and name the
+                    # scheduled task to go and look at. For deploy-demo #82
+                    # through #88 that was false in every word: the poller ran
+                    # on every cycle, deployed, and acknowledged - and the
+                    # acknowledgement was unreadable because of the CR
+                    # described above (#388). The job had already fetched the
+                    # object that says so and printed a guess instead, which
+                    # is why TheHub#343 was filed against the demo container's
+                    # build stamp, and why two more days went into that
+                    # container before anybody read the bytes.
+                    #
+                    # Absent and present need opposite actions, and the object
+                    # is what tells them apart: absent means nothing has ever
+                    # acknowledged this environment; present means the host is
+                    # acknowledging, for some commit that is not this one.
+                    if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1; then
+                      echo "          $ENVIRONMENT.deployed exists and reads '$(tr -d '\r\n' < deployed)'"
+                      echo "          in $(wc -c < deployed | tr -d ' ') bytes - a bare 40-character SHA is 40."
+                      echo "          The host IS acknowledging, at a commit that is not this one."
+                      echo "          Read deploy/thehub/registry-pull-deploy.log for the deploy it"
+                      echo "          last completed. A byte count above the SHA's own length means"
+                      echo "          the acknowledgement carries line endings, which this comparison"
+                      echo "          already strips - so the difference above is a real commit gap."
+                    else
+                      echo "          $ENVIRONMENT.deployed does not exist: nothing has acknowledged"
+                      echo "          a deploy of this environment at all. That, and only that, is"
+                      echo "          the case where the host-side poller is genuinely not running:"
+                      echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
+                    fi
+                    exit 1
+                  fi
+                  sleep 20
+                done
+
+                # Confirmed from outside the host as well as inside it. The
+                # host script health-checks the containers; this checks that
+                # the environment answers over the network the way a user
+                # reaches it, which is a different claim.
+                echo "Confirming ${TARGET_URL} serves the new build..."
+                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
+                  --retry-all-errors -o /dev/null "$TARGET_URL"
+                echo "$ENVIRONMENT is serving ${SHA}"
 
   # == Cloud posture ========================================================
   #
