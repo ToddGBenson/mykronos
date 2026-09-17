@@ -263,7 +263,7 @@ def test_every_reporting_job_is_cross_checked() -> None:
             body = checker._scripts(job)
             if "--capability" not in body:
                 continue
-            if job["name"] not in CAPABILITY_BY_JOB:
+            if (path.stem, job["name"]) not in CAPABILITY_BY_JOB:
                 missing.append(f"{Path(relative).name}:{job['name']}")
 
     assert not missing, (

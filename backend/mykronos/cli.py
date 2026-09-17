@@ -45,12 +45,14 @@ from mykronos import briefing as briefing_report
 from mykronos import grants
 from mykronos.auth import TokenRegistry
 from mykronos.ci import (
+    ACTIONS,
     ActionsClient,
     ConcourseClient,
     _covers,
     capability_by_workflow,
     compare,
     coverage,
+    pipeline_name_for,
     reconcile,
 )
 from mykronos.config import get_settings
@@ -845,10 +847,17 @@ def main(argv: list[str] | None = None) -> int:
             # Distinct name: `rows` is bound above by other subcommands and
             # reusing it makes mypy infer the wrong type — the same trap the
             # `reprocess` branch already documents.
+            # Each side reconciles under its own scope: the Concourse jobs
+            # against that repository's pipeline, the Actions ones against the
+            # single generated-workflow identity (B-59988). Handing both sides
+            # one scope is what `parity` exists to not do.
+            par_pipeline = pipeline_name_for(repo)
             concourse_stages = coverage(
-                par_capabilities, reconcile(concourse.jobs, last_scan)
+                par_capabilities, reconcile(par_pipeline, concourse.jobs, last_scan)
             )
-            actions_stages = coverage(par_capabilities, reconcile(actions.jobs, last_scan))
+            actions_stages = coverage(
+                par_capabilities, reconcile(ACTIONS, actions.jobs, last_scan)
+            )
             parity_rows = compare(concourse_stages, actions_stages)
             _print_table(
                 ["capability", "concourse", "actions", "verdict"],

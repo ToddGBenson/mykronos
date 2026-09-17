@@ -19,6 +19,9 @@ from mykronos.ci import (
     ALL_STAGES,
     CAPABILITY_BY_JOB,
     GATE_JOBS,
+    KEEL,
+    MYKRONOS,
+    THEHUB,
     ConcourseClient,
     JobStatus,
     Reporting,
@@ -215,7 +218,7 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         scanned = datetime(2026, 8, 13, 11, 58, tzinfo=UTC)
 
-        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+        [row] = reconcile(MYKRONOS, [self._job("sast", finished=built)], {"sast": scanned})
 
         assert row.state == "reporting"
 
@@ -228,6 +231,7 @@ class TestReporting:
         scanned = datetime(2026, 8, 13, 11, 58, tzinfo=UTC)
 
         rows = reconcile(
+            MYKRONOS,
             [self._job("demo-and-dast", finished=built)],
             {"functional": scanned, "dast": scanned},
         )
@@ -241,6 +245,7 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
         rows = reconcile(
+            MYKRONOS,
             [self._job("demo-and-dast", finished=built)],
             {"functional": datetime(2026, 8, 13, 11, 58, tzinfo=UTC)},
         )
@@ -255,7 +260,7 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         scanned = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
 
-        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+        [row] = reconcile(MYKRONOS, [self._job("sast", finished=built)], {"sast": scanned})
 
         assert row.state == "silent"
 
@@ -264,7 +269,7 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         scanned = datetime(2026, 8, 13, 11, 30, tzinfo=UTC)
 
-        [row] = reconcile([self._job("sast", finished=built)], {"sast": scanned})
+        [row] = reconcile(MYKRONOS, [self._job("sast", finished=built)], {"sast": scanned})
 
         assert row.state == "reporting"
 
@@ -277,7 +282,7 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         naive = datetime(2026, 8, 13, 11, 58)  # noqa: DTZ001 - the real shape
 
-        [row] = reconcile([self._job("sast", finished=built)], {"sast": naive})
+        [row] = reconcile(MYKRONOS, [self._job("sast", finished=built)], {"sast": naive})
 
         assert row.state == "reporting"
 
@@ -285,14 +290,14 @@ class TestReporting:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         naive = datetime(2026, 8, 11, 12, 0)  # noqa: DTZ001
 
-        [row] = reconcile([self._job("sast", finished=built)], {"sast": naive})
+        [row] = reconcile(MYKRONOS, [self._job("sast", finished=built)], {"sast": naive})
 
         assert row.state == "silent"
 
     def test_a_job_with_no_scan_run_at_all_is_named(self) -> None:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
-        [row] = reconcile([self._job("containers", finished=built)], {})
+        [row] = reconcile(MYKRONOS, [self._job("containers", finished=built)], {})
 
         assert row.state == "never_reported"
 
@@ -316,7 +321,7 @@ class TestReporting:
         dropping the field. A month later nothing anywhere said they had been
         switched off rather than left broken.
         """
-        [row] = reconcile([self._job("sast", status="failed", paused=True)], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="failed", paused=True)], {})
 
         assert row.state == "paused", (
             "a paused lane derived its state from the build that got it "
@@ -330,7 +335,7 @@ class TestReporting:
         it was failing — so whichever is checked first is the one a reader
         sees. `paused` is the fact that changes what they should do.
         """
-        [row] = reconcile([self._job("sast", status="failed", paused=True)], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="failed", paused=True)], {})
 
         assert row.paused is True
         assert row.last_build_failed is True
@@ -338,7 +343,7 @@ class TestReporting:
 
     def test_an_unpaused_failure_is_still_a_failure(self) -> None:
         """The guard that this did not swallow the state it sits in front of."""
-        [row] = reconcile([self._job("sast", status="failed")], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="failed")], {})
 
         assert row.state == "failed"
 
@@ -350,7 +355,7 @@ class TestReporting:
         lane is still not counted as a coverage gap. Only the NAME changed -
         see the test below for why.
         """
-        [row] = reconcile([self._job("sast", status="failed")], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="failed")], {})
         stages = {c.stage: c for c in coverage({"sast"}, [row])}
 
         assert not stages["sast"].problem
@@ -374,13 +379,13 @@ class TestReporting:
         The lane having run at all is a separate fact and now travels
         separately.
         """
-        [row] = reconcile([self._job("sast", status="failed")], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="failed")], {})
 
         assert row.state == "failed"
 
     def test_a_lane_that_truly_never_ran_still_reads_not_run(self) -> None:
         """The state `failed` displaced it from, which must still work."""
-        [row] = reconcile([self._job("sast", status=None)], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status=None)], {})
 
         assert row.state == "not_run"
 
@@ -392,7 +397,7 @@ class TestReporting:
         rather than inventing a fourth answer or falling back to the false
         one.
         """
-        [row] = reconcile([self._job("sast", status="aborted")], {})
+        [row] = reconcile(MYKRONOS, [self._job("sast", status="aborted")], {})
 
         assert row.state == "failed"
 
@@ -401,6 +406,7 @@ class TestReporting:
         have already been mistaken for a coverage gap."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
         rows = reconcile(
+            THEHUB,
             [
                 self._job("dependencies", finished=built),
                 self._job("cloud-posture", finished=built),
@@ -423,8 +429,8 @@ class TestReporting:
         reasoning above is now a line in the source that a test holds to."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
-        assert reconcile([self._job("insider", finished=built)], {}) == []
-        assert "insider" in ACKNOWLEDGED_UNMAPPED_JOBS
+        assert reconcile(MYKRONOS, [self._job("insider", finished=built)], {}) == []
+        assert (MYKRONOS, "insider") in ACKNOWLEDGED_UNMAPPED_JOBS
 
     def test_jobs_that_write_nothing_are_not_checked(self) -> None:
         """`build` and `publish` produce no lake record at all, and flagging
@@ -442,11 +448,11 @@ class TestReporting:
         names = ("build", "publish-backend", "publish-frontend", "promote")
         jobs = [self._job(n, finished=built) for n in names]
 
-        assert reconcile(jobs, {}) == []
+        assert reconcile(MYKRONOS, jobs, {}) == []
         # Skipped deliberately, and the record of that is what this asserts -
         # a name dropped from the table would make the line above pass for the
         # wrong reason, by reporting `unknown` instead of nothing.
-        assert all(n in ACKNOWLEDGED_UNMAPPED_JOBS for n in names)
+        assert all((MYKRONOS, n) in ACKNOWLEDGED_UNMAPPED_JOBS for n in names)
 
     def test_a_job_nobody_has_mapped_is_reported_as_unknown(self) -> None:
         """THE CLASS FIX (B-59330). The old shape `continue`d here, so a job
@@ -459,19 +465,58 @@ class TestReporting:
         lane is healthy, and saying that is different from saying nothing."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
-        [row] = reconcile([self._job("keel-vault-check", finished=built)], {})
+        [row] = reconcile(KEEL, [self._job("keel-vault-check", finished=built)], {})
 
         assert row.job == "keel-vault-check"
         assert row.state == "unknown"
         assert row.capability == "unknown"
+
+    def test_the_same_job_name_means_different_things_on_two_pipelines(self) -> None:
+        """B-59988, END TO END, AND IN BOTH DIRECTIONS.
+
+        One `JobStatus` called `sast`, reconciled twice against the same lake.
+        On mykronos it is the real CodeQL lane and is credited with the `sast`
+        scan run. On keel it is a 158-byte stub that invokes no scanner, and it
+        is reported as unrecognised rather than handed the same credit.
+
+        Both halves are asserted deliberately. "The stub is not credited" would
+        also pass against a table that credits nothing at all, which is a worse
+        bug than the one being fixed — so the real lane has to be shown still
+        working in the same breath.
+        """
+        built = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 9, 17, 11, 58, tzinfo=UTC)
+        job = [self._job("sast", finished=built)]
+
+        [real] = reconcile(MYKRONOS, job, {"sast": scanned})
+        [stub] = reconcile(KEEL, job, {"sast": scanned})
+
+        assert (real.capability, real.state) == ("sast", "reporting")
+        assert (stub.capability, stub.state) == ("unknown", "unknown")
+
+    def test_keels_real_lane_is_credited_under_its_own_name(self) -> None:
+        """The other half of the same story. keel's uploads arrive from
+        `mykronos-sast`, so scoping must not have cost keel its coverage while
+        removing the stub's - otherwise `sast` on keel would read as a gap when
+        CodeQL is running perfectly well."""
+        built = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
+        scanned = datetime(2026, 9, 17, 11, 58, tzinfo=UTC)
+
+        [row] = reconcile(
+            KEEL, [self._job("mykronos-sast", finished=built)], {"sast": scanned}
+        )
+
+        assert (row.capability, row.state) == ("sast", "reporting")
 
     def test_unknown_outranks_the_states_that_would_misdescribe_it(self) -> None:
         """A failing unmapped job must not read `failed`, and a paused one
         must not read `paused`. Both are answers about a lane whose purpose is
         known; here the purpose is what is missing, and dressing that up as an
         ordinary lane state is how it stops being noticed."""
-        failing = reconcile([self._job("unheard-of", status="failed")], {})
-        paused = reconcile([self._job("unheard-of", status="failed", paused=True)], {})
+        failing = reconcile(MYKRONOS, [self._job("unheard-of", status="failed")], {})
+        paused = reconcile(
+            MYKRONOS, [self._job("unheard-of", status="failed", paused=True)], {}
+        )
 
         assert [r.state for r in failing] == ["unknown"]
         assert [r.state for r in paused] == ["unknown"]
@@ -481,7 +526,7 @@ class TestReporting:
         It travels as a job-level row; `coverage()` walks `ALL_STAGES`, so a
         stage called "unknown" cannot appear beside the real ones nor displace
         a capability a repository actually enabled."""
-        rows = coverage({"sast"}, reconcile([self._job("unheard-of")], {}))
+        rows = coverage({"sast"}, reconcile(MYKRONOS, [self._job("unheard-of")], {}))
 
         assert "unknown" not in ALL_STAGES
         assert [r.stage for r in rows if r.stage == "unknown"] == []
@@ -493,14 +538,16 @@ class TestReporting:
         for jobs that had a capability - so moving the unmapped branch behind
         it would have reported a duplicate twice. Marked before the table is
         consulted instead."""
-        rows = reconcile([self._job("unheard-of"), self._job("unheard-of")], {})
+        rows = reconcile(
+            MYKRONOS, [self._job("unheard-of"), self._job("unheard-of")], {}
+        )
 
         assert len(rows) == 1
 
     def test_unit_is_checked_because_nothing_else_would_notice(self) -> None:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
-        [row] = reconcile([self._job("unit", finished=built)], {})
+        [row] = reconcile(MYKRONOS, [self._job("unit", finished=built)], {})
 
         assert row.capability == "unit"
         assert row.state == "never_reported"
@@ -597,7 +644,7 @@ class TestStageCoverage:
         telling a lie in the other direction: the lane would be expected to
         produce scan runs, and read as `never_reported` forever."""
         for name in GATE_JOBS["oracle"]:
-            assert name not in CAPABILITY_BY_JOB
+            assert (MYKRONOS, name) not in CAPABILITY_BY_JOB
 
     def test_enabled_and_silent_is_a_problem(self) -> None:
         rows = coverage({"sast"}, self._reporting(sast="silent"))

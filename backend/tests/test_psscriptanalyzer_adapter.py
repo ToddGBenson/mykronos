@@ -23,7 +23,7 @@ from mykronos.adapters.base import ScanContext
 from mykronos.adapters.registry import get_adapter, supported_tools
 from mykronos.adapters.sast_psscriptanalyzer import normalize
 from mykronos.analysers import readability
-from mykronos.ci import CAPABILITY_BY_JOB
+from mykronos.ci import ACTIONS, CAPABILITY_BY_JOB
 from mykronos.installer import TemplateLibrary
 from mykronos.schemas import ScanStatus, Severity
 
@@ -158,8 +158,8 @@ class TestItIsRegistered:
         assert get_adapter("sast", "psscriptanalyzer").pattern == "*.json"
 
     def test_the_lane_maps_to_sast(self) -> None:
-        assert CAPABILITY_BY_JOB["sast-powershell"] == "sast"
-        assert "mykronos-sast-powershell" not in CAPABILITY_BY_JOB
+        assert CAPABILITY_BY_JOB[(ACTIONS, "sast-powershell")] == "sast"
+        assert (ACTIONS, "mykronos-sast-powershell") not in CAPABILITY_BY_JOB
 
 
 class TestTheLane:

@@ -49,6 +49,7 @@ from mykronos.api.ingest import (
     profile_owner_for_repo,
 )
 from mykronos.ci import (
+    ACTIONS,
     ALL_STAGES,
     ActionsClient,
     ConcourseClient,
@@ -1885,10 +1886,20 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
     # Dispatch on `scanned_by`, the same split `scan_now` and fix
     # verification already use (spec 32 §7). Everything below this line is
     # unchanged and unaware of which CI answered: `reconcile` and `coverage`
-    # were always about job names, statuses and timestamps.
+    # are about job names, statuses and timestamps.
     status = await _ci_status(request, repo_full_name, scanned_by, installation_id)
 
-    reported = reconcile(status.jobs, _queries(request).last_successful_scan_at(repo_full_name))
+    # Which pipeline these job names belong to, because a name means something
+    # only within one (B-59988). Taken from `scanned_by` rather than from
+    # `status.pipeline`, which is `None` whenever the CI could not be read -
+    # and a reconcile against the wrong scope would report every job of an
+    # unreachable pipeline as `unknown`, inventing 26 findings out of an
+    # outage. `status.jobs` is empty in that case, so the value is unused.
+    pipeline = ACTIONS if scanned_by == "github_actions" else pipeline_name_for(repo_full_name)
+
+    reported = reconcile(
+        pipeline, status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
+    )
 
     return CiPage(
         repo_full_name=repo_full_name,
