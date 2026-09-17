@@ -110,6 +110,12 @@ export function stageTone(stage: CiStage): IndicatorTone {
   // tolerate a failed upload (B-062). The inverse of `no_job`, and the more
   // dangerous one, so it reads as a fault rather than as "off".
   if (stage.state === "job_not_enabled") return "bad";
+  // `failed` deliberately has no case and takes the "off" tone below, to stay
+  // consistent with `StageCoverage.problem`, which excludes it on the stated
+  // policy that a broken lane is the pipeline's to report rather than a
+  // coverage gap (`test_a_failed_job_is_not_held_against_the_lake`). The job
+  // tile above already paints it red, and #459 reports it in the briefing.
+  // Only the LABEL changes below — "off" was the wrong word for it.
   // Not enabled, which is not a fault.
   return "off";
 }
@@ -130,6 +136,14 @@ export function stageState(stage: CiStage): string {
       return "event-driven";
     case "job_not_enabled":
       return "job, not enabled";
+    // Both of these reached `default` and were labelled "off" — the one word
+    // that is wrong for each. A failing lane is not switched off, and a
+    // paused one is switched off for a stated reason worth distinguishing.
+    // The TONE is unchanged for both; this corrects the text only.
+    case "failed":
+      return "failing";
+    case "paused":
+      return "paused";
     default:
       return "off";
   }
