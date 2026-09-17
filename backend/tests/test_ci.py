@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mykronos.ci import (
+    ACKNOWLEDGED_UNMAPPED_JOBS,
     ALL_STAGES,
     CAPABILITY_BY_JOB,
     GATE_JOBS,
@@ -416,26 +417,85 @@ class TestReporting:
         assessment. The job succeeds having recorded nothing on purpose -
         submitting one anyway would score 0/100 for exactly the case Aegis
         exists to notice. Checking it reported every green insider job as a
-        silent failure."""
+        silent failure.
+
+        Acknowledged by name since B-59330 rather than merely absent, so the
+        reasoning above is now a line in the source that a test holds to."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
         assert reconcile([self._job("insider", finished=built)], {}) == []
+        assert "insider" in ACKNOWLEDGED_UNMAPPED_JOBS
 
     def test_jobs_that_write_nothing_are_not_checked(self) -> None:
         """`build` and `publish` produce no lake record at all, and flagging
         them would drown the real signal in noise nobody can act on.
+
+        They are skipped because `ACKNOWLEDGED_UNMAPPED_JOBS` says so, not
+        because they are missing from a table (B-59330). The difference is
+        what the next job somebody adds gets: absence is now reported.
 
         `unit` used to be in this list and is deliberately no longer: since
         D-046 it reports a ScanRun, and because that run carries no findings
         the cross-check is the *only* thing that can notice its absence -
         there is no finding count to be conspicuously zero."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
-        jobs = [
-            self._job(n, finished=built)
-            for n in ("build", "publish-backend", "publish-frontend", "promote")
-        ]
+        names = ("build", "publish-backend", "publish-frontend", "promote")
+        jobs = [self._job(n, finished=built) for n in names]
 
         assert reconcile(jobs, {}) == []
+        # Skipped deliberately, and the record of that is what this asserts -
+        # a name dropped from the table would make the line above pass for the
+        # wrong reason, by reporting `unknown` instead of nothing.
+        assert all(n in ACKNOWLEDGED_UNMAPPED_JOBS for n in names)
+
+    def test_a_job_nobody_has_mapped_is_reported_as_unknown(self) -> None:
+        """THE CLASS FIX (B-59330). The old shape `continue`d here, so a job
+        added to a pipeline was unmonitored until somebody remembered the
+        capability table existed - and nothing said a job had been skipped.
+        Five keel jobs errored on a sealed Vault on 2026-09-07, stayed red
+        three days, and nothing escalated.
+
+        Reported rather than skipped: the platform cannot say whether this
+        lane is healthy, and saying that is different from saying nothing."""
+        built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+        [row] = reconcile([self._job("keel-vault-check", finished=built)], {})
+
+        assert row.job == "keel-vault-check"
+        assert row.state == "unknown"
+        assert row.capability == "unknown"
+
+    def test_unknown_outranks_the_states_that_would_misdescribe_it(self) -> None:
+        """A failing unmapped job must not read `failed`, and a paused one
+        must not read `paused`. Both are answers about a lane whose purpose is
+        known; here the purpose is what is missing, and dressing that up as an
+        ordinary lane state is how it stops being noticed."""
+        failing = reconcile([self._job("unheard-of", status="failed")], {})
+        paused = reconcile([self._job("unheard-of", status="failed", paused=True)], {})
+
+        assert [r.state for r in failing] == ["unknown"]
+        assert [r.state for r in paused] == ["unknown"]
+
+    def test_an_unknown_job_does_not_invent_a_stage(self) -> None:
+        """`unknown` is not a capability and must never be rendered as one.
+        It travels as a job-level row; `coverage()` walks `ALL_STAGES`, so a
+        stage called "unknown" cannot appear beside the real ones nor displace
+        a capability a repository actually enabled."""
+        rows = coverage({"sast"}, reconcile([self._job("unheard-of")], {}))
+
+        assert "unknown" not in ALL_STAGES
+        assert [r.stage for r in rows if r.stage == "unknown"] == []
+        # And the real capability is still reported as having no job.
+        assert next(r for r in rows if r.stage == "sast").state == "no_job"
+
+    def test_an_unmapped_job_listed_twice_is_reported_once(self) -> None:
+        """Concourse lists a job once, but `seen` used to be populated only
+        for jobs that had a capability - so moving the unmapped branch behind
+        it would have reported a duplicate twice. Marked before the table is
+        consulted instead."""
+        rows = reconcile([self._job("unheard-of"), self._job("unheard-of")], {})
+
+        assert len(rows) == 1
 
     def test_unit_is_checked_because_nothing_else_would_notice(self) -> None:
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)

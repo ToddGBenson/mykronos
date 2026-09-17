@@ -221,39 +221,71 @@ function JobTile({ job }: { job: CiJob }) {
  * old scan, and nothing anywhere points out that those two facts contradict
  * each other. Only the problems are listed — a row per healthy capability
  * would bury the one that matters.
+ *
+ * Two lists, because there are two different failures. The first is a lane
+ * that ran and did not report. The second is a job nothing has ever been
+ * asked to check: until B-59330 the cross-check dropped those without a word,
+ * which is why five keel jobs could sit red for three days with nothing
+ * escalating.
  */
 export function ReportingGaps({ reporting }: { reporting: CiReporting[] }) {
   const problems = reporting.filter(
     (row) => row.state === "silent" || row.state === "never_reported",
   );
-  if (problems.length === 0) return null;
+  // Jobs nothing is checking, kept as their own list rather than folded into
+  // the one above. "Ran, but nothing arrived" is a statement about a lane
+  // whose purpose is known; these are lanes whose purpose is not recorded, so
+  // there is no claim to make about whether anything should have arrived.
+  // Listed here at all because the backend reporting them and the UI
+  // dropping them would rebuild the silence B-59330 removed, one layer up.
+  const unknown = reporting.filter((row) => row.state === "unknown");
+  if (problems.length === 0 && unknown.length === 0) return null;
 
   return (
     <div className="border-t border-rule-soft bg-high-wash px-3 py-2">
-      <Label>Ran, but nothing arrived</Label>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {problems.map((row) => (
-          <li key={row.job} className="font-mono text-[12px] text-ink-2">
-            <span className="font-bold">{row.job}</span> succeeded
-            {row.built_at ? (
-              <>
-                {" "}
-                <RelativeTime value={row.built_at} />
-              </>
-            ) : null}
-            {row.state === "never_reported" ? (
-              <> — no successful {row.capability} scan has ever reached the lake.</>
-            ) : (
-              <>
-                {" "}
-                — newest {row.capability} scan is from{" "}
-                {row.scanned_at ? <RelativeTime value={row.scanned_at} /> : "before it"},
-                so that build&rsquo;s findings never arrived.
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
+      {problems.length > 0 ? (
+        <>
+          <Label>Ran, but nothing arrived</Label>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {problems.map((row) => (
+              <li key={row.job} className="font-mono text-[12px] text-ink-2">
+                <span className="font-bold">{row.job}</span> succeeded
+                {row.built_at ? (
+                  <>
+                    {" "}
+                    <RelativeTime value={row.built_at} />
+                  </>
+                ) : null}
+                {row.state === "never_reported" ? (
+                  <> — no successful {row.capability} scan has ever reached the lake.</>
+                ) : (
+                  <>
+                    {" "}
+                    — newest {row.capability} scan is from{" "}
+                    {row.scanned_at ? <RelativeTime value={row.scanned_at} /> : "before it"},
+                    so that build&rsquo;s findings never arrived.
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+      {unknown.length > 0 ? (
+        <div className={problems.length > 0 ? "mt-2" : undefined}>
+          <Label>Nothing is checking these</Label>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {unknown.map((row) => (
+              <li key={row.job} className="font-mono text-[12px] text-ink-2">
+                <span className="font-bold">{row.job}</span> runs in this
+                pipeline and nothing records what it produces, so the
+                cross-check can say nothing about it — map it to a capability,
+                or write down that it produces none.
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
