@@ -30,7 +30,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from mykronos.adapters.base import AdapterResult, ScanContext
+from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,11 @@ def _pick_fix(installed: str | None, candidates: str) -> str:
 
 
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
-    outcome = sarif_to_findings(raw_output, context)
+    # Deferred like the container adapter's, and for the same reason: the
+    # package specifier this function parses out of the message is the anchor
+    # that keeps these findings off the positional branch, and it is not set
+    # until below (#325).
+    outcome = sarif_to_findings(raw_output, context, warn_degraded=False)
 
     enriched = 0
     for finding in outcome.findings:
@@ -304,5 +308,9 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             "No osv-scanner finding carried a parseable package specifier. "
             "Dependency fixes cannot be generated without one."
         )
+
+    # After enrichment, never before: the package name attached above is what
+    # keeps these findings off the positional branch (#325).
+    warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome

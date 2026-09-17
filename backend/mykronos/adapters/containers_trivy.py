@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import re
 
-from mykronos.adapters.base import AdapterResult, ScanContext
+from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,13 @@ _FIXED = re.compile(r"^Fixed Version:\s*(?P<version>\S+)\s*$", re.MULTILINE)
 
 
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
-    outcome = sarif_to_findings(raw_output, context)
+    # The churn warning is deferred to the end of this function. A Trivy
+    # result never carries a code snippet and never needs one — the package
+    # name below is its anchor — but that field is still `None` while the
+    # converter runs, so asking there announced that every container finding
+    # would churn while every one of them was stored on a stable package key
+    # (#325).
+    outcome = sarif_to_findings(raw_output, context, warn_degraded=False)
 
     enriched = 0
     for finding in outcome.findings:
@@ -65,5 +71,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             "No Trivy finding carried a parseable package line. Container "
             "findings will have no package attached and cannot be remediated."
         )
+
+    warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome

@@ -607,3 +607,25 @@ class TestTheOsvAdapter:
 
         assert outcome.findings[0].package_name is None
         assert any("package specifier" in w for w in outcome.warnings)
+
+    def test_a_package_finding_is_not_warned_about_as_churn_prone(self) -> None:
+        """#325, the same defect as the container adapter and for the same
+        reason: the package name is attached after the shared SARIF converter
+        has run, so a warning computed inside the converter was reading a
+        field that was still `None` for every Atlas finding."""
+        outcome = self._normalize()
+
+        assert outcome.findings[0].code_snippet is None
+        assert outcome.findings[0].package_name == "js-yaml"
+        assert [w for w in outcome.warnings if "v1-line" in w] == []
+
+    def test_a_finding_with_no_package_is_still_warned_about(self) -> None:
+        """The counterweight: with nothing parseable in the message there is
+        no anchor but the line number, and that churn is real."""
+        document = json.loads(json.dumps(OSV_SARIF))
+        document["runs"][0]["results"][0]["message"]["text"] = "something else"
+
+        outcome = self._normalize(document)
+
+        assert outcome.findings[0].package_name is None
+        assert any("v1-line" in w for w in outcome.warnings)

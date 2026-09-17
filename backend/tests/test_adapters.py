@@ -14,10 +14,12 @@ from typing import Any
 import pytest
 
 from mykronos.adapters import ScanContext, sarif_to_findings
+from mykronos.adapters.base import AdapterResult
 from mykronos.adapters.sarif import severity_from_security_score
 from mykronos.adapters.sast_codeql import normalize_directory, tool_version_from_sarif
 from mykronos.adapters.snippet import infer_symbol, read_source_lines, slice_snippet
 from mykronos.fingerprint import (
+    FINGERPRINT_REPO_LEVEL,
     FINGERPRINT_V1_LINE,
     FINGERPRINT_V2_SNIPPET,
     compute_finding_id,
@@ -466,3 +468,89 @@ class TestFingerprintEndToEnd:
             line_start=finding.line_start,
         )
         assert version == FINGERPRINT_V1_LINE
+
+
+class TestTheDegradedIdentityWarning:
+    """The warning must describe the fingerprint that gets stored (#325).
+
+    It used to count "findings with no code snippet", which is not the
+    condition `compute_finding_id` degrades on. A snippet is one of three
+    anchors — a package name and a symbol are the others — and a finding with
+    no file at all is keyed on rule and title, not on a line number. Counting
+    the snippet alone made the warning fire on every run of two capabilities
+    that never produce a positional finding, and a warning that is wrong every
+    time is one people stop reading.
+    """
+
+    @staticmethod
+    def _churn(result: AdapterResult) -> list[str]:
+        return [w for w in result.warnings if "v1-line" in w]
+
+    def test_a_symbol_alone_is_not_degraded(self) -> None:
+        """No snippet, but the tool named the enclosing symbol, so identity is
+        `v2-snippet` and survives a line shift."""
+        result = sarif_to_findings(
+            sarif(logical="orders.query.get_order"), context(workspace=None)
+        )
+        finding = result.findings[0]
+
+        assert finding.code_snippet is None
+        assert finding.symbol == "orders.query.get_order"
+        _, version = compute_finding_id(
+            repo_full_name=REPO,
+            capability="sast",
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+        )
+        assert version == FINGERPRINT_V2_SNIPPET
+        assert self._churn(result) == []
+
+    def test_a_finding_with_no_file_is_not_degraded(self) -> None:
+        """A repo-level finding is keyed on rule and title. There is no line
+        number in its identity for an edit above it to shift."""
+        result = sarif_to_findings(sarif(uri=""), context(workspace=None))
+        finding = result.findings[0]
+
+        assert finding.file_path is None
+        _, version = compute_finding_id(
+            repo_full_name=REPO,
+            capability="sast",
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+            title=finding.title,
+        )
+        assert version == FINGERPRINT_REPO_LEVEL
+        assert self._churn(result) == []
+
+    def test_a_genuinely_positional_finding_still_warns(self) -> None:
+        """The counterweight. On `sast` this is a real churn risk and the
+        warning is the only thing that makes it visible — silencing it here
+        would cost more than the false alarms it removes."""
+        result = sarif_to_findings(sarif(start_line=9), context(workspace=None))
+        finding = result.findings[0]
+
+        assert finding.code_snippet is None
+        assert finding.symbol is None
+        assert any("churn" in w for w in self._churn(result))
+
+    def test_the_count_is_of_degraded_findings_not_snippetless_ones(self) -> None:
+        """Two results, one anchored by a symbol and one not: the warning says
+        one, not two."""
+        document = json.loads(sarif(start_line=9).decode())
+        anchored = json.loads(json.dumps(document["runs"][0]["results"][0]))
+        anchored["ruleId"] = "py/second-rule"
+        anchored["logicalLocations"] = [{"fullyQualifiedName": "orders.query.get_order"}]
+        document["runs"][0]["results"].append(anchored)
+
+        result = sarif_to_findings(json.dumps(document).encode(), context(workspace=None))
+
+        assert len(result.findings) == 2
+        warnings = self._churn(result)
+        assert len(warnings) == 1
+        assert warnings[0].startswith("1 finding(s)")

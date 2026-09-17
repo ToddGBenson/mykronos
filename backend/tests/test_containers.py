@@ -205,6 +205,36 @@ class TestTheTrivyAdapter:
 
         assert "fixed_version" not in (finding.raw_finding_json or {})
 
+    def test_a_package_finding_is_not_warned_about_as_churn_prone(self) -> None:
+        """#325: every container scan warned that all of its findings would
+        get the positional fingerprint, and not one of them did.
+
+        A Trivy result never carries a code snippet and never needed one — the
+        package name is the anchor, and the adapter attaches it *after* the
+        shared SARIF converter has run. The warning was computed before the
+        field it depends on was set, so it was wrong on every container run
+        the platform has ever done.
+        """
+        result = self._normalize()
+        finding = result.findings[0]
+
+        assert finding.code_snippet is None
+        assert finding.package_name == "perl-modules-5.40"
+        assert [w for w in result.warnings if "v1-line" in w] == []
+
+    def test_a_trivy_finding_with_no_package_is_still_warned_about(self) -> None:
+        """The counterweight: strip the package line and the finding really is
+        keyed on a line number, which is the churn this warning exists for."""
+        import copy
+
+        document = copy.deepcopy(TRIVY_SARIF)
+        document["runs"][0]["results"][0]["message"]["text"] = "No package line here."
+
+        result = self._normalize(document)
+
+        assert result.findings[0].package_name is None
+        assert any("v1-line" in w for w in result.warnings)
+
 
 class TestContainerFindingIdentity:
     """What a container finding is keyed on, and what that costs (D-073).
