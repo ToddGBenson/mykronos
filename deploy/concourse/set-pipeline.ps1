@@ -8,6 +8,16 @@
     the call, and deletes it afterwards. No secret is printed, and none is
     written anywhere git can see.
 
+.PARAMETER AllowPipelineFromAnyBranch
+    Apply pipelines\mykronos.yml as this working tree holds it - whatever
+    branch that is, and including edits that are in no commit - instead of
+    reading it out of the `main` commit. For trying a pipeline change before
+    it is merged.
+
+    It announces itself in red on every run, naming the branch and the SHA,
+    because the failure this guards against is not "somebody applied from a
+    branch". It is "somebody applied from a branch and nothing said so".
+
 .NOTES
     ASCII only - see setup.ps1 for why.
 #>
@@ -17,10 +27,40 @@ param(
     [string]$Target = "mykronos",
     [string]$Pipeline = "mykronos",
     [string]$Concourse = "http://localhost:8080",
+    # See the guard below. Never the default, and never quiet.
+    [switch]$AllowPipelineFromAnyBranch,
     [switch]$Pause
 )
 
 $ErrorActionPreference = "Stop"
+
+# -- B-59329: this script had no source guard at all -------------------------
+#
+# B-59073 established that a pipeline's source is the `main` COMMIT and only
+# that, and hardened set-thehub-pipeline.ps1. This script and
+# set-personal-soc-pipeline.ps1 were left as they were: no branch refusal, no
+# clean-tree check, applying whatever was on disk from any branch, dirty. The
+# reasoning, the two incidents behind it and why reading from the commit is
+# the part that matters are in PipelineSource.ps1, next to the code.
+#
+# One shared implementation rather than a third copy: this story exists
+# because a guard applied to one of three siblings left two behind, and three
+# scripts kept in step is that same shape waiting to happen again.
+. (Join-Path $PSScriptRoot "PipelineSource.ps1")
+
+$PipelineSourceRef = "main"
+
+Update-PipelineSourceRemote -Root $PSScriptRoot -SourceRef $PipelineSourceRef | Out-Null
+
+# Before the fly check and before anything is read from .env, so a refusal
+# costs a second. The evaluation that governs what is actually applied runs
+# inside Resolve-PipelineConfig, on the line before the blob is read.
+$source = Assert-PipelineSourceIsMain -Root $PSScriptRoot -Pipeline $Pipeline `
+    -SourceRef $PipelineSourceRef -AllowAnyBranch:$AllowPipelineFromAnyBranch
+if (-not $AllowPipelineFromAnyBranch) {
+    Write-Host "Pipeline source: $PipelineSourceRef @ $($source.MainSha.Substring(0, 7)), clean and level with origin." -ForegroundColor DarkGray
+}
+
 $fly = Join-Path $PSScriptRoot "bin\fly.exe"
 if (-not (Test-Path $fly)) {
     throw "fly is missing. Fetch it: curl -sSfL -o bin/fly.exe '$Concourse/api/v1/cli?arch=amd64&platform=windows'"
@@ -134,6 +174,7 @@ if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 # 90-day cycle (spec 12 section 2). This reads whichever is current rather
 # than keeping a second copy that would silently go stale.
 $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "mykronos-pipeline-vars-$(Get-Random).yml"
+$tempConfig = $null
 try {
     @(
         # Host IP, not a Docker name: garden task containers resolve through
@@ -219,12 +260,27 @@ try {
     # checked below either way. The real fix is a credential manager, so that
     # the config never contains a secret to print (spec 15 section 6) - this
     # closes the hole in the meantime.
+
+    # Second evaluation, from a fresh read of git, and the last thing that
+    # happens before the apply. Nothing between this line and `fly` below
+    # waits on anything, so there is no window for the tree to move through.
+    #
+    # The refusals and the `git show` are one call because the path this
+    # returns is the only `--config` there is - this script cannot skip the
+    # guard and still have something to apply, which is the property that
+    # stops the next sibling being left behind.
+    $applied = Resolve-PipelineConfig -Root $PSScriptRoot -Pipeline $Pipeline `
+        -RelativePath "pipelines\mykronos.yml" -SourceRef $PipelineSourceRef `
+        -AllowAnyBranch:$AllowPipelineFromAnyBranch
+    if ($applied.Temp) { $tempConfig = $applied.Path }
+
     & $fly --target $Target set-pipeline --pipeline $Pipeline `
-        --config (Join-Path $PSScriptRoot "pipelines\mykronos.yml") `
+        --config $applied.Path `
         --load-vars-from $varsFile --non-interactive | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "fly set-pipeline failed" }
 } finally {
     if (Test-Path $varsFile) { Remove-Item $varsFile -Force }
+    if ($tempConfig -and (Test-Path $tempConfig)) { Remove-Item $tempConfig -Force }
 }
 
 if ($Pause) {
