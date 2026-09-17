@@ -176,7 +176,58 @@ CAPABILITY_BY_JOB: dict[str, str | tuple[str, ...]] = {
     "dast-staging": "dast",
     "functional-dast": ("functional", "dast"),
     "ai-models": "ai",
+    # keel's three uploading lanes (B-59330). keel's pipeline lives in keel's
+    # own repo, so these were read off the running server with
+    # `fly get-pipeline -p keel` rather than from a file here - which is why
+    # they were missing in the first place, and why nothing in this repository
+    # can check them.
+    #
+    # The capability is the one each task DECLARES in its `CAPABILITY:` param,
+    # not one inferred from the job name. `mykronos-atlas` is the case that
+    # makes the distinction worth stating: it runs `osv-scan` with
+    # `TOOL: osv-scanner` and uploads `atlas`, and a reader going by the name
+    # would have guessed a capability called "atlas" for the wrong reason or
+    # "sca" for a job that is not called that.
+    #
+    # Only three of keel's 26 jobs upload anything. The other 23 are stubs,
+    # and they are deliberately NOT acknowledged below - see the note on
+    # `ACKNOWLEDGED_UNMAPPED_JOBS` for why a stub named `container-scan` must
+    # not be written down as a job that correctly produces nothing.
+    "mykronos-sast": "sast",
+    "mykronos-secrets": "secrets",
+    "mykronos-atlas": "atlas",
 }
+
+
+#: A JOB NAME MEANS THE SAME THING IN EVERY PIPELINE, AND IT SHOULD NOT.
+#:
+#: `CAPABILITY_BY_JOB` is keyed on the job name alone. `reconcile()` is called
+#: with one repository's jobs at a time, so the lookup is scoped to a
+#: repository by accident of the call, but the TABLE is global: a job called
+#: `sast` maps to the `sast` capability wherever it runs, whatever it does.
+#:
+#: Measured on keel, 2026-09-17. Four of its 23 stub jobs - `sast`, `secrets`,
+#: `iac` and `lint` - carry names this table already maps. They invoke no
+#: scanner and upload nothing, and they are credited anyway: keel's real
+#: uploads arrive from `mykronos-sast` and `mykronos-secrets`, the lake has
+#: recent `sast` and `secrets` runs, and the stubs' green builds line up
+#: against those runs and read `reporting`. A job that does nothing is
+#: reported as covering a capability because a differently-named sibling
+#: uploaded.
+#:
+#: That is a false green of the exact kind this module exists to remove, and
+#: it is NOT fixed by the unmapped-job reporting beside it: these jobs are
+#: mapped, so they are never `unknown`. It cannot be fixed from the
+#: acknowledgement list either - acknowledging `sast` here would un-monitor
+#: the real `sast` lane in mykronos, thehub and personal-soc, which is the
+#: same defect pointed at three working pipelines.
+#:
+#: The fix is a pipeline-scoped key, which changes this table's shape, every
+#: lookup in `reconcile()`, and `ActionsClient._job_name_for`. That is a
+#: larger change than the one this note was found during, so it is written
+#: down here and reported rather than half-done: `test_ci_job_audit.py` pins
+#: the collision so it cannot be discovered twice.
+COLLIDING_KEEL_STUBS: frozenset[str] = frozenset({"sast", "secrets", "iac", "lint"})
 
 #: How far a successful build may lead its capability's newest scan run before
 #: the results count as missing. Generous on purpose: a job's build finishes
@@ -884,6 +935,20 @@ class StageCoverage:
 
     @property
     def problem(self) -> bool:
+        # `failed` is deliberately absent, and this was checked rather than
+        # assumed: `test_a_failed_job_is_not_held_against_the_lake` states the
+        # policy - a lane that fails produces nothing and the lake is right to
+        # be empty, so the failure is the pipeline's to report and not this
+        # check's. What this property means is "coverage gap", and the value
+        # the cross-check adds is finding lanes that are GREEN and not
+        # reporting. A red lane is already red everywhere a person looks.
+        #
+        # Reconsidered on 2026-09-17 while mapping keel's `mykronos-atlas`
+        # (red since build 29, 2026-09-14) and left alone. The thing that
+        # reports a failing lane is `ConcourseClient.failing_jobs()` from #459,
+        # which reads every job the server lists and is not filtered by
+        # capability at all - so it covers a lane whether or not this table
+        # knows about it.
         return self.state in {"silent", "never_reported", "no_job", "job_not_enabled"}
 
 
@@ -1269,6 +1334,30 @@ UNMAPPED_CAPABILITY = "unknown"
 #: `unit` sat on the old hard-coded skip list until D-046 gave it a ScanRun,
 #: and nothing noticed it had started reporting -- an acknowledgement that
 #: silently stops being true is how the allowlist failed in the first place.
+#:
+#: KEEL'S 23 STUBS ARE DELIBERATELY NOT HERE, and that is a decision rather
+#: than an omission. Measured 2026-09-17: each is 158-437 bytes of pipeline
+#: with no scanner invocation at all, and they include `sca`, `container-scan`,
+#: `iac`, `secrets`, `ai-guardrails`, `suppression-audit`,
+#: `platform-integrity` and three `compliance-*` lanes. Three reasons, and the
+#: first is the one that decides it:
+#:
+#:   1. An entry here CLAIMS a job correctly produces nothing. That is true of
+#:      `build`. It is not true of a job called `container-scan` that scans no
+#:      container: the name is a statement that something is being checked, and
+#:      writing down that it correctly checks nothing is the false green this
+#:      module exists to remove. `unknown` is the honest answer - nothing is
+#:      checking these - and it is also the actionable one.
+#:   2. Four of them (`sast`, `secrets`, `iac`, `lint`) cannot be acknowledged
+#:      at all, because this table is keyed on the job name alone and those
+#:      names are mapped to real capabilities used by three working pipelines.
+#:      See `COLLIDING_KEEL_STUBS`.
+#:   3. Nothing here could check such an entry. keel's pipeline lives in keel's
+#:      own repo, so `test_ci_job_audit.py` - which reads
+#:      `deploy/concourse/pipelines/*.yml` - cannot see those job names to
+#:      confirm they still exist or still upload nothing. An acknowledgement it
+#:      cannot falsify is exactly the unrecheckable claim that test exists to
+#:      prevent, and `unit` is the standing example of what one costs.
 #:
 #: So these record what each job does TODAY. A job here that starts uploading
 #: should turn this file red, and the fix is a line in `CAPABILITY_BY_JOB`.

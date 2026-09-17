@@ -41,7 +41,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mykronos.ci import ACKNOWLEDGED_UNMAPPED_JOBS, CAPABILITY_BY_JOB
+from mykronos.ci import (
+    ACKNOWLEDGED_UNMAPPED_JOBS,
+    CAPABILITY_BY_JOB,
+    COLLIDING_KEEL_STUBS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_DIR = REPO_ROOT / "deploy" / "concourse" / "pipelines"
@@ -211,3 +215,96 @@ def test_the_jobs_this_repository_runs_are_actually_covered() -> None:
     found = {path.name for path in _pipelines()}
 
     assert {"mykronos.yml", "personal-soc.yml", "thehub.yml"} <= found
+
+
+#: keel's three uploading lanes, and the capability each task DECLARES in its
+#: `CAPABILITY:` param. Read off the running server with
+#: `fly get-pipeline -p keel` on 2026-09-17, because keel's pipeline lives in
+#: keel's own repo and nothing in this repository can see it.
+KEEL_UPLOADING_LANES = {
+    "mykronos-sast": "sast",
+    "mykronos-secrets": "secrets",
+    "mykronos-atlas": "atlas",
+}
+
+
+def test_keels_uploading_lanes_are_mapped() -> None:
+    """THE OCCURRENCE THIS STORY STARTED FROM.
+
+    Five keel jobs errored against a sealed Vault on 2026-09-07 and sat red
+    for three days because none of keel's jobs was in `CAPABILITY_BY_JOB`.
+    Reporting unmapped jobs as `unknown` fixes the class; this is the
+    occurrence, and it needs the names, which needed a fly token.
+
+    Asserted by the DECLARED capability rather than one inferred from the job
+    name. `mykronos-atlas` runs `osv-scan` with `TOOL: osv-scanner` and
+    uploads `atlas`; a reader going by names alone would not get there.
+    """
+    for job, capability in KEEL_UPLOADING_LANES.items():
+        assert CAPABILITY_BY_JOB.get(job) == capability, (
+            f"keel's {job} uploads {capability!r} and this table says "
+            f"{CAPABILITY_BY_JOB.get(job)!r}"
+        )
+
+
+def test_keels_stubs_are_not_acknowledged_as_producing_nothing() -> None:
+    """A STUB IS A DARK LANE, NOT AN EXEMPT ONE.
+
+    23 of keel's 26 jobs invoke no scanner: 158-437 bytes each, among them
+    `sca`, `container-scan`, `ai-guardrails`, `suppression-audit` and three
+    `compliance-*` lanes. Three of them (`secrets`, `iac`, `container-scan`)
+    even name gitleaks, checkov and trivy in their text without running them.
+
+    Acknowledging those would write down that keel's container scanning
+    correctly produces no findings. It does not produce findings because it
+    does not exist, which is the opposite claim and the exact false green this
+    module is for. They report `unknown` instead, which is true and is
+    something a person can act on.
+
+    Pinned as a test because it is the kind of decision a later reader
+    reverses to quieten a page.
+    """
+    wrongly_acknowledged = sorted(
+        job
+        for job in ("sca", "container-scan", "suppression-audit", "platform-integrity",
+                    "ai-guardrails", "ai-evals", "agent-assurance", "compliance-daily",
+                    "compliance-weekly", "compliance-monthly", "full-suite",
+                    "verify-artifact", "build-and-attest", "release-preflight",
+                    "authorize-release", "metrics-snapshot", "test")
+        if job in ACKNOWLEDGED_UNMAPPED_JOBS
+    )
+
+    assert not wrongly_acknowledged, (
+        "these are keel stub jobs that run no scanner, and acknowledging them "
+        "records that a named security control correctly produces nothing: "
+        f"{wrongly_acknowledged}. They should report `unknown`."
+    )
+
+
+def test_the_job_name_collision_across_pipelines_is_still_recorded() -> None:
+    """A KNOWN DEFECT, PINNED SO IT IS NOT FOUND A SECOND TIME.
+
+    `CAPABILITY_BY_JOB` is keyed on the job name alone, so a name means the
+    same thing in every pipeline. keel has stub jobs called `sast`, `secrets`,
+    `iac` and `lint` that invoke nothing, and this table maps all four to real
+    capabilities — so keel's stubs are credited with the uploads its
+    differently-named real lanes (`mykronos-sast`, `mykronos-secrets`) make,
+    and read `reporting`.
+
+    Not fixable from either table: acknowledging `sast` here would un-monitor
+    the real `sast` lane in three working pipelines. The fix is a
+    pipeline-scoped key, which is a larger change than the one this was found
+    during.
+
+    This test fails the day somebody makes the table pipeline-scoped, which is
+    the right moment to delete it and `COLLIDING_KEEL_STUBS` together.
+    """
+    assert set(CAPABILITY_BY_JOB) >= COLLIDING_KEEL_STUBS, (
+        "these keel stub names are no longer mapped globally, so either the "
+        "collision is fixed — delete this test and COLLIDING_KEEL_STUBS — or "
+        "a real lane lost its mapping"
+    )
+    assert not (COLLIDING_KEEL_STUBS & set(ACKNOWLEDGED_UNMAPPED_JOBS)), (
+        "a colliding name was acknowledged, which un-monitors the real lane "
+        "of the same name in mykronos, thehub and personal-soc"
+    )
