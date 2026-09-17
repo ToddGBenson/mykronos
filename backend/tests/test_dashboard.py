@@ -1274,6 +1274,42 @@ class TestPortfolioCarriesOracleScores:
         assert body["summary"]["repos_not_assessed"] == 1
         assert body["summary"]["repos_no_go"] == 0
 
+    def test_a_repo_oracle_declined_to_judge_is_counted_as_not_assessed(
+        self, client, auth, admin_auth: dict[str, str], buffer, run_compaction
+    ) -> None:
+        """The other way a repository is not assessed (#445).
+
+        `None` means Oracle never judged this repo. `not_assessed` means Oracle
+        judged it and declined — introduced by #444 so a repository nothing has
+        ever scanned stops reading as `go`. Counting only the first made this
+        report 0 at the exact moment one repository was explicitly not
+        assessed: the same shape of error #341 describes, in the counter that
+        exists to report it.
+        """
+        onboard(client, admin_auth, scanned_by="concourse")
+        buffer.append(
+            "risk_decisions",
+            [
+                {
+                    "decision_id": "d-not-assessed",
+                    "repo_full_name": REPO,
+                    "decision_type": "portfolio",
+                    "overall_risk_score": 0,
+                    "recommendation": "not_assessed",
+                    "evaluated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        body = client.get("/api/dashboard/portfolio", headers=admin_auth).json()
+
+        # The decision row exists, so `recommendation is None` is False here.
+        assert body["repos"][0]["recommendation"] == "not_assessed"
+        assert body["summary"]["repos_not_assessed"] == 1
+        # And it must not be mistaken for a clean verdict.
+        assert body["summary"]["repos_no_go"] == 0
+
     @pytest.mark.anyio
     async def test_a_pr_gate_decision_does_not_become_the_standing_score(
         self, client, admin_auth, run_compaction, settings
