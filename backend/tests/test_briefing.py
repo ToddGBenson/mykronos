@@ -644,6 +644,80 @@ class TestBlockedLanes:
         assert "unit is red, so this lane cannot start" in rendered
 
 
+
+class TestFailingLanesNobodySwitchedOff:
+    """#306. `personal-soc/netassess-ingest` had one success in ten builds,
+    failing on its timer for five weeks, and the briefing did not mention it
+    once in seventy-eight lines — it qualified for no section. These pin the
+    section that now holds it."""
+
+    @staticmethod
+    def _bad(**kw: object) -> briefing.FailingLane:
+        base: dict[str, object] = {
+            "pipeline": "personal-soc",
+            "job": "netassess-ingest",
+            "last_status": "failed",
+            "last_finished_at": _utcnow() - timedelta(days=3),
+        }
+        base.update(kw)
+        return briefing.FailingLane(**base)  # type: ignore[arg-type]
+
+    def test_a_failing_unpaused_lane_is_named(self, catalog) -> None:
+        rendered = briefing.render(
+            briefing.build(catalog, failing_jobs=[self._bad()])
+        )
+
+        assert "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF" in rendered
+        assert "personal-soc/netassess-ingest" in rendered
+        assert "failed" in rendered
+
+    def test_nothing_failing_prints_no_section(self, catalog) -> None:
+        rendered = briefing.render(briefing.build(catalog, failing_jobs=[]))
+
+        assert "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF" not in rendered
+
+    def test_could_not_ask_does_not_read_as_nothing_failing(self, catalog) -> None:
+        """The same distinction `paused_jobs` makes, for the same reason: an
+        unreachable CI system must not render as a healthy one."""
+        unknown = briefing.render(briefing.build(catalog, failing_jobs=None))
+        none_failing = briefing.render(briefing.build(catalog, failing_jobs=[]))
+
+        assert "Could not ask the CI system" in unknown
+        assert unknown != none_failing
+
+    def test_it_is_reported_separately_from_paused(self, catalog) -> None:
+        """Both sections can appear at once and must say different things —
+        a paused lane is a decision somebody made, this is one nobody looked
+        at. Collapsing them would lose exactly that."""
+        rendered = briefing.render(
+            briefing.build(
+                catalog,
+                failing_jobs=[self._bad()],
+                paused_jobs=[
+                    briefing.PausedLane(
+                        pipeline="thehub",
+                        job="cloud-posture",
+                        last_status="failed",
+                        last_finished_at=_utcnow() - timedelta(days=35),
+                    )
+                ],
+            )
+        )
+
+        assert "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF" in rendered
+        assert "LANES THAT ARE SWITCHED OFF" in rendered
+        assert "personal-soc/netassess-ingest" in rendered
+        assert "thehub/cloud-posture" in rendered
+
+    def test_never_finished_is_said_plainly(self, catalog) -> None:
+        rendered = briefing.render(
+            briefing.build(
+                catalog, failing_jobs=[self._bad(last_finished_at=None)]
+            )
+        )
+
+        assert "has never finished a build" in rendered
+
 class TestLanesThatAreSwitchedOff:
     """Paused CI jobs (#401).
 
