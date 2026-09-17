@@ -746,6 +746,34 @@ async def route_open_findings(
     return result
 
 
+@dataclass(frozen=True)
+class OverCapAcceptance:
+    """An acceptance whose window the current policy would refuse — reported,
+    and left exactly as the operator wrote it (#419).
+
+    `window_days` is the window as it was *granted*: `accepted_until` minus the
+    day the acceptance was recorded, which is the same span
+    `_check_acceptance_is_earned` measures on the PATCH that creates one. Not
+    the days remaining, which shrink as the window runs down and would quietly
+    stop reporting an over-long acceptance about halfway through it.
+    """
+
+    finding_id: str
+    repo_full_name: str
+    severity: str
+    reason_code: str
+    accepted_until: date
+    window_days: int
+    limit_days: int
+
+    def line(self) -> str:
+        return (
+            f"{self.repo_full_name} {self.finding_id} {self.severity}/"
+            f"{self.reason_code}: {self.window_days} days to "
+            f"{self.accepted_until.isoformat()}, cap {self.limit_days}"
+        )
+
+
 @dataclass
 class AcceptanceSweepResult:
     """What one pass over the accepted-risk backlog changed."""
@@ -753,12 +781,51 @@ class AcceptanceSweepResult:
     expired: int = 0
     reopened_by_fix: int = 0
     still_accepted: int = 0
+    #: Reported only. Nothing in the sweep writes to these findings.
+    over_cap: list[OverCapAcceptance] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"{self.expired} expired, {self.reopened_by_fix} re-opened because a "
-            f"fix shipped, {self.still_accepted} still accepted"
+            f"fix shipped, {self.still_accepted} still accepted, "
+            f"{len(self.over_cap)} over the window cap (reported, not changed)"
         )
+
+
+def _over_cap(
+    *,
+    finding_id: str,
+    repo_full_name: str,
+    severity: str,
+    reason_code: str,
+    accepted_until: date | None,
+    accepted_on: date | None,
+    limits: dict[str, int],
+) -> OverCapAcceptance | None:
+    """The one acceptance, if today's policy would refuse the window it got.
+
+    `accepted_on` is `resolved_at`, the moment the disposition was written. A
+    row without one cannot have its granted window reconstructed, so it is
+    skipped rather than measured from some other date — reporting an acceptance
+    as over-long on a window nobody granted would be worse than missing it.
+    """
+    if accepted_until is None or accepted_on is None:
+        return None
+    limit = limits.get(severity)
+    if limit is None:
+        return None
+    window = (accepted_until - accepted_on).days
+    if window <= limit:
+        return None
+    return OverCapAcceptance(
+        finding_id=finding_id,
+        repo_full_name=repo_full_name,
+        severity=severity,
+        reason_code=reason_code,
+        accepted_until=accepted_until,
+        window_days=window,
+        limit_days=limit,
+    )
 
 
 def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> AcceptanceSweepResult:
@@ -782,7 +849,22 @@ def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> Accepta
     not a new discovery, and letting it reset the clock would hand every
     ageing finding a way to look young — which is exactly what the age term,
     the due date, and mean-time-to-fix would then be measuring.
+
+    **And one thing it reports without touching** (#419). `MAX_ACCEPTANCE_DAYS`
+    is enforced by `_check_acceptance_is_earned`, which runs on the PATCH that
+    *creates* an acceptance and so has never seen the population that predates
+    it: 42 of 669 acceptances carry a window the policy would refuse today, all
+    `high`, at 166–176 days against a 90-day cap. This walk already visits every
+    one of them, so it names them — in `over_cap` and in the log.
+
+    Named, not corrected. Re-dating, shortening or revoking one here would be
+    the platform overruling the operator's judgement about their own estate,
+    silently and in bulk; a machine that can quietly re-date an acceptance can
+    quietly re-date a real risk. The 42 are theirs to re-date, re-justify, or
+    leave with a note saying why six months was right.
     """
+    from mykronos.api.dashboard import MAX_ACCEPTANCE_DAYS
+
     result = AcceptanceSweepResult()
     if not catalog.all_files("findings"):
         return result
@@ -794,7 +876,10 @@ def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> Accepta
         SELECT finding_id,
                accepted_until,
                accepted_reason_code,
-               coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), '')
+               coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), ''),
+               repo_full_name,
+               severity,
+               resolved_at
         FROM findings
         WHERE status = 'accepted_risk'
         """
@@ -804,13 +889,34 @@ def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> Accepta
 
     expired: list[str] = []
     fixed: list[str] = []
-    for finding_id, accepted_until, reason_code, fixed_version in rows:
+    for (
+        finding_id,
+        accepted_until,
+        reason_code,
+        fixed_version,
+        repo_full_name,
+        severity,
+        resolved_at,
+    ) in rows:
         if accepted_until is not None and accepted_until <= now:
             expired.append(str(finding_id))
         elif reason_code == "no_vendor_fix" and str(fixed_version).strip():
             fixed.append(str(finding_id))
         else:
             result.still_accepted += 1
+            # Only the ones staying accepted. An acceptance this sweep is about
+            # to re-open has no window left to report on.
+            reported = _over_cap(
+                finding_id=str(finding_id),
+                repo_full_name=str(repo_full_name or ""),
+                severity=str(severity or "").strip().lower(),
+                reason_code=str(reason_code or ""),
+                accepted_until=accepted_until,
+                accepted_on=resolved_at.date() if resolved_at is not None else None,
+                limits=MAX_ACCEPTANCE_DAYS,
+            )
+            if reported is not None:
+                result.over_cap.append(reported)
 
     for finding_ids, bucket in ((expired, "expired"), (fixed, "fixed")):
         if not finding_ids:
@@ -831,6 +937,16 @@ def sweep_acceptances(catalog: Catalog, *, today: date | None = None) -> Accepta
             result.expired += outcome.count
         else:
             result.reopened_by_fix += outcome.count
+
+    if result.over_cap:
+        # One line per acceptance, because a count is not a work list: the
+        # person who has to re-date these needs to know which they are.
+        logger.warning(
+            "Acceptance sweep: %s acceptance(s) carry a window the current "
+            "policy would refuse; none was changed:\n%s",
+            len(result.over_cap),
+            "\n".join(sorted(entry.line() for entry in result.over_cap)),
+        )
 
     if result.expired or result.reopened_by_fix:
         logger.info("Acceptance sweep: %s", result.summary())

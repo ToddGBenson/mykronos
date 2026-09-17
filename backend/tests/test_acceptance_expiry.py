@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from mykronos.jobs import sweep_acceptances
 from mykronos.lake.catalog import Catalog
+from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.schemas import utcnow
 from tests.conftest import (
     dependency_finding,
@@ -659,3 +660,202 @@ class TestTheAcceptanceChecklist:
 
         assert response.status_code == 422
         assert "architecture" in response.json()["detail"]
+
+
+class TestWindowsThePolicyWouldNowRefuse:
+    """`MAX_ACCEPTANCE_DAYS` runs on the PATCH that creates an acceptance, so
+    it has never seen the 669 that predate it — 42 of which carry a window it
+    would refuse today, all `high`, at 166–176 days against a 90-day cap
+    (#419).
+
+    The sweep already walks every acceptance. These tests pin that it names
+    those windows and, more importantly, that naming them is *all* it does: an
+    acceptance is the operator's judgement about their own estate, and a
+    machine that can quietly re-date one can quietly re-date a real risk.
+    """
+
+    def _accept_then_stretch(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        *,
+        days: int,
+        reason_code: str = "no_vendor_fix",
+    ) -> str:
+        """Create an acceptance the endpoint allows, then widen its window in
+        the lake directly.
+
+        The endpoint cannot be asked for an over-cap window — refusing one is
+        its whole job — so the only way to stand up the population this reports
+        on is to write the row the way it was written before the cap existed.
+        """
+        finding_id = only_finding(catalog)
+        response = accept(
+            client,
+            admin_auth,
+            finding_id,
+            accepted_reason_code=reason_code,
+            reason="the parser is never reached from an entry point",
+            accepted_until=(today() + timedelta(days=20)).isoformat(),
+        )
+        assert response.status_code == 200, response.text
+        update_findings(
+            catalog,
+            locate_findings(catalog, [finding_id]),
+            "accepted_until = ?",
+            [today() + timedelta(days=days)],
+        )
+        return finding_id
+
+    def test_an_over_long_window_is_reported(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        seed(client, auth, run_compaction, severity="high")
+        finding_id = self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        result = sweep_acceptances(catalog, today=today())
+
+        assert len(result.over_cap) == 1
+        reported = result.over_cap[0]
+        assert reported.finding_id == finding_id
+        assert (reported.severity, reported.window_days, reported.limit_days) == (
+            "high",
+            170,
+            90,
+        )
+        assert reported.reason_code == "no_vendor_fix"
+
+    def test_reporting_changes_nothing(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """The whole constraint. The acceptance is still accepted, still ends
+        on the day the operator chose, and still rests on the code they gave —
+        the sweep reported it and touched nothing."""
+        seed(client, auth, run_compaction, severity="high")
+        self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        result = sweep_acceptances(catalog, today=today())
+
+        assert result.still_accepted == 1
+        assert (result.expired, result.reopened_by_fix) == (0, 0)
+        assert state(catalog) == (
+            "accepted_risk",
+            today() + timedelta(days=170),
+            "no_vendor_fix",
+        )
+
+    def test_the_window_is_the_one_granted_not_the_days_left(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """Measured from the day the acceptance was recorded, not from today.
+        Days-remaining shrinks as the window runs down, so a 170-day window set
+        in March would stop being reported in June — the report would go quiet
+        on exactly the acceptances that had been standing longest."""
+        seed(client, auth, run_compaction, severity="high")
+        self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        result = sweep_acceptances(catalog, today=today() + timedelta(days=100))
+
+        assert [entry.window_days for entry in result.over_cap] == [170]
+
+    def test_a_window_inside_the_cap_is_not_reported(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        seed(client, auth, run_compaction, severity="high")
+        self._accept_then_stretch(client, admin_auth, catalog, days=89)
+
+        assert sweep_acceptances(catalog, today=today()).over_cap == []
+
+    def test_the_cap_that_applies_is_the_finding_s_own_severity(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """170 days is over the cap for `high` and inside it for `medium`.
+        The 42 are what they are because somebody set one uniform review date
+        across a batch of mixed severities."""
+        seed(client, auth, run_compaction, severity="medium")
+        self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        assert sweep_acceptances(catalog, today=today()).over_cap == []
+
+    def test_an_acceptance_being_reopened_is_not_also_reported(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """An acceptance the sweep is expiring has no window left to report on,
+        and listing it for re-dating would be asking for work on a finding that
+        is already back on the queue."""
+        seed(client, auth, run_compaction, severity="high")
+        self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        result = sweep_acceptances(catalog, today=today() + timedelta(days=171))
+
+        assert result.expired == 1
+        assert result.over_cap == []
+        assert state(catalog)[0] == "open"
+
+    def test_an_indefinite_acceptance_is_not_reported(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """No `accepted_until` is a different refusal with a different remedy,
+        and #408 already guards it at the door. Reporting it here as a window
+        of some length would be inventing the number."""
+        seed(client, auth, run_compaction, severity="low")
+        assert (
+            accept(client, admin_auth, only_finding(catalog), indefinite=True).status_code
+            == 200
+        )
+
+        assert sweep_acceptances(catalog, today=today()).over_cap == []
+
+    def test_the_summary_names_them(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        admin_auth: dict[str, str],
+        catalog: Catalog,
+        run_compaction: Any,
+    ) -> None:
+        """`main.py` logs the summary and nothing else, so a count that is not
+        in the summary is a count nobody ever reads."""
+        seed(client, auth, run_compaction, severity="high")
+        self._accept_then_stretch(client, admin_auth, catalog, days=170)
+
+        summary = sweep_acceptances(catalog, today=today()).summary()
+
+        assert "1 over the window cap" in summary
+        assert "not changed" in summary
