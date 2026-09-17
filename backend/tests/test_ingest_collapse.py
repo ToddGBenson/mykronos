@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from mykronos.api.ingest import _warn_on_collapse
+from tests.conftest import REPO
 
 
 def _row(finding_id: str, title: str) -> dict[str, object]:
@@ -37,7 +38,7 @@ class TestTheSignalThatMatters:
         ]
 
         with caplog.at_level(logging.WARNING):
-            _warn_on_collapse(rows, "dast", "ToddGBenson/TheHub", "run-1")
+            _warn_on_collapse(rows, "dast", REPO, "run-1")
 
         assert "merged DIFFERENT findings" in caplog.text
         assert "script-src unsafe-inline" in caplog.text
@@ -49,7 +50,7 @@ class TestTheSignalThatMatters:
         rows = [_row("abc", "Non-Storable Content at GET /")] * 2
 
         with caplog.at_level(logging.WARNING):
-            _warn_on_collapse(rows, "dast", "ToddGBenson/TheHub", "run-1")
+            _warn_on_collapse(rows, "dast", REPO, "run-1")
 
         assert "merged DIFFERENT findings" not in caplog.text
 
@@ -59,7 +60,7 @@ class TestTheSignalThatMatters:
         rows = [_row("abc", "same")] * 3
 
         with caplog.at_level(logging.INFO):
-            _warn_on_collapse(rows, "secrets", "ToddGBenson/TheHub", "run-1")
+            _warn_on_collapse(rows, "secrets", REPO, "run-1")
 
         assert "2 duplicate submission(s) merged" in caplog.text
 
@@ -81,7 +82,7 @@ class TestTheSignalThatMatters:
         ]
 
         with caplog.at_level(logging.WARNING):
-            _warn_on_collapse(rows, "dast", "ToddGBenson/TheHub", "run-1")
+            _warn_on_collapse(rows, "dast", REPO, "run-1")
 
         assert "5 submission(s) collapsed into 3 finding(s)" in caplog.text
 
@@ -95,7 +96,7 @@ class TestTheSignalThatMatters:
         ]
 
         with caplog.at_level(logging.WARNING):
-            _warn_on_collapse(rows, "dast", "ToddGBenson/TheHub", "run-1")
+            _warn_on_collapse(rows, "dast", REPO, "run-1")
 
         assert "\nINFO: nothing to see here" not in caplog.text
         assert "\n" in caplog.text
