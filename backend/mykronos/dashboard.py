@@ -42,6 +42,7 @@ from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
+from mykronos.oracle import NOT_ASSESSED
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
@@ -609,7 +610,18 @@ class DashboardQueries:
             repos_awaiting_first_scan=sum(1 for r in real if r.awaiting_first_scan),
             repos_with_stale_scans=sum(1 for r in real if r.is_stale),
             repos_no_go=sum(1 for r in real if r.recommendation == "no_go"),
-            repos_not_assessed=sum(1 for r in real if r.recommendation is None),
+            repos_not_assessed=sum(
+                1
+                for r in real
+                # Two ways a repository is not assessed, and both belong in a
+                # counter whose whole job is to say what is unknown. `None` is
+                # "Oracle never judged this repo"; `not_assessed` is "Oracle
+                # judged it and declined", which #444 introduced so that a
+                # repository nothing has ever scanned stops reading as `go`.
+                # Counting only the first meant this reported 0 at the exact
+                # moment a repository was explicitly not assessed (#445).
+                if r.recommendation is None or r.recommendation == NOT_ASSESSED
+            ),
             overdue_findings=overdue_findings,
         )
         return rows, summary
