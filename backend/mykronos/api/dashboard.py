@@ -2308,9 +2308,11 @@ class GovernanceOut(BaseModel):
         default_factory=list,
         description=(
             "Controls that changed state since the platform last looked, newest "
-            "first. A transition *to* `unknown` is a read that failed rather "
-            "than a control that was removed — a revoked permission and a "
-            "security regression must never look the same."
+            "first. Transitions that cross `unknown` in either direction are "
+            "not here: a read that failed is not a control that was removed, "
+            "and a read that recovered is not a control being switched on — a "
+            "revoked permission and a security regression must never look the "
+            "same (#264)."
         ),
     )
     merges: dict[str, Any] = Field(
