@@ -845,14 +845,34 @@ def main(argv: list[str] | None = None) -> int:
             # Distinct name: `rows` is bound above by other subcommands and
             # reusing it makes mypy infer the wrong type — the same trap the
             # `reprocess` branch already documents.
-            parity_rows = compare(
-                coverage(par_capabilities, reconcile(concourse.jobs, last_scan)),
-                coverage(par_capabilities, reconcile(actions.jobs, last_scan)),
+            concourse_stages = coverage(
+                par_capabilities, reconcile(concourse.jobs, last_scan)
             )
+            actions_stages = coverage(par_capabilities, reconcile(actions.jobs, last_scan))
+            parity_rows = compare(concourse_stages, actions_stages)
             _print_table(
                 ["capability", "concourse", "actions", "verdict"],
                 [[r.capability, r.before, r.after, r.verdict] for r in parity_rows],
             )
+
+            # A capability served by several jobs is one row in that table and
+            # several lanes underneath it, and the row carries the weakest of
+            # them (B-380). Naming the lanes is what stops the reader having to
+            # trust the collapse: `keel`'s `sast` reads `failed` because
+            # ShellCheck fails, while CodeQL beside it reports perfectly well,
+            # and neither half of that is visible from the word `failed`.
+            multi = [
+                (label, stage)
+                for label, stages in (("concourse", concourse_stages), ("actions", actions_stages))
+                for stage in stages
+                if len(stage.lanes) > 1
+            ]
+            if multi:
+                print()
+                print("Capabilities served by more than one lane:")
+                for label, stage in multi:
+                    lanes = ", ".join(f"{job}={state}" for job, state in stage.lanes)
+                    print(f"  {label} {stage.stage}: {lanes} -> {stage.state}")
 
             regressed = [r.capability for r in parity_rows if r.regressed]
             if regressed:
