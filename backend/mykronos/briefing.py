@@ -517,6 +517,53 @@ class FailingLane:
 
 
 @dataclass
+class TokenDelivery:
+    """An ingestion token the rotation job left for a person (#263).
+
+    Nothing surfaced these. The rotation sweep wrote a warning line and moved
+    on, so finding the one repository it had deferred on every run for days
+    took reading thirty hours of container logs — and the line it wrote said
+    "due for token rotation" about a token with eighty-eight days left.
+
+    Two states, deliberately one dataclass with a `state` on it rather than
+    two lists, because the point is that a reader must be able to tell them
+    apart on the page:
+
+    - ``due`` — the active token is past `rotate_after`. Rotate it by hand,
+      because this platform cannot deliver a rotated token to a
+      Concourse-scanned repository (D-086).
+    - ``unverified`` — delivery of the active token has never been confirmed.
+      This is **not** a reason to rotate. It is a reason to check that scans
+      are arriving; rotating a token whose Vault copy works is how the
+      repository goes dark (D-097).
+    """
+
+    repo_full_name: str
+    #: "due" | "unverified"
+    state: str
+    issued_at: datetime
+    rotate_after: datetime
+    #: Which scanner reads this repo's token, and therefore why the rotation
+    #: job cannot deliver to it. Printed rather than inferred.
+    scanned_by: str = ""
+
+    @property
+    def days_until_due(self) -> float:
+        """Negative once the token is actually past its rotation date.
+
+        The number the log line omitted, and the one that settles the
+        argument: a reader who is told "due for rotation" and finds three
+        months on the clock stops reading this channel.
+        """
+        from mykronos.schemas import utcnow
+
+        end = self.rotate_after
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        return (end - utcnow().replace(tzinfo=UTC)).total_seconds() / 86400
+
+
+@dataclass
 class Briefing:
     generated_at: datetime
     total_open: int
@@ -559,6 +606,14 @@ class Briefing:
     #: list because the fix is a tool choice rather than a lane repair, and
     #: because these lanes are green everywhere else in the platform.
     unread: list[UnreadCode] = field(default_factory=list)
+    #: Ingestion tokens the rotation job deferred to a person (#263). Its own
+    #: list for the same reason as `unhealthy_jobs`: it is a credential, not a
+    #: lane and not a finding, and it comes from the operational database
+    #: rather than the lake.
+    tokens: list[TokenDelivery] = field(default_factory=list)
+    #: True when the token registry could not be read. Distinct from an empty
+    #: `tokens` list, which means it was read and nothing is waiting.
+    tokens_unknown: bool = False
     classes: list[ClassSummary] = field(default_factory=list)
     auto_fixable: int = 0
     #: Already fixed, waiting only for scans to confirm. Needs no work.
@@ -1139,6 +1194,7 @@ def build(
     paused_jobs: list[PausedLane] | None = None,
     failing_jobs: list[FailingLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
+    tokens: list[TokenDelivery] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1212,6 +1268,11 @@ def build(
         # direction.
         unhealthy_jobs=list(unhealthy_jobs or []),
         jobs_unknown=unhealthy_jobs is None,
+        # Scoped by `asset_id` unlike the three above it, because a token *is*
+        # keyed by repository — it is the one thing in this group the lake's
+        # denominator applies to.
+        tokens=_only(list(tokens or []), asset_id),
+        tokens_unknown=tokens is None,
         awaiting=_only(awaiting_closure(catalog), asset_id),
         classes=classes,
         # Only `atlas` has deterministic fixers with anything to act on; the
@@ -1373,6 +1434,55 @@ def render(briefing: Briefing) -> str:
             "  Could not read the CI system, so whether any lane is paused is",
             "  unknown. A paused lane reports nothing and looks like a lane",
             "  that was never configured.",
+            "",
+        ]
+
+    if briefing.tokens:
+        lines += [
+            "INGESTION TOKENS WAITING ON A PERSON",
+            "  The rotation sweep cannot write a secret to a repository it does",
+            "  not drive, so it defers and logs. Nothing read those lines: one",
+            "  repository was deferred on every run for days and it took 30",
+            "  hours of container logs to find out.",
+            "",
+        ]
+        due = [t for t in briefing.tokens if t.state == "due"]
+        unverified = [t for t in briefing.tokens if t.state != "due"]
+        for token in sorted(due, key=lambda t: t.rotate_after):
+            overdue = -token.days_until_due
+            lines.append(f"  {token.repo_full_name}  — DUE")
+            lines.append(
+                f"      issued {token.issued_at:%Y-%m-%d}, rotation date "
+                f"{token.rotate_after:%Y-%m-%d} ({overdue:.0f} days ago)"
+            )
+            lines.append(
+                f"      → rotate by hand and re-run set-pipeline; "
+                f"{token.scanned_by or 'its scanner'} reads it from Vault"
+            )
+        for token in sorted(unverified, key=lambda t: t.repo_full_name):
+            # The number that settles it. The log line this replaces said "due
+            # for token rotation" about a token with 88 days left, so a reader
+            # who checked the date concluded the warning was noise -- and the
+            # claim that was actually being made never reached them (#263).
+            lines.append(f"  {token.repo_full_name}  — DELIVERY NEVER CONFIRMED")
+            lines.append(
+                f"      active token issued {token.issued_at:%Y-%m-%d}; NOT due "
+                f"for rotation ({token.days_until_due:.0f} days to go)"
+            )
+            lines.append(
+                "      → check scans are arriving (this page, above). Do NOT "
+                "rotate it:"
+            )
+            lines.append(
+                "        rotating a token whose Vault copy works is what breaks "
+                "the pipeline."
+            )
+        lines.append("")
+    elif briefing.tokens_unknown:
+        lines += [
+            "INGESTION TOKENS WAITING ON A PERSON",
+            "  Could not read the token registry. Not the same as no token",
+            "  waiting, and must not read like it.",
             "",
         ]
 

@@ -181,11 +181,15 @@ class TestRotation:
         with caplog.at_level("WARNING"):
             result = await rotate_ingestion_tokens(db, factory)
 
-        assert result.deferred == [REPO]
+        # `unverified`, not `deferred`: #263 split the bucket as well as the
+        # wording, because a result object that counts the two together is the
+        # same false claim one layer up from the log line.
+        assert result.unverified == [REPO]
+        assert result.deferred == []
         assert result.rotated == []
         message = caplog.text
         assert "is due for token rotation" not in message
-        assert "secret-never-synced" in message
+        assert "never presented its active ingestion token" in message
         assert "NOT due for rotation" in message
 
     async def test_a_due_concourse_repo_still_says_due(
@@ -291,7 +295,8 @@ class TestRotation:
             db, factory, concourse=FakeConcourse(has_pipeline=True)
         )
 
-        assert result.deferred == [REPO]
+        assert result.unverified == [REPO]
+        assert result.deferred == []
         assert result.rotated == []
         assert result.resynced == []
 
