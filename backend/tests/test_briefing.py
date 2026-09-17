@@ -624,3 +624,80 @@ class TestLanesThatAreSwitchedOff:
         )
 
         assert [lane.job for lane in report.paused] == ["cloud-posture"]
+
+
+class TestScheduledJobsThatAreNotRunning:
+    """The platform's own sweeps (#409).
+
+    THE DEFECT THIS PINS. The acceptance sweep failed for four days -- the one
+    job that enforces every review date and re-opens an acceptance whose
+    premise a scan has disproved. `job_runs` held the failure, correct and
+    unread, the whole time: `last_error` named a write-write conflict and
+    `last_succeeded_at` was three days stale.
+
+    Nothing surfaced it. `_every` retries, so a job that throws on every tick
+    looks from outside exactly like one that has never had a problem, and the
+    briefing -- the page somebody actually reads after a deploy -- did not
+    mention job health at all.
+    """
+
+    @staticmethod
+    def _job(**kw: object) -> Any:
+        from mykronos.platform_health import JobHealth
+
+        base: dict[str, Any] = {
+            "name": "acceptances",
+            "status": "failing",
+            # Shaped the way `assess_job` actually writes it -- it leads with
+            # the count, which is why the renderer does not repeat it.
+            "detail": "2 consecutive failures: write-write conflict on findings",
+            "consecutive_failures": 2,
+        }
+        base.update(kw)
+        return JobHealth(**base)  # type: ignore[arg-type]
+
+    def test_a_failing_sweep_is_named(self, catalog) -> None:
+        report = briefing.build(
+            catalog,
+            unhealthy_jobs=[
+                self._job(last_succeeded_at=_utcnow() - timedelta(days=3))
+            ],
+        )
+
+        rendered = briefing.render(report)
+
+        assert "SCHEDULED JOBS THAT ARE NOT RUNNING" in rendered
+        assert "acceptances" in rendered
+        assert "write-write conflict" in rendered
+        # `assess_job` leads the detail with the count; not repeated below it.
+        assert "2 consecutive failures" in rendered
+
+    def test_a_healthy_platform_prints_no_section(self, catalog) -> None:
+        rendered = briefing.render(briefing.build(catalog, unhealthy_jobs=[]))
+
+        assert "SCHEDULED JOBS THAT ARE NOT RUNNING" not in rendered
+
+    def test_could_not_read_does_not_read_as_healthy(self, catalog) -> None:
+        """Same trap as the paused lanes: an unreadable job table must not
+        render identically to a platform whose jobs are all running."""
+        unknown = briefing.render(briefing.build(catalog, unhealthy_jobs=None))
+        healthy = briefing.render(briefing.build(catalog, unhealthy_jobs=[]))
+
+        assert "could not be read" in unknown
+        assert unknown != healthy
+
+    def test_a_job_that_never_ran_is_reported_too(self, catalog) -> None:
+        """`never_ran` and `late` are as interesting as `failing`: a daily job
+        on a container redeployed hourly used to reach neither."""
+        report = briefing.build(
+            catalog,
+            unhealthy_jobs=[
+                self._job(name="rotation", status="never_ran", detail="no run recorded",
+                          consecutive_failures=0, last_succeeded_at=None)
+            ],
+        )
+
+        rendered = briefing.render(report)
+
+        assert "rotation" in rendered
+        assert "never_ran" in rendered
