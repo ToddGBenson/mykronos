@@ -20,7 +20,11 @@ from mykronos.adapters.dast_zap import normalize as zap_normalize
 from mykronos.adapters.registry import get_adapter, normalize_results
 from mykronos.adapters.secrets_gitleaks import REDACTED
 from mykronos.adapters.secrets_gitleaks import normalize as gitleaks_normalize
-from mykronos.fingerprint import FINGERPRINT_V2_SNIPPET, compute_finding_id
+from mykronos.fingerprint import (
+    FINGERPRINT_V1_LINE,
+    FINGERPRINT_V2_SNIPPET,
+    compute_finding_id,
+)
 from mykronos.schemas import ScanStatus, Severity
 
 REPO = "ToddGBenson/payments-api"
@@ -80,9 +84,13 @@ class TestGitleaks:
 
     def test_no_snippet_is_ever_captured(self) -> None:
         """Every other adapter captures surrounding source for fingerprint
-        stability. Doing that here would copy the secret into the lake."""
+        stability. Doing that here would copy the secret into the lake.
+
+        Not a redaction marker either — see `TestGitleaksIdentity` for why a
+        constant in this field is worse than an empty one (#396).
+        """
         result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
-        assert result.findings[0].code_snippet == REDACTED
+        assert result.findings[0].code_snippet is None
 
     def test_the_finding_says_which_commit_it_is_about(self) -> None:
         """The workflow runs `gitleaks detect` over a full-depth clone, so a
@@ -135,30 +143,6 @@ class TestGitleaks:
         assert finding.raw_finding_json["Secret"] == REDACTED
         assert finding.raw_finding_json["Match"] == REDACTED
 
-    def test_identity_is_stable_when_the_secret_moves_down_the_file(self) -> None:
-        """The D-001 property, achieved without storing the secret: identity
-        is (repo, capability, rule, file)."""
-        first = gitleaks_normalize(
-            json.dumps([gitleaks_record(StartLine=42)]).encode(), context("secrets")
-        ).findings[0]
-        second = gitleaks_normalize(
-            json.dumps([gitleaks_record(StartLine=118)]).encode(), context("secrets")
-        ).findings[0]
-
-        def identity(finding):
-            return compute_finding_id(
-                repo_full_name=REPO,
-                capability="secrets",
-                rule_id=finding.rule_id,
-                file_path=finding.file_path,
-                symbol=finding.symbol,
-                code_snippet=finding.code_snippet,
-                line_start=finding.line_start,
-            )
-
-        assert identity(first) == identity(second)
-        assert identity(first)[1] == FINGERPRINT_V2_SNIPPET
-
     def test_a_null_report_is_a_clean_scan(self) -> None:
         """Gitleaks writes literal `null` when it finds nothing. That is a
         clean result, not a broken one."""
@@ -186,6 +170,120 @@ class TestGitleaks:
         result = gitleaks_normalize(json.dumps([gitleaks_record()]).encode(), context("secrets"))
         assert "rotate" in result.findings[0].description.lower()
         assert "history" in result.findings[0].description.lower()
+
+
+class TestGitleaksIdentity:
+    """One detection, one finding (#396).
+
+    The adapter used to pass a constant redaction marker as `code_snippet`.
+    `compute_finding_id` dispatches on that field, and a constant normalizes
+    non-empty, so the snippet branch always won and `line_start` was never
+    read: every hit of one rule in one file became a single row. On TheHub's
+    latest scan, 34 detections were stored as 13, and a `false_positive`
+    verdict on one of them covered seventeen real credentials nobody had
+    reviewed (#398).
+
+    None of these tests may ever assert on a secret value, and none of them
+    supply one: the point of the fix is that identity comes from the location,
+    not from the credential.
+    """
+
+    @staticmethod
+    def identity(finding) -> tuple[str, str]:
+        return compute_finding_id(
+            repo_full_name=REPO,
+            capability="secrets",
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+        )
+
+    @staticmethod
+    def findings(*records: dict[str, Any]) -> list[Any]:
+        return gitleaks_normalize(json.dumps(list(records)).encode(), context("secrets")).findings
+
+    def test_each_detection_in_one_file_is_its_own_finding(self) -> None:
+        """The reported case: `generic-api-key` matched fifteen times in one
+        Concourse pipeline and was stored once. Six of the reported lines."""
+        lines = [757, 1150, 1337, 1761, 1986, 2173]
+        found = self.findings(
+            *(
+                gitleaks_record(
+                    RuleID="generic-api-key",
+                    File="concourse/pipelines/thehub.yml",
+                    StartLine=line,
+                    EndLine=line,
+                )
+                for line in lines
+            )
+        )
+
+        assert len(found) == len(lines)
+        assert len({self.identity(f)[0] for f in found}) == len(lines)
+
+    def test_two_rules_at_one_line_stay_separate(self) -> None:
+        """A high-specificity rule must not be absorbed into a noisy one. The
+        Anthropic key in #398 was lost exactly this way."""
+        found = self.findings(
+            gitleaks_record(RuleID="generic-api-key", File="p.yml", StartLine=2740),
+            gitleaks_record(RuleID="anthropic-api-key", File="p.yml", StartLine=2740),
+        )
+
+        assert len({self.identity(f)[0] for f in found}) == 2
+
+    def test_identity_is_positional_and_says_so(self) -> None:
+        """`V1_LINE` is labelled degraded and counted as a data-quality
+        metric. For secrets it is the honest answer: there is no code to
+        anchor to, and claiming `V2_SNIPPET` for a constant hid that."""
+        finding = self.findings(gitleaks_record())[0]
+
+        assert self.identity(finding)[1] == FINGERPRINT_V1_LINE
+        assert self.identity(finding)[1] != FINGERPRINT_V2_SNIPPET
+
+    def test_a_string_line_number_still_separates_detections(self) -> None:
+        """`line_start` is now the only thing keeping two hits apart, so a
+        line that arrives as `"757"` must not quietly become `None` and
+        re-collapse them."""
+        found = self.findings(
+            gitleaks_record(StartLine="757", EndLine="757"),
+            gitleaks_record(StartLine="1150", EndLine="1150"),
+        )
+
+        assert [f.line_start for f in found] == [757, 1150]
+        assert len({self.identity(f)[0] for f in found}) == 2
+
+    def test_a_detection_keeps_its_identity_across_scans(self) -> None:
+        """Regression guard for #274: an identity that churns per scan is
+        worse than one that merges. The same hit rescanned is one finding."""
+        first = self.findings(gitleaks_record(StartLine=757))[0]
+        second = self.findings(gitleaks_record(StartLine=757))[0]
+
+        assert self.identity(first) == self.identity(second)
+
+    def test_one_secret_seen_in_two_commits_is_one_finding(self) -> None:
+        """Gitleaks scans history, so the same line surfaces under every
+        commit that carried it. That is one secret at one location, and the
+        commit is deliberately not identity material — including it would
+        make every secret new on every commit."""
+        found = self.findings(
+            gitleaks_record(File="docs/sbom/latest-trivy.json", StartLine=66, Commit="a" * 40),
+            gitleaks_record(File="docs/sbom/latest-trivy.json", StartLine=66, Commit="b" * 40),
+        )
+
+        assert len({self.identity(f)[0] for f in found}) == 1
+
+    def test_the_secret_is_still_absent_from_a_separated_finding(self) -> None:
+        """Regression guard on the property the constant was protecting: none
+        of this may put the credential into the lake."""
+        leaky = gitleaks_record(
+            StartLine=757, Secret=UNREDACTED_SENTINEL, Match=f"token = {UNREDACTED_SENTINEL}"
+        )
+        finding = self.findings(leaky)[0]
+
+        assert finding.code_snippet is None
+        assert UNREDACTED_SENTINEL not in json.dumps(finding.model_dump(mode="json"))
 
 
 # ---------------------------------------------------------------------------
