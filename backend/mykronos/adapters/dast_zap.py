@@ -57,6 +57,40 @@ ZAP groups by alert with a list of instances. One alert affecting five URLs is
 five findings here, not one: they are fixed and tracked separately, and
 collapsing them would make "how many are left" unanswerable.
 
+**An alert whose subject is the scanner is not a finding against the target**
+(#303). `ZAP is Out of Date` (pluginid 10116) reads, in full, "The latest
+version of ZAP is 2.17.0". That is the scanner reporting on *itself*, and ZAP
+attaches it to whichever URI it happened to crawl — this estate's archive has
+it landing on `/frontend/img/hub-icon.svg`, `/sitemap.xml`, `/healthz`,
+`/frontend/css/bundle.css?v=…` and a dozen `/repos/{id}` pages. Nothing is
+wrong with any of them. Measured across the archived raw reports it is the
+single most frequent alert the lane has ever produced (160 instances, ahead of
+`10031`'s 94), and it had accumulated 24 finding identities: 19 recorded
+`fixed` because the arbitrary URI moved, 4 dismissed `false_positive` by hand,
+1 open.
+
+Two things this deliberately is *not*:
+
+- **Not a `riskcode` filter.** #273 proposes dropping ZAP's Informational band
+  (`riskcode` 0), which handles the 22 `ZAP-10031` rows cleanly and does not
+  touch this one: `10116` is `riskcode: "1"` (Low) at `confidence: "3"`, a
+  higher severity than the noise the informational filter is aimed at.
+- **Not a deny-list of rule ids.** A list of "rules we ignore" keyed on plugin
+  numbers is the maintenance shape #324 objects to, and it is where real
+  findings go to be forgotten. `_is_about_the_scanner` states the actual
+  category instead — the alert's own text names ZAP as its subject — so a
+  future ZAP release that renumbers or adds a sibling self-report is caught
+  without anyone editing a list.
+
+And it is **recorded, not dropped**. It becomes a warning on the
+`AdapterResult`, which the uploader puts in the CI step summary and in the
+ScanRun's `detail` — so the lane says "zap 2.16.1, latest 2.17.0" beside the
+run it belongs to. A rule filtered out of the findings table and written
+nowhere is worse than a misattributed finding: at least the misattribution is
+visible, and silence is how a scanner quietly stops being a control. It does
+not touch `scan_status`, because a DAST lane a minor version behind is a
+lane-quality signal and not a release blocker.
+
 For the same reason the rule identity comes from `alertRef`, not `pluginid`:
 several alerts can share a plugin *and* a CWE, and only `alertRef` tells them
 apart.
@@ -131,6 +165,71 @@ def _route_of(uri: str) -> str:
     return "/".join(segments) or "/"
 
 
+#: The alert's own name opening with the scanner's name. ZAP titles say what
+#: is wrong with the *target* — "Content Security Policy Header Not Set",
+#: "Absence of Anti-CSRF Tokens", "Sub Resource Integrity Attribute Missing" —
+#: so a title whose grammatical subject is "ZAP" is the tool talking about the
+#: tool. Checked against every alert in this estate's archived raw reports:
+#: eighteen distinct (pluginid, alert) pairs, and `10116 ZAP is Out of Date`
+#: is the only one that matches.
+_SCANNER_IS_THE_SUBJECT = re.compile(r"\A\s*(?:OWASP\s+)?ZAP\b", re.IGNORECASE)
+
+#: ZAP stating a version of itself, as a second, independent tell for the same
+#: category — so a retitled or newly added self-report is still caught. Scoped
+#: to `otherinfo`, which is the alert's per-finding evidence field, and not to
+#: `solution`: "upgrade to the latest version of ZAP" is remediation advice and
+#: could in principle appear on a real finding, whereas "the latest version of
+#: ZAP is 2.17.0" is a statement of fact about the scanner.
+_ZAP_VERSION_STATEMENT = re.compile(r"version of ZAP is\s*([0-9][\w.\-]*)", re.IGNORECASE)
+
+#: ZAP's text fields are HTML fragments (`<p>The latest version…</p>`).
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _is_about_the_scanner(alert: dict[str, Any], name: str) -> bool:
+    """Is this alert a statement about ZAP rather than about the target?
+
+    The discriminator #303 asks for. Deliberately a predicate over the alert's
+    own words rather than a list of plugin ids: the category is "the subject is
+    the scanner", and a list of numbers records which members of the category
+    someone happened to meet, which is the thing that rots.
+    """
+    if _SCANNER_IS_THE_SUBJECT.match(name):
+        return True
+    return bool(_ZAP_VERSION_STATEMENT.search(str(alert.get("otherinfo") or "")))
+
+
+def _lane_health_note(
+    alert: dict[str, Any],
+    name: str,
+    rule_id: str,
+    running_version: str,
+    context: ScanContext,
+) -> str:
+    """One line for the lane, standing in for the finding that was not filed.
+
+    Front-loaded, because the uploader copies only `warnings[0]` into the
+    ScanRun's `detail` and truncates it at 200 characters. Everything a person
+    needs to act — which scanner, which version, that it is not about their
+    application — has to fit before that cut.
+    """
+    match = _ZAP_VERSION_STATEMENT.search(str(alert.get("otherinfo") or ""))
+    latest = f", latest {match.group(1)}" if match else ""
+    running = running_version or "version unreported"
+    title = _TAG.sub(" ", name).strip()
+    return (
+        f"zap {running}{latest}: \"{title}\" ({rule_id}) is about the scanner, "
+        f"not about {context.repo_full_name} — recorded as lane health rather "
+        f"than a finding (#303). It does not gate. ZAP attaches this alert to "
+        f"whichever URI it happened to crawl, so the file path it named was "
+        f"arbitrary."
+    )
+
+
+def _rule_id(alert_ref: str, cwe: str) -> str:
+    return (f"ZAP-{alert_ref}" + (f"-CWE-{cwe}" if cwe else ""))[:255]
+
+
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     """Parse a ZAP baseline JSON report."""
     result = AdapterResult()
@@ -149,6 +248,15 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         return result
 
     truncated = 0
+    #: One note per distinct self-report, not one per instance: ZAP files the
+    #: same statement about itself against every URI it crawled, and 24 copies
+    #: of "your scanner is out of date" is the noise this is removing.
+    lane_health: list[str] = []
+    #: The running scanner, straight from the report ZAP wrote — `"@version":
+    #: "2.16.1"`. Not `context.tool_version`, which the DAST lane leaves empty:
+    #: `deploy/concourse/pipelines/thehub.yml` passes no `--tool-version`, and
+    #: `detect_tool_version` only recovers one from SARIF, which ZAP is not.
+    running_version = str(document.get("@version") or "").strip()
 
     for site in document.get("site") or []:
         if not isinstance(site, dict):
@@ -176,10 +284,24 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                 result.skipped += 1
                 continue
 
+            cwe = str(alert.get("cweid") or "").strip()
+
+            # #303. Routed to the lane, not filed against the application, and
+            # not counted in `skipped` — `skipped` means "the parser could not
+            # make sense of this", which marks the run PARTIAL_FAILURE. This
+            # record was understood perfectly; it is simply not a finding about
+            # the target.
+            if _is_about_the_scanner(alert, name):
+                note = _lane_health_note(
+                    alert, name, _rule_id(rule_id, cwe), running_version, context
+                )
+                if note not in lane_health:
+                    lane_health.append(note)
+                continue
+
             severity = _severity(alert)
             description = str(alert.get("desc") or "")
             solution = str(alert.get("solution") or "")
-            cwe = str(alert.get("cweid") or "").strip()
 
             instances = [i for i in (alert.get("instances") or []) if isinstance(i, dict)]
             if not instances:
@@ -198,7 +320,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
 
                 result.findings.append(
                     FindingSubmission(
-                        rule_id=(f"ZAP-{rule_id}" + (f"-CWE-{cwe}" if cwe else ""))[:255],
+                        rule_id=_rule_id(rule_id, cwe),
                         # The route, not the URI: a title that named a concrete
                         # repo uuid would be rewritten on every scan and would
                         # read as a finding about one row rather than a route.
@@ -220,6 +342,13 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                         },
                     )
                 )
+
+    # Before the truncation warning, because only the first warning survives
+    # into the ScanRun's `detail`: a truncated alert still leaves 25 findings
+    # in the table to notice, whereas this note is the *only* record that the
+    # self-report happened at all.
+    for note in lane_health:
+        result.warn(note)
 
     if truncated:
         # Silent truncation would read as "that is all of them".
