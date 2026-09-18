@@ -80,9 +80,10 @@
 # Every job is in at least one group on purpose: Concourse hides any job that
 # is in none, and a hidden lane is a lane nobody notices has gone red.
 #
-# The `demo` group is gone with Path B (ADR 0072, #59100). `prod` keeps
+# The `demo` group came back with the two demo lanes (#491). `prod` keeps
 # `dast-prod` alone: production is still here and still scanned, it is simply
-# no longer *delivered* from here.
+# no longer *delivered* from here. `deploy-prod` was the last job in this file
+# that claimed otherwise, and it is retired (#59990/#59999/#60063).
 groups:
   - name: quality
     jobs: [unit, qa, prompt-evals]
@@ -95,7 +96,7 @@ groups:
   - name: demo
     jobs: [deploy-demo, api-inventory, dast-demo]
   - name: prod
-    jobs: [deploy-prod, dast-prod]
+    jobs: [dast-prod]
   - name: remediation
     jobs: [remediate]
 
@@ -2249,41 +2250,54 @@ jobs:
   # is the whole explanation; the short version is that Concourse sees a branch
   # and Aegis is built around a `pull_request`, so the missing context is
   # recovered by asking GitHub which pull request introduced this commit.
-  # **This job is a promotion gate again (#59999).** The history matters,
-  # because it has now reversed twice, and how it reverted is the argument for
-  # writing the gate down rather than remembering it.
+  # **THIS JOB IS NOT A PROMOTION GATE, BECAUSE THERE IS NO PROMOTION.**
+  # Decided by the operator 2026-09-18 (#59990/#59999/#60063). The list has now
+  # reversed three times, so the reasoning is written down here in full rather
+  # than remembered -- and the condition that would reverse it a fourth time is
+  # stated at the bottom, because the previous two reversals each turned on a
+  # premise nobody had written down.
   #
-  # `insider` is the last job a version clears before `deploy-prod` becomes
-  # reachable, so its `passed:` list IS the gate. #55167 widened that list
-  # from `[oracle-gate]` to `[oracle-gate, api-inventory, dast-demo]` for a
-  # measured reason: until 2026-09-04 those two hung off `deploy-demo` with
-  # nothing downstream requiring them, so a commit whose demo DAST failed was
-  # still eligible for production. On 2026-08-20 `api-inventory` failed builds
-  # #14-#19 while `oracle-gate` #20 went green and the version stayed
-  # promotable. A security scan that cannot stop a release is advisory
-  # decoration, and B-055 later caught our copy of this file having silently
-  # reverted the widening -- `scripts/check_pipeline_gates.py` exists because
-  # of it.
+  # WHAT THE GATE WAS FOR. `insider` used to be the last job a version cleared
+  # before `deploy-prod` became reachable, so its `passed:` list WAS the gate.
+  # #55167 widened it from `[oracle-gate]` to
+  # `[oracle-gate, api-inventory, dast-demo]` for a measured reason: those two
+  # hung off `deploy-demo` with nothing downstream requiring them, so a commit
+  # whose demo DAST failed was still eligible for production. On 2026-08-20
+  # `api-inventory` failed builds #14-#19 while `oracle-gate` #20 went green
+  # and the version stayed promotable. A security scan that cannot stop a
+  # release is advisory decoration, and B-055 later caught our copy of this
+  # file having silently reverted the widening --
+  # `scripts/check_pipeline_gates.py` exists because of it.
   #
-  # #59100 then narrowed it back to `[oracle-gate]`, on the premise that Path B
-  # was retired: `deploy-prod` gone, nothing downstream of this job deploying
-  # anything, and `api-inventory` and `dast-demo` deleted along with the demo
-  # environment they read. Every clause of that premise has since expired.
-  # #491 restored both jobs and the `demo` group; `deploy-demo` succeeded three
-  # times on 2026-09-17 (builds #89-#91); and `deploy-prod` is a job in this
-  # file whose own `passed:` is exactly `[insider]`. The narrowing comment
-  # closed by saying that if delivery ever came back to Concourse the gate
-  # comes back with it, and that #55167's reasoning was the specification for
-  # rebuilding it. It came back. This is that rebuild.
+  # #59100 narrowed it back to `[oracle-gate]` on the premise that Path B was
+  # retired. #59999 (PR #493) widened it again on the finding that every clause
+  # of that premise had expired: #491 had restored `api-inventory` and
+  # `dast-demo`, `deploy-demo` was succeeding, and `deploy-prod` was still a
+  # job in this file whose own `passed:` was `[insider]`.
   #
-  # The 2026-08-20 failure recurred while this was being written, which is why
-  # the list is the argument and not an anecdote about it: `api-inventory`
-  # builds #34 and #35 failed on 2026-09-17 while `oracle-gate` #36-#38 went
-  # green. Under `passed: [oracle-gate]` that version is promotable carrying a
-  # failed API-contract check. The applied pipeline has held the wide list
-  # throughout and is the only reason it is not promotable right now -- a
-  # protection this repository was not supplying, and one `set-pipeline` from
-  # losing.
+  # WHAT THE OPERATOR DECIDED, AND WHY IT IS NOT A THIRD FLIP-FLOP. #59999 was
+  # right that `deploy-prod` was reachable and wrong to conclude the gate was
+  # therefore needed. The alternative it did not take is that a reachable job
+  # nobody triggers is not a lane to guard, it is a lane to delete.
+  # `thehub/deploy-prod` last ran 2026-08-19 (build 8) -- a month of silence --
+  # and under ADR 0072 Path A production ships through TheHub's own
+  # `scripts/deploy.sh` from `develop`. So the job is retired, and with it the
+  # only thing this list could gate. `passed: [oracle-gate]` is not a weakening
+  # of the gate; it is what is left of it once the promotion is gone.
+  #
+  # WHAT IS NOT LOST. `api-inventory` and `dast-demo` still run, still upload,
+  # and still go red when they fail. What they no longer do is block a
+  # promotion, because nothing here promotes. `oracle-gate` keeps
+  # `passed: [deploy-demo]` (#59999), which transitively requires the six lanes
+  # `deploy-demo` gates on AND requires the version reached an environment, so
+  # `insider` is still downstream of every scanning lane in this pipeline.
+  #
+  # WHAT WOULD REVERSE THIS, stated so the next reader does not have to infer
+  # it: **a job in this file whose success means "production now runs this
+  # commit".** If delivery comes back to Concourse, #55167's reasoning above is
+  # the specification for rebuilding the gate, and `api-inventory` and
+  # `dast-demo` go back in this list. Absent such a job, adding them back gates
+  # nothing and only makes `insider` harder to schedule.
   - name: insider
     public: true
     serial_groups: [worker]
@@ -2310,7 +2324,7 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [oracle-gate, api-inventory, dast-demo]
+        passed: [oracle-gate]
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -3461,11 +3475,24 @@ jobs:
   #
   # Path B is retired (ADR 0072). Production is deployed by TheHub's own
   # `scripts/deploy.sh` from `develop`, out of band and with nothing here
-  # observing it. `deploy-prod` is gone, and there is no remaining job in this
-  # file whose success means "production now runs this commit" -- so gating on
-  # one would assert something untrue. That is exactly the position
-  # `dast-staging` documents at length below, and this is now the second lane
-  # in it.
+  # observing it. `deploy-prod` is gone -- deleted from this file by
+  # #59990/#59999/#60063, where until then this paragraph was describing a job
+  # that was still present -- and there is no remaining job in this file whose
+  # success means "production now runs this commit", so gating on one would
+  # assert something untrue. That is exactly the position `dast-staging`
+  # documents at length below, and this is now the second lane in it.
+  #
+  # **DO NOT ADD `passed: [deploy-prod]` BACK.** TheHub's own copy of this
+  # pipeline still carries it, so `scripts/check_pipeline_gates.py` will keep
+  # reporting the difference, and the difference is deliberate: it is recorded
+  # as an EXPLAINED_DIVERGENCE in `backend/tests/test_pipeline_gate_wiring.py`
+  # pointing back here. Decided by the operator 2026-09-18 (#60063): this job
+  # stays daily-and-ungated. The measured reason is that the gated form is how
+  # production went 29 days without any DAST at all -- `dast-prod` last ran
+  # 2026-08-19 because `deploy-prod` last ran 2026-08-19, and a lane starved of
+  # eligible versions is not paused and not failing, so it looks exactly like a
+  # healthy one. Gating a live scanner on a deleted lane would make that
+  # permanent rather than merely long.
   #
   # The target itself is unaffected and this is the point worth not losing:
   # production is real, reachable and still worth scanning. What changed is
@@ -3916,164 +3943,6 @@ jobs:
                   exit 1
                 }
                 echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
-  - name: deploy-prod
-    public: true
-    on_success:
-      do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: finish, STATUS: success, TARGET_ENV: prod }
-    on_failure:
-      do:
-        - *slack_alert
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: finish, STATUS: failed, TARGET_ENV: prod }
-    on_error:
-      do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored }
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: finish, STATUS: errored, TARGET_ENV: prod }
-    on_abort:
-      do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: finish, STATUS: aborted, TARGET_ENV: prod }
-    plan:
-      - get: source
-        attempts: *retry_fetch
-        passed: [insider]
-      - get: python
-        attempts: *retry_fetch
-      - task: request-deploy
-        timeout: 30m
-        image: python
-        params:
-          MINIO_ENDPOINT: ((minio-endpoint))
-          MINIO_ACCESS_KEY: ((minio-access-key))
-          MINIO_SECRET_KEY: ((minio-secret-key))
-          RELEASE_BUCKET: ((thehub-release-bucket))
-          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
-          TARGET_URL: ((thehub-prod-url))
-          ENVIRONMENT: prod
-          # Pinned and verified where it is fetched. dl.min.io now returns
-          # 410 Gone -- MinIO archived the open-source client -- so the
-          # release asset on GitHub is the only served copy.
-          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
-          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
-                # dl.min.io returns 410 Gone: MinIO archived the open-source
-                # client and stopped serving it, so `curl -f` fails and this
-                # task dies before it starts. Pinned GitHub release instead,
-                # verified -- a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
-                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
-                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
-                chmod +x /usr/local/bin/mc
-                SCHEME=${MINIO_ENDPOINT%%://*}
-                HOSTPORT=${MINIO_ENDPOINT#*://}
-                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
-
-                SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
-                echo "Requesting $ENVIRONMENT deploy of $SHA"
-
-                # Concourse publishes a pointer. It does not connect to the
-                # deploy host, and the host has no listener for it to connect
-                # to - the same one-way handoff the image registry already
-                # gives us, and the reason docker-compose.yml chose a registry
-                # over mounting the Docker socket. Nothing this job can do
-                # restarts a service.
-                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
-                printf '%s' "$SHA" > requested
-                mc --quiet cp requested "store/$RELEASE_BUCKET/$ENVIRONMENT.requested"
-
-                # Then wait to be told it happened. Fire-and-forget would let
-                # DAST probe the previous build and report it as this commit's
-                # result - `passed: [deploy-demo]` has to mean demo is actually
-                # serving this SHA, not that a request for it was filed.
-                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
-                # The comparison below strips CR and LF before comparing.
-                # The acknowledgement is written by a PowerShell poller on
-                # Windows, and piping a string to a native command there
-                # appends a carriage return and a newline. Command
-                # substitution strips the trailing newline and does NOT
-                # strip the carriage return, so the comparison could never
-                # match: the job waited its full budget and reported that
-                # the host had never deployed, while the host had deployed
-                # and acknowledged correctly. Five days of TheHub#343 were
-                # exactly this.
-                #
-                # Invisible unless read as bytes. The two objects render
-                # identically and differ by two: demo.deployed was 42 bytes
-                # and demo.requested 40, for the same 40-character SHA.
-                #
-                # Fixed on the reading side deliberately: a consumer of a
-                # pointer should tolerate line endings whatever wrote it,
-                # and this file is the consumer for both environments.
-                while :; do
-                  if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1 \
-                     && [ "$(tr -d '\r\n' < deployed)" = "$SHA" ]; then
-                    echo "Host reports $ENVIRONMENT at $SHA"
-                    break
-                  fi
-                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-                    echo "::error:: $ENVIRONMENT never reported $SHA (waited $DEPLOY_TIMEOUT_MINUTES min)."
-                    echo "          The pointer is published and still stands."
-                    # Report what was read, rather than assert a cause nothing
-                    # checked. This message used to state that the host-side
-                    # poller was not running or had rolled back, and name the
-                    # scheduled task to go and look at. For deploy-demo #82
-                    # through #88 that was false in every word: the poller ran
-                    # on every cycle, deployed, and acknowledged - and the
-                    # acknowledgement was unreadable because of the CR
-                    # described above (#388). The job had already fetched the
-                    # object that says so and printed a guess instead, which
-                    # is why TheHub#343 was filed against the demo container's
-                    # build stamp, and why two more days went into that
-                    # container before anybody read the bytes.
-                    #
-                    # Absent and present need opposite actions, and the object
-                    # is what tells them apart: absent means nothing has ever
-                    # acknowledged this environment; present means the host is
-                    # acknowledging, for some commit that is not this one.
-                    if mc --quiet cp "store/$RELEASE_BUCKET/$ENVIRONMENT.deployed" deployed >/dev/null 2>&1; then
-                      echo "          $ENVIRONMENT.deployed exists and reads '$(tr -d '\r\n' < deployed)'"
-                      echo "          in $(wc -c < deployed | tr -d ' ') bytes - a bare 40-character SHA is 40."
-                      echo "          The host IS acknowledging, at a commit that is not this one."
-                      echo "          Read deploy/thehub/registry-pull-deploy.log for the deploy it"
-                      echo "          last completed. A byte count above the SHA's own length means"
-                      echo "          the acknowledgement carries line endings, which this comparison"
-                      echo "          already strips - so the difference above is a real commit gap."
-                    else
-                      echo "          $ENVIRONMENT.deployed does not exist: nothing has acknowledged"
-                      echo "          a deploy of this environment at all. That, and only that, is"
-                      echo "          the case where the host-side poller is genuinely not running:"
-                      echo "          Scheduled Task 'TheHub Registry Pull Deploy' on the deploy host."
-                    fi
-                    exit 1
-                  fi
-                  sleep 20
-                done
-
-                # Confirmed from outside the host as well as inside it. The
-                # host script health-checks the containers; this checks that
-                # the environment answers over the network the way a user
-                # reaches it, which is a different claim.
-                echo "Confirming ${TARGET_URL} serves the new build..."
-                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
-                  --retry-all-errors -o /dev/null "$TARGET_URL"
-                echo "$ENVIRONMENT is serving ${SHA}"
 
   # == Cloud posture ========================================================
   #

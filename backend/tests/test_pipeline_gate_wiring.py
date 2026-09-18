@@ -18,9 +18,23 @@ Three layers, deliberately, because they fail for different reasons:
 * **The gate itself** -- read straight out of the committed file, no network.
   This is the layer that cannot be skipped, and it is the one that would have
   caught both regressions. It states the security property twice: once as the
-  exact `passed:` edges, and once as "what must transitively precede
-  `deploy-prod`", so a rename or a re-plumbing of the middle of the chain does
-  not quietly drop a lane.
+  exact `passed:` edges, and once as "what must transitively precede the
+  deepest gate job", so a rename or a re-plumbing of the middle of the chain
+  does not quietly drop a lane.
+
+**The deepest gate job is `insider`, and it is no longer a promotion gate**
+(operator decision 2026-09-18, #59990/#59999/#60063). `deploy-prod` is deleted:
+it last ran 2026-08-19 and production ships through TheHub's own
+`scripts/deploy.sh` from `develop` under ADR 0072 Path A. This file was written
+one day earlier around the opposite decision, and reversing it needed care,
+because the easy way to un-assert a property is to delete the test that held it
+and be left with a file that passes by checking less. So the transitive layer
+is repointed at `insider` rather than removed, and a new assertion takes the
+place of the old one: **no job in this pipeline deploys production.** That is
+strictly the stronger claim. The old test said "these lanes must gate the
+production deploy"; the new one says "there is no production deploy here to
+gate", and if one ever comes back it fails until somebody rebuilds the gate
+deliberately.
 
 * **The cross-repo check** -- our copy against the repository that owns it,
   over `gh`.
@@ -79,20 +93,50 @@ REQUIRED_GATE: dict[str, dict[str, list[str]]] = {
     "oracle-gate": {"source": ["deploy-demo"]},
     "api-inventory": {"source": ["deploy-demo"]},
     "dast-demo": {"source": ["deploy-demo"]},
-    "insider": {"source": sorted(["oracle-gate", "api-inventory", "dast-demo"])},
-    "deploy-prod": {"source": ["insider"]},
+    # `[oracle-gate]` and not the three-job list, because `deploy-prod` is
+    # deleted and there is no promotion left for this list to gate
+    # (#59990/#59999/#60063). `oracle-gate` carries `passed: [deploy-demo]`,
+    # so `insider` still transitively requires all six analysers AND requires
+    # the version to have reached an environment -- which is why narrowing
+    # this list does not narrow what must pass before `insider` runs. See
+    # `MUST_PRECEDE_THE_DEEPEST_GATE` below, which is unchanged by this.
+    "insider": {"source": ["oracle-gate"]},
 }
 
-#: Must have passed before anything reaches production. Asserted against the
-#: transitive closure of `passed:` edges behind `deploy-prod` rather than
-#: against one job's list, so the property survives the chain being re-plumbed.
-MUST_PRECEDE_PROD = frozenset(
-    {"deploy-demo", "oracle-gate", "api-inventory", "dast-demo", *ANALYSERS}
-)
+#: The deepest job in the promotion chain. Named once, because three tests
+#: below depend on which job that is and a rename should move all of them
+#: together.
+DEEPEST_GATE = "insider"
+
+#: A job whose success would mean "production now runs this commit". None
+#: exists, and `test_no_job_here_deploys_production` is what keeps it that way.
+#: Production ships through TheHub's own `scripts/deploy.sh` from `develop`
+#: (ADR 0072 Path A), out of band, with nothing in this pipeline observing it.
+RETIRED_DEPLOY_JOBS = ("deploy-prod",)
+
+#: Must have passed before `insider` can run. Asserted against the transitive
+#: closure of `passed:` edges rather than against one job's list, so the
+#: property survives the chain being re-plumbed.
+#:
+#: `api-inventory` and `dast-demo` are deliberately NOT here. They were, while
+#: `deploy-prod` existed and `insider` gated it. They still run, still upload
+#: and still go red; what they no longer do is block a promotion, because
+#: nothing here promotes. Putting them back is a one-line change to
+#: REQUIRED_GATE and this set, and the condition for making it is written above
+#: `insider` in the pipeline file.
+MUST_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", "oracle-gate", *ANALYSERS})
 
 #: Differences between our copy and TheHub's that are deliberate, with the
 #: reason. Anything NOT in here fails the cross-repo check, which is the point:
 #: a new divergence is unexplained until somebody explains it here.
+#:
+#: Each key is matched as a SUBSTRING of a report line, so an entry is broader
+#: than the divergence it was written for: `insider` here silences any future
+#: `insider` difference too. That is a real cost and it is accepted rather than
+#: overlooked -- the alternative, pinning whole report lines, breaks on
+#: cosmetic changes to the reporter and gets deleted the first time it does.
+#: `TestTheCommittedGate` is what stops this being load-bearing: the contents
+#: of every gated edge are pinned exactly, offline, against the file itself.
 EXPLAINED_DIVERGENCE = {
     "functional-dast": (
         "retired by #468 and deliberately left retired by #491 -- its only "
@@ -106,8 +150,27 @@ EXPLAINED_DIVERGENCE = {
     ),
     "dast-prod": (
         "our copy is time-triggered and ungated where TheHub's is gated on "
-        "`deploy-prod`; see #59999, routed to the operator as a decision "
-        "rather than settled here. Remove this entry when that lands"
+        "`deploy-prod`. DECIDED 2026-09-18 by the operator (#60063): ours "
+        "stays. The gated form is how production went 29 days with no DAST at "
+        "all -- `dast-prod` last ran 2026-08-19 because `deploy-prod` last ran "
+        "2026-08-19 -- and gating a live scanner on a lane we have now deleted "
+        "would make that permanent. This entry is NOT interim any more; it "
+        "stands until TheHub's copy changes to match"
+    ),
+    "deploy-prod": (
+        "ours deleted it; TheHub's copy still has it. DECIDED 2026-09-18 by "
+        "the operator (#59990/#59999/#60063): the job last ran 2026-08-19 and "
+        "production ships through TheHub's own `scripts/deploy.sh` from "
+        "`develop` under ADR 0072 Path A, so there is no promotion for a "
+        "Concourse job to perform. TheHub's copy should follow, and until it "
+        "does this is the difference"
+    ),
+    "insider": (
+        "ours gates on `[oracle-gate]` where TheHub's gates on "
+        "`[api-inventory, dast-demo, oracle-gate]`. Same decision as "
+        "`deploy-prod` above and downstream of it: with the promotion deleted "
+        "the wide list gates nothing. Not a reversion of #55167, whose "
+        "reasoning still holds for any pipeline that does promote"
     ),
 }
 
@@ -179,28 +242,61 @@ class TestTheCommittedGate:
             "fine, and belongs in REQUIRED_GATE with a reason."
         )
 
-    def test_nothing_reaches_production_without_these(self) -> None:
+    def test_nothing_reaches_the_deepest_gate_without_these(self) -> None:
         gate = committed_gates()
-        behind_prod = closure(gate, "deploy-prod")
-        assert behind_prod, "`deploy-prod` has no upstream at all -- it is ungated"
-        missing = sorted(MUST_PRECEDE_PROD - behind_prod)
+        behind = closure(gate, DEEPEST_GATE)
+        assert behind, f"`{DEEPEST_GATE}` has no upstream at all -- it is ungated"
+        missing = sorted(MUST_PRECEDE_THE_DEEPEST_GATE - behind)
         assert not missing, (
-            f"these can no longer stop a production deploy: {missing}. "
-            "A security scan that cannot stop a release is advisory decoration."
+            f"these can no longer stop `{DEEPEST_GATE}`: {missing}. "
+            "A security scan that cannot stop anything is advisory decoration."
         )
 
-    def test_the_demo_dast_specifically_gates_production(self) -> None:
-        """The exact hole #59999 was filed for, stated on its own.
+    def test_no_job_here_deploys_production(self) -> None:
+        """What replaces "these lanes gate the production deploy" (#59990).
 
-        `api-inventory` failed builds #34 and #35 on 2026-09-17 while
-        `oracle-gate` #36-#38 went green. Under `passed: [oracle-gate]` that
-        version is promotable carrying a failed API-contract check.
+        The gate was reversed twice on unwritten premises, and the reason it
+        could be is that the premise -- whether this pipeline delivers
+        production at all -- lived in nobody's test. It lives here now.
+
+        Deleting `deploy-prod` is only half the decision; the other half is
+        that it does not quietly come back. A restored deploy job with no
+        `passed:` list is the shape #59999 reported: defined, reachable,
+        ungated and dormant. If one returns, this fails, and rebuilding the
+        gate becomes a deliberate act with #55167's reasoning to follow.
         """
-        behind_prod = closure(committed_gates(), "deploy-prod")
-        for job in ("dast-demo", "api-inventory"):
-            assert job in behind_prod, (
-                f"a commit whose `{job}` failed is still eligible for deploy-prod"
-            )
+        config = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+        jobs = [job["name"] for job in config.get("jobs") or []]
+        # The floor. An empty or unparseable file would otherwise satisfy
+        # every assertion below by containing nothing.
+        assert len(jobs) >= 20, f"only {len(jobs)} jobs read from {THEHUB.name}"
+
+        present = sorted(set(jobs) & set(RETIRED_DEPLOY_JOBS))
+        assert not present, (
+            f"{present} is back in {THEHUB.name}. It was retired by operator "
+            "decision on 2026-09-18 (#59990/#59999/#60063) because production "
+            "ships through TheHub's own `scripts/deploy.sh` from `develop`. If "
+            "delivery has genuinely returned to Concourse, rebuild the "
+            "promotion gate in REQUIRED_GATE and MUST_PRECEDE_THE_DEEPEST_GATE "
+            "in the same change -- do not just delete this assertion."
+        )
+
+        # And nothing may gate on it either. A `passed: [deploy-prod]` left
+        # behind by a half-applied deletion makes the job that carries it
+        # permanently unreachable, which is what happened to `thehub.yml` on
+        # 2026-09-17 and took three red tests to notice.
+        dangling = sorted(
+            {
+                job
+                for job, resources in committed_gates().items()
+                for upstreams in resources.values()
+                if set(upstreams) & set(RETIRED_DEPLOY_JOBS)
+            }
+        )
+        assert not dangling, (
+            f"{dangling} still gate on a retired deploy job, so they can never "
+            "run. Concourse does not report this: the job simply waits."
+        )
 
 
 class TestTheCrossRepoCheckRuns:

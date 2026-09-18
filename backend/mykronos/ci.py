@@ -1546,8 +1546,8 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "pushes the frontend image to the registry, produces no findings",
     ),
     ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
-    # thehub's two were removed under #59100 and are BACK, because the premise
-    # that removed them expired before the change landed.
+    # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
+    # premise that removed it expired before the change landed.
     #
     # #59100 retired Path B on the evidence that `deploy-demo` was dead: builds
     # #86, #87 and #88 each burned ~26 minutes and failed. That was true when it
@@ -1561,11 +1561,19 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # not applied. A premise measured once, true then, and never re-derived is
     # exactly what this module exists to catch, and it happened here.
     #
-    # They are ACKNOWLEDGED rather than mapped: both deploy, neither uploads a
-    # finding, and putting a deploy job in CAPABILITY_BY_JOB would credit it with
-    # a security capability it does not have.
+    # It is ACKNOWLEDGED rather than mapped: it deploys, it uploads no finding,
+    # and putting a deploy job in CAPABILITY_BY_JOB would credit it with a
+    # security capability it does not have.
+    #
+    # `deploy-prod` WAS THE SECOND ENTRY HERE AND WENT WITH ITS JOB
+    # (#59990/#59999/#60063, operator decision 2026-09-18). It is deleted in the
+    # same change that deletes the job, and deliberately not left behind as a
+    # harmless-looking line: `test_every_acknowledgement_names_a_job_that_exists`
+    # would go red, and more to the point an acknowledgement that outlives its
+    # job starts excusing a FUTURE job that reuses the name. The excuse here --
+    # "publishes a deploy pointer to MinIO, runs no scanner" -- was a statement
+    # about a specific job's plan, not about the word `deploy-prod`.
     ((THEHUB,), "deploy-demo", "publishes a deploy pointer to MinIO, runs no scanner"),
-    ((THEHUB,), "deploy-prod", "publishes a deploy pointer to MinIO, runs no scanner"),
     (
         (PERSONAL_SOC,),
         "package",
