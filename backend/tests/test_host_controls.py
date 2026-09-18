@@ -22,6 +22,7 @@ from typing import Any
 
 from mykronos.cli import main
 from mykronos.host_controls import (
+    EXPECTED_ASSERTIONS,
     assess,
     parse_evidence,
     parse_remote,
@@ -139,6 +140,31 @@ class TestTheProbeIsNotEvidence:
 
         assert not report.failures
         assert not report.ok
+        assert "NOTHING WAS VERIFIED" in verdict(report)
+
+    def test_a_document_that_measured_nothing_verifies_nothing(self) -> None:
+        """`not_measured` is not evidence either [#60015].
+
+        The new state exists so an operator can tell which gaps are closeable,
+        NOT so they count as measurements. If `not_measured` were treated as
+        evidence, a report in which every single check was unestablished would
+        claim to have verified something — the exact "green because it could
+        not fail" shape the new state was added to prevent, reintroduced by the
+        fix for it.
+        """
+        from mykronos.host_controls import Assertion, Report
+
+        report = Report(
+            assertions=[
+                Assertion(key, "not_measured", "nothing to compare against")
+                for key in sorted(EXPECTED_ASSERTIONS)
+            ]
+        )
+
+        assert not report.failures
+        assert not report.missing_assertions  # the floor is satisfied
+        assert not report.ok
+        assert not report.complete
         assert "NOTHING WAS VERIFIED" in verdict(report)
 
 
@@ -330,9 +356,35 @@ class TestTheControlStoryStaysCurrent:
 
 class TestPublishedPorts:
     def test_no_baseline_can_neither_pass_nor_fail(self) -> None:
+        """`not_measured`, not `not_evidence` [#60015].
+
+        The two were one state and the merge lost the actionable half. The
+        local probe is `not_evidence` because it can never be evidence however
+        often it runs; this has a subject, 22 bindings were observed, and one
+        `--record-ports` closes it. A report that says "incomplete" has to be
+        able to say which of its checks an operator can do something about.
+        """
         report = assess(parse_evidence(document()), ports_baseline=None)
 
-        assert state_of(report, "ports.baseline") == "not_evidence"
+        assert state_of(report, "ports.baseline") == "not_measured"
+        assert [a.key for a in report.unmeasured] == ["ports.baseline"]
+        assert "compared to nothing" in detail_of(report, "ports.baseline")
+        assert "--record-ports" in detail_of(report, "ports.baseline")
+
+    def test_an_unread_ports_section_is_unknown_and_still_fails(self) -> None:
+        """`not_measured` must not swallow the case it sits next to.
+
+        "I could not read the published ports" is a failure; "I read them and
+        had no baseline" is not. Widening the new state to cover both would
+        turn an unreadable host into an incomplete report.
+        """
+        report = assess(
+            parse_evidence(document(errors={"published_ports": "docker not running"})),
+            ports_baseline=None,
+        )
+
+        assert state_of(report, "ports.baseline") == "unknown"
+        assert not report.ok
 
     def test_a_new_binding_fails(self) -> None:
         report = assess(
@@ -399,12 +451,138 @@ class TestAddressParsing:
 
 
 class TestTheCommand:
-    def test_a_healthy_document_exits_zero(self, tmp_path: Path, capsys: Any) -> None:
+    def test_a_healthy_document_with_a_baseline_exits_zero(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        evidence = tmp_path / "host-controls.json"
+        evidence.write_text(json.dumps(document()), encoding="utf-8")
+        baseline = tmp_path / "ports.json"
+        baseline.write_text(
+            json.dumps(["mykronos-registry 0.0.0.0:5000->5000/tcp"]), encoding="utf-8"
+        )
+
+        assert (
+            main(["host-controls", str(evidence), "--ports-baseline", str(baseline)])
+            == 0
+        )
+        out = capsys.readouterr().out
+        assert "VERIFIED" in out
+        assert "NOT MEASURED" not in out
+
+    def test_the_same_document_without_a_baseline_exits_three(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        """This is the defect in #60015, and it used to exit 0.
+
+        Byte-identical evidence to the test above; the only difference is that
+        nothing establishes `ports.baseline`, so 22 bindings are observed and
+        compared to nothing. The run said `not_evidence` in a sub-row of a
+        table and `VERIFIED` in the exit code, and the exit code is what a
+        scheduler reads.
+
+        Reworked rather than deleted: the old assertion (`== 0` with no
+        baseline) was the bug written down as a guarantee, so leaving it would
+        have meant either a failing suite or an un-fixed control.
+        """
         evidence = tmp_path / "host-controls.json"
         evidence.write_text(json.dumps(document()), encoding="utf-8")
 
-        assert main(["host-controls", str(evidence)]) == 0
-        assert "VERIFIED" in capsys.readouterr().out
+        assert main(["host-controls", str(evidence)]) == 3
+
+        out = capsys.readouterr().out
+        assert "NOT MEASURED" in out
+        assert "ports.baseline" in out
+
+    def test_the_three_outcomes_have_three_numbers(self, tmp_path: Path) -> None:
+        """The acceptance criterion itself, as one assertion.
+
+        "A verdict of 'could not measure' is distinguishable from 'passed' in
+        the EXIT CODES, not only in the text output." Asserting the three are
+        distinct is the property; asserting each individually is not, because
+        three tests each passing against the same number would still be green.
+        """
+        evidence = tmp_path / "host-controls.json"
+        baseline = tmp_path / "ports.json"
+        baseline.write_text(
+            json.dumps(["mykronos-registry 0.0.0.0:5000->5000/tcp"]), encoding="utf-8"
+        )
+
+        evidence.write_text(json.dumps(document()), encoding="utf-8")
+        passed = main(["host-controls", str(evidence), "--ports-baseline", str(baseline)])
+        not_measured = main(["host-controls", str(evidence)])
+
+        evidence.write_text(json.dumps(document(firewall_rules=[])), encoding="utf-8")
+        failed = main(["host-controls", str(evidence), "--ports-baseline", str(baseline)])
+
+        assert len({passed, not_measured, failed}) == 3
+        assert (passed, failed, not_measured) == (0, 1, 3)
+
+    def test_the_floor_names_exactly_what_assess_produces(self) -> None:
+        """The floor and the function have to stay the same list.
+
+        Two ways to rot, both silent. An assertion added to `assess` and not to
+        `EXPECTED_ASSERTIONS` is a check the floor does not defend, so deleting
+        it later goes unnoticed. A name in `EXPECTED_ASSERTIONS` that `assess`
+        never emits makes every report permanently incomplete, and the fix
+        somebody reaches for is deleting the floor.
+        """
+        report = assess(parse_evidence(document()))
+
+        assert {a.key for a in report.assertions} == set(EXPECTED_ASSERTIONS)
+
+    def test_a_missing_check_is_not_a_pass(self) -> None:
+        """The floor on what was examined [#60015].
+
+        A report is not allowed to go green by asking fewer questions. Without
+        this, deleting an assertion from `assess` turns its subject green
+        rather than red — the control keeps reporting and stops reporting the
+        thing, which is the failure mode this whole story is about.
+        """
+        from mykronos.host_controls import Report
+
+        full = assess(parse_evidence(document()), ports_baseline=[
+            "mykronos-registry 0.0.0.0:5000->5000/tcp"
+        ])
+        assert full.ok and full.complete
+
+        pruned = Report(
+            assertions=[a for a in full.assertions if a.key != "firewall.scope"]
+        )
+
+        assert pruned.missing_assertions == ["firewall.scope"]
+        assert not pruned.ok
+        assert not pruned.complete
+        assert "INCOMPLETE REPORT" in verdict(pruned)
+        assert "firewall.scope" in verdict(pruned)
+
+    def test_json_output_carries_both_halves(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        """`ok` alone cannot answer the question the exit code now answers."""
+        evidence = tmp_path / "host-controls.json"
+        evidence.write_text(json.dumps(document()), encoding="utf-8")
+
+        main(["host-controls", str(evidence), "--json"])
+        payload = json.loads(capsys.readouterr().out)
+
+        assert payload["ok"] is True
+        assert payload["complete"] is False
+        assert payload["unmeasured"] == ["ports.baseline"]
+        assert payload["missing_assertions"] == []
+
+    def test_an_unverified_run_is_still_one_not_three(self, tmp_path: Path) -> None:
+        """Precedence: a failure outranks an unestablished check.
+
+        Both are true of this document — the rule is gone AND there is no ports
+        baseline. It must report the failure, because 3 reads as "nothing is
+        wrong, something is missing" and something is very wrong.
+        """
+        evidence = tmp_path / "host-controls.json"
+        evidence.write_text(
+            json.dumps(document(firewall_rules=[])), encoding="utf-8"
+        )
+
+        assert main(["host-controls", str(evidence)]) == 1
 
     def test_a_document_with_only_a_probe_exits_non_zero(
         self, tmp_path: Path, capsys: Any

@@ -27,7 +27,7 @@ believed, and it catches every way this control has really been lost —
 deletion, disablement, a narrowed remote range, a profile that no longer
 matches the interface, and the host moving to a subnet the rule never named.
 
-**Four states, not two.** A check that cannot fail is worth nothing, and so is
+**Five states, not two.** A check that cannot fail is worth nothing, and so is
 a check that cannot say it did not run:
 
 * ``pass`` — read, and the assertion holds.
@@ -36,14 +36,34 @@ a check that cannot say it did not run:
   the same insistence for the same reason: a NAS that is switched off must not
   read the same as one confirmed closed.
 * ``not_evidence`` — the check ran and its result cannot distinguish a pass
-  from a failure. The local probe above is the whole reason this state exists.
-  It is carried in the report rather than dropped, because an operator who does
-  not see it will run it anyway and believe it.
+  from a failure, **and never could**. The local probe above is the whole
+  reason this state exists. It is carried in the report rather than dropped,
+  because an operator who does not see it will run it anyway and believe it.
+* ``not_measured`` — the check has a subject and could have been established,
+  but this run had nothing to establish it against. A `ports.baseline` with no
+  recorded baseline is the case: 22 bindings were observed and compared to
+  nothing. Unlike ``not_evidence`` this is *fixable*, and the detail says how.
 
-``unknown`` fails a report. ``not_evidence`` neither passes nor fails one — but
-a report in which *nothing* is evidence does not pass either, which is the
-property that makes "I curled it and it worked" incapable of producing a green
-run here.
+``unknown`` fails a report. ``not_evidence`` and ``not_measured`` neither pass
+nor fail one — but a report in which *nothing* is evidence does not pass
+either, which is the property that makes "I curled it and it worked" incapable
+of producing a green run here.
+
+**Why ``not_measured`` is separate from ``not_evidence`` [#60015].** Collapsing
+them loses the only actionable half. ``not_evidence`` is a permanent property
+of the check — the local probe will never be evidence no matter how often it is
+run, so there is nothing for an operator to do about it. ``not_measured`` is a
+property of *this run* — record a baseline and the next run is a comparison. A
+report that reads "incomplete" must say which of its checks an operator can
+close, and one state cannot say both.
+
+**Completeness is reported separately from correctness, and in the exit code.**
+:attr:`Report.ok` answers "did everything I measured hold"; :attr:`Report.complete`
+answers "did I measure everything I am supposed to measure". They are different
+questions and the defect in #60015 was reporting only the first. The command
+exits :data:`EXIT_NOT_MEASURED` when it is ok but not complete, so a control
+that inspected nothing cannot be read as one that inspected everything and
+found it well.
 
 **Transport is deliberately not here**, exactly as in `netassess`: every
 function takes a document already in hand. `deploy/concourse/Get-HostControl
@@ -62,7 +82,41 @@ from typing import Any, Literal
 #: else is a different control with a different story.
 REGISTRY_PORT = 5000
 
-State = Literal["pass", "fail", "unknown", "not_evidence"]
+State = Literal["pass", "fail", "unknown", "not_evidence", "not_measured"]
+
+#: The exit codes this control speaks. Kept as named constants because the
+#: whole point of #60015 is that the number carries the verdict: a caller that
+#: only knows "0 or not 0" cannot tell a control that passed from one that
+#: never ran, and that is the defect. `scripts/bench_grade.py` declares the
+#: same four under the same names, and
+#: `test_the_two_controls_agree_on_what_the_numbers_mean` fails if they drift.
+#:
+#: They are duplicated rather than shared because `bench_grade.py` runs as a
+#: standalone script inside a pipeline container with no `mykronos` package on
+#: the path (`dump_openapi.py` needs a `sys.path` shim to import one). A shared
+#: module would buy one definition and cost a runtime import that can fail in
+#: the place this most needs to work; a test that pins the two together buys
+#: the same guarantee with neither.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+EXIT_NOT_MEASURED = 3
+
+#: Every assertion :func:`assess` is required to produce. This is the floor on
+#: what was examined: a report is not allowed to pass by containing fewer
+#: checks than it is supposed to. Dropping `firewall.scope` from `assess` and
+#: leaving the rest green would otherwise be a passing run, and "the control
+#: passed because nobody asked it the hard question" is the failure this module
+#: exists to end. [#60015]
+EXPECTED_ASSERTIONS = frozenset(
+    {
+        "firewall.rule_present",
+        "firewall.scope",
+        "registry.auth",
+        "ports.baseline",
+        "registry.local_probe",
+    }
+)
 
 #: `RemoteAddress` values Windows resolves at evaluation time against state this
 #: document does not carry. A rule scoped to one of these may or may not cover
@@ -94,7 +148,14 @@ class Assertion:
 
     @property
     def is_evidence(self) -> bool:
-        return self.state != "not_evidence"
+        """Did this assertion establish anything about the host.
+
+        `not_measured` is in here with `not_evidence` [#60015]: a check that had
+        nothing to compare against established no more than one that could never
+        establish anything. They differ in what an operator can do next, which
+        is :attr:`Report.unmeasured`'s job, not this one's.
+        """
+        return self.state not in ("not_evidence", "not_measured")
 
 
 @dataclass(frozen=True)
@@ -112,16 +173,56 @@ class Report:
         return [a for a in self.assertions if a.state in ("fail", "unknown")]
 
     @property
+    def missing_assertions(self) -> list[str]:
+        """The floor: checks this report is supposed to contain and does not.
+
+        A report is not allowed to pass by asking fewer questions. Without this,
+        deleting an assertion from :func:`assess` turns its subject green rather
+        than red — the control keeps reporting, and stops reporting the thing.
+        [#60015]
+        """
+        return sorted(EXPECTED_ASSERTIONS - {a.key for a in self.assertions})
+
+    @property
+    def unmeasured(self) -> list[Assertion]:
+        """Checks with a subject that this run had nothing to establish against.
+
+        Separate from :attr:`failures` because they are not failures, and
+        separate from the permanently-uninformative `not_evidence` because each
+        one names something an operator can close. [#60015]
+        """
+        return [a for a in self.assertions if a.state == "not_measured"]
+
+    @property
     def ok(self) -> bool:
         """Did this run actually verify anything, and did it all hold?
 
-        Both halves are load-bearing. A document containing nothing but the
-        local probe has no failures at all — and verifies nothing, so it is not
-        ok. That is the naive check, and this is the line it cannot cross.
+        Three halves now, all load-bearing. A document containing nothing but
+        the local probe has no failures at all — and verifies nothing, so it is
+        not ok. That is the naive check, and this is the line it cannot cross.
+        The floor is the third: a report missing checks it should carry is not
+        ok however green what remains is.
+
+        This deliberately does NOT consider :attr:`unmeasured`. "Everything I
+        measured held" and "I measured everything" are different claims and
+        collapsing them is the #60015 defect in the other direction — see
+        :attr:`complete`.
         """
+        if self.missing_assertions:
+            return False
         if self.failures:
             return False
         return any(a.state == "pass" for a in self.assertions)
+
+    @property
+    def complete(self) -> bool:
+        """Did this run establish everything it is supposed to establish.
+
+        The question `ok` cannot answer. A run with a green firewall and no
+        ports baseline is `ok` and not `complete`, and the whole of #60015 is
+        that those two exited with the same number.
+        """
+        return not self.unmeasured and not self.missing_assertions
 
 
 def _to_int(address: str) -> int | None:
@@ -554,10 +655,11 @@ def assert_published_ports(
     if baseline is None:
         return Assertion(
             "ports.baseline",
-            "not_evidence",
+            "not_measured",
             f"No recorded baseline, so this run can neither pass nor fail: "
-            f"{len(evidence.published_ports)} binding(s) observed. Record this run "
-            "with --record-ports and the next one becomes a comparison.",
+            f"{len(evidence.published_ports)} binding(s) observed and compared to "
+            "nothing. Record this run with --record-ports and the next one "
+            "becomes a comparison.",
         )
 
     added = sorted(set(evidence.published_ports) - set(baseline))
@@ -625,21 +727,40 @@ def assess(evidence: Evidence, *, ports_baseline: list[str] | None = None) -> Re
 def verdict(report: Report) -> str:
     """The one line an operator reads after the table.
 
-    Three outcomes, because the failure this module exists to end is a check
-    with three outcomes reported as two.
+    Five outcomes, because the failure this module exists to end is a check
+    with more outcomes than it reports. The order is precedence, most specific
+    first: something that failed outranks something that was never asked, and a
+    document that establishes nothing at all is described as that rather than as
+    a list of the checks it happens to be missing.
     """
-    if report.ok:
-        return (
-            "VERIFIED. Read from the firewall rule itself, not from a request to "
-            "the port — a request from this host would have said this either way."
+    if report.failures:
+        return "NOT VERIFIED: " + ", ".join(
+            f"{a.key} ({a.state})" for a in report.failures
         )
-    if not report.failures:
+    if not any(a.is_evidence for a in report.assertions):
         return (
             "NOTHING WAS VERIFIED. This document carries no evidence: every check in "
             "it returns the same answer whether the control holds or not."
         )
-    return "NOT VERIFIED: " + ", ".join(
-        f"{a.key} ({a.state})" for a in report.failures
+    if report.missing_assertions:
+        return (
+            "INCOMPLETE REPORT: this document is missing "
+            + ", ".join(report.missing_assertions)
+            + ". It is not a pass and not a failure — it is fewer questions than "
+            "this control is defined to ask, so what remains green says nothing "
+            "about what is absent."
+        )
+    if report.unmeasured:
+        return (
+            "VERIFIED IN PART, AND NOT MEASURED: "
+            + ", ".join(a.key for a in report.unmeasured)
+            + ". What was read holds. The listed check has a subject and was "
+            "compared to nothing, so this run is not a pass for it — see each "
+            "detail for what closes it."
+        )
+    return (
+        "VERIFIED. Read from the firewall rule itself, not from a request to "
+        "the port — a request from this host would have said this either way."
     )
 
 
