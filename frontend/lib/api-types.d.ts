@@ -3642,6 +3642,7 @@ export interface components {
             triage: string;
             /** Triage Rationale */
             triage_rationale: string;
+            prior_disposition?: components["schemas"]["PriorDispositionOut"] | null;
             /**
              * Toxic Combination Ids
              * @default []
@@ -3820,6 +3821,7 @@ export interface components {
             fix: components["schemas"]["FixOut"] | null;
             package: components["schemas"]["PackageOut"] | null;
             severity_here?: components["schemas"]["SeverityHereOut"] | null;
+            prior_disposition?: components["schemas"]["PriorDispositionOut"] | null;
             /** Missing Context */
             missing_context: components["schemas"]["RecordGap"][];
         };
@@ -4642,6 +4644,43 @@ export interface components {
             nist_800_53: string[];
             /** Not Applicable Because */
             not_applicable_because?: string[];
+        };
+        /**
+         * PriorDispositionOut
+         * @description A decision recorded under an identifier that has since been replaced (#280).
+         *
+         *     Evidence, never a verdict. A Debian `TEMP-` id becoming a CVE changes the
+         *     `finding_id`, so the acceptance stays on the retired row and the new one
+         *     arrives untriaged — the same investigation, asked twice. This names the
+         *     earlier decision so a person can see they have already answered it.
+         *
+         *     It deliberately does **not** carry the status forward. Four placeholders
+         *     became six CVEs on 2026-09-11, so there is no pairing to infer, and
+         *     applying an old acceptance to a vulnerability nobody has looked at would
+         *     suppress a real finding.
+         */
+        PriorDispositionOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Status */
+            status: string;
+            /** Package Name */
+            package_name: string;
+            /** Package Version */
+            package_version: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Accepted Reason Code */
+            accepted_reason_code?: string | null;
+            /** Accepted Until */
+            accepted_until?: string | null;
+            /**
+             * Summary
+             * @description One sentence naming the earlier decision, for somebody deciding whether to look further.
+             */
+            summary: string;
         };
         /**
          * ProfileProposalOut

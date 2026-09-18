@@ -524,6 +524,36 @@ TriageFilter = Literal[
 ]
 
 
+class PriorDispositionOut(BaseModel):
+    """A decision recorded under an identifier that has since been replaced (#280).
+
+    Evidence, never a verdict. A Debian `TEMP-` id becoming a CVE changes the
+    `finding_id`, so the acceptance stays on the retired row and the new one
+    arrives untriaged — the same investigation, asked twice. This names the
+    earlier decision so a person can see they have already answered it.
+
+    It deliberately does **not** carry the status forward. Four placeholders
+    became six CVEs on 2026-09-11, so there is no pairing to infer, and
+    applying an old acceptance to a vulnerability nobody has looked at would
+    suppress a real finding.
+    """
+
+    finding_id: str
+    rule_id: str
+    status: str
+    package_name: str
+    package_version: str
+    #: From `resolved_at`. Null for a row written before that column was
+    #: populated — reported as absent rather than guessed.
+    decided_at: datetime | None = None
+    accepted_reason_code: str | None = None
+    accepted_until: date | None = None
+    summary: str = Field(
+        description="One sentence naming the earlier decision, for somebody "
+        "deciding whether to look further."
+    )
+
+
 class FindingGroupOut(BaseModel):
     """One problem, however many times it was reported."""
 
@@ -553,6 +583,9 @@ class FindingGroupOut(BaseModel):
         )
     )
     triage_rationale: str
+    #: The decision this group is about to re-ask, if a provisional
+    #: advisory id was replaced under it (#280). Null when there is none.
+    prior_disposition: PriorDispositionOut | None = None
     toxic_combination_ids: list[str] = []
     cve_id: str | None = Field(
         default=None,
@@ -4169,6 +4202,8 @@ class FindingRecordOut(BaseModel):
     #: Absent is the honest answer; a fabricated vector would produce a number
     #: that looks like a standard and is not one.
     severity_here: SeverityHereOut | None = None
+    #: See PriorDispositionOut. Null when this finding re-asks nothing.
+    prior_disposition: PriorDispositionOut | None = None
     missing_context: list[RecordGap]
 
 
@@ -4290,6 +4325,17 @@ async def whole_finding_record(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
         severity_here=_severity_here(request, row, profile),
+        # Evidence that this finding re-asks a decision already made, where a
+        # provisional advisory id was replaced under it (#280). Never a status.
+        prior_disposition=(
+            PriorDispositionOut(**prior)
+            if (
+                prior := finding_record.prior_decision(
+                    catalog, repo_full_name=repo_full_name, row=row
+                )
+            )
+            else None
+        ),
         closure=ClosureOut(
             **finding_record.closure(capability=capability, lane=lanes.get(capability))
         ),
