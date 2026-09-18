@@ -12,6 +12,7 @@ because of a specific hazard, the hazard.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,16 +37,49 @@ CREDENTIAL_SHAPES = re.compile(
     r"|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)"
 )
 
-SOURCE_GLOBS = ("**/*.py", "**/*.yaml", "**/*.yml", "**/*.json", "**/*.j2", "**/*.md")
-SKIP_DIRS = {".venv", "node_modules", ".git", "__pycache__", ".next", "datalake"}
+SOURCE_SUFFIXES = (".py", ".yaml", ".yml", ".json", ".j2", ".md")
 
 
 def _source_files() -> list[Path]:
-    files: list[Path] = []
-    for pattern in SOURCE_GLOBS:
-        for path in ROOT.glob(pattern):
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
+    """The files git would carry, not the files that happen to be on disk.
+
+    This used to glob the filesystem from the repository root, which is a
+    different question with a different answer. The root also holds
+    `.claude/worktrees/` — a full checkout per agent, of unmerged branches
+    and their scratch — so the scan below read tens of copies of the tree
+    and returned a verdict that changed when somebody else's branch changed.
+    It went red for seven minutes on a fixture in another worktree, then
+    green again, with no commit in between and nothing wrong with the tree
+    it claims to be reviewing. A security check whose result moves on its
+    own is one people learn to re-run rather than read.
+
+    `git ls-files` is the right boundary in both directions: it excludes
+    untracked scratch that can never reach main, and it includes files that
+    are staged but not yet committed, which is exactly the moment a
+    credential would be caught on its way in.
+
+    This is the second bug of this family here — see `test_ai_checks`, where
+    `SKIP_DIRS` was matched against absolute path parts and a parent
+    directory named `build` switched the whole scan off. Both come from
+    asking the filesystem a question only git can answer.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
+        # Never degrade to "scanned nothing, found nothing". A check that
+        # cannot run must say so, not pass.
+        pytest.fail(f"could not list tracked files, so nothing was scanned: {exc}")
+
+    files = []
+    for raw in out.split(b"\0"):
+        if not raw:
+            continue
+        path = ROOT / raw.decode("utf-8", errors="replace")
+        if path.suffix.lower() in SOURCE_SUFFIXES:
             files.append(path)
     return files
 
@@ -71,6 +105,47 @@ class TestNoCredentialsInTheTree:
         assert offenders == [], (
             "Credential-shaped strings found: " + ", ".join(offenders)
         )
+
+    def test_the_scan_reads_tracked_files_and_not_scratch(self) -> None:
+        """The scan must cover the tree git carries, and only that.
+
+        Two ways for this check to be useless, and this asserts against
+        both. It can scan nothing and report a clean tree — the failure
+        mode of the `SKIP_DIRS` bug in `test_ai_checks`. Or it can scan
+        another agent's worktree and report a credential that exists only
+        in untracked scratch, which is how it last went red.
+        """
+        scanned = {p.resolve() for p in _source_files()}
+
+        tracked = (BACKEND / "mykronos" / "cli.py").resolve()
+        assert tracked in scanned, "the scan no longer reaches tracked source"
+        # 418 tracked source files at the time of writing. The floor is well
+        # under that so ordinary deletion does not trip it, and well over
+        # zero so a scan that silently stops reading does.
+        assert len(scanned) > 300, (
+            f"only {len(scanned)} files scanned; the scan has been narrowed "
+            "to the point where passing means nothing"
+        )
+
+        # Built at runtime so this file does not itself carry the shape.
+        shaped = "ghp_" + "a" * 36
+        assert CREDENTIAL_SHAPES.search(shaped), (
+            "the pattern no longer matches a PAT, so the scan above cannot "
+            "fail no matter what is in the tree"
+        )
+
+        scratch = ROOT / ".claude" / "worktrees" / "agent-scope-probe"
+        probe = scratch / "fixture.py"
+        scratch.mkdir(parents=True, exist_ok=True)
+        try:
+            probe.write_text(f'TOKEN = "{shaped}"\n', encoding="utf-8")
+            assert probe.resolve() not in {p.resolve() for p in _source_files()}, (
+                "untracked scratch is being scanned again; a file in another "
+                "agent's worktree can turn this suite red"
+            )
+        finally:
+            probe.unlink(missing_ok=True)
+            scratch.rmdir()
 
     def test_the_env_example_has_no_real_values(self) -> None:
         """spec 12 §8: documented placeholders, never a working secret."""
