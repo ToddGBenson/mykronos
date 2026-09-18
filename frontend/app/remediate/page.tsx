@@ -57,6 +57,7 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
     total_open,
     blocked_findings,
     closing_soon,
+    closing_soon_open,
     auto_fixable,
     stalled,
     stale = [],
@@ -67,7 +68,14 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
 
   // What is left once the free ones and the frozen ones are set aside. This
   // is the only number on the page that means "work a person has to do".
-  const actionable = Math.max(0, total_open - closing_soon - blocked_findings);
+  //
+  // `closing_soon_open`, not `closing_soon` (#439). Both are real and they
+  // count different populations: `total_open` is `status = 'open'` alone,
+  // while `closing_soon` has included `accepted_risk` since #437. Subtracting
+  // the whole of it removes findings this total never contained, and
+  // `Math.max(0, ...)` below turns that into a quiet undercount rather than a
+  // visibly broken number — the worse of the two failure modes.
+  const actionable = Math.max(0, total_open - closing_soon_open - blocked_findings);
 
   return (
     <div className="flex flex-col gap-5">

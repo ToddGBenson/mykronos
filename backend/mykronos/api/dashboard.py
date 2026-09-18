@@ -2596,6 +2596,12 @@ class BriefingOut(BaseModel):
     #: — closure is arithmetic from here. Separating this from the open count
     #: is what stops a backlog looking larger than the work in it.
     closing_soon: int
+    #: The part of `closing_soon` that `total_open` also counts. This is the
+    #: only one a caller may subtract from `total_open`: that total is
+    #: `status = 'open'` alone, while `closing_soon` has included
+    #: `accepted_risk` since #437, so subtracting all of it removes findings
+    #: the total never contained (#439).
+    closing_soon_open: int
     auto_fixable: int
     stalled: list[StalledLaneOut]
     #: Lanes that ARE producing successful scans, of a tree that is not
@@ -2662,6 +2668,7 @@ async def post_deployment_briefing(
         total_open=report.total_open,
         blocked_findings=report.blocked_findings,
         closing_soon=report.closing_soon,
+        closing_soon_open=report.closing_soon_open,
         auto_fixable=report.auto_fixable,
         stalled=[
             StalledLaneOut.model_validate(dataclasses.asdict(lane)) for lane in report.stalled

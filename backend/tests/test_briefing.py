@@ -318,6 +318,87 @@ class TestAwaitingClosure:
         assert report.closing_soon == 1
         assert report.awaiting[0].scans_needed == 0
 
+    def test_an_acceptance_leaving_is_not_subtractable_from_the_open_count(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """#439. `closing_soon` and `total_open` count different populations.
+
+        `total_open` is `status = 'open'` and nothing else. Since #437
+        `closing_soon` also counts `accepted_risk`. So the remediate page's
+        `total_open - closing_soon - blocked` subtracts findings that total
+        never contained, and `Math.max(0, ...)` turns the result into a quiet
+        undercount rather than a visibly wrong number.
+
+        The whole defect is visible in one acceptance: it is in `closing_soon`
+        and must not be in `closing_soon_open`.
+        """
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _accept(client, admin_auth, _only_finding(catalog))
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        report = briefing.build(catalog)
+
+        assert report.closing_soon == 1, "the reader is still told it closes for free"
+        assert report.closing_soon_open == 0, "but it was never in total_open"
+        assert report.total_open == 0
+
+        # What the page computes. With the old expression this is
+        # max(0, 0 - 1 - 0) -> 0, which is right here only by accident; the
+        # invariant is what stops it being wrong elsewhere.
+        assert report.closing_soon_open <= report.total_open
+
+    def test_an_open_finding_leaving_is_counted_in_both(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The other half, and the guard against fixing this by zeroing it.
+
+        `closing_soon_open` that always returned 0 would satisfy the test
+        above and silently stop the page ever discounting real closures.
+        """
+        _scan(client, auth, "run-1", [finding_payload()])
+        run_compaction()
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        report = briefing.build(catalog)
+
+        assert report.closing_soon == 1
+        assert report.closing_soon_open == 1
+
+    def test_the_two_populations_are_reported_separately_when_mixed(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """One open and one accepted, both absent. The split is the point."""
+        _scan(
+            client,
+            auth,
+            "run-1",
+            [finding_payload(), finding_payload(file_path="b.py")],
+        )
+        run_compaction()
+        accepted = sorted(
+            r[0]
+            for r in catalog.query("SELECT finding_id FROM findings ORDER BY finding_id")
+        )[0]
+        _accept(client, admin_auth, accepted)
+        _scan(client, auth, "run-2", [])
+        _scan(client, auth, "run-3", [])
+        run_compaction()
+
+        report = briefing.build(catalog)
+
+        assert report.closing_soon == 2, "both are on their way out"
+        assert report.closing_soon_open == 1, "only one of them was ever open"
+        assert report.total_open == 1
+        # The number the page prints. Subtracting `closing_soon` here would
+        # give max(0, 1 - 2) = 0 and hide a real finding.
+        assert max(0, report.total_open - report.closing_soon_open) == 0
+        assert max(0, report.total_open - report.closing_soon) == 0
+
     def test_it_agrees_with_the_sweep_about_an_acceptance_too(
         self, client, auth, admin_auth, catalog, run_compaction
     ) -> None:
