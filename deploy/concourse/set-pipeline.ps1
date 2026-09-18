@@ -221,6 +221,13 @@ try {
         # than each one naming the default branch as a literal (PS-6). One
         # place to change if this pipeline is ever pointed somewhere else.
         "scanned-branch: main",
+        # The timezone the `weekly` timer reads its window in (#60014). This
+        # line is the reason `mykronos.yml` can now set a `location` at all:
+        # the resource had none because this script supplied no such var, and
+        # a `((scan-timezone))` nobody supplies applies as an unresolved
+        # reference and never fires. Same value and same name as
+        # set-thehub-pipeline.ps1 and set-personal-soc-pipeline.ps1 use.
+        "scan-timezone: America/Phoenix",
         # MinIO is on the compose network, so the task container reaches it by
         # service name rather than through the host.
         "minio-endpoint: http://192.168.0.14:9000",

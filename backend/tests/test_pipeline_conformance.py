@@ -653,6 +653,79 @@ def test_the_committed_vars_say_what_the_apply_script_applies(stem: str) -> None
         f"self-apply would drop them"
     )
 
+    # AND THE REVERSE, which this test did not check until #60014 and which is
+    # the direction the `weekly` timer's own comment had described the cost of:
+    # "using a variable nobody supplies here would apply an unresolved
+    # reference and the resource would never fire."
+    #
+    # The two appliers are not interchangeable. The committed vars file feeds
+    # the `set-pipeline` JOB; the script feeds a manual apply from a laptop. A
+    # var in the file and not in the script resolves on a self-apply and is
+    # left as the literal string `((name))` by the script -- so the pipeline
+    # works until somebody applies it the other way, and then a resource
+    # silently stops matching anything. Concourse does not reject it: an
+    # unresolved var in a resource `source` is just a wrong value.
+    #
+    # Found by mutation: deleting `scan-timezone` from the script alone left
+    # all 47 tests in this pair green.
+    unsupplied = sorted(set(committed) - set(scripted))
+    assert not unsupplied, (
+        f"vars/{stem}.yml carries {unsupplied}, which {APPLY_SCRIPT[stem]} does not write, "
+        f"so a manual apply would leave them as unresolved `((name))` literals"
+    )
+
+
+# --- Every timer says which clock it reads -----------------------------------
+#
+# `mykronos/weekly` was the only `time` resource in the estate with no
+# `location`, and Concourse defaults to UTC. Phoenix is UTC-7 year round, so a
+# window written as "Sunday 04:00-05:00" ran at 21:00-22:00 SATURDAY -- neither
+# what the file says nor when the estate is quiet (#60014).
+#
+# The cost of getting this wrong is invisible rather than red. A timer in the
+# wrong zone still fires, still succeeds, and still reports nothing unusual; it
+# simply does so at an hour nobody chose. `mykronos/coverage` is the consumer
+# that made it visible, and only because it had never built at all.
+#
+# A skipped assertion is not a passed one, so this asserts a floor first: fewer
+# timers than this repository holds means the discovery broke, not that the
+# estate got simpler.
+#
+# Three, not five: keel's `daily` and `weekly` are real timers in the same
+# estate, but keel's pipeline lives in keel's own repository and nothing here
+# can read it. Counting them would make this test unfalsifiable in exactly the
+# way `ACKNOWLEDGED_UNMAPPED_JOBS` refuses to be.
+MINIMUM_TIMERS = 3
+
+
+def _time_resources() -> list[tuple[str, str, dict]]:
+    """`(pipeline, resource, source)` for every `type: time` resource."""
+    found = []
+    for path in sorted(checker.PIPELINE_DIR.glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for resource in document.get("resources") or []:
+            if resource.get("type") == "time":
+                found.append((path.stem, resource["name"], resource.get("source") or {}))
+    return found
+
+
+def test_every_timer_names_the_timezone_it_reads_its_window_in() -> None:
+    timers = _time_resources()
+    assert len(timers) >= MINIMUM_TIMERS, (
+        f"only {len(timers)} time resources found across the estate; expected at "
+        f"least {MINIMUM_TIMERS}. A discovery that finds no timers would pass "
+        "this test by inspecting nothing."
+    )
+    missing = sorted(
+        f"{pipeline}/{name}" for pipeline, name, source in timers if not source.get("location")
+    )
+    assert not missing, (
+        f"these timers set no `location`, so Concourse reads their window in UTC: "
+        f"{missing}. That is seven hours off Phoenix and turns a pre-dawn Sunday "
+        "slot into Saturday evening. Set `location: ((scan-timezone))` and make "
+        "sure BOTH the apply script and vars/<pipeline>.yml supply it."
+    )
+
 
 # --- One scanner, one version ------------------------------------------------
 
