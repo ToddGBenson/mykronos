@@ -27,7 +27,12 @@ from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.logsafe import scrub
-from mykronos.oracle.engine import MODIFIER_CATEGORIES, Decision, OracleEngine
+from mykronos.oracle.engine import (
+    MODIFIER_CATEGORIES,
+    Decision,
+    OracleEngine,
+    resolve_decision_type,
+)
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
 
@@ -273,7 +278,31 @@ class OracleService:
         blocking: bool = False,
         github: GitHubClient | None = None,
     ) -> PublishedDecision:
-        """Score, persist, and post a Check Run if there is somewhere to post it."""
+        """Score, persist, and post a Check Run if there is somewhere to post it.
+
+        The scope is settled here, before anything is scored, so the scheduled
+        job and the HTTP gate cannot disagree about what a decision *is* —
+        which is the same reason persistence lives here rather than in the
+        endpoint.
+        """
+        requested_type = decision_type
+        decision_type = resolve_decision_type(
+            decision_type, commit_sha=commit_sha, pr_number=pr_number
+        )
+        if decision_type != requested_type:
+            # Warning, not debug: this is a caller sending a label its own
+            # payload contradicts, and the pipeline or workflow that sent it
+            # needs re-applying (issue #275). Silence here is what let it run
+            # for 1,601 decisions.
+            logger.warning(
+                "Recording a %s decision for %s as %s: the payload names a "
+                "change (commit %s, pr %s), so it is not a standing posture.",
+                scrub(requested_type),
+                scrub(repo_full_name),
+                scrub(decision_type),
+                scrub(commit_sha or "-"),
+                pr_number,
+            )
         decision = self.engine.evaluate(
             repo_full_name,
             decision_type=decision_type,
@@ -437,6 +466,15 @@ class OracleService:
         count. That is the honest direction for a "should we switch this on"
         question: it reports what the gate would refuse *today*, given what is
         known today.
+
+        **It says which repositories it covers.** `repositories` and
+        `repositories_without_a_judged_merge` are returned beside the totals,
+        because "it would have refused 0 of the last 30 merges" is a
+        materially different claim depending on whether those 30 came from
+        every repository or from three of five (issue #275). A gate statistic
+        that does not state its denominator's coverage is an argument, not a
+        measurement — and the repositories missing from it are the ones whose
+        gate runs somewhere this number cannot see.
         """
         where = ["decision_type = 'pr_gate'", "gate_outcome IS NOT NULL"]
         params: list[Any] = []
@@ -515,7 +553,35 @@ class OracleService:
                     )
         totals["would_have_blocked_on_introduced"] = len(refused)
 
+        # Coverage. Which repositories this number is drawn from, and which
+        # ones the platform has judged at all but that contribute nothing to
+        # it — the gap issue #275 is about.
+        covered = sorted(
+            str(repo)
+            for (repo,) in self.catalog.query(
+                f"SELECT DISTINCT repo_full_name FROM risk_decisions WHERE {clause}",
+                params,
+            )
+        )
+        judged = sorted(
+            str(repo)
+            for (repo,) in self.catalog.query(
+                "SELECT DISTINCT repo_full_name FROM risk_decisions", []
+            )
+        )
+        uncovered = [repo for repo in judged if repo not in set(covered)]
+
         return {
+            "repositories": covered,
+            "repositories_judged": judged,
+            "repositories_without_a_judged_merge": uncovered,
+            "coverage_note": (
+                f"Drawn from {len(covered)} of {len(judged)} repositories the "
+                "platform has scored. A repository appears here only once a "
+                "pull-request gate decision of its has a recorded merge "
+                "outcome, so one whose gate runs per commit rather than per "
+                "pull request contributes nothing, however often it runs."
+            ),
             **totals,
             "merged_commits_judged": len(merged_commits),
             "refused_on_introduced": refused,

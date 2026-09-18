@@ -50,7 +50,7 @@ class EvaluateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    decision_type: str = Field(pattern="^(pr_gate|release_gate|portfolio)$")
+    decision_type: str = Field(pattern="^(pr_gate|commit_gate|release_gate|portfolio)$")
     commit_sha: str = Field(min_length=1, max_length=64)
     pr_number: int | None = None
     release_tag: str | None = Field(default=None, max_length=255)
@@ -58,6 +58,18 @@ class EvaluateRequest(BaseModel):
 
 class EvaluateResult(BaseModel):
     decision_id: str
+    decision_type: str = Field(
+        default="portfolio",
+        description=(
+            "The scope the decision was **recorded** under, which is not "
+            "always the one that was requested (issue #275). A `portfolio` "
+            "request carrying a commit sha is a verdict about one change, not "
+            "a standing posture, so it is filed as `commit_gate` — or "
+            "`pr_gate` when it names a pull request. Read this rather than "
+            "echoing what you sent: where they differ, the caller is a "
+            "pipeline or workflow that needs re-applying."
+        ),
+    )
     overall_risk_score: int
     recommendation: str
     reasoning: str
@@ -214,6 +226,7 @@ async def evaluate(
 
     return EvaluateResult(
         decision_id=published.decision.decision_id,
+        decision_type=published.decision.decision_type,
         overall_risk_score=published.decision.overall_risk_score,
         recommendation=published.decision.recommendation,
         reasoning=published.decision.reasoning,

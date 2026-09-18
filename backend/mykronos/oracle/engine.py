@@ -42,7 +42,67 @@ from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
-DECISION_TYPES = ("pr_gate", "release_gate", "portfolio")
+DECISION_TYPES = ("pr_gate", "commit_gate", "release_gate", "portfolio")
+
+#: The decision types that judge one change, as opposed to a standing posture.
+#:
+#: `commit_gate` exists because the taxonomy had no name for the commonest
+#: gate we actually run (issue #275). A Concourse pipeline is triggered by a
+#: commit on a branch, not by a pull request, so it has no PR number to send —
+#: and both the Concourse pipelines and the Actions gate template therefore
+#: filed their per-commit verdicts as `portfolio`, the standing
+#: repository-wide posture. That made a per-commit verdict unfindable and left
+#: the portfolio trend answering two different questions at once.
+GATE_DECISION_TYPES = ("pr_gate", "commit_gate", "release_gate")
+
+
+def normalise_pr_number(pr_number: int | None) -> int | None:
+    """`0` means "no pull request", not pull request zero.
+
+    The Actions gate template sends `0` because a workflow output is a string
+    and `jq --argjson` needs something numeric. Left alone it writes rows that
+    claim to judge pull request #0 — 1,394 of them across three repositories.
+    """
+    return pr_number if pr_number else None
+
+
+def resolve_decision_type(
+    requested: str, *, commit_sha: str = "", pr_number: int | None = None
+) -> str:
+    """The decision type the *payload* says this is, whatever it was labelled.
+
+    A caller's label is a claim; `commit_sha` and `pr_number` are the evidence
+    for it, and where the two disagree the evidence wins:
+
+    - `portfolio` carrying a commit sha is not a standing posture. It is a
+      gate decision about one change — `pr_gate` if it names a pull request,
+      `commit_gate` otherwise.
+    - `pr_gate` with no pull request number is not PR-scoped. Nothing can ever
+      attach an outcome to it, because `record_gate_outcome` finds its row by
+      `(repo, pr_number)`, so it is a `commit_gate` wearing the wrong label.
+
+    Correcting rather than refusing is deliberate. The contradiction is sent
+    by pipelines and workflows applied out-of-band, so a 422 here would turn
+    every gate job in the estate red before anyone could re-apply them — which
+    is how a security gate gets switched off in its first week. The caller is
+    told what was actually recorded instead, in
+    `EvaluateResult.decision_type`.
+    """
+    if requested not in DECISION_TYPES:
+        raise ValueError(
+            f"Unknown decision_type {requested!r}. "
+            f"Expected one of: {', '.join(DECISION_TYPES)}."
+        )
+    pr = normalise_pr_number(pr_number)
+    if requested == "release_gate":
+        return requested
+    if requested == "portfolio":
+        if not commit_sha:
+            return "portfolio"
+        return "pr_gate" if pr is not None else "commit_gate"
+    if requested == "pr_gate" and pr is None:
+        return "commit_gate"
+    return requested
 
 #: The verdict for a repository nothing has ever looked at (issue #341).
 #:
@@ -1817,9 +1877,24 @@ class OracleEngine:
                 f"Unknown decision_type {decision_type!r}. "
                 f"Expected one of: {', '.join(DECISION_TYPES)}."
             )
+        # The pairing, validated where the row is built rather than only at the
+        # endpoint (issue #275). A portfolio decision is about a repository; a
+        # commit sha on one is a contradiction, and accepting it quietly is
+        # what let 1,601 per-commit verdicts accumulate inside the standing
+        # posture unnoticed. Callers that may be sending the old shape run
+        # `resolve_decision_type` first; this is the floor under them, so no
+        # write path can reintroduce it.
+        if decision_type == "portfolio" and (commit_sha or normalise_pr_number(pr_number)):
+            raise ValueError(
+                "A portfolio decision describes a repository, not a change: "
+                f"decision_type='portfolio' cannot carry commit_sha="
+                f"{commit_sha!r} or pr_number={pr_number!r}. Use "
+                "'commit_gate', or 'pr_gate' when a pull request is named."
+            )
 
+        pr_number = normalise_pr_number(pr_number)
         self._as_of = as_of or utcnow()
-        for_gate = decision_type in ("pr_gate", "release_gate")
+        for_gate = decision_type in GATE_DECISION_TYPES
 
         # Read before anything is scored, because it decides what a zero at the
         # end of it is allowed to mean (issue #341).
