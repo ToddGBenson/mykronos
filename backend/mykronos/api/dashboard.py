@@ -2492,6 +2492,10 @@ class StalledLaneOut(BaseModel):
     open_findings: int
     days_since_run: float
     usual_gap_days: float
+    #: Why no dispatch is offered, empty when one is (#278). A UI renders the
+    #: action below as a button; where this is set, that action is a read and
+    #: this is the sentence to show instead of pretending otherwise.
+    dispatch_refusal: str = ""
     action: BriefingActionOut
 
 
@@ -2617,6 +2621,8 @@ async def post_deployment_briefing(
         default_branches=_default_branches(request),
         languages=languages,
         sast_tools=sast_tools,
+        scanned_by=_scanned_by(request),
+        concourse_token=bool(request.app.state.settings.concourse_api_token),
     )
     return BriefingOut(
         generated_at=report.generated_at,
@@ -3363,6 +3369,21 @@ def _default_branches(request: Request) -> dict[str, str]:
             select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
         ).all()
     return {str(name): str(branch or "") for name, branch in rows}
+
+
+def _scanned_by(request: Request) -> dict[str, str]:
+    """How each repository's scans are dispatched, from the onboarding ledger.
+
+    The briefing needs it to decide whether it may offer `POST .../scan` for a
+    stalled lane (#278). Read here rather than in `briefing` for the same
+    reason `_default_branches` is: that module builds from the lake and this
+    lives in the operational database.
+    """
+    with request.app.state.db.session() as session:
+        rows = session.execute(
+            select(RepoOnboarding.github_repo_full_name, RepoOnboarding.scanned_by)
+        ).all()
+    return {str(name): str(how or "") for name, how in rows}
 
 
 @router.get("/repos/{repo_id}/scan-health")

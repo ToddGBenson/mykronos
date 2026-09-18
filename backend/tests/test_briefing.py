@@ -869,3 +869,204 @@ class TestScheduledJobsThatAreNotRunning:
 
         assert "rotation" in rendered
         assert "never_ran" in rendered
+
+
+def _onboard(db, repo: str = REPO, scanned_by: str = "concourse") -> None:
+    """A repository in the onboarding ledger, declaring how it is scanned."""
+    from mykronos.db.models import Organization, RepoOnboarding
+
+    owner = repo.split("/")[0]
+    with db.session() as session:
+        org = (
+            session.query(Organization)
+            .filter(Organization.github_org_login == owner)
+            .one_or_none()
+        )
+        if org is None:
+            org = Organization(github_org_login=owner)
+            session.add(org)
+            session.flush()
+        session.add(
+            RepoOnboarding(
+                org_id=org.id,
+                github_repo_full_name=repo,
+                github_installation_id=1,
+                status="active",
+                scanned_by=scanned_by,
+                enabled_capabilities=["sast"],
+                default_branch="main",
+                onboarded_by="test",
+            )
+        )
+        session.flush()
+
+
+class TestTheDispatchIsOnlyOfferedWhereItWorks:
+    """#278. The headline remediation did not work on most of the estate.
+
+    The stalled-lane section printed `POST /api/repos/{repo}/scan` for every
+    lane it reported, and never read `scanned_by` once. `POST /scan` follows
+    `scanned_by`: a GitHub Actions `workflow_dispatch` for an Actions-scanned
+    repository, a Concourse build trigger for a Concourse-scanned one -- and
+    the Concourse trigger is a *write*, which 503s unless the deployment holds
+    an API token. Measured on this estate 2026-09-17: five of seven active
+    repositories are Concourse-scanned and no token is configured, so the
+    button was an error message on the majority of them.
+
+    The rule here is `UnreadCode`'s: where the platform cannot perform the
+    action, it does not print one that looks like it can.
+    """
+
+    def _stall(self, client, auth, catalog, run_compaction) -> None:
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+    def test_a_concourse_repo_with_no_token_is_not_offered_the_dispatch(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(
+            catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+        ).stalled[0]
+
+        assert lane.action.method != "POST"
+        assert "/scan" not in lane.action.path
+        assert "Concourse API token" in lane.dispatch_refusal
+        assert lane.dispatch_refusal in lane.action.effect
+
+    def test_it_says_what_will_run_the_lane_instead(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """Refusing is half the answer. The other half is the useful one."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(
+            catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+        ).stalled[0]
+
+        assert "only thing that will run it" in lane.action.effect
+        # And it still says what is frozen behind the lane, which is the
+        # reason the row is on the page at all.
+        assert "close up to 1 finding(s)" in lane.action.effect
+
+    def test_a_concourse_repo_with_a_token_keeps_the_dispatch(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The fix is not "stop offering it". It is "offer it where it works"."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(
+            catalog, scanned_by={REPO: "concourse"}, concourse_token=True
+        ).stalled[0]
+
+        assert lane.dispatch_refusal == ""
+        assert lane.action.method == "POST"
+        assert "capabilities=sast" in lane.action.path
+
+    def test_an_actions_scanned_repo_keeps_the_dispatch_without_a_token(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """`keel` and `binnacle`. A Concourse token is irrelevant to them, and
+        withholding the button from them would be the same defect mirrored."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(
+            catalog, scanned_by={REPO: "github_actions"}, concourse_token=False
+        ).stalled[0]
+
+        assert lane.dispatch_refusal == ""
+        assert lane.action.method == "POST"
+
+    def test_a_repository_with_no_scanner_is_not_offered_the_dispatch(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """`scanned_by=none` 409s, for a different and equally stated reason."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(catalog, scanned_by={REPO: "none"}).stalled[0]
+
+        assert lane.action.method == "GET"
+        assert "scanned_by=none" in lane.dispatch_refusal
+
+    def test_an_unstated_mechanism_keeps_the_behaviour_it_had(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """A caller that did not say gets no guess about which way it fails."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        lane = briefing.build(catalog).stalled[0]
+
+        assert lane.dispatch_refusal == ""
+        assert lane.action.method == "POST"
+
+    def test_the_terminal_prints_the_reason_not_a_bare_link(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """A row that silently swapped POST for GET would be a worse lie than
+        the one it replaced: the operator would read it as the button."""
+        self._stall(client, auth, catalog, run_compaction)
+
+        rendered = briefing.render(
+            briefing.build(catalog, scanned_by={REPO: "concourse"}, concourse_token=False)
+        )
+
+        assert f"/api/repos/{REPO}/scan" not in rendered
+        assert "no Concourse API token" in rendered
+
+    def test_the_endpoint_refuses_on_the_same_facts_as_the_terminal(
+        self, client, admin_auth, auth, catalog, run_compaction
+    ) -> None:
+        """The dashboard offers this endpoint as the remedy too, and a UI that
+        rendered a button the terminal had already refused would be the same
+        defect in a second place."""
+        _onboard(client.app.state.db, scanned_by="concourse")
+        self._stall(client, auth, catalog, run_compaction)
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+
+        assert body["stalled"][0]["action"]["method"] == "GET"
+        assert "Concourse API token" in body["stalled"][0]["dispatch_refusal"]
+
+
+class TestABlockedLaneCannotDispatchItsUpstreamEither:
+    """The blocked row points at the upstream lane, so it inherits the same
+    constraint -- and inherited it silently until #278."""
+
+    def _at(self, client, token, capability, when, status="success", findings=None):
+        headers = {"Authorization": f"Bearer {token}"}
+        run_id = f"{capability}-{when:%Y%m%d%H%M%S}-{status}"
+        post_scan(
+            client,
+            headers,
+            scan_run_id=run_id,
+            capability=capability,
+            scan_status=status,
+            started_at=when.replace(tzinfo=None).isoformat(),
+        )
+        if findings:
+            post_findings(client, headers, findings, scan_run_id=run_id, capability=capability)
+
+    def test_the_upstream_button_is_withheld_too(
+        self, client, catalog, run_compaction
+    ) -> None:
+        token = issue_token(client, REPO, "sast", "unit")
+        old = _utcnow() - timedelta(days=40)
+        self._at(client, token, "sast", old, findings=[finding_payload()])
+        self._at(client, token, "unit", old)
+        self._at(client, token, "unit", _utcnow() - timedelta(days=1), status="failure")
+        run_compaction()
+
+        lane = next(
+            lane
+            for lane in briefing.build(
+                catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+            ).stalled
+            if lane.capability == "sast"
+        )
+
+        assert lane.reason == "blocked"
+        assert lane.action.method == "GET"
+        assert "capabilities=unit" not in lane.action.path
+        # It still names the upstream, which is the part that was useful.
+        assert "until unit is green" in lane.action.effect

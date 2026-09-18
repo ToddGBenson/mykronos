@@ -3980,7 +3980,7 @@ export interface components {
             cis_not_covered?: components["schemas"]["CisGapOut"][];
             /**
              * Drift
-             * @description Controls that changed state since the platform last looked, newest first. A transition *to* `unknown` is a read that failed rather than a control that was removed — a revoked permission and a security regression must never look the same.
+             * @description Controls that changed state since the platform last looked, newest first. Transitions that cross `unknown` in either direction are not here: a read that failed is not a control that was removed, and a read that recovered is not a control being switched on — a revoked permission and a security regression must never look the same (#264).
              */
             drift?: components["schemas"]["ControlDriftOut"][];
             /**
@@ -5592,6 +5592,11 @@ export interface components {
             days_since_run: number;
             /** Usual Gap Days */
             usual_gap_days: number;
+            /**
+             * Dispatch Refusal
+             * @default
+             */
+            dispatch_refusal: string;
             action: components["schemas"]["BriefingActionOut"];
         };
         /** StatusChange */
