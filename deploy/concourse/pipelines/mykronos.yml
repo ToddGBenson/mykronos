@@ -156,6 +156,45 @@ resources:
         - deploy/concourse/vars/
 
 anchors:
+  # -- #59976: apt on this host reaches Debian over IPv6 only ---------------
+  #
+  # `apt-get install curl jq git` fails in task containers with "network is
+  # unreachable". Every attempt goes to `2a04:4e42::/...` and no IPv4 attempt
+  # is ever made. It is intermittent -- it killed a `prompt-evals` build
+  # fifteen minutes after an identical one had succeeded -- which is worse
+  # than a hard failure, because a lane that dies one run in five reads as
+  # flaky infrastructure rather than as a fault with a cause somebody could
+  # go and fix.
+  #
+  # So every task that actually runs apt writes a drop-in before apt opens a
+  # socket:
+  #
+  #     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+  #
+  # **Why that line is repeated rather than shared, in a file built out of
+  # anchors.** A YAML anchor aliases a NODE, and these task scripts are single
+  # literal block scalars. YAML has no string interpolation, so there is no
+  # construct that splices an anchored scalar into the middle of another one.
+  # The alternatives were tried on paper and are worse: anchoring a whole
+  # `run:` fails because every script differs; `APT_CONFIG` still needs a file
+  # this would have to write first; `apt-get -o Acquire::ForceIPv4=true` is
+  # the same edit at every site with a longer line and two places to forget
+  # it. So the line is repeated -- and
+  # `test_every_apt_task_forces_ipv4_first` asserts that every apt-running
+  # task carries it, so the next lane's author cannot quietly omit it.
+  #
+  # There is no anchor here that already covers several sites the way
+  # thehub.yml's `hub_report` does, so all 22 are edited individually.
+  #
+  # Third IPv6-preference fault on this host, after `localhost` resolving to a
+  # squatted `::1` (#57609, #59968). The recorded eventual shape is baking
+  # curl/jq/git into the task images so that no lane runs apt at all; that is
+  # a separate change and explicitly not this one.
+  #
+  # `resolve-sha` gets its drop-in inside the `else` branch rather than at
+  # the top of the script, because that is the only place it calls apt --
+  # the fast path reads `.git/ref` and installs nothing.
+
   # -- PS-12: retry the fetch, never the verdict ---------------------------
   #
   # `attempts:` re-runs a step on ANY non-success, from inside the step and
@@ -561,6 +600,10 @@ jobs:
                 # the python image does not ship it. Every other job that
                 # installs the uploader does this first; this one did not, and
                 # failed its first build on `Cannot find command 'git'`.
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
                 # The pinned package, installed exactly as every scanning task
@@ -622,6 +665,10 @@ jobs:
             args:
               - -ec
               - |
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet -e ".[dev]"
@@ -714,6 +761,10 @@ jobs:
             args:
               - -ec
               - |
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet -e ".[dev]"
@@ -782,6 +833,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet -e ".[dev]"
@@ -866,6 +921,10 @@ jobs:
             args:
               - -ec
               - |
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
 
@@ -1009,6 +1068,10 @@ jobs:
                 - -ec
                 - |
                   set -uo pipefail
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                   # 70 rather than 0 for a missing file. An absent exit code
@@ -1080,6 +1143,10 @@ jobs:
                 set -uo pipefail
                 cd source
                 mkdir -p /tmp/results
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
 
                 # Checksummed (PS-8), the way the osv-scanner binary in the
@@ -1158,6 +1225,10 @@ jobs:
                 set -uo pipefail
                 cd source
                 mkdir -p /tmp/results
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
 
                 # The released Go binary, checksummed. `pip install
@@ -1234,6 +1305,10 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -1404,6 +1479,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
                 mkdir -p ../results
@@ -1454,6 +1533,10 @@ jobs:
                 set -uo pipefail
                 cd source
                 mkdir -p /tmp/results
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                 # setuptools is not optional here despite not being a semgrep
@@ -1582,6 +1665,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 cd source
                 git config --global --add safe.directory "$PWD"
@@ -1802,6 +1889,10 @@ jobs:
                 - -ec
                 - |
                   set -euo pipefail
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -1871,6 +1962,10 @@ jobs:
               - |
                 set -euo pipefail
                 cd source
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
 
                 # No repo_full_name: it comes from the ingestion token, so a
@@ -1986,6 +2081,10 @@ jobs:
                   tr -d '\n' < source/.git/ref > meta/sha
                 else
                   echo "No source/.git/ref; falling back to installing git." >&2
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   git -C source rev-parse HEAD | tr -d '\n' > meta/sha
                 fi
@@ -2051,6 +2150,10 @@ jobs:
                 set -euo pipefail
                 # git is not in python:3.13-slim and the SHA is read from the
                 # checkout rather than from a Concourse variable.
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
                 pip install --quiet build
@@ -2154,6 +2257,10 @@ jobs:
                   tr -d '\n' < source/.git/ref > meta/sha
                 else
                   echo "No source/.git/ref; falling back to installing git." >&2
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   git -C source rev-parse HEAD | tr -d '\n' > meta/sha
                 fi
@@ -2240,6 +2347,10 @@ jobs:
                   tr -d '\n' < source/.git/ref > meta/sha
                 else
                   echo "No source/.git/ref; falling back to installing git." >&2
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   git -C source rev-parse HEAD | tr -d '\n' > meta/sha
                 fi
@@ -2336,6 +2447,10 @@ jobs:
                   tr -d '\n' < source/.git/ref > meta/sha
                 else
                   echo "No source/.git/ref; falling back to installing git." >&2
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   git -C source rev-parse HEAD | tr -d '\n' > meta/sha
                 fi
@@ -2412,6 +2527,10 @@ jobs:
                 - -ec
                 - |
                   set -euo pipefail
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -2479,6 +2598,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git jq curl >/dev/null
                 SHA="$(git -C source rev-parse HEAD)"
 
@@ -2589,6 +2712,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git curl jq >/dev/null
                 cd source
                 SHA="$(git rev-parse HEAD)"

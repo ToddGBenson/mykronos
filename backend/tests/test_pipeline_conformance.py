@@ -245,6 +245,125 @@ def test_a_hook_that_can_fail_loses_its_retry(tmp_path: Path) -> None:
     assert any(" PS-12 " in p and "exemption has lapsed" in p for p in problems), problems
 
 
+#: A line that RUNS apt-get, as opposed to one that merely mentions it in a
+#: comment. `dast-demo` and `dast-prod` are the reason this is not a substring
+#: test: both explain that a venv "would mean apt-get, which needs the root
+#: this task does not have", and neither calls it.
+_APT_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+|\belse\s+)apt-get\s+\S")
+
+
+def _runs_apt(line: str) -> bool:
+    stripped = line.strip()
+    return not stripped.startswith("#") and bool(_APT_COMMAND.search(stripped))
+
+
+def test_every_apt_task_forces_ipv4_first() -> None:
+    """#59976, and the thing that stops fifty-seven copies of one line drifting.
+
+    apt reaches Debian over IPv6 only from this host: every attempt goes to
+    `2a04:4e42::/...` and returns "network is unreachable", with no IPv4
+    attempt made at all. It is intermittent -- it killed a `prompt-evals` build
+    fifteen minutes after an identical one succeeded -- which is the shape that
+    gets written off as flaky infrastructure instead of fixed.
+
+    The fix is one line per task, because a YAML anchor aliases a node and
+    cannot splice a string into the middle of a block scalar (the reasoning is
+    written out at the top of each pipeline's `anchors:`). One line per task is
+    exactly the kind of convention that holds for a month and then does not, so
+    it is asserted here rather than remembered: a new lane that installs a
+    package and forgets the drop-in fails in the `unit` lane, not on the worker
+    at 2am.
+
+    Asserted per SCRIPT rather than per job. A job whose scan task forces IPv4
+    and whose upload task does not is still a lane that dies on a network
+    error, and concatenating a job's scripts would hide that.
+    """
+    missing: list[str] = []
+    inspected: dict[str, int] = {}
+
+    for path in checker.pipelines():
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        inspected[path.name] = 0
+        for job in document["jobs"]:
+            scripts: list[str] = []
+
+            def collect(node: dict, into: list[str] = scripts) -> None:
+                run = node.get("run")
+                if isinstance(run, dict):
+                    into.extend(
+                        arg
+                        for arg in (run.get("args") or [])
+                        if isinstance(arg, str) and "\n" in arg
+                    )
+
+            checker._walk(job, collect)
+
+            for script in scripts:
+                lines = script.split("\n")
+                apt = [i for i, line in enumerate(lines) if _runs_apt(line)]
+                if not apt:
+                    continue
+                inspected[path.name] += 1
+                drop_in = [
+                    i
+                    for i, line in enumerate(lines)
+                    if "99force-ipv4" in line and not line.strip().startswith("#")
+                ]
+                if not drop_in:
+                    missing.append(f"{path.name}:{job['name']} runs apt with no IPv4 drop-in")
+                elif drop_in[0] > apt[0]:
+                    missing.append(
+                        f"{path.name}:{job['name']} writes the IPv4 drop-in after its first "
+                        f"apt-get, which is after the connection it was meant to fix"
+                    )
+
+    # A check that found nothing to check is indistinguishable from a check
+    # that passed, and this one walks four layers to find its subjects --
+    # `pipelines()`, `jobs`, `_walk`, and an inline `run.args` block scalar.
+    # Any of them narrowing (a task moving to `run.path`, a pipeline dropping
+    # out of the glob) empties `missing` and turns this green while asserting
+    # nothing. So the discovery is asserted alongside the property: 144 scripts
+    # run apt today, 22/13/109 across the three pipelines.
+    assert all(inspected.values()), (
+        "This test inspected no apt-running script in "
+        + ", ".join(name for name, count in inspected.items() if not count)
+        + " -- discovery broke, so a green result here means nothing. "
+        f"Found: {inspected}"
+    )
+    assert sum(inspected.values()) >= 100, (
+        f"Only {sum(inspected.values())} apt-running scripts were found, against "
+        "144 when this was written. A drop that large is discovery breaking, not "
+        f"lanes being removed. Found: {inspected}"
+    )
+
+    assert not missing, "\n".join(
+        [
+            "apt reaches Debian over IPv6 only here (#59976); these tasks would "
+            "fail intermittently with 'network is unreachable':",
+            *missing,
+        ]
+    )
+
+
+def test_the_ipv4_check_can_tell_a_comment_from_a_command() -> None:
+    """The check above is only worth its cost if it cannot be fooled either way.
+
+    A false negative loses the lane it was meant to protect. A false POSITIVE
+    is worse here than it sounds: it would demand a write to
+    /etc/apt/apt.conf.d in `dast-demo` and `dast-prod`, which run on the `zap`
+    image as an unprivileged user -- taking two working DAST lanes down under
+    `set -e` to fix a problem they do not have.
+    """
+    assert _runs_apt("                apt-get update -qq && apt-get install -y git")
+    assert _runs_apt("  apt-get install -y -qq curl")
+    assert _runs_apt("else apt-get update; fi")
+    assert _runs_apt("if [ -z x ]; then apt-get update; fi")
+
+    assert not _runs_apt("  # would mean apt-get, which needs the root this task does not")
+    assert not _runs_apt("                # died in this task, on `apt-get update`, having done")
+    assert not _runs_apt('  echo "this lane needs no apt-get at all"')
+
+
 def test_every_reporting_job_is_cross_checked() -> None:
     """PS-1's second half: reporting without being checked is half the point.
 

@@ -1,0 +1,149 @@
+# Dependency version updates for the Mykronos platform (#270).
+#
+# Mykronos is the platform that tells four other repositories their dependencies
+# are stale, and until now it had no automated update path of its own. Every
+# bump here was manual, which is part of why a Next.js RCE with a published
+# patch stayed open long enough for `atlas` to keep reporting it.
+#
+# ## Why `github-actions` is the load-bearing entry
+#
+# Every third-party action in `.github/workflows/` and in the composite action
+# at `actions/upload-results/` is pinned to a 40-character commit SHA with the
+# tag in a trailing comment. That is the right control -- a tag is mutable and a
+# moved tag is a supply-chain compromise of everything the workflow token can
+# reach -- but it means Dependabot is the *only* mechanism by which those pins
+# ever roll forward. Without this file they stagnate at whatever SHA was correct
+# the day they were written.
+#
+# `directory: /` covers `.github/workflows/`. It does NOT cover a composite
+# action living outside the repository root, so `actions/upload-results` gets
+# its own entry; it pins `actions/setup-python` and would otherwise never be
+# offered an update.
+#
+# ## Why every entry carries a `cooldown`
+#
+# Without one, Dependabot proposes a version the hour it is published. The first
+# hours after a release are exactly the window in which a hijacked maintainer
+# account or a compromised publish pipeline is still live and the bad version
+# has not yet been yanked. A cooldown does not make a package safe -- it puts
+# the rest of the ecosystem between us and the release, so that by the time we
+# see it, a malicious publish has usually already been pulled and the PR is
+# never opened at all.
+#
+# This matters more than usual for `github-actions` specifically. The operator
+# reviewing an action bump is looking at a 40-character hash. Human review is a
+# real control for "do we want this version" and provides nothing at all against
+# "is this version malicious" -- nobody spots a backdoor by eyeballing a SHA. So
+# on the one ecosystem where Dependabot is the sole path in, the human gate is
+# the control least able to catch what a cooldown is for.
+#
+# Cooldown costs nothing on the axis this file exists for: GitHub states it "is
+# only available for version updates, not security updates", so a Dependabot
+# *security* update carrying a known CVE is still proposed immediately. The
+# delay applies to routine version churn only.
+#
+# ## Key names
+#
+# `default-days`, `semver-major-days`, `semver-minor-days` and `semver-patch-days`
+# are the documented keys. The `semver-*-days` variants are supported per
+# ecosystem: `pip` and `npm` support them, `github-actions` does not, so those
+# entries carry `default-days` alone. An unknown key here is silently ignored,
+# which would leave this file looking fixed and doing nothing.
+#
+# See: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#cooldown-
+#
+# ## Note on PR volume
+#
+# Minor and patch updates are grouped and the open-PR limits are deliberately
+# low. A Dependabot PR currently fails every Mykronos scan lane because the
+# ingestion token is empty on such PRs (#426) -- until that is fixed, each PR
+# this file opens arrives red for a reason that has nothing to do with the
+# dependency. Grouping keeps that noise to one PR per ecosystem per week.
+
+version: 2
+updates:
+  # Workflow action SHA pins. Dependabot is the only way these move.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(actions)"
+    labels: ["dependencies", "github-actions"]
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # The composite action is not covered by `directory: /`; it pins
+  # actions/setup-python to a SHA of its own.
+  - package-ecosystem: github-actions
+    directory: /actions/upload-results
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(actions)"
+    labels: ["dependencies", "github-actions"]
+
+  # Backend Python dependencies (backend/pyproject.toml). Majors wait longest:
+  # a major is a feature bump nobody is waiting on, and the extra window is free.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 14
+      semver-patch-days: 3
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(pip)"
+    labels: ["dependencies", "python"]
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Frontend npm tree (frontend/package.json).
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 14
+      semver-patch-days: 3
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(npm)"
+    labels: ["dependencies", "javascript"]
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # No `docker` entry. Both Dockerfiles use floating tags (`python:3.13-slim`,
+  # `node:22-slim`, `gcr.io/distroless/nodejs22-debian13:nonroot`) rather than
+  # digests, so there is no pin for Dependabot to roll forward -- a rebuild
+  # already picks up the current image. Add one here if those are ever pinned
+  # to digests, which would be the better control.

@@ -114,6 +114,43 @@ class Action:
     effect: str
 
 
+def dispatch_refusal(scanned_by: str, *, concourse_token: bool) -> str:
+    """Why `POST /api/repos/{repo}/scan` cannot dispatch this repository.
+
+    Empty string when it can. Kept in step with `api.repos.scan_now`, which is
+    the code that either dispatches or refuses -- this is not a second opinion
+    about the estate, it is the same two conditions read before the button is
+    printed rather than after it is pressed.
+
+    The defect it ends (#278). This module never read `scanned_by` at all, so
+    every stalled lane got the same `POST .../scan` line. Measured on
+    2026-09-17, five of the seven active repositories here are scanned by
+    Concourse -- `mykronos`, `TheHub`, `personal-soc`, `apc` and
+    `blog.toddbenson.net` -- and triggering a Concourse build is a *write*,
+    which needs an API token this deployment does not hold. Only `keel` and
+    `binnacle` are on GitHub Actions, where the dispatch really works. So the
+    headline remediation of the whole briefing answered 503 on the majority of
+    the estate, at the one moment somebody is most likely to be in a hurry.
+
+    An unknown mechanism returns "" deliberately. A caller that did not say how
+    a repository is scanned gets the behaviour it had before rather than a
+    guess about which way the dispatch fails; inventing the answer here is the
+    same mistake in the other direction.
+    """
+    if scanned_by == "concourse" and not concourse_token:
+        return (
+            "This deployment holds no Concourse API token (spec 17 §2.5) and "
+            "triggering a Concourse build is a write, so POST /scan answers 503 "
+            "for this repository. Reading its pipeline status is unaffected."
+        )
+    if scanned_by == "none":
+        return (
+            "This repository declares no scanner (scanned_by=none), so there is "
+            "nothing for POST /scan to trigger."
+        )
+    return ""
+
+
 #: The single request that acts on a whole class, where one exists. Only two
 #: of the six classes have one, and that is the accurate picture rather than a
 #: gap: a base-image rebuild is a Dockerfile change and a committed secret
@@ -222,13 +259,28 @@ class StalledLane:
     #: For a **blocked** lane, the upstream capability whose failure is
     #: holding it; empty otherwise.
     blocked_by: str = ""
+    #: How this repository's scans are dispatched -- "concourse",
+    #: "github_actions", "none", or "" when the caller did not say. Read from
+    #: the onboarding ledger and handed over, the same way languages and
+    #: paused jobs are: the briefing builds from the lake, and this lives in
+    #: the operational database.
+    scanned_by: str = ""
+    #: Whether this deployment holds a Concourse API token. Only half the
+    #: question -- a Concourse-scanned repository needs it and an
+    #: Actions-scanned one does not -- which is why both fields are here and
+    #: `dispatch_refusal` reads them together.
+    concourse_token: bool = False
+    #: Why the dispatch below is not offered, empty when it is. Serialised, so
+    #: a UI can say the same sentence the terminal does instead of deciding for
+    #: itself whether the button works.
+    dispatch_refusal: str = field(init=False, default="")
     #: Set in `__post_init__` rather than exposed as a property, because
     #: `--json` serialises with `dataclasses.asdict` and a property is
     #: silently absent from it. The action is the part a pipeline step wants.
     action: Action = field(init=False)
 
     def __post_init__(self) -> None:
-        """Re-run the lane. This is the button, and it already exists.
+        """Re-run the lane — where this deployment can actually dispatch it.
 
         A stalled lane is the one group in the whole briefing where a single
         request genuinely does the work: dispatching the capability produces
@@ -239,7 +291,23 @@ class StalledLane:
         button a lie half the time. A **silent** lane was working when it
         stopped, so dispatching it is the whole fix. A **failing** lane will
         fail again — re-running it closes nothing and looks like action.
+
+        And on most of this estate there is no dispatch to offer (#278).
+        `POST /scan` follows `scanned_by`, and a Concourse-scanned repository
+        needs an API token this deployment does not hold, so the request
+        answers 503. Where that is so the row keeps the diagnosis and drops the
+        button, exactly as `UnreadCode` does — "no dispatch button, and that
+        is the point" — and says instead what *will* run the lane, which is
+        the sentence somebody can act on. Printing a request that cannot be
+        made is worse than printing none: it costs a round trip and the trust
+        in every other line on the page.
         """
+        self.dispatch_refusal = dispatch_refusal(
+            self.scanned_by, concourse_token=self.concourse_token
+        )
+        if self.dispatch_refusal:
+            self.action = self._undispatchable_action()
+            return
         if self.reason == "blocked":
             # The button is the upstream lane's, not this one's: Concourse
             # will not schedule a job whose `passed:` constraint is unmet, so
@@ -269,6 +337,54 @@ class StalledLane:
             effect=(
                 f"Dispatches the lane. {caveat} Two successful runs then "
                 f"close up to {self.open_findings} finding(s)."
+            ),
+        )
+
+    def _undispatchable_action(self) -> Action:
+        """What to print when this platform cannot start the lane.
+
+        A read of the CI view, the same destination `StaleLane` and
+        `UnreadCode` send somebody to and for the same reason: it is a route
+        that exists and does what it says. The effect carries the refusal and
+        then the only useful sentence left — what runs this lane if nobody
+        can ask it to.
+
+        The cadence comes from the lane's own history rather than from a
+        schedule this module cannot see. Naming "the 04:23 atlas schedule"
+        would be inventing a fact; "it has been running about every six hours"
+        is measured, and it is enough to tell somebody whether waiting is a
+        plan.
+        """
+        target = self.blocked_by or self.capability
+        if self.usual_gap_days > 0:
+            waiting = (
+                f"Its own trigger is the only thing that will run it, and it has "
+                f"been running about every {_cadence(self.usual_gap_days)}."
+            )
+        else:
+            waiting = (
+                "Its own trigger — the push or the schedule in the pipeline — "
+                "is the only thing that will run it."
+            )
+        # The same caveat the dispatch carries, for the same reason: waiting
+        # for the next run of a broken job is not a plan either.
+        if self.reason == "failing":
+            waiting += (
+                " Repair the job first — the next run of a broken job fails "
+                "again and closes nothing."
+            )
+        elif self.reason == "blocked":
+            waiting = (
+                f"Nothing here can start until {self.blocked_by} is green, and "
+                f"{self.blocked_by} cannot be dispatched from here either. " + waiting
+            )
+        return Action(
+            label=f"No way to dispatch {target} for {self.repo_full_name} from here",
+            method="GET",
+            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
+            effect=(
+                f"{self.dispatch_refusal} {waiting} Two successful runs then close "
+                f"up to {self.open_findings} finding(s)."
             ),
         )
 
@@ -796,8 +912,20 @@ def _repo_moved_since(catalog: Catalog) -> dict[tuple[str, str], bool]:
     return moved
 
 
-def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[StalledLane]:
+def stalled_lanes(
+    catalog: Catalog,
+    *,
+    now: datetime | None = None,
+    scanned_by: dict[str, str] | None = None,
+    concourse_token: bool = False,
+) -> list[StalledLane]:
     """Lanes that cannot close findings, failing or silent.
+
+    `scanned_by` and `concourse_token` decide whether each row can offer the
+    dispatch it used to offer unconditionally (#278) -- see
+    `dispatch_refusal`. Both are handed in rather than read here, because both
+    live in the operational database and this builds from the lake. Omitted,
+    every row keeps the button, which is what every caller got before.
 
     **Failing** is counted consecutively from the newest run backwards, so a
     lane that failed twice and then recovered is not reported — it is working,
@@ -909,6 +1037,8 @@ def stalled_lanes(catalog: Catalog, *, now: datetime | None = None) -> list[Stal
                 open_findings=open_counts.get((repo, capability), 0),
                 days_since_run=round(since, 1),
                 usual_gap_days=round(gap, 1),
+                scanned_by=(scanned_by or {}).get(repo, ""),
+                concourse_token=concourse_token,
             )
         )
 
@@ -1191,6 +1321,12 @@ def build(
     default_branches: dict[str, str] | None = None,
     languages: dict[str, dict[str, int]] | None = None,
     sast_tools: dict[str, str | list[str]] | None = None,
+    # `repo_full_name` -> "concourse" | "github_actions" | "none", from the
+    # onboarding ledger, and whether this deployment can trigger a Concourse
+    # build at all. Without them a stalled lane offers the dispatch
+    # unconditionally, which is the behaviour #278 is about.
+    scanned_by: dict[str, str] | None = None,
+    concourse_token: bool = False,
     paused_jobs: list[PausedLane] | None = None,
     failing_jobs: list[FailingLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
@@ -1247,7 +1383,15 @@ def build(
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
-        stalled=_only(stalled_lanes(catalog, now=stamp), asset_id),
+        stalled=_only(
+            stalled_lanes(
+                catalog,
+                now=stamp,
+                scanned_by=scanned_by,
+                concourse_token=concourse_token,
+            ),
+            asset_id,
+        ),
         stale=_only(
             stale_lanes(catalog, now=stamp, default_branches=default_branches), asset_id
         ),
@@ -1346,6 +1490,17 @@ def render(briefing: Briefing) -> str:
             lines.append(f"      holding {lane.open_findings} finding(s) open")
             if lane.detail:
                 lines.append(f"      {lane.detail[:110]}")
+            if lane.dispatch_refusal:
+                # The line below is a read, not the dispatch this section used
+                # to print unconditionally. Without this sentence beside it the
+                # row reads as an unhelpful link rather than as a refusal with
+                # a reason and a thing to wait for (#278).
+                lines += textwrap.wrap(
+                    lane.action.effect,
+                    72,
+                    initial_indent="      ",
+                    subsequent_indent="      ",
+                )
             lines.append(f"      → {lane.action.method} {lane.action.path}")
         # Closes the section whether or not the idle note follows it.
         lines.append("")

@@ -24,6 +24,14 @@ import type { StalledLane } from "@/lib/api";
  * closes nothing and looks like action, so the button is still offered (a
  * person may well be re-running it to read the new logs) and the caveat is
  * next to it rather than discovered afterwards.
+ *
+ * **And where the dispatch cannot be made, there is no button** (#278). This
+ * component posted to `/scan` for every lane, and that endpoint follows
+ * `scanned_by`: a Concourse-scanned repository needs an API token this
+ * deployment does not hold, so it answers 503. Five of the seven active
+ * repositories here are Concourse-scanned. The backend now says so in
+ * `dispatch_refusal`, and this renders that sentence and a link to the lane's
+ * CI view instead of a control whose only outcome is an error.
  */
 export function StalledLanes({ lanes }: { lanes: StalledLane[] }) {
   if (!lanes.length) {
@@ -116,6 +124,22 @@ function Lane({ lane }: { lane: StalledLane }) {
         </p>
       ) : null}
 
+      {lane.dispatch_refusal ? (
+        // No button, and that is the point. The sentence the backend wrote is
+        // the same one `mykronos briefing` prints, so the terminal and this
+        // page cannot disagree about whether the dispatch is available.
+        <div className="mt-1 flex flex-col gap-1">
+          <p className="max-w-[70ch] text-[11px] leading-snug text-ink-3">
+            {lane.action.effect}
+          </p>
+          <a
+            href={`/repos/${encodeURIComponent(lane.repo_full_name)}`}
+            className="inline-block font-mono text-[11px] text-ink-3 underline decoration-rule underline-offset-2 hover:text-ink"
+          >
+            Open the repository &rarr;
+          </a>
+        </div>
+      ) : (
       <div className="mt-1 flex flex-wrap items-center gap-2">
         {state === "dispatched" ? (
           <span className="font-mono text-[11px] text-ink-3">
@@ -138,6 +162,7 @@ function Lane({ lane }: { lane: StalledLane }) {
             : "The lane was working when it stopped, so this is the fix."}
         </span>
       </div>
+      )}
 
       {state === "error" ? (
         <p className="mt-1 max-w-[52ch] text-[11px] leading-snug text-critical">{message}</p>
