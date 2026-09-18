@@ -209,24 +209,31 @@ class TestTheConfiguredSource:
         )
         gates = checker.gates(ours)
 
-        # `[oracle-gate]` alone, and this is not the B-055 regression coming
-        # back (#59100). B-055 was our copy of this file silently losing the
-        # widening #55167 made, while `deploy-prod` still existed -- so a
-        # commit whose demo DAST had failed stayed eligible for production.
+        # Tightened back to the three-job list (#59999), on the condition this
+        # test's previous revision named for itself.
         #
-        # Path B is retired (ADR 0072). `deploy-prod`, `api-inventory` and
-        # `dast-demo` are deleted, not demoted: the latter two read a demo
-        # environment that no longer exists. `insider` gates nothing now
-        # because there is nothing downstream of it to gate, so pinning the
-        # three-job list here would pin a gate to jobs the pipeline does not
-        # contain -- which `test_a_job_missing_from_theirs_is_named_separately`
-        # would then report as drift against TheHub's copy forever.
+        # That revision pinned `[oracle-gate]` alone and said so deliberately:
+        # under #59100 `deploy-prod`, `api-inventory` and `dast-demo` were
+        # deleted rather than demoted, `insider` gated nothing because nothing
+        # downstream of it deployed, and pinning three jobs the pipeline did
+        # not contain would have reported drift against TheHub's copy forever.
+        # It closed by saying that if delivery returned to Concourse,
+        # "#55167's reasoning is restated above `insider` in the pipeline and
+        # this assertion tightens with it."
         #
-        # What is still asserted is the thing this test exists for: the
-        # extractor finds a real gate in the real file. If delivery returns to
-        # Concourse, #55167's reasoning is restated above `insider` in the
-        # pipeline and this assertion tightens with it.
-        assert gates["insider"]["source"] == ["oracle-gate"], (
-            "insider must still be reached through oracle-gate, not off source directly"
+        # Delivery returned. #491 restored `api-inventory` and `dast-demo`,
+        # `deploy-prod` is a job in the file whose `passed:` is `[insider]`,
+        # and all three run on the server. So the condition is met and this is
+        # the tightening it asked for -- not a revert of #59100's reasoning,
+        # which was sound for the pipeline it described.
+        #
+        # The gate itself is asserted in full, with the transitive property it
+        # stands for, in `test_pipeline_gate_wiring.py`. What is asserted here
+        # is the thing THIS test exists for: the extractor finds a real gate in
+        # the real file. A refactor that made `gates()` return nothing would
+        # pass every test above and fail this one.
+        assert gates["insider"]["source"] == ["api-inventory", "dast-demo", "oracle-gate"], (
+            "insider is the promotion gate again: a commit whose demo DAST or "
+            "API inventory failed must not stay eligible for deploy-prod (#55167, #59999)"
         )
         assert sum(1 for job in gates.values() if job) >= 10

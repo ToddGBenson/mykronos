@@ -2249,12 +2249,12 @@ jobs:
   # is the whole explanation; the short version is that Concourse sees a branch
   # and Aegis is built around a `pull_request`, so the missing context is
   # recovered by asking GitHub which pull request introduced this commit.
-  # **This job used to be a promotion gate, and is not one any more (#59100).**
-  # The history matters, because the obvious reading of the change below is the
-  # wrong one.
+  # **This job is a promotion gate again (#59999).** The history matters,
+  # because it has now reversed twice, and how it reverted is the argument for
+  # writing the gate down rather than remembering it.
   #
-  # `insider` was the last job a version cleared before `deploy-prod` became
-  # reachable, so its `passed:` list WAS the gate. #55167 widened that list
+  # `insider` is the last job a version clears before `deploy-prod` becomes
+  # reachable, so its `passed:` list IS the gate. #55167 widened that list
   # from `[oracle-gate]` to `[oracle-gate, api-inventory, dast-demo]` for a
   # measured reason: until 2026-09-04 those two hung off `deploy-demo` with
   # nothing downstream requiring them, so a commit whose demo DAST failed was
@@ -2265,23 +2265,25 @@ jobs:
   # reverted the widening -- `scripts/check_pipeline_gates.py` exists because
   # of it.
   #
-  # The list is now back to `[oracle-gate]`, and that is **not** a revert of
-  # #55167. #55167's premise was that a green `insider` made a version
-  # promotable. Path B is retired (ADR 0072, #59100): `deploy-prod` is gone,
-  # nothing downstream of this job deploys anything, and production is shipped
-  # by TheHub's own `scripts/deploy.sh` from `develop`. There is no promotion
-  # for this gate to guard. `api-inventory` and `dast-demo` were not dropped
-  # from the gate - they were deleted, because both read a demo environment
-  # that no longer exists and neither can answer for anything now.
+  # #59100 then narrowed it back to `[oracle-gate]`, on the premise that Path B
+  # was retired: `deploy-prod` gone, nothing downstream of this job deploying
+  # anything, and `api-inventory` and `dast-demo` deleted along with the demo
+  # environment they read. Every clause of that premise has since expired.
+  # #491 restored both jobs and the `demo` group; `deploy-demo` succeeded three
+  # times on 2026-09-17 (builds #89-#91); and `deploy-prod` is a job in this
+  # file whose own `passed:` is exactly `[insider]`. The narrowing comment
+  # closed by saying that if delivery ever came back to Concourse the gate
+  # comes back with it, and that #55167's reasoning was the specification for
+  # rebuilding it. It came back. This is that rebuild.
   #
-  # So what this job is today is a *scanner*: it assesses the pull request
-  # behind a commit and files the assessment. That is worth keeping on its own
-  # terms - it needs no environment, only GitHub - but nobody should read a
-  # green `insider` as "cleared for production" again. It never clears
-  # anything now.
-  #
-  # If delivery ever comes back to Concourse, the gate comes back with it, and
-  # #55167's reasoning above is the specification for rebuilding it.
+  # The 2026-08-20 failure recurred while this was being written, which is why
+  # the list is the argument and not an anecdote about it: `api-inventory`
+  # builds #34 and #35 failed on 2026-09-17 while `oracle-gate` #36-#38 went
+  # green. Under `passed: [oracle-gate]` that version is promotable carrying a
+  # failed API-contract check. The applied pipeline has held the wide list
+  # throughout and is the only reason it is not promotable right now -- a
+  # protection this repository was not supplying, and one `set-pipeline` from
+  # losing.
   - name: insider
     public: true
     serial_groups: [worker]
@@ -2308,7 +2310,7 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [oracle-gate]
+        passed: [oracle-gate, api-inventory, dast-demo]
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -2505,29 +2507,27 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # These six, and not `deploy-demo` (#59100). This edge used to read
-        # `passed: [deploy-demo]`, which was never about the deploy: it was how
-        # the gate was placed after every static security lane, because
-        # `deploy-demo` was itself gated on exactly these six. Path B is
-        # retired and `deploy-demo` is gone, so the list it stood for is named
-        # here directly.
+        # `deploy-demo`, and not the six lanes directly (#59999). This edge
+        # read `passed: [deploy-demo]` until #59100 rewrote it as the six lanes
+        # `deploy-demo` was itself gated on, on the stated premise that Path B
+        # was retired and `deploy-demo` was gone. `deploy-demo` is not gone: it
+        # succeeded three times on 2026-09-17 (builds #89-#91), and it is the
+        # job `api-inventory` and `dast-demo` hang off.
         #
-        # The set is deliberately unchanged rather than "improved while we are
-        # in here". Oracle scores the whole picture and gating on a partial one
-        # produces a decision the next finding invalidates - but which lanes
-        # make up "the whole picture" is a judgement this change is not
-        # entitled to move. Same six lanes, same reachability, one less hop.
+        # With the premise false the rewrite goes back, and going back is
+        # strictly stronger rather than merely different: `deploy-demo` carries
+        # `passed:` on exactly these six lanes, so gating on it requires all
+        # six transitively AND requires that the version reached an
+        # environment. No lane is dropped from the set by this change, which
+        # is the judgement #59100 rightly said it was not entitled to move.
         #
-        # What it does lose, stated plainly: DAST no longer precedes the gate
-        # at all. `dast-demo` was the runtime lane in front of Oracle and it
-        # scanned demo; with demo gone there is no runtime scan tied to this
-        # commit to wait for. `dast-prod` and `dast-staging` still run and
-        # their findings still reach Mykronos, so Oracle still sees them - it
-        # sees them from the previous night's timer rather than from this
-        # build. That is weaker, and it is weaker because the environment those
-        # scans would have needed no longer exists, not because the edge was
-        # dropped for convenience.
-        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
+        # That last clause is the point of restoring it. #59100 recorded what
+        # the rewrite cost -- "DAST no longer precedes the gate at all" -- and
+        # gating on the six directly is what let Oracle score a build that had
+        # never been deployed anywhere. This puts `oracle-gate`, `api-inventory`
+        # and `dast-demo` back on one footing downstream of `deploy-demo`,
+        # which is the shape `insider` now requires all three of.
+        passed: [deploy-demo]
       - get: python
         attempts: *retry_fetch
       - *preflight
