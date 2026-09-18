@@ -1,0 +1,72 @@
+# The check that was not there.
+#
+# On 2026-09-18 this repository had THREE workflows and none of them ran on a
+# pull request: delivery (push), demo-and-dast (workflow_run) and promote
+# (workflow_run). Everything ran after the merge. #340 records the deleted
+# oracle risk gate; this is the plainer half of the same hole.
+#
+# Two Dependabot majors landed in one day and both needed catching here:
+#
+#   #489  typescript 5.9.3 -> 7.0.2. `npm ci` exits ERESOLVE -- no
+#         openapi-typescript release accepts TS 7. Merged ungated at 19:57,
+#         took Delivery, the frontend image, demo-and-dast and the deployed
+#         version down until 08:53 the next morning. Fixed by #505.
+#
+#   #510  eslint 9.39.5 -> 10.8.1. `npm ci` PASSES (npm resolves a nested
+#         eslint 9 and only warns) and `npm run build` passes too, because
+#         `next build` does not run eslint. `npm run lint` exits 2 on a
+#         TypeError inside eslint-plugin-react.
+#
+# So all three steps run, and the second case is why. A gate that stopped at
+# `npm ci` would have passed #510, and one that stopped at `build` would
+# have passed it as well.
+#
+# This does not BLOCK a merge -- no branch protection here requires a check
+# (#334). It makes the answer visible before somebody clicks merge, which is
+# what was missing both times.
+name: Frontend PR check
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-pr.yml'
+
+# A new push supersedes the answer from the old one.
+concurrency:
+  group: frontend-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: npm ci, build, lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Matches frontend/Dockerfile's `FROM node:22-slim`. A check that
+          # builds on a different major is answering a question nobody asked.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci`, never `npm install`: ci fails on a lockfile that does not
+      # match package.json, which is the state #489 was in.
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: npm run build
+        working-directory: frontend
+        run: npm run build
+
+      # Last, and not optional. #510 reached this step green.
+      - name: npm run lint
+        working-directory: frontend
+        run: npm run lint
