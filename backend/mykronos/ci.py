@@ -242,6 +242,13 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # scanned ((thehub-demo-url)), and with no demo it would have reported on
     # whatever the host last served.
     ((THEHUB,), "dast-prod", "dast"),
+    # [#477] Restored with the jobs themselves. #468 removed these alongside
+    # `functional-dast` on the premise that the demo chain was dead; it was
+    # blocked by the CRLF mismatch #388 fixed, and both lanes ran again on
+    # 2026-09-17. Without these entries the coverage cross-check cannot see
+    # them, which is what `test_every_reporting_job_is_cross_checked` caught.
+    ((THEHUB,), "api-inventory", "qa"),
+    ((THEHUB,), "dast-demo", "dast"),
     # `dast-staging` scans the standing staging environment on a daily timer
     # rather than after a deploy, because staging is deployed out of band. That
     # makes registering it matter more than for its two siblings, not less: a
@@ -1539,15 +1546,26 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "pushes the frontend image to the registry, produces no findings",
     ),
     ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
-    # thehub's `deploy-demo` and `deploy-prod` were here until #59100. Path B
-    # -- main -> Concourse -> registry -> a host poller -- is retired
-    # (ADR 0072) and both jobs are deleted from thehub.yml.
-    # `test_every_acknowledgement_names_a_job_that_exists` requires every
-    # (pipeline, job) here to still exist in that pipeline: an
-    # acknowledgement that outlives its job starts excusing a future one
-    # that reuses the name, and "deploy-prod" is about as reusable as a
-    # name gets. mykronos keeps its own delivery jobs above; only thehub's
-    # two are removed.
+    # thehub's two were removed under #59100 and are BACK, because the premise
+    # that removed them expired before the change landed.
+    #
+    # #59100 retired Path B on the evidence that `deploy-demo` was dead: builds
+    # #86, #87 and #88 each burned ~26 minutes and failed. That was true when it
+    # was written. The cause was a CRLF acknowledgement mismatch fixed by #388 on
+    # 2026-09-15, which did not reach the SERVER until `set-pipeline` ran for the
+    # first time at 13:37 on 2026-09-17. `deploy-demo` #89 then SUCCEEDED at
+    # 15:22 and #90 at 19:48, and `dast-demo` came back with them after seven
+    # days dark.
+    #
+    # So the chain was never dead -- it was blocked by a fix that was merged and
+    # not applied. A premise measured once, true then, and never re-derived is
+    # exactly what this module exists to catch, and it happened here.
+    #
+    # They are ACKNOWLEDGED rather than mapped: both deploy, neither uploads a
+    # finding, and putting a deploy job in CAPABILITY_BY_JOB would credit it with
+    # a security capability it does not have.
+    ((THEHUB,), "deploy-demo", "publishes a deploy pointer to MinIO, runs no scanner"),
+    ((THEHUB,), "deploy-prod", "publishes a deploy pointer to MinIO, runs no scanner"),
     (
         (PERSONAL_SOC,),
         "package",
