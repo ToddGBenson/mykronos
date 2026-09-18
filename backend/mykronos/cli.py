@@ -1217,27 +1217,35 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "ci-repeat-failures":
-            client = ConcourseClient(
+            # `ci_client` and `repeat_sweep`, not `client` and `result`: this
+            # function is one long chain of `if args.command == ...` branches
+            # sharing a scope, so mypy binds each name to the type of its FIRST
+            # assignment -- `client` to GitHubClient at the installation branch,
+            # `result` to CompactionResult at `compact`. Reusing them here was
+            # six errors and a red `lint-and-types` lane, none of them a real
+            # type confusion. Branch-specific names are the fix that does not
+            # need an ignore comment.
+            ci_client = ConcourseClient(
                 settings.concourse_url,
                 team=settings.concourse_team,
                 external_url=settings.concourse_external_url,
             )
-            if not client.configured:
+            if not ci_client.configured:
                 print(
                     "No Concourse configured, so no lane was checked. "
                     "This is not a clean estate, it is an unasked question."
                 )
                 return 1
-            result = ci_repeat.sweep(
-                client, threshold=args.threshold, history=args.history
+            repeat_sweep = ci_repeat.sweep(
+                ci_client, threshold=args.threshold, history=args.history
             )
-            print(ci_repeat.render(result))
+            print(ci_repeat.render(repeat_sweep))
             # Unreachable Concourse and a sweep that inspected nothing both
             # exit non-zero: a caller that only reads the exit code must not
             # be told "clean" by a check that never ran.
-            if result is None or result.lanes_inspected == 0:
+            if repeat_sweep is None or repeat_sweep.lanes_inspected == 0:
                 return 1
-            return 1 if result.incidents else 0
+            return 1 if repeat_sweep.incidents else 0
 
         if args.command == "briefing":
             # Run after every deploy. The first section is the point of it:
