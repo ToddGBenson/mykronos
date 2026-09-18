@@ -38,6 +38,32 @@ npm run dev          # http://localhost:3000, expects the backend on :8100
 `python scripts/regen_api_types.py` from the repo root after any backend schema
 change; a drifted copy types the whole app as `unknown`.
 
+### Install the pre-commit hook, once per clone
+
+```bash
+python scripts/install_hooks.py      # sets core.hooksPath -> scripts/hooks
+```
+
+**This is opt-in and it is not installed for you.** It sets git config, which
+is a per-clone decision rather than something a repository gets to make, so
+nothing in CI or in any script runs it. It had never been run in this clone,
+which is why `scripts/hooks/pre-commit` — and `regen_api_types.py`, whose only
+invoker it is — were dead code (#60001).
+
+Three things enforce this one rule, and they are deliberately not equivalent:
+
+| Where | What it catches | When |
+|---|---|---|
+| `scripts/hooks/pre-commit` | staged API change with stale types | at commit, and it regenerates and stages them for you |
+| `backend/tests/test_api_types_fresh.py` | a schema component, field or enum member the committed types do not declare | in the unit lane, seconds, no node and no network |
+| `mykronos/frontend` lane | any byte-level difference in the generated file | in CI, after a build |
+
+The hook is the cheapest and is optional. The test is the one that always runs.
+The lane is the only one that compares the generated file byte for byte, and it
+reimplements the comparison inline rather than calling
+`scripts/regen_api_types.py` for a reason worth knowing before anyone
+"deduplicates" it: that task runs in `node:slim`, which has no python.
+
 ## Build
 
 The production image is built by the pipeline (`mykronos/frontend` job) and published
