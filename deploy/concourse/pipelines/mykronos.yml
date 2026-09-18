@@ -1751,7 +1751,14 @@ jobs:
                 # The base branch is not fetched by the git resource, and the
                 # author-baseline signal compares against it. Without this the
                 # signal is skipped rather than guessed (spec 06 §7).
-                git fetch --quiet origin "$BASE" || true
+                # [#496] BatchMode: see the same fetch in thehub.yml. `|| true`
+                # catches a non-zero exit, not a question — and ssh with no
+                # known_hosts asks one, then waits for an answer that cannot
+                # arrive. The build hangs to its task timeout instead of
+                # skipping the signal. Found on thehub/insider; this is the
+                # identical line in mykronos's own lane, caught by the
+                # conformance test rather than by a second outage.
+                GIT_SSH_COMMAND='ssh -o BatchMode=yes'                   git fetch --quiet origin "$BASE" || true
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
