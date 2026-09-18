@@ -158,6 +158,41 @@ resources:
         - deploy/concourse/vars/
 
 anchors:
+  # -- #59976: apt on this host reaches Debian over IPv6 only ---------------
+  #
+  # `apt-get install curl jq git` fails in task containers with "network is
+  # unreachable". Every attempt goes to `2a04:4e42::/...` and no IPv4 attempt
+  # is ever made. It is intermittent -- it killed a `prompt-evals` build
+  # fifteen minutes after an identical one had succeeded -- which is worse
+  # than a hard failure, because a lane that dies one run in five reads as
+  # flaky infrastructure rather than as a fault with a cause somebody could
+  # go and fix.
+  #
+  # So every task that actually runs apt writes a drop-in before apt opens a
+  # socket:
+  #
+  #     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+  #
+  # **Why that line is repeated rather than shared, in a file built out of
+  # anchors.** A YAML anchor aliases a NODE, and these task scripts are single
+  # literal block scalars. YAML has no string interpolation, so there is no
+  # construct that splices an anchored scalar into the middle of another one.
+  # The alternatives were tried on paper and are worse: anchoring a whole
+  # `run:` fails because every script differs; `APT_CONFIG` still needs a file
+  # this would have to write first; `apt-get -o Acquire::ForceIPv4=true` is
+  # the same edit at every site with a longer line and two places to forget
+  # it. So the line is repeated -- and
+  # `test_every_apt_task_forces_ipv4_first` asserts that every apt-running
+  # task carries it, so the next lane's author cannot quietly omit it.
+  #
+  # All 13 sites are edited individually; no anchor in this file already
+  # covers several of them the way thehub.yml's `hub_report` does.
+  #
+  # Third IPv6-preference fault on this host, after `localhost` resolving to a
+  # squatted `::1` (#57609, #59968). The recorded eventual shape is baking
+  # curl/jq/git into the task images so that no lane runs apt at all; that is
+  # a separate change and explicitly not this one.
+
   # -- PS-12: retry the fetch, never the verdict ---------------------------
   #
   # `attempts:` re-runs a step on ANY non-success, from inside the step and
@@ -436,6 +471,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
                 git config --global --add safe.directory "$PWD"
@@ -556,6 +595,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
@@ -718,6 +761,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet checkov
 
@@ -834,6 +881,10 @@ jobs:
               - |
                 set -euo pipefail
                 cd source
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 git config --global --add safe.directory "$PWD"
 
@@ -1119,6 +1170,10 @@ jobs:
                     echo "          Not uploading: an empty upload would report this as a clean scan."
                     exit 0
                   fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   cd source
@@ -1185,6 +1240,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                 cat > tests.ps1 <<'PS'
@@ -1407,6 +1466,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
 
                 cat > check.py <<'PY'
@@ -1653,6 +1716,10 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
@@ -1762,6 +1829,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                 cd source
@@ -1860,6 +1931,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null
 
                 rc=0
@@ -1957,6 +2032,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
@@ -2174,6 +2253,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
@@ -2287,6 +2370,10 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
