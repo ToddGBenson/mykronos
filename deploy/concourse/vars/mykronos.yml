@@ -18,6 +18,12 @@ mykronos-ref: v7
 # default branch as a literal.
 scanned-branch: main
 
+# The timezone the `weekly` timer reads its window in (#60014). personal-soc
+# and thehub have carried this since they were written; mykronos did not, so
+# its window ran in UTC -- "Sunday 04:00" was 21:00 Saturday in Phoenix. The
+# `weekly` resource is the only consumer.
+scan-timezone: America/Phoenix
+
 minio-endpoint: http://192.168.0.14:9000
 registry: 192.168.0.14:5000
 demo-host: 192.168.0.14

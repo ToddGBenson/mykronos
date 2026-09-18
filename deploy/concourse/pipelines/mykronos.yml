@@ -62,11 +62,43 @@ resources:
     type: time
     icon: clock-outline
     source:
-      # No `location`, so UTC. personal-soc and thehub pass
+      # `location`, like every other timer in the estate (#60014). It was the
+      # only one without, and the reason it had none was true when written and
+      # was the wrong conclusion: "personal-soc and thehub pass
       # `((scan-timezone))` from their own set-pipeline scripts and this
-      # pipeline's does not — using a variable nobody supplies here would
-      # apply an unresolved reference and the resource would never fire.
-      # A weekly job has no reason to care which hour it is locally.
+      # pipeline's does not — using a variable nobody supplies here would apply
+      # an unresolved reference and the resource would never fire."
+      #
+      # The variable is supplied now. `set-pipeline.ps1` and
+      # `vars/mykronos.yml` both carry `scan-timezone` as of this change, which
+      # is the fix the old comment described the need for rather than an
+      # argument against setting a location.
+      #
+      # WHAT UTC ACTUALLY MEANT HERE. Phoenix is UTC-7 year round, so a window
+      # written as "Sunday 04:00–05:00" ran at 21:00–22:00 SATURDAY locally.
+      # The intent of the two lines below is a pre-dawn Sunday slot on an idle
+      # worker; UTC put it in Saturday evening, which is neither what it says
+      # nor when the estate is quiet.
+      #
+      # THE TIMEZONE IS NOT ESTABLISHED AS THE CAUSE OF THE ZERO BUILDS, and
+      # saying so matters more than the fix. Measured 2026-09-18, read-only:
+      #
+      #   fly resource-versions -r mykronos/weekly     -> no versions at all
+      #   fly resource-versions -r thehub/daily        -> versions daily
+      #   fly resource-versions -r personal-soc/weekly -> versions since 08-16
+      #
+      # so by #60014's own diagnostic the TIMER is the problem and not the job.
+      # But the Concourse API reports this resource being checked successfully
+      # and recently, and a `time` resource emits only inside its window — and
+      # NO SUNDAY HAS PASSED since `mykronos/set-pipeline` first applied this
+      # file (build #1, 2026-09-17 13:35). Zero versions is therefore also
+      # exactly what a correctly-configured resource would show right now.
+      #
+      # The two explanations are not distinguishable from here, and the next
+      # window tells them apart: Sunday 2026-09-20, 04:00–05:00 America/Phoenix
+      # once this is applied. If `coverage` still has no build after it, the
+      # timezone was not the cause and the resource itself is next.
+      location: ((scan-timezone))
       days: [Sunday]
       start: 4:00 AM
       stop: 5:00 AM
