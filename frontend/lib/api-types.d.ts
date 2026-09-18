@@ -2803,6 +2803,8 @@ export interface components {
             blocked_findings: number;
             /** Closing Soon */
             closing_soon: number;
+            /** Closing Soon Open */
+            closing_soon_open: number;
             /** Auto Fixable */
             auto_fixable: number;
             /** Stalled */

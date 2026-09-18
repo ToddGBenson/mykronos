@@ -525,7 +525,15 @@ class AwaitingClosure:
 
     repo_full_name: str
     capability: str
+    #: Every closeable finding on its way out, whatever its status. This is
+    #: what "closing on their own" means to a reader.
     findings: int
+    #: The subset whose status is `open`, and so the subset that is also
+    #: counted in `total_open` (#439). `CLOSEABLE_STATUSES` covers
+    #: `accepted_risk` too since #437, and an acceptance was never in the open
+    #: count -- so subtracting the whole of `findings` from `total_open`
+    #: removes findings that total never contained.
+    open_findings: int
     #: How many more successful scans of this lane before they close. Zero
     #: means the next `reconcile_absences` sweep takes them.
     scans_needed: int
@@ -741,6 +749,24 @@ class Briefing:
         return sum(a.findings for a in self.awaiting)
 
     @property
+    def closing_soon_open(self) -> int:
+        """The part of `closing_soon` that `total_open` also counts.
+
+        Both numbers are real and they answer different questions.
+        `closing_soon` is what a reader wants: how much of this backlog
+        evaporates without anybody touching it. `closing_soon_open` is the only
+        one that may be subtracted from `total_open`, because `total_open` is
+        `status = 'open'` and nothing else, while `closing_soon` has included
+        `accepted_risk` since #437.
+
+        Subtracting the whole of `closing_soon` understates the work by however
+        many acceptances happen to be on their way out, and `Math.max(0, ...)`
+        on the page turns that into a quiet undercount rather than a visibly
+        broken number -- the worse of the two failure modes (#439).
+        """
+        return sum(a.open_findings for a in self.awaiting)
+
+    @property
     def blocked_findings(self) -> int:
         """Open findings that cannot close until a lane is repaired."""
         return sum(lane.open_findings for lane in self.stalled)
@@ -802,7 +828,8 @@ def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
             SELECT repo_full_name, capability, count(*) AS runs
             FROM recent GROUP BY 1, 2
         )
-        SELECT f.asset_id, f.capability, d.runs, count(*)
+        SELECT f.asset_id, f.capability, d.runs, count(*),
+               count(*) FILTER (WHERE f.status = 'open')
         FROM findings f
         JOIN depth d
           ON d.repo_full_name = f.asset_id AND d.capability = f.capability
@@ -820,11 +847,12 @@ def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
             repo_full_name=str(repo),
             capability=str(capability),
             findings=int(count),
+            open_findings=int(open_count),
             # A lane with fewer than the required runs on record cannot confirm
             # yet, however long the finding has been absent.
             scans_needed=max(0, REQUIRED_ABSENCES - int(runs)),
         )
-        for repo, capability, runs, count in rows
+        for repo, capability, runs, count, open_count in rows
     ]
     out.sort(key=lambda a: -a.findings)
     return out
