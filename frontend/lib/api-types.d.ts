@@ -3554,6 +3554,12 @@ export interface components {
         EvaluateResult: {
             /** Decision Id */
             decision_id: string;
+            /**
+             * Decision Type
+             * @description The scope the decision was **recorded** under, which is not always the one that was requested (issue #275). A `portfolio` request carrying a commit sha is a verdict about one change, not a standing posture, so it is filed as `commit_gate` — or `pr_gate` when it names a pull request. Read this rather than echoing what you sent: where they differ, the caller is a pipeline or workflow that needs re-applying.
+             * @default portfolio
+             */
+            decision_type: string;
             /** Overall Risk Score */
             overall_risk_score: number;
             /** Recommendation */
