@@ -36,7 +36,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, worklist
+from mykronos import blast_radius, prior_disposition, worklist
 from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
@@ -1047,6 +1047,11 @@ class DashboardQueries:
             store=store,
             combination_of=combination_of,
             fix_stage_of=self._fix_stages(repo_full_name),
+            # A newly-opened dependency finding whose package and version
+            # already carry a decision made under a provisional advisory id
+            # arrives saying so (#280). Read here rather than in the grouping
+            # so it is one query per page, not one per row.
+            prior_of=prior_disposition.for_findings(self.catalog, repo_full_name, rows),
         )
         if session is not None:
             self._attach_threat_intel(session, groups)
@@ -1410,6 +1415,7 @@ class DashboardQueries:
         store: KnowledgeStore | None,
         combination_of: dict[str, str],
         fix_stage_of: dict[str, str] | None = None,
+        prior_of: dict[str, prior_disposition.PriorDisposition] | None = None,
     ) -> list[dict[str, Any]]:
         """Collapse repeat occurrences of the same problem into one row.
 
@@ -1447,6 +1453,10 @@ class DashboardQueries:
                     "owner": finding.get("owner"),
                     "owner_split": False,
                     "toxic_combination_ids": [],
+                    # A decision this row is about to re-ask, because the
+                    # advisory was renamed under it (#280). Evidence on the
+                    # row, never a status: see `prior_disposition`.
+                    "prior_disposition": None,
                 }
                 order.append(key)
 
@@ -1506,6 +1516,14 @@ class DashboardQueries:
             if combination_id and combination_id not in group["toxic_combination_ids"]:
                 group["toxic_combination_ids"].append(combination_id)
 
+            # A group stands for several occurrences and each carries its own
+            # version, so the precedent is the most recent among them rather
+            # than whichever row happened to sort first.
+            group["prior_disposition"] = prior_disposition.best(
+                group["prior_disposition"],
+                (prior_of or {}).get(str(finding["finding_id"])),
+            )
+
         # Read once, not once per row: `active_entries()` parses the whole
         # knowledge file, and this loop runs for every group on the page.
         learned = [] if store is None else store.active_entries()
@@ -1550,6 +1568,8 @@ class DashboardQueries:
                 group["fixable"] = False
             else:
                 group["fixable"] = None
+            precedent = group["prior_disposition"]
+            group["prior_disposition"] = None if precedent is None else precedent.as_dict()
             result.append(group)
         return result
 
