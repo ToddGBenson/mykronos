@@ -1210,7 +1210,23 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: osv-scanner
-        timeout: 30m
+        # 32m, not 30m (#60002). MEASURED 2026-09-18 over the last 99 successful
+        # builds: p50 3.2m, p90 7.2m, worst 39.9m. The cap is the SUM of this and
+        # `sbom-and-evidence` (20m), so 32+20 = 52m against a 39.9m worst run.
+        #
+        # This job is the hardest cap in the estate to set and it is worth saying
+        # why rather than leaving the number looking arbitrary: its worst run is
+        # 5.5x its own p90, the HIGHEST outlier ratio of the 53 jobs with enough
+        # history to measure (estate p50 2.65x, p90 5.10x). So the usual rule --
+        # clear the routine worst by the estate's p90 outlier ratio -- gives only
+        # 36.7m here, BELOW a run that has already happened. The binding
+        # constraint is instead the observed worst plus the audit's own 1.3x pass
+        # threshold: 39.9 x 1.3 = 51.9m.
+        #
+        # That leaves it at 1.30x, the tightest cap in this file, and it is the
+        # one to watch: one slower build re-flags it. Raising it further without
+        # new measurement would be picking a number.
+        timeout: 32m
         image: python
         params: *mykronos_env
         config:
@@ -1884,7 +1900,36 @@ jobs:
         # lake, to a capability nobody enabled (L0003).
         ensure:
           task: upload
-          timeout: 10m
+          # 20m, not 10m (#60002). THIS CAP HAS ALREADY FIRED: `mykronos/iac`
+          # build #74 failed after 22.5m with `timeout exceeded`, and the log
+          # shows it died inside THIS task, not inside `scan-iac`. The job's own
+          # total had 3.1x headroom at the time, which is why the job-level
+          # number looked healthy while the task-level one was killing builds.
+          #
+          # What the task does is `apt-get update`, `pip install` the uploader
+          # from GitHub, then POST the results -- three network round trips and
+          # no local compute. 10m was measured-insufficient exactly once.
+          #
+          # 24m = 22.5m x 1.30. A build killed by its clock is a CENSORED
+          # observation: it proves the true duration exceeds the cap and does not
+          # say by how much, so it earns the same 1.30x floor a successful worst
+          # run does. Applied to the whole job's 22.5m, not to this task's 10m,
+          # because 10m is what the clock allowed rather than what the work
+          # needed -- the censored number that means something is the one for the
+          # build as a whole.
+          #
+          # It also has to sit ABOVE that 22.5m for a second reason. The audit
+          # attributes a timeout by asking which single task cap the failed
+          # build's duration lands near; with every task capped below 22.5m no
+          # cap can account for it, and the job stays flagged forever no matter
+          # how much headroom it is given. A per-task cap under the job's own
+          # longest censored run is a cap the audit cannot reason about.
+          #
+          # Not higher than that: the cap's remaining job is to catch a HANG, and
+          # a task that needs more than twenty-four minutes to install a wheel
+          # and post a SARIF is hung rather than slow. 24m is 2.4x the old cap,
+          # still below the estate's median outlier ratio of 2.65x.
+          timeout: 24m
           image: python
           params: *mykronos_env
           config:
@@ -2375,7 +2420,36 @@ jobs:
                 grep -Eq '^[0-9a-f]{40}$' meta/sha \
                   || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
       - task: kaniko
-        timeout: 45m
+        # 53m, not 45m (#60002). THIS CAP HAS ALREADY FIRED, three times:
+        # `mykronos/publish-frontend` builds #78, #88 and #89 failed after 49.6m,
+        # 48.9m and 51.0m with `timeout exceeded`, all of them inside kaniko --
+        # #89's log ends mid `COPY --from=deps /app/node_modules`, with `npm
+        # install` alone having taken 7m before that.
+        #
+        # The audit had been reporting this job only as "under 30% headroom",
+        # never as a job whose builds were being killed by the clock: a job that
+        # already carried one flag never printed its second, so the three
+        # timeouts were in the data and not in the report. Fixed in
+        # `scripts/audit_pipeline_timeouts.py` in this change.
+        #
+        # MEASURED 2026-09-18 over the last 94 successful builds: p50 4.4m,
+        # p90 11.2m, worst 44.5m. A build killed by its clock is a CENSORED
+        # observation -- it proves the true duration exceeds the cap and does
+        # not say by how much -- so the longest of them earns the same 1.30x
+        # floor a successful worst run does, and here it is the term that binds:
+        #
+        #     max(p90 x 5.10, worst x 1.30, censored x 1.30)
+        #   = max(57.1,       57.8,         51.0 x 1.30 = 66.3)  = 67m
+        #
+        # for the job; `resolve-sha` holds 5m of that, so 62m here. Setting it
+        # to 58m instead -- which the first two terms alone would have given --
+        # would have left the cap two minutes above a duration that has already
+        # killed three builds, which is not headroom.
+        #
+        # Note `publish-backend` keeps 45m deliberately: same task, different
+        # work. Its worst successful run is 17.8m against p90 6.7m, so the same
+        # rule gives 34m and its existing cap already clears it.
+        timeout: 62m
         config:
           platform: linux
           image_resource:
@@ -2530,7 +2604,36 @@ jobs:
         # lake, to a capability nobody enabled (L0003).
         ensure:
           task: upload
-          timeout: 10m
+          # 20m, not 10m (#60002). THIS CAP HAS ALREADY FIRED: `mykronos/iac`
+          # build #74 failed after 22.5m with `timeout exceeded`, and the log
+          # shows it died inside THIS task, not inside `scan-iac`. The job's own
+          # total had 3.1x headroom at the time, which is why the job-level
+          # number looked healthy while the task-level one was killing builds.
+          #
+          # What the task does is `apt-get update`, `pip install` the uploader
+          # from GitHub, then POST the results -- three network round trips and
+          # no local compute. 10m was measured-insufficient exactly once.
+          #
+          # 24m = 22.5m x 1.30. A build killed by its clock is a CENSORED
+          # observation: it proves the true duration exceeds the cap and does not
+          # say by how much, so it earns the same 1.30x floor a successful worst
+          # run does. Applied to the whole job's 22.5m, not to this task's 10m,
+          # because 10m is what the clock allowed rather than what the work
+          # needed -- the censored number that means something is the one for the
+          # build as a whole.
+          #
+          # It also has to sit ABOVE that 22.5m for a second reason. The audit
+          # attributes a timeout by asking which single task cap the failed
+          # build's duration lands near; with every task capped below 22.5m no
+          # cap can account for it, and the job stays flagged forever no matter
+          # how much headroom it is given. A per-task cap under the job's own
+          # longest censored run is a cap the audit cannot reason about.
+          #
+          # Not higher than that: the cap's remaining job is to catch a HANG, and
+          # a task that needs more than twenty-four minutes to install a wheel
+          # and post a SARIF is hung rather than slow. 24m is 2.4x the old cap,
+          # still below the estate's median outlier ratio of 2.65x.
+          timeout: 24m
           image: python
           params: *mykronos_env
           config:
