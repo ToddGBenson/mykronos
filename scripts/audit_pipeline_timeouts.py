@@ -22,11 +22,32 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 import yaml
 
-CONCOURSE = os.environ.get("CONCOURSE_URL", "http://127.0.0.1:8080").rstrip("/")
+def _http_base(value, name):
+    """An http(s) base, or nothing. `urlopen` honours `file://` (B-090).
+
+    Concourse's answer is parsed with `json.load` straight off the response,
+    so `CONCOURSE_URL=file:///etc/passwd` is a local file read wearing an
+    API call's clothes. Nothing here is reachable by an attacker -- it is a
+    developer script reading an env var -- and that is the reason to spend
+    two lines on it rather than the reason not to: the check costs nothing
+    and the next caller of `_api` may not be a developer script.
+
+    Refused loudly rather than defaulted, because silently substituting
+    localhost for what somebody typed is how an audit reports on the wrong
+    Concourse.
+    """
+    scheme = urlsplit(value).scheme
+    if scheme not in ("http", "https"):
+        sys.exit(f"{name} must be an http:// or https:// URL, not {scheme or 'a bare path'!r}.")
+    return value.rstrip("/")
+
+
+CONCOURSE = _http_base(os.environ.get("CONCOURSE_URL", "http://127.0.0.1:8080"), "CONCOURSE_URL")
 TEAM = os.environ.get("CONCOURSE_TEAM", "main")
 #: Pipelines this repository holds the definition for. A pipeline Concourse
 #: knows about and this checkout does not is somebody else's to audit.

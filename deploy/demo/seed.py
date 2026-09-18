@@ -31,6 +31,7 @@ import random
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
@@ -105,6 +106,14 @@ def mint_token(repo_full_name: str, capabilities: list[str]) -> str:
 
 class Client:
     def __init__(self, base: str, admin_token: str, gate_token: str) -> None:
+        # `urlopen` honours `file://`, and every response here is parsed as
+        # the API's answer. Checked at the boundary rather than at each call
+        # so there is one place to be right (B-090).
+        scheme = urllib.parse.urlsplit(base).scheme
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"--url must be an http:// or https:// URL, not {scheme or 'a bare path'!r}."
+            )
         self.base = base.rstrip("/")
         self.headers = {
             "Authorization": f"Bearer {admin_token}",
