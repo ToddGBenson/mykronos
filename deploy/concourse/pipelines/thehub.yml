@@ -3702,6 +3702,31 @@ jobs:
               - |
                 set -uo pipefail
 
+                # The tool, before the target (#59975). Every curl below is
+                # written `if ! curl ...`, and that construct cannot tell
+                # "there is no curl in this image" (127) from "the target did
+                # not answer" (7): both simply make the `if` true, and the
+                # message that prints names the target either way. This job
+                # spent two days being read as a staging outage on exactly that
+                # ambiguity while the real cause -- curl 23, an unwritable
+                # destination -- sat in the build log.
+                #
+                # So the binary is established once, up front, in its own words.
+                # After this line every later curl failure is a statement about
+                # the target or the filesystem, never about the toolchain, and
+                # the messages below are entitled to say so.
+                #
+                # Not hypothetical in this estate: `python:3.14-slim`, which the
+                # report-to-hub tasks in this same pipeline use, ships with no
+                # curl at all and they apt-get it before use.
+                if ! command -v curl >/dev/null 2>&1; then
+                  echo "::error::curl is not installed in this task's image."
+                  echo "::error::This is a MISSING TOOL, not an unreachable target -- nothing"
+                  echo "::error::about $TARGET_URL has been tested. Install curl in the image"
+                  echo "::error::or add it to this task; do not read this as a staging outage."
+                  exit 1
+                fi
+
                 # Reachability first (L0001). Staging is deployed by hand, so
                 # "nobody has brought it up since the last reboot" is a normal
                 # state here in a way it is not for demo -- and an unreachable
@@ -3710,6 +3735,8 @@ jobs:
                      --retry 5 --retry-delay 6 --retry-all-errors \
                      -o /dev/null "$TARGET_URL"; then
                   echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                  echo "::error::curl is present and ran (checked above), so this is the TARGET,"
+                  echo "::error::not the tooling."
                   exit 1
                 fi
 
@@ -3809,8 +3836,13 @@ jobs:
                   case "$rc" in
                     23) echo "::error::Fetched ${PROBE_REL} but could not write ${PROBE_FILE}." ;;
                     22) echo "::error::The target returned an HTTP error for ${TARGET_URL%/}/${PROBE_REL}." ;;
-                    6|7) echo "::error::Could not reach ${TARGET_URL%/} to fetch ${PROBE_REL}." ;;
+                    6|7) echo "::error::Could not reach ${TARGET_URL%/} to fetch ${PROBE_REL} -- the TARGET is unreachable from this task. curl is present and ran." ;;
                     28) echo "::error::Timed out fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
+                    # 127 cannot happen after the `command -v curl` guard at the
+                    # top of this script, and is kept anyway: if that guard is
+                    # ever moved or dropped, this is the line that stops a
+                    # missing binary being filed as an unreachable target again.
+                    127) echo "::error::curl is not installed in this task's image -- a MISSING TOOL, not an unreachable target. ${TARGET_URL%/} was never contacted." ;;
                     *)  echo "::error::curl exited ${rc} fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
                   esac
                   echo "::error::The scan ran, but what it scanned cannot be established, so"

@@ -756,3 +756,126 @@ def test_every_zap_pin_is_an_exact_version() -> None:
         where: value for where, value in _zap_pins().items() if not EXACT_VERSION.match(value)
     }
     assert not floating, f"these ZAP pins float rather than naming a release: {floating}"
+
+
+def _zap_baseline_script() -> str:
+    """The one task both of `dast-staging`'s curls live in."""
+    document = yaml.safe_load(
+        (checker.PIPELINE_DIR / "thehub.yml").read_text(encoding="utf-8")
+    )
+    jobs = {job["name"]: job for job in document["jobs"]}
+    tasks = [
+        step
+        for step in _steps({"jobs": [jobs["dast-staging"]]})
+        if step.get("task") == "zap-baseline"
+    ]
+    assert tasks, "dast-staging no longer has a zap-baseline task"
+    return tasks[0]["config"]["run"]["args"][-1]
+
+
+def test_the_probe_names_the_tool_before_it_blames_the_target() -> None:
+    """#59975, and the reason that story took three days instead of one.
+
+    `if ! curl ...` cannot distinguish "there is no curl in this image" (127)
+    from "the target did not answer" (7): both make the `if` true and the
+    message that prints names the target. `dast-staging` failed for two days
+    with a message about an unreachable staging host while the build log said
+    `curl: (23) Failure writing output to destination` — the fetch had already
+    succeeded and the destination was unwritable. Three separate investigations
+    went looking for a network fault that was never there.
+
+    So the binary is established once, up front, before any curl runs. Every
+    curl failure after that line is a statement about the target or the
+    filesystem, and the messages are entitled to say so.
+
+    This asserts the ordering, not merely the presence: a `command -v curl`
+    placed *after* the reachability check would read as satisfying the rule
+    while leaving the ambiguity exactly where it was.
+    """
+    script = _zap_baseline_script()
+
+    guard = script.find("command -v curl")
+    assert guard != -1, (
+        "the zap-baseline task no longer establishes that curl exists before using it; "
+        "a missing binary will be reported as an unreachable target again (#59975)"
+    )
+
+    first_curl = re.search(r"^\s*(if ! )?curl\s", script, re.MULTILINE)
+    assert first_curl, "the zap-baseline task no longer invokes curl at all"
+    assert guard < first_curl.start(), (
+        "the curl guard runs after the first curl, so the first failure still cannot "
+        "say whether the tool or the target is missing (#59975)"
+    )
+
+
+def test_the_two_probe_verdicts_do_not_share_one_message() -> None:
+    """The story's first acceptance criterion, stated as a property.
+
+    A missing binary and an unreachable target need different things done --
+    fix the image, or bring staging up -- so one sentence covering both is the
+    defect this guard exists to prevent, committed inside the guard. #392
+    already made that mistake once here: "Could not fetch" was printed for
+    "could not resolve", "connection refused", "HTTP 404" and "could not write
+    the file" alike, and it named the wrong cause in production on its first
+    real run.
+
+    The two messages must therefore be distinguishable by reading them, which
+    is the only place it matters -- a human at 02:00 looking at a red lane.
+    """
+    script = _zap_baseline_script()
+
+    tool_lines = [
+        line for line in script.splitlines() if "MISSING TOOL" in line or "not installed" in line
+    ]
+    target_lines = [
+        line
+        for line in script.splitlines()
+        if "is not answering" in line or "TARGET is unreachable" in line
+    ]
+
+    assert tool_lines, "no message says plainly that curl itself is missing (#59975)"
+    assert target_lines, "no message says plainly that the target is unreachable (#59975)"
+
+    # And no single line may offer the two as alternatives. This is the shape
+    # the regression actually takes -- nobody deletes the messages, they merge
+    # them into one hedged sentence that saves a branch and costs the reader
+    # the answer. "curl is missing or the target is not answering" tells an
+    # operator at 02:00 precisely nothing.
+    #
+    # Contrastive negation is the opposite of the defect and is allowed: "a
+    # MISSING TOOL, not an unreachable target" names one cause and rules the
+    # other out, which is the whole point. The test therefore looks for the
+    # two causes joined as a disjunction, not for their co-occurrence.
+    hedged = [
+        line
+        for line in script.splitlines()
+        if "::error::" in line
+        and re.search(r"\bor\b", line)
+        and re.search(r"not installed|missing tool|no curl", line, re.IGNORECASE)
+        and re.search(r"not answering|unreachable|could not reach", line, re.IGNORECASE)
+    ]
+    assert not hedged, (
+        "one message offers a missing binary and an unreachable target as alternatives, "
+        "which is the hedge the story's first acceptance criterion rules out: "
+        + "; ".join(line.strip() for line in hedged)
+    )
+
+
+def test_the_probe_translates_curl_127_rather_than_printing_the_number() -> None:
+    """Belt and braces for the guard above.
+
+    The `command -v curl` check makes 127 unreachable at the probe. It is
+    still translated, because the guard is one refactor away from moving and
+    `curl exited 127` is exactly the opaque message that sent this story
+    looking at the network for two days.
+    """
+    script = _zap_baseline_script()
+    case_block = re.search(r'case "\$rc" in(.*?)esac', script, re.DOTALL)
+    assert case_block, "the probe no longer translates curl's exit code (#392)"
+    body = case_block.group(1)
+
+    for code in ("22", "23", "127"):
+        assert re.search(rf"^\s*(?:\d+\|)*{code}(?:\|\d+)*\)", body, re.MULTILINE), (
+            f"curl exit {code} is no longer given a message of its own; it falls to the "
+            f"catch-all, which prints a number rather than a cause (#59975)"
+        )
