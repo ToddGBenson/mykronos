@@ -504,6 +504,60 @@ class ConcourseClient:
             return None
         return [str(p["name"]) for p in payload if isinstance(p, dict) and "name" in p]
 
+    def pipeline_url(self, pipeline: str) -> str:
+        """Where a browser reaches this pipeline (not where this process does)."""
+        return f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+
+    def job_names(self, pipeline: str) -> list[str] | None:
+        """Every job in one pipeline, or None if that pipeline is unreadable.
+
+        `None` rather than `[]`, for the reason this module repeats: a
+        pipeline that cannot be read has not been shown to be healthy, and a
+        sweep that silently skipped it would report a clean estate.
+        """
+        statuses = self.job_last_statuses(pipeline)
+        return None if statuses is None else list(statuses)
+
+    def job_last_statuses(self, pipeline: str) -> dict[str, str | None] | None:
+        """Each job in one pipeline against its last *finished* build's status.
+
+        One request answers "which lanes are worth asking about in detail",
+        which matters because every read here costs a round trip and this
+        estate has 79 lanes. `None` for a job means it has never finished a
+        build — not a success, and the caller must not read it as one.
+        """
+        payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+        if not isinstance(payload, list):
+            return None
+        out: dict[str, str | None] = {}
+        for raw in payload:
+            if not isinstance(raw, dict) or "name" not in raw:
+                continue
+            build = raw.get("finished_build")
+            status = build.get("status") if isinstance(build, dict) else None
+            out[str(raw["name"])] = str(status) if isinstance(status, str) else None
+        return out
+
+    def job_builds(
+        self, pipeline: str, job: str, *, limit: int = 10
+    ) -> list[dict[str, object]] | None:
+        """One job's recent builds, newest first, or None if unreadable.
+
+        This is the one read in this module that looks at more than a lane's
+        *latest* build, and it is still only the build list: id, name, status
+        and timestamps. It does not fetch build logs or build events, which
+        carry scanner output and resolved `((var))` values — the property
+        stated at the top of this module holds here too. What that costs the
+        detector built on it is measured and recorded in `ci_repeat`.
+        """
+        payload = self._get(
+            f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs/{job}/builds"
+            f"?limit={int(limit)}"
+        )
+        if not isinstance(payload, list):
+            return None
+        return [b for b in payload if isinstance(b, dict)]
+
     def has_pipeline_for(self, repo_full_name: str) -> bool | None:
         """Is there a Concourse pipeline for this repository?
 

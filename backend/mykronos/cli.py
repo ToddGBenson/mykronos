@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
-from mykronos import grants
+from mykronos import ci_repeat, grants
 from mykronos import host_controls as host_controls_module
 from mykronos.auth import TokenRegistry
 from mykronos.ci import (
@@ -343,6 +343,27 @@ def _build_parser() -> argparse.ArgumentParser:
             "repository deleted on purpose reads as drift, so an unfiltered "
             "sweep would open a pull request putting it back."
         ),
+    )
+
+    repeats = sub.add_parser(
+        "ci-repeat-failures",
+        help="Lanes that have failed several builds running on the same cause",
+    )
+    repeats.add_argument(
+        "--threshold",
+        type=int,
+        default=ci_repeat.REPEAT_THRESHOLD,
+        help=(
+            "Consecutive same-cause failures before a lane is reported. The "
+            f"default of {ci_repeat.REPEAT_THRESHOLD} is measured, not chosen "
+            "— see mykronos.ci_repeat."
+        ),
+    )
+    repeats.add_argument(
+        "--history",
+        type=int,
+        default=10,
+        help="Recent builds to read per lane. Must exceed --threshold.",
     )
 
     sub.add_parser("stats", help="Row counts and buffer depth")
@@ -1194,6 +1215,29 @@ def main(argv: list[str] | None = None) -> int:
                 ],
             )
             return 0
+
+        if args.command == "ci-repeat-failures":
+            client = ConcourseClient(
+                settings.concourse_url,
+                team=settings.concourse_team,
+                external_url=settings.concourse_external_url,
+            )
+            if not client.configured:
+                print(
+                    "No Concourse configured, so no lane was checked. "
+                    "This is not a clean estate, it is an unasked question."
+                )
+                return 1
+            result = ci_repeat.sweep(
+                client, threshold=args.threshold, history=args.history
+            )
+            print(ci_repeat.render(result))
+            # Unreachable Concourse and a sweep that inspected nothing both
+            # exit non-zero: a caller that only reads the exit code must not
+            # be told "clean" by a check that never ran.
+            if result is None or result.lanes_inspected == 0:
+                return 1
+            return 1 if result.incidents else 0
 
         if args.command == "briefing":
             # Run after every deploy. The first section is the point of it:
