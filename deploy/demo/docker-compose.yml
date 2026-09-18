@@ -40,6 +40,22 @@
 
 name: mykronos-demo
 
+# Every image in this file is a TOOL, not a service (mykronos #666).
+#
+# The stack above already says why: stood up from nothing, seeded, attacked and
+# destroyed inside one Concourse task, on tmpfs, holding synthetic data. Its
+# containers serve no traffic and keep nothing. Findings in them are real and
+# they are not estate risk in the sense the risk view means.
+#
+# Without this, 90% of the estate's container findings came from one image in
+# here -- the ZAP scanner -- and drowned the 5 criticals in the process that
+# holds every credential the estate has.
+#
+# `x-` is compose's own extension prefix, so `docker compose` ignores this.
+# Absence means `service`: an undeclared image counts toward risk, because
+# quietly removing findings from a total is the error that matters.
+x-mykronos-role: tool
+
 services:
   backend:
     image: ${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}
