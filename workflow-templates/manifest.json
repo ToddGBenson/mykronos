@@ -28,8 +28,8 @@
     "containers": {
       "template": "containers.yml.j2",
       "target": ".github/workflows/mykronos-containers.yml",
-      "version": "2.2.1",
-      "summary": "Container and image scanning with Trivy"
+      "version": "2.3.0",
+      "summary": "Container and image scanning with Trivy - images this repo builds, and the images its compose files run"
     },
     "iac": {
       "template": "iac.yml.j2",

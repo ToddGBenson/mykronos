@@ -103,6 +103,78 @@ class TestDiscovery:
         assert "${" + "#" not in source
 
 
+class TestItAlsoScansWhatIsDeployed:
+    """#427: the lane scanned four of the fifteen images this estate runs.
+
+    Not a missing entry anywhere — every path into it enumerated images it
+    *built*, so Vault, MinIO, Concourse, Postgres, Redis, nginx and a 2023
+    `registry:2` were never in scope for anything. Visible in the lake as an
+    absence: no container scan, for any repository, has ever recorded a
+    `musl`, `busybox`, `apk-tools`, `nginx`, `redis` or `postgres` package.
+    """
+
+    def test_the_deployed_images_are_scanned_as_well_as_the_built_ones(
+        self, rendered: str
+    ) -> None:
+        assert "mykronos.estate_images" in rendered
+        # And the built ones are still scanned: this is an addition, not a
+        # replacement. The application image is the one thing the lane did do.
+        assert "docker build" in rendered
+
+    def test_the_list_is_derived_rather_than_configured(self, rendered: str) -> None:
+        """The property the fix turns on. A list of the fifteen images running
+        today, in a template or in a repo's capability config, is correct on
+        the day it is written and silently short the first time somebody adds
+        a service."""
+        executable = "\n".join(
+            line for line in rendered.splitlines() if not line.lstrip().startswith("#")
+        )
+        for hardcoded in ("hashicorp/vault", "minio/minio", "concourse/concourse", "registry:2"):
+            assert hardcoded not in executable
+        assert "mykronos.estate_images --root . --output" in executable
+
+    def test_each_deployed_image_gets_its_own_report(self, rendered: str) -> None:
+        """A shared report name is how 600 container results became 118: the
+        image reference is part of a finding's identity (spec 05 §5)."""
+        assert "trivy-estate-$SAFE.sarif" in rendered
+
+    def test_it_does_not_need_the_docker_socket_for_a_pulled_image(self, rendered: str) -> None:
+        """Trivy pulls the image itself, which is the only reason this can
+        scan an image the runner never built."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert "docker.sock" not in estate_step
+
+    def test_an_image_that_would_not_scan_is_named_and_its_empty_report_discarded(
+        self, rendered: str
+    ) -> None:
+        """A deployed image that could not be scanned is not a clean deployed
+        image, and an empty report is what the adapter would read as one."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert "::error::Deployed images Trivy could not scan" in estate_step
+        assert 'rm -f "$OUT/trivy-estate-$SAFE.sarif"' in estate_step
+
+    def test_a_deriver_that_died_is_not_a_repository_that_deploys_nothing(
+        self, rendered: str
+    ) -> None:
+        """The step does not run under `set -e`, so an unchecked deriver would
+        leave no list, scan zero images and exit 0."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert "Could not enumerate the images this repository deploys" in estate_step
+
+    def test_every_image_failing_is_fatal(self, rendered: str) -> None:
+        """One image whose registry withdrew the tag is somebody else's fact
+        and must not redden a lane other jobs wait on. All of them failing is
+        the mechanism, and that cannot read as a clean scan."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert '[ "$SCANNED" -eq 0 ]' in estate_step
+        assert "exit 1" in estate_step
+
+    def test_the_step_is_in_the_rendered_workflow_as_a_real_step(self, rendered: str) -> None:
+        document = yaml.safe_load(rendered)
+        names = [step.get("name") for step in document["jobs"]["containers"]["steps"]]
+        assert "Scan the images this repository's compose files run" in names
+
+
 class TestItIsAValidWorkflow:
     def test_it_parses_as_yaml(self, rendered: str) -> None:
         document = yaml.safe_load(rendered)

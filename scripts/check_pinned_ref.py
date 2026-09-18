@@ -41,6 +41,12 @@ REQUIRED_MODULES: tuple[str, ...] = (
     "mykronos.reachability",
     "mykronos.ai_pin_check",
     "mykronos.junit_stage",
+    # #427. The containers lane installs the pinned package to ask which
+    # images the repository deploys. A pin without this module leaves that
+    # step failing on an import while the built-image scan beside it still
+    # reports, which is the lane going quietly back to scanning four of
+    # fifteen.
+    "mykronos.estate_images",
 )
 
 #: Repository scripts a pipeline fetches by raw URL at `${MYKRONOS_REF}`
@@ -69,6 +75,7 @@ REQUIRED_FLAGS: dict[str, tuple[str, ...]] = {
     "mykronos.atlas_sbom": ("--banned-package", "--blocked-license", "--sarif"),
     "mykronos.ai_pin_check": ("--repo-root", "--output"),
     "mykronos.junit_stage": ("--out", "--suite", "--case"),
+    "mykronos.estate_images": ("--root", "--output"),
 }
 
 

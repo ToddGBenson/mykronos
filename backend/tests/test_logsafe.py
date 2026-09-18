@@ -299,6 +299,11 @@ class TestRenderingIsStillSafeAfterValidation:
             ingestion_api_url="https://example.invalid",
             token_secret_name="MYKRONOS_INGESTION_TOKEN",
             upload_action_ref="example-org/repo/actions/upload-results@v1",
+            # The containers lane installs the package to enumerate the images
+            # the repository deploys (#427), so the spec is part of its
+            # context now. Every real caller already passes it -- the aegis,
+            # ai, atlas and sast templates have always needed it.
+            mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
             config={"tool_version": "0.58.1"},
         ).content
 

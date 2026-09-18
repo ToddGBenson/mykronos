@@ -184,4 +184,110 @@
             echo "::warning::No image was scannable; recording an empty result."
             printf '%s' "$EMPTY_SARIF" > "$OUT/trivy-empty.sarif"
           fi
+
+      - name: Set up Python
+        # `setup-python` rather than the runner's system interpreter, which is
+        # the pattern the atlas template already uses: a system `pip install`
+        # is refused outright on a runner whose Python is externally managed,
+        # and that is a failure mode that arrives with an image bump rather
+        # than with a change to this file.
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Mykronos, to enumerate the deployed images
+        # Only to run `mykronos.estate_images` in the step below. The upload
+        # action installs its own copy from the same spec, and duplicating the
+        # install here rather than sharing it is what keeps this step's failure
+        # from taking the upload with it.
+        run: pip install --quiet '<< mykronos_package_spec >>'
+
+      - name: Scan the images this repository's compose files run
+        # #427. Everything above scans images this repository *builds*, and in
+        # the estate that raised this, that was four images out of fifteen. The
+        # other eleven — Vault, MinIO, Concourse, Postgres, Redis, nginx and a
+        # `registry:2` last built in 2023 — are pulled rather than built, so no
+        # Dockerfile names them and nothing had ever looked at them. The lake
+        # showed it as an absence: across every container scan ever recorded,
+        # for any repository, not one `musl`, `busybox`, `apk-tools`, `nginx`,
+        # `redis` or `postgres` package.
+        #
+        # The list is derived from the compose files rather than configured,
+        # because a list of images in this repo's capability config is the same
+        # defect one level up: right when it is written, silently short the
+        # first time somebody adds a service. An image joins this scan by being
+        # deployed.
+        #
+        # No Docker socket. Trivy pulls the image from its registry itself,
+        # which is also why this works for an image the runner never built.
+        env:
+          TRIVY: aquasec/trivy:<< config.tool_version | default('0.58.1') >>
+        run: |
+          set -uo pipefail
+          OUT="${{ runner.temp }}/mykronos-results"
+          mkdir -p "$OUT"
+          LIST="${{ runner.temp }}/estate-images.txt"
+
+          # Checked, because this step does not run under `set -e`: a deriver
+          # that died would leave no list, the loop below would read nothing,
+          # and a scan of zero deployed images would exit 0 and look exactly
+          # like a repository that deploys nothing.
+          if ! python -m mykronos.estate_images --root . --output "$LIST"; then
+            echo "::error::Could not enumerate the images this repository deploys."
+            exit 1
+          fi
+
+          TOTAL=0
+          SCANNED=0
+          FAILED=""
+          while IFS= read -r IMAGE; do
+            [ -n "$IMAGE" ] || continue
+            TOTAL=$((TOTAL + 1))
+
+            # The image reference becomes the finding's path and therefore part
+            # of its identity (spec 05 §5), so the report file is named after
+            # it too: one file per image, and never a shared one. A shared tag
+            # is how 600 container results once became 118.
+            SAFE=$(printf '%s' "$IMAGE" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
+
+            echo "::group::Scanning $IMAGE"
+            if docker run --rm -v "$OUT:/out" "$TRIVY" \
+              image "$IMAGE" \
+                --scanners vuln \
+                --format sarif \
+                --output "/out/trivy-estate-$SAFE.sarif" \
+                --exit-code 0 \
+                --quiet \
+              && [ -s "$OUT/trivy-estate-$SAFE.sarif" ]; then
+              SCANNED=$((SCANNED + 1))
+            else
+              # An empty report is a failed scan, not a clean image, and the
+              # adapter would read it as the second. Removed rather than
+              # uploaded.
+              rm -f "$OUT/trivy-estate-$SAFE.sarif"
+              FAILED="$FAILED $IMAGE"
+            fi
+            echo "::endgroup::"
+          done < "$LIST"
+
+          # `::error::` and not `::warning::`, but not fatal either, and the
+          # line between them is who owns the failure. A deployed image whose
+          # registry has withdrawn the tag cannot be scanned by anything —
+          # `minio/minio:RELEASE.2025-04-22T22-12-26Z` answers UNAUTHORIZED on
+          # Docker Hub for exactly that reason — and reddening this lane every
+          # run would block the jobs that wait on it over a fact about
+          # somebody else's registry. It is stated loudly instead.
+          if [ -n "$FAILED" ]; then
+            echo "::error::Deployed images Trivy could not scan:$FAILED"
+          fi
+
+          # Every one of them failing is a different claim: the list was
+          # derived, so the mechanism is what broke, and that must not read as
+          # a clean scan of the deployment.
+          if [ "$TOTAL" -gt 0 ] && [ "$SCANNED" -eq 0 ]; then
+            echo "::error::None of the $TOTAL deployed image(s) could be scanned."
+            exit 1
+          fi
 {% endblock %}
