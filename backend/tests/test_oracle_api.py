@@ -360,16 +360,40 @@ class TestDecisionHistory:
     def test_filters_by_decision_type(
         self, client, oracle_auth, admin_auth, seeded, run_compaction
     ) -> None:
+        """Filtering works across the two types this endpoint can produce.
+
+        It used to ask for a `portfolio` decision here, and #495 made that
+        unreachable through this route on purpose: `commit_sha` is required
+        (`Field(min_length=1)`), the engine now refuses a portfolio decision
+        that carries one, and the service reclassifies rather than erroring.
+        A portfolio decision is a standing statement about a repository and
+        arrives via `score-portfolio`, which names no commit.
+
+        So the old assertion described a state the engine now forbids. It is
+        replaced with the same filter over two types this endpoint really
+        returns, rather than deleted -- the filter itself was never the thing
+        that changed.
+        """
         evaluate(client, oracle_auth, decision_type="pr_gate")
-        evaluate(client, oracle_auth, decision_type="portfolio", pr_number=None)
+        evaluate(client, oracle_auth, decision_type="commit_gate", pr_number=None)
         run_compaction()
 
         body = client.get(
             f"/api/oracle/decisions/{seeded}",
-            params={"decision_type": "portfolio"},
+            params={"decision_type": "commit_gate"},
             headers=admin_auth,
         ).json()
         assert len(body["decisions"]) == 1
+
+        other = client.get(
+            f"/api/oracle/decisions/{seeded}",
+            params={"decision_type": "pr_gate"},
+            headers=admin_auth,
+        ).json()
+        assert len(other["decisions"]) == 1, (
+            "Both types must be filterable; asserting only one would pass "
+            "against a filter that ignored its argument entirely."
+        )
 
     def test_an_unknown_repo_is_404(self, client, admin_auth) -> None:
         assert (
