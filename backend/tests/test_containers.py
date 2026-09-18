@@ -144,13 +144,21 @@ class TestItAlsoScansWhatIsDeployed:
         estate_step = rendered.split("Scan the images this repository's compose files run")[1]
         assert "docker.sock" not in estate_step
 
-    def test_an_image_that_would_not_scan_fails_the_lane(self, rendered: str) -> None:
+    def test_an_image_that_would_not_scan_is_named_and_its_empty_report_discarded(
+        self, rendered: str
+    ) -> None:
         """A deployed image that could not be scanned is not a clean deployed
-        image. Swallowing it would leave the lane reporting confidently on a
-        subset and looking identical to full coverage, which is the failure
-        #427 describes."""
+        image, and an empty report is what the adapter would read as one."""
         estate_step = rendered.split("Scan the images this repository's compose files run")[1]
-        assert "::error::Trivy could not scan" in estate_step
+        assert "::error::Deployed images Trivy could not scan" in estate_step
+        assert 'rm -f "$OUT/trivy-estate-$SAFE.sarif"' in estate_step
+
+    def test_every_image_failing_is_fatal(self, rendered: str) -> None:
+        """One image whose registry withdrew the tag is somebody else's fact
+        and must not redden a lane other jobs wait on. All of them failing is
+        the mechanism, and that cannot read as a clean scan."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert '[ "$SCANNED" -eq 0 ]' in estate_step
         assert "exit 1" in estate_step
 
     def test_the_step_is_in_the_rendered_workflow_as_a_real_step(self, rendered: str) -> None:

@@ -220,9 +220,12 @@
 
           python -m mykronos.estate_images --root . --output "$LIST"
 
+          TOTAL=0
+          SCANNED=0
           FAILED=""
           while IFS= read -r IMAGE; do
             [ -n "$IMAGE" ] || continue
+            TOTAL=$((TOTAL + 1))
 
             # The image reference becomes the finding's path and therefore part
             # of its identity (spec 05 §5), so the report file is named after
@@ -233,24 +236,41 @@
               | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
 
             echo "::group::Scanning $IMAGE"
-            if ! docker run --rm -v "$OUT:/out" "$TRIVY" \
+            if docker run --rm -v "$OUT:/out" "$TRIVY" \
               image "$IMAGE" \
                 --scanners vuln \
                 --format sarif \
                 --output "/out/trivy-estate-$SAFE.sarif" \
                 --exit-code 0 \
-                --quiet; then
+                --quiet \
+              && [ -s "$OUT/trivy-estate-$SAFE.sarif" ]; then
+              SCANNED=$((SCANNED + 1))
+            else
+              # An empty report is a failed scan, not a clean image, and the
+              # adapter would read it as the second. Removed rather than
+              # uploaded.
+              rm -f "$OUT/trivy-estate-$SAFE.sarif"
               FAILED="$FAILED $IMAGE"
             fi
             echo "::endgroup::"
           done < "$LIST"
 
+          # `::error::` and not `::warning::`, but not fatal either, and the
+          # line between them is who owns the failure. A deployed image whose
+          # registry has withdrawn the tag cannot be scanned by anything —
+          # `minio/minio:RELEASE.2025-04-22T22-12-26Z` answers UNAUTHORIZED on
+          # Docker Hub for exactly that reason — and reddening this lane every
+          # run would block the jobs that wait on it over a fact about
+          # somebody else's registry. It is stated loudly instead.
           if [ -n "$FAILED" ]; then
-            # Named, and fatal. A deployed image that could not be scanned is
-            # not a clean deployed image, and swallowing it would put this lane
-            # back where the issue found it — reporting confidently on a subset
-            # and looking identical to full coverage.
-            echo "::error::Trivy could not scan:$FAILED"
+            echo "::error::Deployed images Trivy could not scan:$FAILED"
+          fi
+
+          # Every one of them failing is a different claim: the list was
+          # derived, so the mechanism is what broke, and that must not read as
+          # a clean scan of the deployment.
+          if [ "$TOTAL" -gt 0 ] && [ "$SCANNED" -eq 0 ]; then
+            echo "::error::None of the $TOTAL deployed image(s) could be scanned."
             exit 1
           fi
 {% endblock %}

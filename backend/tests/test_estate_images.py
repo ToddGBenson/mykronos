@@ -303,9 +303,27 @@ class TestTheLanesThatRunHere:
             assert hardcoded not in executable
 
     @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
-    def test_an_estate_image_that_would_not_scan_fails_the_lane(self, pipeline: str) -> None:
+    def test_an_image_that_would_not_scan_is_named_and_its_empty_report_discarded(
+        self, pipeline: str
+    ) -> None:
+        """An empty report is a failed scan, not a clean image, and the adapter
+        would read it as the second."""
         body = _scan_task_body(pipeline)
         assert 'test -s "results/trivy-estate-${safe}.sarif"' in body
+        assert 'rm -f "results/trivy-estate-${safe}.sarif"' in body
+        assert "Deployed images Trivy could not scan" in body
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_every_image_failing_is_fatal_but_one_of_them_is_not(self, pipeline: str) -> None:
+        """`minio/minio:RELEASE.2025-04-22T22-12-26Z` answers UNAUTHORIZED from
+        Docker Hub -- the tag has been withdrawn upstream, so nothing can scan
+        it remotely. Reddening the lane every commit over somebody else's
+        registry would block the jobs that wait on it; all of them failing is a
+        different claim, because the list was derived and so the mechanism is
+        what broke."""
+        body = _scan_task_body(pipeline)
+        assert '[ "${estate_scanned}" -eq 0 ]' in body
+        assert "None of the ${estate_total} deployed image(s) could be scanned." in body
 
     @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
     def test_each_estate_image_gets_its_own_report(self, pipeline: str) -> None:
