@@ -69,6 +69,7 @@ from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ownership import OwnershipResolver
 from mykronos.ratelimit import SlidingWindowLimiter
+from mykronos.review_coverage import refresh as refresh_review_coverage
 from mykronos.schemas import utcnow
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
@@ -502,6 +503,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
+        async def _review_coverage() -> None:
+            # Awaited rather than threaded, the way governance is: it is
+            # HTTP-bound and its DB write is a handful of small rows.
+            result = await refresh_review_coverage(
+                app.state.db, app.state.catalog, app.state.github_factory
+            )
+            # At `info` always, never `warning`. The measure describes how the
+            # estate works rather than reporting a fault, and #302 is explicit
+            # that it must not become a rule — a six-hourly warning saying
+            # somebody pushed to their own branch is how a log stops being
+            # read. `unreadable` rides along in the summary rather than
+            # getting a level of its own.
+            logger.info("Review coverage: %s", result.summary())
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -527,6 +542,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
+            (
+                "review-coverage",
+                settings.review_coverage_interval_seconds,
+                _review_coverage,
+            ),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (
                 "deployment-probe",

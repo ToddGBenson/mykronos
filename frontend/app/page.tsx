@@ -192,6 +192,14 @@ export default async function PortfolioPage({
                       live={repo.capability_states
                         .filter((state) => state.has_scanned)
                         .map((state) => state.capability)}
+                      reasons={Object.fromEntries(
+                        repo.capability_states
+                          .filter((state) => state.silent_reason)
+                          .map((state) => [
+                            state.capability,
+                            state.silent_reason as string,
+                          ]),
+                      )}
                     />
                   </td>
 

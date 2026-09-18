@@ -123,6 +123,20 @@ class CapabilityStateOut(BaseModel):
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
+    silent_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why this capability has reported nothing here, when the platform "
+            "can say (#302). `enabled: true` with `has_scanned: false` still "
+            "collapsed two states: nobody wired this up, and wired up but "
+            "structurally unable to report on this repository. `aegis` scores "
+            "pull requests, so on a repository where most commits reach the "
+            "branch without one it has nothing to assess — which is a "
+            "different problem from a broken lane and calls for a different "
+            "response. Null means the platform has no reason to offer, which "
+            "is not a claim that there is none."
+        ),
+    )
 
 
 class PortfolioRowOut(BaseModel):
@@ -171,6 +185,22 @@ class PortfolioRowOut(BaseModel):
         ),
     )
     risk_assessed_at: datetime | None = None
+    unreviewed_commit_share: float | None = Field(
+        default=None,
+        description=(
+            "Share of this repository's recently scanned commits that reached "
+            "the branch with no pull request (#302). Null means too few have "
+            "been resolved to report a share — deliberately not 0, which "
+            "would read as 'everything was reviewed'. Reported, never gated "
+            "on: a solo operator pushing to their own branch is a legitimate "
+            "way to work, and this is an observation about how the estate "
+            "works rather than a rule."
+        ),
+    )
+    unreviewed_commit_summary: str | None = Field(
+        default=None,
+        description="The same measure as a sentence, with its denominator.",
+    )
 
 
 class EstateOut(BaseModel):
@@ -1148,6 +1178,8 @@ async def portfolio(
                 recommendation=row.recommendation,
                 raw_risk_score=row.raw_risk_score,
                 risk_assessed_at=row.risk_assessed_at,
+                unreviewed_commit_share=row.unreviewed_commit_share,
+                unreviewed_commit_summary=row.unreviewed_commit_summary,
             )
             for row in rows
         ],

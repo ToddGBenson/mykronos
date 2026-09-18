@@ -36,7 +36,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, prior_disposition, worklist
+from mykronos import blast_radius, prior_disposition, review_coverage, worklist
 from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
@@ -426,6 +426,15 @@ class CapabilityState:
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
+    #: Why this capability has reported nothing here, when the platform can
+    #: say (#302). The third state B-008 left out: `enabled` and
+    #: `has_scanned: false` still collapses "nobody wired this up" together
+    #: with "wired up, and structurally unable to report on this repository".
+    #: `aegis` on TheHub is the second — it scores pull requests, and most of
+    #: what reaches that branch never goes through one. None means the
+    #: platform has no reason to offer, which is not the same as there being
+    #: none.
+    silent_reason: str | None = None
 
 
 @dataclass
@@ -453,6 +462,18 @@ class PortfolioRow:
     #: both displaying 100 still need an order in the triage queue.
     raw_risk_score: float | None = None
     risk_assessed_at: datetime | None = None
+    #: Share of this repository's recently scanned commits that reached the
+    #: branch with no pull request (#302). A first-class number rather than a
+    #: detail of one capability's status: it is a sharper statement about
+    #: review coverage than any capability row, and it is true whether or not
+    #: `aegis` is enabled. None means not enough commits have been resolved to
+    #: report a share — never 0, which would read as "everything was reviewed".
+    #:
+    #: Reported, never gated on. A solo operator pushing to their own branch
+    #: is a legitimate way to work; what is not legitimate is the platform
+    #: implying an assessment happened.
+    unreviewed_commit_share: float | None = None
+    unreviewed_commit_summary: str | None = None
 
     @property
     def awaiting_first_scan(self) -> bool:
@@ -502,6 +523,13 @@ REPORTS_ELSEWHERE: dict[str, tuple[str, str]] = {
     "patchwork": ("remediation_events", "created_at"),
 }
 
+#: Capabilities whose unit of assessment is a pull request, not a commit or a
+#: tree (#302). Only these can be silent *because* a repository's changes do
+#: not go through pull requests, so only these carry that reason. `oracle`
+#: scores a repository and `patchwork` opens pull requests rather than reading
+#: them, so neither belongs here despite sitting beside `aegis` above.
+PULL_REQUEST_SCOPED: frozenset[str] = frozenset({"aegis"})
+
 
 class DashboardQueries:
     def __init__(self, catalog: Catalog) -> None:
@@ -550,6 +578,14 @@ class DashboardQueries:
             # scanned — a Concourse repo whose grants are the ledger, or one
             # disabled after reporting — so `has_scanned` is read for all of
             # them rather than assumed false for the disabled.
+            # Read from the DB, never from GitHub: the refresher fills
+            # `commit_reviews` on a timer, and a portfolio render that made one
+            # API call per commit per repository would be a page that times
+            # out — and one that failed closed on a rate limit would report
+            # every repository as unmeasured at the busiest moment.
+            measure = review_coverage.stored(session, self.catalog, repo)
+            reason = review_coverage.silence_reason(measure)
+
             capability_states = [
                 CapabilityState(
                     capability=capability,
@@ -558,6 +594,21 @@ class DashboardQueries:
                     last_scan_at=scan_state.get(capability, {}).get("last_scan_at"),
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
+                    # Only where it is the true explanation. A capability that
+                    # *has* reported needs no excuse for its silence, one
+                    # nobody enabled is already named as such, and a reason
+                    # attached to a capability that does not read pull
+                    # requests would be a fluent sentence about the wrong
+                    # thing — which is how an explanation stops being read.
+                    silent_reason=(
+                        reason
+                        if (
+                            capability in PULL_REQUEST_SCOPED
+                            and capability in enabled
+                            and capability not in scan_state
+                        )
+                        else None
+                    ),
                 )
                 for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
             ]
@@ -592,6 +643,10 @@ class DashboardQueries:
                     total_open=sum(counts.values()),
                     last_scan_at=max(last_scan_values) if last_scan_values else None,
                     capability_states=capability_states,
+                    unreviewed_commit_share=measure.unreviewed_share,
+                    unreviewed_commit_summary=(
+                        measure.summary() if measure.unreviewed_share is not None else None
+                    ),
                     **self._risk_fields(decisions_by_repo.get(repo)),
                 )
             )

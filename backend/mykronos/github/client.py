@@ -273,6 +273,23 @@ class GitHubClient(Protocol):
         """
         ...
 
+    async def pull_requests_for_commit(
+        self, repo_full_name: str, commit_sha: str
+    ) -> list[int] | None:
+        """Which pull requests contain this commit (#302).
+
+        The question behind it is "was this change reviewed at all". A commit
+        pushed straight to a branch answers with an empty list; a squash-merge
+        answers with the one pull request it came from.
+
+        Three answers, not two. `[]` is *GitHub looked and found none*, which
+        is the interesting one. `None` is *nobody could look* — a 404, a
+        revoked permission, a rate limit — and must never be counted as an
+        unreviewed commit, because a measure of review coverage that silently
+        improves when the API stops answering is worse than no measure.
+        """
+        ...
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary: ...
@@ -492,6 +509,12 @@ class FakeRepo:
     #: the workflow exists and has never finished a run — which is a real
     #: state (`not_run`) and not an error.
     workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
+    #: Pull request numbers per commit sha (#302). A sha that is absent from
+    #: this map answers `[]` — "GitHub looked and found none" — which is the
+    #: honest default for a fake repository where nothing opened a pull
+    #: request, and is a different answer from the unreadable `None` a test
+    #: produces by asking about a repository the fake does not hold.
+    commit_pull_requests: dict[str, list[int]] = field(default_factory=dict)
 
 
 class FakeGitHubClient:
@@ -677,6 +700,17 @@ class FakeGitHubClient:
             if pr.number == number:
                 return pr
         return None
+
+    async def pull_requests_for_commit(
+        self, repo_full_name: str, commit_sha: str
+    ) -> list[int] | None:
+        self.calls.append(("pull_requests_for_commit", f"{repo_full_name}@{commit_sha}"))
+        try:
+            repo = self._repo(repo_full_name)
+        except GitHubError:
+            # Unreadable, not unreviewed.
+            return None
+        return list(repo.commit_pull_requests.get(commit_sha, []))
 
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
@@ -1222,6 +1256,23 @@ class RestGitHubClient:
         except GitHubError:
             return None
         return {str(name): int(count) for name, count in (payload or {}).items()}
+
+    async def pull_requests_for_commit(
+        self, repo_full_name: str, commit_sha: str
+    ) -> list[int] | None:
+        try:
+            payload = await self._json(
+                "GET",
+                f"/repos/{repo_full_name}/commits/{commit_sha}/pulls",
+                params={"per_page": 100},
+            )
+        except GitHubError:
+            # Every failure collapses to "nobody could look". The distinction
+            # between a 404 and a 403 matters to an operator reading logs and
+            # not to the measure: neither is evidence that the commit went
+            # unreviewed, and only the empty list is.
+            return None
+        return [int(item["number"]) for item in (payload or []) if "number" in item]
 
     async def find_open_pull_request(
         self, repo_full_name: str, head_branch_prefix: str

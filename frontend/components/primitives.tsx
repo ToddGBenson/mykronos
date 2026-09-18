@@ -220,6 +220,7 @@ export function CapabilityGrid({
   enabled,
   pending = [],
   live = [],
+  reasons = {},
 }: {
   enabled: string[];
   pending?: string[];
@@ -231,6 +232,19 @@ export function CapabilityGrid({
    * had never reported once.
    */
   live?: string[];
+  /**
+   * Why an enabled capability has reported nothing, where the backend can say
+   * (#302). A third state hides inside the outline: a lane nobody wired up
+   * and a lane with nothing here to assess draw identically, and they call for
+   * opposite responses. `aegis` on TheHub is the second — it scores pull
+   * requests, and most of what reaches that branch never goes through one.
+   *
+   * It stays in the label rather than becoming a fourth mark. The grid is one
+   * row per repository and a reason is a sentence; a distinct fill for "silent
+   * for a known reason" would be a symbol nobody could read without the
+   * sentence anyway.
+   */
+  reasons?: Record<string, string>;
 }) {
   return (
     <span className="inline-flex items-center gap-[2px]">
@@ -240,10 +254,17 @@ export function CapabilityGrid({
         const isLive = isOn && live.includes(capability);
         const isPending = !isOn && pending.includes(capability);
 
+        // Only read for an enabled capability that has not reported. A reason
+        // beside evidence would be a sentence contradicting the mark next to
+        // it.
+        const reason = isOn && !isLive ? reasons[capability] : undefined;
+
         const state = isLive
           ? "reporting"
           : isOn
-            ? "enabled, not yet reporting"
+            ? reason
+              ? "enabled, nothing here to report on"
+              : "enabled, not yet reporting"
             : isPending
               ? "pending install PR"
               : "not enabled";
@@ -262,8 +283,10 @@ export function CapabilityGrid({
           <span
             key={capability}
             role="img"
-            aria-label={`${meta.label}: ${state}`}
-            title={`${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}`}
+            aria-label={`${meta.label}: ${state}${reason ? `. ${reason}` : ""}`}
+            title={`${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}${
+              reason ? `\n${reason}` : ""
+            }`}
             className={`${CAP_CELL} h-[15px] border ${skin}`}
           />
         );

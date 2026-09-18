@@ -230,6 +230,19 @@ class Settings(BaseSettings):
         ),
     )
 
+    review_coverage_interval_seconds: int = Field(
+        default=21_600,
+        ge=1,
+        description=(
+            "Resolves each newly scanned commit to the pull request that "
+            "carried it, or to none (#302). Six-hourly, matching governance: "
+            "the number it feeds is a description of how a repository is "
+            "worked on, which moves over days rather than minutes. Steady "
+            "state is one GitHub call per newly scanned commit — a resolved "
+            "association is immutable and never re-read."
+        ),
+    )
+
     insider_risk_default_retention_days: int = Field(
         default=90,
         ge=1,

@@ -852,3 +852,50 @@ class ControlDrift(Base):
             f"<ControlDrift {self.repo_full_name} {self.control_key} "
             f"{self.from_state}->{self.to_state}>"
         )
+
+
+class CommitReview(Base):
+    """Whether one scanned commit reached its branch through a pull request (#302).
+
+    Aegis scores pull requests. On `ToddGBenson/TheHub` it has produced zero
+    signals across the repository's entire history — not because it is broken,
+    but because ten of the last twelve commits it was pointed at were pushed
+    straight to the branch and had no pull request to score. The job's own
+    refusal to score those is correct: submitting an assessment anyway would
+    make the change nobody reviewed read as the safest change in the
+    repository. What was missing is any record of *why* the capability is
+    silent, so "enabled and produced nothing" was indistinguishable from
+    "enabled and nobody wired it up".
+
+    This table is that record, one row per commit. It is deliberately a fact
+    about a commit rather than a score about a repository: the repository's
+    number is derived from these rows and can be re-derived under a different
+    sample size, while the rows themselves never need revisiting.
+
+    **`pr_number is None` is a measurement, not a gap.** It means GitHub was
+    asked and answered "no pull request contains this commit". A commit nobody
+    could resolve gets no row at all, so an API that stops answering shortens
+    the sample rather than inventing unreviewed commits — see
+    `review_coverage`, where `sampled` and the resolved total are kept apart
+    for exactly this reason.
+    """
+
+    __tablename__ = "commit_reviews"
+    __table_args__ = (
+        UniqueConstraint("repo_full_name", "commit_sha", name="uq_commit_review"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: The lowest-numbered pull request containing this commit, or None for
+    #: "GitHub looked and found none". Never the string "none" and never 0 —
+    #: a sentinel in this column would be a pull request number to a reader.
+    pr_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<CommitReview {self.repo_full_name} {self.commit_sha[:8]} "
+            f"pr={self.pr_number}>"
+        )
