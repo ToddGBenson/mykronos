@@ -59,6 +59,58 @@ HOOKS = {'preflight', 'report-to-hub', 'notify-slack'}
 #: and the jobs that matter most here are exactly the ones that never succeed.
 TIMEOUT_MARGIN = 0.95
 
+#: A cap must clear its job's worst observed run by at least this much. It is
+#: the audit's pass threshold and it is also the floor used when SETTING a cap,
+#: so a number chosen to satisfy this check is not one the check re-flags.
+HEADROOM_FLOOR = 1.3
+
+#: How far above its own routine worst a job's outlier run actually sits,
+#: measured rather than assumed: the 90th percentile of `worst / p90` across
+#: every job in the estate with at least ten successful builds.
+#:
+#: MEASURED 2026-09-18 over 53 such jobs: p50 2.65x, p75 4.02x, p90 5.10x,
+#: p95 5.21x, max 8.16x. Recorded here because it is what the caps raised by
+#: #60002 were derived from -- `cap >= max(p90 x OUTLIER_RATIO, worst x
+#: HEADROOM_FLOOR)` -- and a derivation nobody can re-run is a round number
+#: with a story attached. Re-measure it before leaning on it again; the estate
+#: it describes is four pipelines whose jobs change.
+OUTLIER_RATIO = 5.10
+
+#: `(pipeline, job)` -> why this job is flagged and is NOT being given a bigger
+#: cap. A waiver, not a suppression: the job still appears in the report, with
+#: this reason beside it, and the run still says what it found.
+#:
+#: The bar for an entry is that raising the cap would be the WRONG FIX, not
+#: that raising it is inconvenient. A cap exists to stop a hung task holding a
+#: worker, so a hang is precisely the case where a bigger number makes things
+#: worse: the job fails either way and burns the difference.
+#:
+#: `test_timeout_audit.py` holds these to the same rule
+#: `ACKNOWLEDGED_UNMAPPED_JOBS` is held to -- every waiver must name a job that
+#: exists in a pipeline file. A waiver outliving its job starts excusing a
+#: future job that reuses the name.
+TIMEOUT_WAIVERS = {
+    ("thehub", "insider"): (
+        "build #25 ran 15.3m against the 15m cap, but the log says "
+        "`Are you sure you want to continue connecting (yes/no/[fingerprint])? "
+        "timeout exceeded` -- it was waiting at an SSH host-key prompt, not "
+        "working. Fixed by #496 (merged as #499) with StrictHostKeyChecking, "
+        "not by a bigger number. Successful runs are p50 2.0m / p90 3.4m / "
+        "worst 6.1m against 15m, so there is no evidence the task needs more "
+        "time. Remove this when build #25 ages out of the sampled window."
+    ),
+}
+
+
+def _observed_label(kind):
+    """What the minutes beside a problem actually measure.
+
+    Every row used to say "worst successful", including rows whose number came
+    from a FAILED build that ran to its cap. Those are opposite facts and the
+    reader acts on them differently.
+    """
+    return "worst successful" if kind == "headroom" else "a failed build ran"
+
 
 def _api(path):
     with urlopen(f"{CONCOURSE}{path}", timeout=20) as response:
@@ -187,22 +239,54 @@ for path in sorted(PIPELINE_DIR.glob('*.yml')):
             continue
         seen_min = seen / 60
         ratio = total_cap / seen_min if seen_min else 99
-        flag = ''
+        flags = []
         if ratio < 1.0:
-            flag = '  !! CAP BELOW OBSERVED WORST'
-            problems.append((pipeline, name, total_cap, round(seen_min)))
-        elif ratio < 1.3:
-            flag = '  !  under 30% headroom'
-            problems.append((pipeline, name, total_cap, round(seen_min)))
-        if near_cap and not flag:
-            flag = f'  !! {len(near_cap)} failed build(s) ran to the cap'
-            problems.append((pipeline, name, total_cap, round(max(near_cap) / 60)))
-        print(f'{name:<18}{total_cap:<8}{round(seen_min):<11}{count.get(name, 0):<5}{ratio:.1f}x{flag}')
+            flags.append(('headroom', '!! CAP BELOW OBSERVED WORST', round(seen_min)))
+        elif ratio < HEADROOM_FLOOR:
+            flags.append(('headroom', '!  under 30% headroom', round(seen_min)))
+        # `and not flag` used to live here, so a job already carrying a headroom
+        # flag never reported its timeouts. `mykronos/publish-frontend` had THREE
+        # builds killed by the clock -- #78, #88, #89, all `timeout exceeded`
+        # inside kaniko -- and the audit printed only "under 30% headroom" about
+        # it. The two findings are different diagnoses with different fixes, and
+        # the one that was being suppressed is the more serious of the pair: a
+        # tight cap is a risk, a cap that has already fired is a build that died
+        # for a reason unrelated to what it was checking. Both are reported now.
+        if near_cap:
+            flags.append((
+                'timeout',
+                f'!! {len(near_cap)} failed build(s) ran to the cap',
+                round(max(near_cap) / 60),
+            ))
+        for kind, text, observed_minutes in flags:
+            problems.append((pipeline, name, total_cap, observed_minutes, kind))
+        shown = '  ' + '  '.join(text for _, text, _ in flags) if flags else ''
+        print(f'{name:<18}{total_cap:<8}{round(seen_min):<11}{count.get(name, 0):<5}{ratio:.1f}x{shown}')
     print()
 
-if problems:
+waived, unwaived = [], []
+for problem in problems:
+    pipeline, name = problem[0], problem[1]
+    if (pipeline, name) in TIMEOUT_WAIVERS:
+        waived.append(problem)
+    else:
+        unwaived.append(problem)
+
+if waived:
+    print('Waived, with the reason recorded:')
+    for pipeline, job, cap, observed_minutes, kind in waived:
+        print(f'  {pipeline}/{job}: cap {cap}m, {_observed_label(kind)} {observed_minutes}m')
+        print(f'      {TIMEOUT_WAIVERS[(pipeline, job)]}')
+    print()
+
+if unwaived:
     print('Caps to raise:')
-    for pipeline, job, cap, seen in problems:
-        print(f'  {pipeline}/{job}: cap {cap}m vs worst successful {seen}m')
+    for pipeline, job, cap, observed_minutes, kind in unwaived:
+        # The label used to read "worst successful" for every row, including
+        # rows whose number came from a FAILED build that ran to the cap. Those
+        # are opposite facts -- one says the job finished in that time, the
+        # other says it was killed at it -- and printing the wrong one sends the
+        # reader looking for a slow success that never happened.
+        print(f'  {pipeline}/{job}: cap {cap}m vs {_observed_label(kind)} {observed_minutes}m')
     sys.exit(1)
 print('every cap clears its observed worst run with margin')

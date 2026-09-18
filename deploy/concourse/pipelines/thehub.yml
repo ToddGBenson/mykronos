@@ -1533,7 +1533,21 @@ jobs:
                 echo "Building $(cat meta/sha)"
 
       - task: kaniko
-        timeout: 60m
+        # 71m, not 60m (#60002). MEASURED 2026-09-18 over the last 95 successful
+        # builds: p50 4.6m, p90 14.9m, worst 50.0m. Target = max(p90 x 5.10,
+        # worst x 1.30) = max(76.0, 65.0) = 76m for the job; `resolve-sha` holds
+        # 5m of that, so 71m here.
+        #
+        # The p90 term binds rather than the worst-run term, which is the case
+        # worth noticing: this job's routine is 4.6m and its bad days are 50m, so
+        # sizing the cap off the single worst run alone would leave it with less
+        # margin than the estate's own spread says it needs.
+        #
+        # 5.10x is not a chosen number. It is the 90th percentile of worst/p90
+        # across all 53 jobs in the estate with 10 or more successful builds
+        # (p50 2.65x, p90 5.10x, max 8.16x) -- how far above its own routine
+        # worst a job's outlier actually sits, measured rather than assumed.
+        timeout: 71m
         image: kaniko
         config:
           platform: linux
@@ -2429,6 +2443,35 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: aegis
+        # 15m, DELIBERATELY NOT RAISED (#60002), and this is the entry worth
+        # reading before raising any of the others.
+        #
+        # `audit_pipeline_timeouts.py` flags this job: build #25 failed after
+        # 15.3m against this 15m cap, which is the signature of a task killed by
+        # its own clock. The obvious fix is a bigger number and it would have
+        # been the wrong one. Reading the build log rather than the duration:
+        #
+        #     Are you sure you want to continue connecting
+        #     (yes/no/[fingerprint])? timeout exceeded
+        #
+        # The task was not slow. It was sitting at an SSH host-key prompt with
+        # no answer coming, and it would have sat there for whatever number this
+        # line contained. That defect is FIXED -- #496, merged as #499 -- and
+        # the fix is a `StrictHostKeyChecking` setting, not a cap.
+        #
+        # Raising this to clear a hang would have deleted the only signal that
+        # caught it: a job that hangs against a 15m cap fails in 15m, and a job
+        # that hangs against a 40m cap burns a worker for 40m and still fails.
+        # MEASURED over the last 24 successful builds: p50 2.0m, p90 3.4m,
+        # worst 6.1m -- 2.4x headroom, comfortably inside the estate's spread.
+        # There is no evidence this task needs more time, only evidence that it
+        # once waited for input that never came.
+        #
+        # The waiver is recorded in `TIMEOUT_WAIVERS` in
+        # `scripts/audit_pipeline_timeouts.py` with the same reason, and it
+        # expires on its own terms: it names build #25, so once that build ages
+        # out of the sampled window the waiver stops being needed and the test
+        # that checks waivers are still earned will say so.
         timeout: 15m
         image: python
         params:
@@ -4376,7 +4419,11 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: model-inventory
-        timeout: 15m
+        # 23m, not 15m (#60002). MEASURED 2026-09-18 over the last 80 successful
+        # builds: p50 1.6m, p90 4.4m, worst 13.5m -- 1.1x headroom, the second
+        # tightest in the estate. Target = max(p90 x 5.10, worst x 1.30) =
+        # max(22.4, 17.5) = 23m, and this is the job's only non-hook task.
+        timeout: 23m
         image: python
         params:
           <<: *mykronos_env
