@@ -242,6 +242,13 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # scanned ((thehub-demo-url)), and with no demo it would have reported on
     # whatever the host last served.
     ((THEHUB,), "dast-prod", "dast"),
+    # [#477] Restored with the jobs themselves. #468 removed these alongside
+    # `functional-dast` on the premise that the demo chain was dead; it was
+    # blocked by the CRLF mismatch #388 fixed, and both lanes ran again on
+    # 2026-09-17. Without these entries the coverage cross-check cannot see
+    # them, which is what `test_every_reporting_job_is_cross_checked` caught.
+    ((THEHUB,), "api-inventory", "qa"),
+    ((THEHUB,), "dast-demo", "dast"),
     # `dast-staging` scans the standing staging environment on a daily timer
     # rather than after a deploy, because staging is deployed out of band. That
     # makes registering it matter more than for its two siblings, not less: a
