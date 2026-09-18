@@ -153,6 +153,14 @@ class TestItAlsoScansWhatIsDeployed:
         assert "::error::Deployed images Trivy could not scan" in estate_step
         assert 'rm -f "$OUT/trivy-estate-$SAFE.sarif"' in estate_step
 
+    def test_a_deriver_that_died_is_not_a_repository_that_deploys_nothing(
+        self, rendered: str
+    ) -> None:
+        """The step does not run under `set -e`, so an unchecked deriver would
+        leave no list, scan zero images and exit 0."""
+        estate_step = rendered.split("Scan the images this repository's compose files run")[1]
+        assert "Could not enumerate the images this repository deploys" in estate_step
+
     def test_every_image_failing_is_fatal(self, rendered: str) -> None:
         """One image whose registry withdrew the tag is somebody else's fact
         and must not redden a lane other jobs wait on. All of them failing is

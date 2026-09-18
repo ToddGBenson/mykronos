@@ -228,7 +228,14 @@
           mkdir -p "$OUT"
           LIST="${{ runner.temp }}/estate-images.txt"
 
-          python -m mykronos.estate_images --root . --output "$LIST"
+          # Checked, because this step does not run under `set -e`: a deriver
+          # that died would leave no list, the loop below would read nothing,
+          # and a scan of zero deployed images would exit 0 and look exactly
+          # like a repository that deploys nothing.
+          if ! python -m mykronos.estate_images --root . --output "$LIST"; then
+            echo "::error::Could not enumerate the images this repository deploys."
+            exit 1
+          fi
 
           TOTAL=0
           SCANNED=0
