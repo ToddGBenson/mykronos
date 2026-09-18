@@ -80,3 +80,56 @@ def test_every_name_here_is_a_real_setting() -> None:
     unknown = set(MUST_BE_PASSABLE) - fields
 
     assert not unknown, f"{sorted(unknown)} are not fields on Settings"
+
+
+def test_the_app_key_mount_has_no_silent_default() -> None:
+    """A missing App key must stop the stack, not start it credential-less.
+
+    The mount used to read:
+
+        ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:-/dev/null}:/secrets/github-app.pem:ro
+
+    so a recreate without that variable exported bind-mounted an empty file.
+    The container started, the healthcheck went green, and the platform ran
+    with no GitHub credential — which is the exact failure mode this file's
+    docstring is about, applied to the one secret that cannot be regenerated
+    from inside the platform.
+
+    It happened on 2026-09-18 and left /dev/null mounted for six minutes,
+    reporting Healthy throughout.
+
+    `MYKRONOS_ADMIN_TOKEN` already used `:?` in the same file. This asserts the
+    App key does too, and that nobody restores the convenience.
+    """
+    raw = COMPOSE.read_text(encoding="utf-8")
+
+    mounts = [
+        line.strip()
+        for line in raw.splitlines()
+        if "/secrets/github-app.pem" in line and "MYKRONOS_GITHUB_APP_KEY_HOST_PATH" in line
+    ]
+    assert mounts, "no bind mount for the App private key — has it moved?"
+
+    for line in mounts:
+        assert "/dev/null" not in line, (
+            f"the App key mount falls back to /dev/null, which starts the "
+            f"platform with no GitHub credential and a green healthcheck: {line}"
+        )
+        assert ":?" in line, (
+            f"the App key mount has no `:?` guard, so an unset variable will "
+            f"substitute something rather than refusing to start: {line}"
+        )
+
+
+def test_the_app_key_variable_is_documented_for_an_operator() -> None:
+    """It is read by compose and not by the application, so it appears in no
+    `Settings` field and is easy to omit. `.env.example` is the only place an
+    operator would find it."""
+    example = (
+        Path(__file__).resolve().parents[2] / "backend" / ".env.example"
+    ).read_text(encoding="utf-8")
+
+    assert "MYKRONOS_GITHUB_APP_KEY_HOST_PATH" in example, (
+        "compose refuses to start without this variable and nothing tells an "
+        "operator it exists"
+    )
