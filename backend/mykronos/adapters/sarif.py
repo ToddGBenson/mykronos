@@ -165,7 +165,25 @@ def _severity_for(
                 score = float(raw)
             except (TypeError, ValueError):
                 score = None
-            if score is not None:
+            # [#497] A score of exactly 0.0 is not a measurement of "no risk",
+            # it is how a tool spells "I have not scored this". Trivy emits it
+            # for every UNKNOWN-severity vulnerability and says so in the same
+            # rule: `tags: ['vulnerability', 'security', 'UNKNOWN']`. The bands
+            # below start at 0.1, so 0.0 fell past all of them to INFO, and an
+            # unrated CVE was filed with the weight of a cosmetic observation.
+            # 100 of 138 `info` container findings reached that band this way.
+            #
+            # Treated as absent instead, so the `level` below decides —
+            # `note` -> LOW for the trivy case. LOW is not a guess at the real
+            # severity; it is the floor the tool's own level already implied,
+            # and it does not read as reassurance. `surfaces.py` makes the same
+            # argument for exposure: "the wrong direction to be wrong in is the
+            # one that reads as reassurance."
+            #
+            # The score is deliberately not carried forward either. Reporting
+            # 0.0 as this finding's score would assert a measurement nobody
+            # made.
+            if score is not None and score > 0.0:
                 return severity_from_security_score(score), score
 
     level = result.get("level")
