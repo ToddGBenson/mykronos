@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 from sqlalchemy import select
@@ -49,6 +49,9 @@ from mykronos.patchwork.verification import (
     resolve_pending,
 )
 from mykronos.schemas import utcnow
+
+if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
+    from mykronos.briefing import TokenDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +97,22 @@ class RotationResult:
     #: rotated token to a Concourse-scanned repository (D-086). Named rather
     #: than counted, because the operator has to act on each one.
     deferred: list[str] = field(default_factory=list)
+    #: Not due, and not rotated: flagged never-confirmed-delivered on a
+    #: repository this job cannot write a secret to (#263).
+    #:
+    #: Its own list because the requested action is the opposite one. A
+    #: `deferred` repo needs a hand rotation; an `unverified` repo needs
+    #: somebody to check that ingestion is arriving, and rotating it by hand
+    #: is how its pipeline goes dark. Counting the two together under
+    #: "deferred" is what let TheHub be reported as due for rotation with 88
+    #: days left on its clock.
+    unverified: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"rotated {len(self.rotated)}, resynced {len(self.resynced)}, "
-            f"deferred {len(self.deferred)}, failed {len(self.failed)}, "
-            f"purged {self.purged}"
+            f"deferred {len(self.deferred)}, unverified {len(self.unverified)}, "
+            f"failed {len(self.failed)}, purged {self.purged}"
         )
 
 
@@ -111,14 +124,21 @@ def unsynced_deferral_warning(repo: str, blocker: str) -> str:
     false of the second. The difference is not cosmetic, because the two want
     opposite actions from whoever reads the line.
 
-    `secret_synced` is set in exactly two places, and both set it immediately
-    after a GitHub Actions secret write lands. So a repository this job cannot
-    write to can never carry the flag: it joins `unsynced_repos()` on the day
-    it is onboarded and stays there permanently, warning on every scheduled
-    run about a token that may be delivered perfectly well by some other path.
-    ToddGBenson/TheHub is that repository -- flagged unsynced, three months
-    from its rotation date, and uploading successfully from Concourse the
-    whole time.
+    `secret_synced` used to be set in exactly two places, both immediately
+    after a GitHub Actions secret write landed. So a repository this job
+    cannot write to could never shed the flag: it joined `unsynced_repos()` on
+    the day it was onboarded and stayed there permanently, warning on every
+    scheduled run about a token that was being delivered perfectly well by
+    another path. ToddGBenson/TheHub was that repository -- flagged unsynced,
+    three months from its rotation date, and uploading successfully from
+    Concourse the whole time.
+
+    `TokenRegistry.confirm_delivery` closed that hole (#263): an upload
+    authenticated with the *active* token now records delivery, so the flag
+    has a path back to true for a repository this job cannot write to. What
+    remains, and what this line reports, is a repository that has genuinely
+    never presented its active token -- which is a real thing to look into and
+    still not a reason to rotate.
 
     Telling that operator to "rotate it by hand" is telling them to break a
     working pipeline: the token changes, Vault keeps serving the old value,
@@ -127,13 +147,68 @@ def unsynced_deferral_warning(repo: str, blocker: str) -> str:
     the advice instead of by ignoring it.
     """
     return (
-        f"{repo} is flagged secret-never-synced and {blocker}; its token is "
-        "NOT due for rotation. This job sets that flag only after writing a "
-        "GitHub Actions secret, so a repository it cannot write to carries the "
-        "flag permanently -- it is not evidence the token is undelivered. "
-        "Confirm ingestion is actually failing (mykronos briefing) before "
-        "rotating: rotating a token whose Vault copy works is what breaks it."
+        f"{repo} has never presented its active ingestion token and {blocker}; "
+        "its token is NOT due for rotation. Delivery is recorded when an "
+        "upload authenticates with the active token, so this says no scan has "
+        "used it yet -- not that rotation is overdue. Confirm ingestion is "
+        "actually failing (mykronos briefing) before rotating: rotating a "
+        "token whose Vault copy works is what breaks it."
     )
+
+
+def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
+    """The tokens the rotation sweep will hand to a person, for the briefing.
+
+    Read separately from running the sweep, because the briefing must not
+    rotate anything to find out what needs rotating. Everything here comes
+    from the operational database; nothing is called.
+
+    **What this deliberately cannot see.** The sweep also defers a repository
+    that *declares* `github_actions` but has a Concourse pipeline reading the
+    same token (D-097), and that check is a network call to Concourse. Asking
+    it from a briefing would make the page fail when CI is unreachable, so
+    this reports the deferrals that are decidable from the record alone. It is
+    therefore a floor on what is waiting, which is the safe direction and is
+    said out loud rather than left to be discovered.
+    """
+    from mykronos.briefing import TokenDelivery
+
+    with db.session() as session:
+        registry = TokenRegistry(session)
+        due = set(registry.due_for_rotation())
+        unsynced = set(registry.unsynced_repos())
+        scanners = {
+            row.github_repo_full_name: row.scanned_by
+            for row in session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.status.in_(("active", "pending_install"))
+                )
+            ).scalars()
+        }
+
+        waiting: list[TokenDelivery] = []
+        for repo in sorted(due | unsynced):
+            scanned_by = scanners.get(repo)
+            if scanned_by is None or scanned_by == "github_actions":
+                # Offboarded, or the sweep can deliver to it unaided: not
+                # something to put in front of a person.
+                continue
+            token = registry.active_token_for(repo)
+            if token is None:
+                continue
+            waiting.append(
+                TokenDelivery(
+                    repo_full_name=repo,
+                    # `due` wins when a repo is both, because the two actions
+                    # are not equally urgent and only one of them is safe to
+                    # skip: an expired token stops working on a date.
+                    state="due" if repo in due else "unverified",
+                    issued_at=token.issued_at,
+                    rotate_after=token.rotate_after,
+                    scanned_by=scanned_by,
+                )
+            )
+        return waiting
 
 
 async def rotate_ingestion_tokens(
@@ -200,6 +275,7 @@ async def rotate_ingestion_tokens(
                     repo,
                     onboarding.scanned_by,
                 )
+                result.deferred.append(repo)
             else:
                 logger.warning(
                     "%s",
@@ -209,7 +285,7 @@ async def rotate_ingestion_tokens(
                         "cannot deliver to",
                     ),
                 )
-            result.deferred.append(repo)
+                result.unverified.append(repo)
             continue
 
         # `scanned_by` records intent and holds one value, so it cannot
@@ -243,9 +319,10 @@ async def rotate_ingestion_tokens(
                         repo,
                         blocker,
                     )
+                    result.deferred.append(repo)
                 else:
                     logger.warning("%s", unsynced_deferral_warning(repo, blocker))
-                result.deferred.append(repo)
+                    result.unverified.append(repo)
                 continue
 
         github = github_factory.for_installation(onboarding.github_installation_id)
@@ -1282,14 +1359,29 @@ class GovernanceSweepResult:
     drifted: int = 0
     #: The transitions themselves, worst kind first, for the caller to log.
     changes: list[str] = field(default_factory=list)
+    #: Controls inside a readable repository that could not be resolved this
+    #: pass, or could not be resolved last pass. Counted separately from
+    #: `drifted` and never logged at `warning` (#264): a failed read is not a
+    #: control coming off. Counted at all, rather than dropped, so a read that
+    #: fails every six hours forever is visible somewhere.
+    unreadable_controls: int = 0
+    #: `repo control_key`, for the caller to name in the log.
+    unreadable_reads: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        if not self.drifted:
-            return f"{self.read} read, {self.unreadable} unreadable, nothing changed"
-        return (
-            f"{self.read} read, {self.unreadable} unreadable, "
-            f"{self.drifted} control(s) changed: {'; '.join(self.changes)}"
-        )
+        parts = [f"{self.read} read", f"{self.unreadable} unreadable"]
+        if self.drifted:
+            parts.append(
+                f"{self.drifted} control(s) changed: {'; '.join(self.changes)}"
+            )
+        else:
+            parts.append("nothing changed")
+        if self.unreadable_controls:
+            parts.append(
+                f"could not read {self.unreadable_controls} control(s): "
+                f"{'; '.join(self.unreadable_reads)}"
+            )
+        return ", ".join(parts)
 
 
 async def sweep_governance(
@@ -1351,12 +1443,21 @@ async def sweep_governance(
 
         result.read += 1
         with db.session() as session:
-            for change in governance_module.remember(session, posture):
+            report = governance_module.remember(session, posture)
+            for change in report.drift:
                 result.drifted += 1
                 result.changes.append(
                     f"{change.repo_full_name} {change.control_key} "
                     f"{change.from_state}->{change.to_state}"
                 )
+            # A control the read could not resolve is counted here and nowhere
+            # near `drifted`, so it can never reach the `warning` branch in
+            # `main.py` (#264). `posture.readable` is about the repository; a
+            # repository can be readable and one control inside it not be, and
+            # that gap is what filed both of this estate's governance alerts.
+            for key in report.unreadable:
+                result.unreadable_controls += 1
+                result.unreadable_reads.append(f"{repo.github_repo_full_name} {key}")
             session.commit()
 
     return result

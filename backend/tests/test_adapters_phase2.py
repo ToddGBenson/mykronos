@@ -512,6 +512,173 @@ class TestZapSubAlerts:
         assert result.scan_status is ScanStatus.PARTIAL_FAILURE
 
 
+class TestZapScannerSelfReport:
+    """#303: an alert whose subject is the scanner is lane health, not a
+    finding against the application.
+
+    `ZAP is Out of Date` is copied verbatim from the archived raw report
+    `ToddGBenson/TheHub/ffb885f6-d888-4f21-85f3-7bd59d4f4860/zap.json`,
+    including the document's own `@version` — the running scanner. Across the
+    archived reports it is the most frequent alert the lane has ever produced
+    (160 instances) and it had 24 finding identities: 19 `fixed` because the
+    arbitrary URI moved, 4 dismissed `false_positive` by hand, 1 open.
+    """
+
+    SELF_REPORT: dict[str, Any] = {
+        "pluginid": "10116",
+        "alertRef": "10116",
+        "alert": "ZAP is Out of Date",
+        "name": "ZAP is Out of Date",
+        # Low, *not* Informational. This is the line that matters: #273's
+        # `riskcode == "0"` filter is aimed one band below this alert and
+        # leaves it in place. If a future change makes this "0", this class
+        # stops testing what it says it tests.
+        "riskcode": "1",
+        "confidence": "3",
+        "riskdesc": "Low (High)",
+        "desc": "<p>The version of ZAP you are using to test your app is out of date.</p>",
+        "instances": [
+            {
+                "id": "17",
+                "uri": "http://192.168.0.14:8002/frontend/img/hub-icon.svg",
+                "method": "GET",
+                "param": "",
+                "otherinfo": "The latest version of ZAP is 2.17.0",
+            }
+        ],
+        "solution": "<p>Download the latest version of ZAP and install it.</p>",
+        "otherinfo": "<p>The latest version of ZAP is 2.17.0</p>",
+        "cweid": "1104",
+    }
+
+    @staticmethod
+    def _report(alerts: list[dict[str, Any]], version: str = "2.16.1") -> bytes:
+        return json.dumps(
+            {
+                "@programName": "ZAP",
+                "@version": version,
+                "site": [
+                    {"@name": "http://192.168.0.14:8002", "alerts": alerts},
+                ],
+            }
+        ).encode()
+
+    def test_the_scanner_reporting_its_own_version_is_not_a_finding(self) -> None:
+        """The icon file has nothing wrong with it, and neither did the
+        stylesheet, the sitemap or the dozen `/repos/{id}` pages ZAP attached
+        this same statement to on other runs."""
+        result = zap_normalize(self._report([self.SELF_REPORT]), context("dast"))
+
+        assert result.findings == []
+
+    def test_it_is_recorded_on_the_lane_rather_than_dropped(self) -> None:
+        """The property #303 asks for first: a rule filtered out of the
+        findings table and written nowhere is worse than a misattributed
+        finding. The warning is what reaches the ScanRun's `detail`."""
+        result = zap_normalize(self._report([self.SELF_REPORT]), context("dast"))
+
+        assert len(result.warnings) == 1
+        note = result.warnings[0]
+        assert "2.16.1" in note, "the running scanner, from the report's own @version"
+        assert "2.17.0" in note, "the version ZAP says is current"
+        assert "ZAP-10116-CWE-1104" in note
+
+    def test_it_does_not_gate_and_does_not_mark_the_run_degraded(self) -> None:
+        """A DAST lane one minor version behind is lane quality, not a release
+        blocker. `skipped` in particular would flip the run to
+        PARTIAL_FAILURE, and nothing here was unparseable."""
+        result = zap_normalize(self._report([self.SELF_REPORT]), context("dast"))
+
+        assert result.scan_status is ScanStatus.SUCCESS
+        assert result.skipped == 0
+
+    def test_a_riskcode_filter_would_not_have_caught_it(self) -> None:
+        """#273's discriminator handles the 22 informational `ZAP-10031` rows
+        and misses this one, which is why this needs its own predicate."""
+        assert self.SELF_REPORT["riskcode"] != "0"
+
+        result = zap_normalize(self._report([self.SELF_REPORT]), context("dast"))
+
+        assert result.findings == []
+
+    def test_one_note_per_alert_not_one_per_crawled_uri(self) -> None:
+        """ZAP files the same statement about itself against every URI it
+        happened to crawl. 24 copies of it is the noise being removed."""
+        spread = {
+            **self.SELF_REPORT,
+            "instances": [
+                {"uri": f"http://192.168.0.14:8002/asset-{i}.svg", "method": "GET"}
+                for i in range(6)
+            ],
+        }
+        result = zap_normalize(self._report([spread]), context("dast"))
+
+        assert result.findings == []
+        assert len(result.warnings) == 1
+
+    def test_real_findings_in_the_same_report_are_untouched(self) -> None:
+        """The failure mode worth guarding: a predicate that swallows the
+        scan."""
+        real = {
+            "pluginid": "10038",
+            "alertRef": "10038",
+            "alert": "Content Security Policy Header Not Set",
+            "riskcode": "2",
+            "desc": "No CSP header.",
+            "solution": "Set one.",
+            "cweid": "693",
+            "instances": [{"uri": "http://192.168.0.14:8002/admin", "method": "GET"}],
+        }
+        result = zap_normalize(self._report([self.SELF_REPORT, real]), context("dast"))
+
+        assert [f.rule_id for f in result.findings] == ["ZAP-10038-CWE-693"]
+
+    def test_an_application_finding_that_merely_mentions_zap_is_still_filed(self) -> None:
+        """The predicate is about the alert's *subject*, not about the string
+        "ZAP" appearing somewhere. Remediation advice naming the tool is not
+        the tool reporting on itself, which is why `solution` is not read."""
+        mentions = {
+            "pluginid": "10999",
+            "alertRef": "10999",
+            "alert": "Timestamp Disclosure - Unix",
+            "riskcode": "0",
+            "desc": "A timestamp was disclosed.",
+            "solution": "Confirm with ZAP that the timestamp is not sensitive.",
+            "cweid": "200",
+            "instances": [{"uri": "http://192.168.0.14:8002/api/x", "method": "GET"}],
+        }
+        result = zap_normalize(self._report([mentions]), context("dast"))
+
+        assert [f.rule_id for f in result.findings] == ["ZAP-10999-CWE-200"]
+        assert result.warnings == []
+
+    def test_a_renumbered_or_retitled_self_report_is_still_caught(self) -> None:
+        """Why this is a predicate and not a list of plugin ids: ZAP owns the
+        numbering and the wording, and a list pinned to `10116` would go
+        stale silently the first time either changed."""
+        renamed = {
+            **self.SELF_REPORT,
+            "pluginid": "10777",
+            "alertRef": "10777",
+            "alert": "Scanner Requires An Update",
+            "name": "Scanner Requires An Update",
+        }
+        result = zap_normalize(self._report([renamed]), context("dast"))
+
+        assert result.findings == []
+        assert len(result.warnings) == 1
+
+    def test_the_note_survives_the_two_hundred_character_detail_truncation(self) -> None:
+        """`upload.py` copies `warnings[0][:200]` into the ScanRun's `detail`.
+        Everything a person needs to act on has to fit before that cut."""
+        result = zap_normalize(self._report([self.SELF_REPORT]), context("dast"))
+
+        detail = result.warnings[0][:200]
+        assert "2.16.1" in detail
+        assert "2.17.0" in detail
+        assert REPO in detail
+
+
 class TestZapRouteIdentity:
     """#274: identity is the route, not the concrete URL.
 

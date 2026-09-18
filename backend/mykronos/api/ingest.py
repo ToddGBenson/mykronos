@@ -130,6 +130,20 @@ async def require_token(
             session, overlap_hours=request.app.state.settings.token_overlap_hours
         )
         resolution = registry.resolve(credentials.credentials)
+        if resolution is not None and not resolution.superseded:
+            # Delivery, observed rather than assumed (#263). Presenting the
+            # active token is the only proof of delivery that exists for a
+            # repository this platform cannot write a secret to, and it is
+            # strictly better evidence than the secret write the flag used to
+            # depend on: a write that GitHub accepted says the secret was
+            # stored, while this says the scanner is actually using it.
+            #
+            # Inside the session already open for `resolve`, and a no-op once
+            # the flag is set, so the steady state is one extra SELECT already
+            # served from the row just fetched. Deliberately not gated on a
+            # capability: any authenticated call proves possession, and
+            # `/health` is what a workflow calls first.
+            registry.confirm_delivery(resolution.token_sha256)
 
     if resolution is None:
         # Unknown, revoked and expired-superseded are deliberately

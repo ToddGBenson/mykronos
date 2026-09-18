@@ -165,12 +165,17 @@ class TokenRegistry:
         return list(rows)
 
     def unsynced_repos(self) -> list[str]:
-        """Repos whose active token never reached their Actions secret.
+        """Repos whose active token has never been confirmed delivered.
 
         A rotation that succeeded here but failed to write the secret leaves
         exactly this state, and it is invisible to `due_for_rotation` because
         the new token has a fresh 90-day clock. Left alone, the repo's CI
         breaks the moment the superseded token's overlap expires.
+
+        "Never confirmed delivered" is the honest reading, and it is narrower
+        than "undelivered" — see `confirm_delivery`. This list is evidence of
+        absence, not evidence of a break, and a caller that treats it as the
+        latter is the defect in #263.
         """
         rows = self.session.execute(
             select(IngestionToken.repo_full_name)
@@ -184,6 +189,51 @@ class TokenRegistry:
         token = self._active_token(repo_full_name)
         if token is not None:
             token.secret_synced = True
+            token.delivery_confirmed_at = utcnow()
+
+    def confirm_delivery(self, token_sha256: str) -> bool:
+        """Record that whoever holds this token has the *active* one (#263).
+
+        The second writer of `secret_synced`, and the one that gives the flag
+        a path back to true for a repository this platform cannot write a
+        secret to.
+
+        Until now the flag was set in exactly two places, both immediately
+        after a successful GitHub Actions secret write. A Concourse-scanned
+        repository is onboarded unsynced and stays unsynced forever: the
+        rotation job skips the write, so nothing can ever clear it. The one
+        tripwire the platform has for a token desync therefore sat permanently
+        tripped on `ToddGBenson/TheHub` — the single repository it had already
+        fired on for real (D-097) — which spends the signal that would catch
+        the next occurrence.
+
+        Ingestion already knows the answer. A request authenticated with the
+        repo's *active* token is proof the holder has that exact value; there
+        is no other way to present it, since only the SHA-256 is ever stored.
+        TheHub has been supplying that proof several times a day.
+
+        The `status == "active"` condition is the whole guard and is not an
+        optimisation. A caller presenting a *superseded* token is the failure
+        this flag exists to catch — the rotation happened and the new value
+        never arrived — so confirming on it would clear the tripwire using the
+        evidence that should trip it. Returns True only when it changed
+        something, so callers on the hot path can stay quiet.
+        """
+        token = self.session.get(IngestionToken, token_sha256)
+        if token is None or token.status != "active" or token.secret_synced:
+            return False
+        token.secret_synced = True
+        token.delivery_confirmed_at = utcnow()
+        return True
+
+    def active_token_for(self, repo_full_name: str) -> IngestionToken | None:
+        """The repo's active token row, for reporting on it.
+
+        Public because a report has to say *what* it measured — the issue
+        date, the rotation date and whether delivery was ever confirmed —
+        and a bare list of repo names cannot (#263).
+        """
+        return self._active_token(repo_full_name)
 
     # -- resolution -----------------------------------------------------
 

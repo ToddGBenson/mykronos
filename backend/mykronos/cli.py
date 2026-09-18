@@ -11,6 +11,7 @@
     mykronos compact
     mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
     mykronos self-check
+    mykronos host-controls <evidence.json> [--ports-baseline FILE] [--record-ports]
     mykronos briefing [--json]
     mykronos parity <owner/repo>
     mykronos workflows <owner/repo>
@@ -36,6 +37,7 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -43,6 +45,7 @@ from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
 from mykronos import grants
+from mykronos import host_controls as host_controls_module
 from mykronos.auth import TokenRegistry
 from mykronos.ci import (
     ACTIONS,
@@ -194,6 +197,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "self-check",
         help="Ask the internet whether this platform is reachable (spec 32 §8)",
     )
+
+    host_controls = sub.add_parser(
+        "host-controls",
+        help=(
+            "Re-read the host firewall rule that scopes the deploy registry "
+            "(#298). Reads the rule; does not probe the port, because a probe "
+            "from this host passes whether the rule exists or not."
+        ),
+    )
+    host_controls.add_argument(
+        "evidence",
+        help="JSON from deploy/concourse/Get-HostControlEvidence.ps1.",
+    )
+    host_controls.add_argument(
+        "--ports-baseline",
+        default=None,
+        help=(
+            "Recorded published-port set to compare against. Without one the "
+            "port assertion can neither pass nor fail and says so."
+        ),
+    )
+    host_controls.add_argument(
+        "--record-ports",
+        action="store_true",
+        help="Write this run's published ports to --ports-baseline and exit.",
+    )
+    host_controls.add_argument("--json", action="store_true", help="Machine-readable output.")
 
     briefing = sub.add_parser(
         "briefing",
@@ -504,11 +534,23 @@ def main(argv: list[str] | None = None) -> int:
                         ", ".join(sorted(reg.granted_capabilities(token.repo_full_name))) or "-",
                         token.issued_at.isoformat(timespec="seconds"),
                         token.rotate_after.isoformat(timespec="seconds"),
+                        # The moment, not a bare yes (#263). A `True` with no
+                        # date on it cannot be aged and cannot be told apart
+                        # from a value written at onboarding, which is how a
+                        # stuck flag went unread for days.
+                        (
+                            token.delivery_confirmed_at.isoformat(timespec="seconds")
+                            if token.delivery_confirmed_at
+                            else ("yes" if token.secret_synced else "never")
+                        ),
                         token.token_sha256[:12] + "...",
                     ]
                     for token in reg.list_tokens()
                 ]
-            _print_table(["repo", "status", "grants", "issued", "rotate after", "sha256"], rows)
+            _print_table(
+                ["repo", "status", "grants", "issued", "rotate after", "delivered", "sha256"],
+                rows,
+            )
             return 0
 
         if args.command == "purge-tokens":
@@ -606,6 +648,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Token rotation: {rotation.summary()}")
                 for repo, reason in rotation.failed:
                     print(f"  FAILED {repo}: {reason}")
+                # Two lists, two sentences, because they ask for opposite
+                # actions (#263). Printed apart from `summary()` so that the
+                # operator reading this terminal sees the distinction the log
+                # line used to collapse -- "deferred" covering both is how a
+                # token with 88 days left was announced as due for rotation.
+                for repo in rotation.deferred:
+                    print(
+                        f"  DUE {repo}: rotate by hand, then re-run set-pipeline "
+                        "(or Import-EnvSecretsToVault.ps1 -Apply)"
+                    )
+                for repo in rotation.unverified:
+                    print(
+                        f"  UNVERIFIED {repo}: NOT due for rotation. Its active "
+                        "token has never been presented to ingestion. Check "
+                        "scans are arriving before touching the credential — "
+                        "rotating one whose Vault copy works is what breaks it."
+                    )
             else:
                 sync = asyncio.run(reconcile_installations(db, factory))
                 print(
@@ -1307,6 +1366,20 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a briefing must not die on this
                 logging.getLogger(__name__).debug("Could not read job health")
 
+            # Ingestion tokens the rotation sweep defers to a person (#263).
+            # Read here for the same reason as job health: it lives in the
+            # operational database, not the lake. `None` on failure so the
+            # page says "could not read" rather than "nothing waiting" --
+            # which is the whole complaint, since the one deferral this
+            # platform had was visible only in 30 hours of container logs.
+            tokens: list[briefing_report.TokenDelivery] | None = None
+            try:
+                from mykronos.jobs import deliveries_awaiting_operator
+
+                tokens = deliveries_awaiting_operator(db)
+            except Exception:  # noqa: BLE001 - a briefing must not die on this
+                logging.getLogger(__name__).debug("Could not read token deliveries")
+
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
@@ -1315,12 +1388,74 @@ def main(argv: list[str] | None = None) -> int:
                 paused_jobs=paused_jobs,
                 failing_jobs=failing_jobs,
                 unhealthy_jobs=unhealthy_jobs,
+                tokens=tokens,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
             else:
                 print(briefing_report.render(report))
             return 0
+
+        if args.command == "host-controls":
+            # The one control in this estate that does not live in a
+            # repository: `mykronos-registry` runs with no `auth:` block at
+            # all, and an inbound Block rule in Windows Defender Firewall is
+            # the only thing between a LAN device and a write to a tag this
+            # host then runs. It was applied once and nothing re-read it.
+            #
+            # This reads the rule. It deliberately does not probe the port:
+            # Windows does not filter host-to-self traffic, so
+            # `curl http://192.168.0.14:5000/v2/_catalog` from here returns
+            # the catalog whether the rule is in force, narrowed, disabled or
+            # deleted — a check that cannot fail, which is the whole of #298.
+            document = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
+            evidence = host_controls_module.parse_evidence(document)
+
+            if args.record_ports:
+                if not args.ports_baseline:
+                    print("--record-ports needs --ports-baseline", file=sys.stderr)
+                    return 2
+                Path(args.ports_baseline).write_text(
+                    json.dumps(sorted(evidence.published_ports), indent=2),
+                    encoding="utf-8",
+                )
+                print(
+                    f"Recorded {len(evidence.published_ports)} binding(s) to "
+                    f"{args.ports_baseline}"
+                )
+                return 0
+
+            baseline: list[str] | None = None
+            if args.ports_baseline and Path(args.ports_baseline).exists():
+                baseline = list(json.loads(Path(args.ports_baseline).read_text(encoding="utf-8")))
+
+            # Distinct name: `report` is bound by the `briefing` branch and
+            # reusing it makes mypy infer the wrong type -- the trap this
+            # file's `self-check` and `reprocess` branches already document.
+            host_report = host_controls_module.assess(evidence, ports_baseline=baseline)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "ok": host_report.ok,
+                            "assertions": [
+                                dataclasses.asdict(a) for a in host_report.assertions
+                            ],
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                _print_table(
+                    ["assertion", "state", "detail"],
+                    [[a.key, a.state, a.detail] for a in host_report.assertions],
+                )
+                print()
+                print(host_controls_module.verdict(host_report))
+            # Non-zero when anything failed OR when nothing was verified. The
+            # second half is the point: a document carrying only the local
+            # probe has no failures and still must not read as a pass.
+            return 0 if host_report.ok else 1
 
         if args.command == "query":
             with catalog.connect_readonly() as con:
