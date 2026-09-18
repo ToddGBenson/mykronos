@@ -41,7 +41,6 @@ from tests.conftest import (
 )
 from tests.test_onboarding import onboard
 
-
 # --------------------------------------------------------------------------
 # The resolver, on its own
 # --------------------------------------------------------------------------
