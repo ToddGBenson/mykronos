@@ -2475,12 +2475,54 @@ jobs:
                 grep -Eq '^[0-9a-f]{40}$' meta/sha \
                   || { echo "resolve-sha produced no usable SHA." >&2; exit 1; }
 
+      # -- Which images does this estate actually run? (#427) ----------------
+      #
+      # The step below scanned `mykronos-backend` and `mykronos-frontend`,
+      # which is every image this pipeline builds and four of the fifteen this
+      # estate runs. Vault, MinIO, Concourse, Postgres and a `registry:2`
+      # built in 2023 are pulled rather than built, so nothing named them and
+      # nothing had ever looked at them -- an absence the lake shows plainly,
+      # since no container scan for any repository has ever recorded a `musl`,
+      # `busybox`, `apk-tools`, `nginx`, `redis` or `postgres` package.
+      #
+      # Derived rather than listed. A second `for image in ...` line naming
+      # the eleven is correct today and silently short the first time somebody
+      # adds a service to a compose file, which is the same defect one level
+      # up. `estate_images` reads the compose files in this checkout, so an
+      # image joins the scan by being deployed.
+      #
+      # Run out of `source` rather than a `pip install` from GitHub: the
+      # deriver is then the one from the commit under test, matching the
+      # compose files it is reading, and the task needs no network beyond the
+      # one package it does not vendor.
+      - task: derive-estate-images
+        timeout: 10m
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: estate }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                pip install --quiet pyyaml
+                PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
+                  --root source --output estate/images.txt
+
       - task: scan-images
-        timeout: 45m
+        # 45m covered two application images. The estate's own images are
+        # bigger and there are more of them -- `concourse/concourse` alone
+        # carries several hundred findings across every binary it bundles --
+        # and a cap below the observed worst case does not make a slow job
+        # fast, it makes a working job red (PS-7).
+        timeout: 90m
         image: trivy
         config:
           platform: linux
-          inputs: [{ name: meta }]
+          inputs: [{ name: meta }, { name: estate }]
           outputs: [{ name: results }]
           params:
             REGISTRY: ((registry))
@@ -2521,6 +2563,42 @@ jobs:
                     exit 1
                   }
                 done
+
+                # The images this estate runs and does not build (#427). The
+                # list came from `derive-estate-images`, which read it out of
+                # the compose files rather than out of a list somebody keeps
+                # up to date.
+                #
+                # No `--insecure` here: these are pulled from Docker Hub and
+                # ghcr over TLS, and the flag above is about the LAN registry
+                # being plain HTTP rather than about the scan's rigour.
+                while IFS= read -r estate_image; do
+                  [ -n "${estate_image}" ] || continue
+
+                  # The reference is part of the finding's identity (spec 05
+                  # section 5), so the report is named after it. A shared
+                  # report name is how 600 container results became 118.
+                  safe=$(printf '%s' "${estate_image}" \
+                    | tr '[:upper:]' '[:lower:]' \
+                    | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
+
+                  echo "Scanning ${estate_image}"
+                  trivy image "${estate_image}" \
+                    --scanners vuln \
+                    --format sarif --output "results/trivy-estate-${safe}.sarif" \
+                    --exit-code 0 --quiet \
+                    --parallel 1 \
+                    --timeout 30m
+
+                  # A deployed image that could not be scanned is not a clean
+                  # deployed image. Failing here is what keeps this lane from
+                  # going back to reporting confidently on a subset and
+                  # looking identical to full coverage.
+                  test -s "results/trivy-estate-${safe}.sarif" || {
+                    echo "::error::Trivy wrote no report for ${estate_image} - the scan did not run."
+                    exit 1
+                  }
+                done < estate/images.txt
         # PS-3: `ensure`, so the upload runs whether the scan above
         # succeeded or not. Concourse creates a declared output volume before
         # the task runs, so a scanner that died leaves an empty `results` --

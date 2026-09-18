@@ -2152,12 +2152,52 @@ jobs:
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 git -C source rev-parse HEAD | tr -d '\n' > meta/sha
 
+      # -- Which images does TheHub actually run? (#427) ---------------------
+      #
+      # The step below scans `thehub`, which is the image this pipeline
+      # builds. The stack around it -- four Postgres containers on
+      # `pgvector/pgvector:pg16`, two Redis on `redis:7-alpine`, an
+      # `nginx:alpine` frontend, an `alpine:3.19` backup cron and the
+      # socket proxy -- is pulled rather than built, so no Dockerfile names it
+      # and nothing has ever looked at it. Across every container scan in the
+      # lake, for any repository, not one Alpine-family package appears.
+      #
+      # Derived from TheHub's own compose files rather than listed here. That
+      # also answers the ownership question #427 raises: a `redis:7-alpine`
+      # finding is neither naturally TheHub's nor mykronos's, and the compose
+      # file that starts the container is a fact rather than a guess about
+      # which it is.
+      - task: derive-estate-images
+        timeout: 10m
+        image: python
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: estate }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                python -m mykronos.estate_images --root source --output estate/images.txt
+
       - task: scan-image
-        timeout: 45m
+        # 45m covered one application image. TheHub's stack adds eight more,
+        # and a cap below the observed worst case does not make a slow job
+        # fast, it makes a working job red (PS-7).
+        timeout: 90m
         image: trivy
         config:
           platform: linux
-          inputs: [{ name: source }, { name: meta }]
+          inputs: [{ name: source }, { name: meta }, { name: estate }]
           outputs: [{ name: results }]
           params:
             REGISTRY: ((registry))
@@ -2206,6 +2246,42 @@ jobs:
                   echo "::error::Trivy wrote no report - the image scan did not run."
                   exit 1
                 }
+
+                # The images TheHub runs and does not build (#427). The list
+                # came from `derive-estate-images`, which read it out of the
+                # compose files rather than out of a list somebody keeps up to
+                # date.
+                #
+                # No `--insecure` here: these are pulled from Docker Hub over
+                # TLS, and the flag above is about the LAN registry being
+                # plain HTTP rather than about the scan's rigour.
+                while IFS= read -r estate_image; do
+                  [ -n "${estate_image}" ] || continue
+
+                  # The reference is part of the finding's identity (spec 05
+                  # section 5), so the report is named after it. A shared
+                  # report name is how 600 container results became 118.
+                  safe=$(printf '%s' "${estate_image}" \
+                    | tr '[:upper:]' '[:lower:]' \
+                    | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
+
+                  echo "Scanning ${estate_image}"
+                  trivy image "${estate_image}" \
+                    --scanners vuln \
+                    --format sarif --output "results/trivy-estate-${safe}.sarif" \
+                    --exit-code 0 --quiet \
+                    --parallel 1 \
+                    --timeout 30m
+
+                  # A deployed image that could not be scanned is not a clean
+                  # deployed image. Failing here is what keeps this lane from
+                  # reporting confidently on a subset and looking identical to
+                  # full coverage.
+                  test -s "results/trivy-estate-${safe}.sarif" || {
+                    echo "::error::Trivy wrote no report for ${estate_image} - the scan did not run."
+                    exit 1
+                  }
+                done < estate/images.txt
         # PS-3: `ensure`, so the upload runs whether the scan above
         # succeeded or not. Concourse creates a declared output volume before
         # the task runs, so a scanner that died leaves an empty `results` --

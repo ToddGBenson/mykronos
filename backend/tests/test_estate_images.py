@@ -23,6 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pytest
+import yaml
 
 from mykronos.estate_images import (
     ComposeService,
@@ -257,6 +258,79 @@ class TestThisEstate:
 
     def test_nothing_unresolved_reaches_the_scanner(self) -> None:
         assert not [image for image in _estate() if "$" in image or not image]
+
+
+class TestTheLanesThatRunHere:
+    """The wiring, read out of the committed pipelines.
+
+    A module nothing calls is not coverage. Both containers jobs enumerated
+    images by name -- `for image in mykronos-backend mykronos-frontend`, and
+    `trivy image .../thehub:$SHA` -- which is exactly why the estate's other
+    images were never scanned, and it is a two-line revert away from being
+    true again. Read from the file, with no network, for the reason
+    `test_pipeline_gate_wiring.py` gives: the regression this guards against
+    is a change to the file.
+    """
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_the_containers_job_derives_its_image_list(self, pipeline: str) -> None:
+        job = _containers_job(pipeline)
+        tasks = [step["task"] for step in job["plan"] if "task" in step]
+        assert "derive-estate-images" in tasks, tasks
+
+        derive = next(step for step in job["plan"] if step.get("task") == "derive-estate-images")
+        body = "\n".join(derive["config"]["run"]["args"])
+        assert "mykronos.estate_images" in body
+        assert "estate/images.txt" in body
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_the_scan_reads_the_derived_list_rather_than_a_list_of_names(
+        self, pipeline: str
+    ) -> None:
+        body = _scan_task_body(pipeline)
+        assert "done < estate/images.txt" in body
+        executable = "\n".join(
+            line for line in body.splitlines() if not line.lstrip().startswith("#")
+        )
+        for hardcoded in (
+            "hashicorp/vault",
+            "minio/minio",
+            "concourse/concourse",
+            "registry:2",
+            "redis:7-alpine",
+            "pgvector",
+        ):
+            assert hardcoded not in executable
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_an_estate_image_that_would_not_scan_fails_the_lane(self, pipeline: str) -> None:
+        body = _scan_task_body(pipeline)
+        assert 'test -s "results/trivy-estate-${safe}.sarif"' in body
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_each_estate_image_gets_its_own_report(self, pipeline: str) -> None:
+        """A shared report name is how 600 container results became 118."""
+        assert 'results/trivy-estate-${safe}.sarif' in _scan_task_body(pipeline)
+
+
+def _containers_job(pipeline: str) -> dict[str, object]:
+    path = REPO_ROOT / "deploy" / "concourse" / "pipelines" / pipeline
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    jobs = {job["name"]: job for job in document["jobs"]}
+    # A floor before a conclusion: a pipeline that parsed to no jobs would
+    # pass every assertion below by having nothing to contradict them.
+    assert jobs, f"{pipeline} parsed to no jobs"
+    return dict(jobs["containers"])
+
+
+def _scan_task_body(pipeline: str) -> str:
+    job = _containers_job(pipeline)
+    plan = job["plan"]
+    assert isinstance(plan, list)
+    scan = next(
+        step for step in plan if str(step.get("task", "")).startswith("scan-image")
+    )
+    return "\n".join(scan["config"]["run"]["args"])
 
 
 class TestTheCommandLine:
