@@ -141,6 +141,24 @@ updates:
       npm-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # #489 bumped typescript 5.9.3 -> 7.0.2 and took Delivery down on every
+      # commit for the next four and a half hours. No release of
+      # `openapi-typescript` accepts it: 7.13.0 is the latest and its peer
+      # range is still `^5.x`, so `npm ci` exits ERESOLVE before anything is
+      # built. The frontend image is never published, `demo-and-dast` is
+      # gated on a successful Delivery and skipped every run, and the dast
+      # findings it would have closed stayed open.
+      #
+      # The cooldown above did not apply. `semver-major-days: 30` delays a
+      # release; it says nothing about whether the rest of the tree can
+      # resolve it, and this one had been out long enough.
+      #
+      # Minor and patch still come through. Remove this block when
+      # `openapi-typescript` widens its peer range -- check it, do not assume
+      # it, because the failure is silent until the next delivery.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   # No `docker` entry. Both Dockerfiles use floating tags (`python:3.13-slim`,
   # `node:22-slim`, `gcr.io/distroless/nodejs22-debian13:nonroot`) rather than
