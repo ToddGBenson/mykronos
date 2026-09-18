@@ -94,7 +94,16 @@ services:
       # The App private key, read-only and outside the image. Spec 12 §2 puts
       # it in the "never in a repo, never in a layer" tier, and an image is a
       # layer somebody can pull.
-      - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:-/dev/null}:/secrets/github-app.pem:ro
+      #
+      # `:?` and not `:-/dev/null`. The default was a silent one: compose
+      # mounted an empty file, the container started, the healthcheck went
+      # green, and the platform ran with no GitHub credential at all. It fired
+      # again on 2026-09-18 -- a recreate where the variable had not been
+      # exported left /dev/null here for six minutes, reporting Healthy
+      # throughout. `MYKRONOS_ADMIN_TOKEN` two blocks up already refuses this
+      # way; there was no reason for the one credential that cannot be rotated
+      # from inside the platform to be the lenient one.
+      - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:?set it in backend/.env — the host path to the App private key}:/secrets/github-app.pem:ro
     healthcheck:
       # python, not curl: curl is no longer in the image (its CVEs were 4 of
       # the highs the platform's own scan found), and compose's healthcheck
