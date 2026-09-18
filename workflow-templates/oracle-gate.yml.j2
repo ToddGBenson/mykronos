@@ -111,9 +111,13 @@ jobs:
             if [ "$PR" != "0" ]; then
               KIND=pr_gate
             else
-              # A push to the default branch with no PR attached. Still worth
-              # a decision — it is what the portfolio view reflects.
-              KIND=portfolio
+              # A push with no PR attached. Still worth a decision, and it is
+              # still a decision about *this commit* — so `commit_gate`, not
+              # `portfolio` (#275). `portfolio` is the standing
+              # repository-wide posture the scheduled score-portfolio job
+              # writes; filing per-commit verdicts under it hid them from
+              # every query that asks what the gate decided for a commit.
+              KIND=commit_gate
             fi
             {
               echo "kind=$KIND"
@@ -135,9 +139,16 @@ jobs:
 
           # jq builds the body so a branch name with a quote in it cannot
           # break out of the JSON.
+          #
+          # `pr_number` is null, not 0, when there is no pull request (#275).
+          # `0` is only the sentinel this step needs because a workflow output
+          # is a string and `--argjson` wants a number; sent as-is it writes
+          # decisions claiming to judge pull request #0.
           BODY=$(jq -nc \
             --arg kind "$KIND" --arg sha "$SHA" --arg tag "$TAG" --argjson pr "$PR" \
-            '{decision_type: $kind, commit_sha: $sha, pr_number: $pr, release_tag: $tag}')
+            '{decision_type: $kind, commit_sha: $sha,
+              pr_number: (if $pr == 0 then null else $pr end),
+              release_tag: $tag}')
 
           curl --fail --silent --show-error --max-time 60 \
             -X POST "<< ingestion_api_url >>/api/oracle/evaluate" \

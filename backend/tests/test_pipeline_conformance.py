@@ -879,3 +879,64 @@ def test_the_probe_translates_curl_127_rather_than_printing_the_number() -> None
             f"curl exit {code} is no longer given a message of its own; it falls to the "
             f"catch-all, which prints a number rather than a cause (#59975)"
         )
+
+
+def _oracle_evaluate_payloads() -> dict[str, list[str]]:
+    """Every `/api/oracle/evaluate` body a pipeline builds, by pipeline name.
+
+    Read out of the raw text rather than the parsed YAML: the body is a jq
+    program inside a bash script inside a task's `run.args`, so the structure
+    that matters here is textual. A pipeline builds several jq bodies around a
+    commit sha — SBOM provenance is one — so a body counts as a decision only
+    if it names a `decision_type`.
+    """
+    payloads: dict[str, list[str]] = {}
+    for path in checker.pipelines():
+        text = path.read_text(encoding="utf-8")
+        if "oracle/evaluate" not in text:
+            continue
+        bodies = re.findall(r"\{[^{}]*decision_type[^{}]*\}", text)
+        assert bodies, f"{path.name} calls /api/oracle/evaluate with no readable body"
+        payloads[path.name] = bodies
+    return payloads
+
+
+def test_no_pipeline_files_a_per_commit_verdict_as_a_standing_one() -> None:
+    """A gate job judges one commit; `portfolio` is the repository's standing
+    posture (#275).
+
+    Every `oracle-gate` job sent `decision_type: "portfolio"` with a commit
+    sha, which is a contradiction the endpoint used to accept. 1,601 per-commit
+    verdicts accumulated inside the standing posture before anyone noticed, and
+    "what did the gate decide for this commit?" had no answer at all for the
+    repositories gated from Concourse.
+
+    The server corrects the pairing now, so this is not what keeps the lake
+    honest — it is what keeps the pipelines from relying on being corrected.
+    """
+    payloads = _oracle_evaluate_payloads()
+    assert payloads, "no pipeline builds an /api/oracle/evaluate body any more"
+
+    wrong = {
+        name: body
+        for name, bodies in payloads.items()
+        for body in bodies
+        if "commit_sha" in body and '"portfolio"' in body
+    }
+    assert not wrong, (
+        "a commit-triggered gate job files its verdict as the standing "
+        "repository posture: " + "; ".join(f"{k}: {v}" for k, v in wrong.items())
+    )
+
+
+def test_every_gate_payload_names_a_scope_the_api_accepts() -> None:
+    """Guard on the guard above: a typo'd scope would satisfy it silently."""
+    accepted = {"pr_gate", "commit_gate", "release_gate", "portfolio"}
+    for name, bodies in _oracle_evaluate_payloads().items():
+        for body in bodies:
+            found = re.search(r'decision_type:\s*"([a-z_]+)"', body)
+            assert found, f"{name}: a gate payload names no decision_type: {body}"
+            assert found.group(1) in accepted, (
+                f"{name}: decision_type {found.group(1)!r} is not one "
+                f"`/api/oracle/evaluate` accepts"
+            )

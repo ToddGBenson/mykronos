@@ -903,9 +903,17 @@ jobs:
                 # pipeline cannot request a decision about somebody else's
                 # repository. The endpoint forbids extra fields, so sending it
                 # is a 422 rather than a harmless duplicate.
+                #
+                # `commit_gate`, not `portfolio` (#275). This job is triggered
+                # by a commit on a branch, so its verdict is about one change.
+                # `portfolio` is the standing repository-wide posture that the
+                # scheduled score-portfolio job writes, and filing per-commit
+                # verdicts under it made them unfindable and left the
+                # portfolio trend answering two questions at once. Not
+                # `pr_gate`, because there is no pull request here to name.
                 BODY=$(jq -nc \
                   --arg sha "$(git rev-parse HEAD)" \
-                  '{commit_sha: $sha, decision_type: "portfolio"}')
+                  '{commit_sha: $sha, decision_type: "commit_gate"}')
 
                 curl --fail --silent --show-error --max-time 120 \
                   -X POST "$MYKRONOS_URL/api/oracle/evaluate" \

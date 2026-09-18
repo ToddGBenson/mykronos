@@ -21,6 +21,10 @@ import type { RiskDecision } from "@/lib/api";
 
 const DECISION_TYPE_LABEL: Record<string, string> = {
   pr_gate: "pull request",
+  // A gate that judged one commit with no pull request attached — what a
+  // Concourse pipeline, triggered by a push, produces. Distinct from
+  // "standing", which is the scheduled repository-wide score (#275).
+  commit_gate: "commit",
   release_gate: "release",
   portfolio: "standing",
 };
