@@ -83,6 +83,15 @@ PRUNED_DIRS: frozenset[str] = frozenset(
 )
 
 Origin = Literal["built_here", "upstream", "unresolved"]
+#: What an image is FOR, which is not derivable from its name or its tag.
+#: `postgres:15` is a service here and a throwaway fixture in the demo stack,
+#: and the reference is identical in both. So it is DECLARED, never guessed --
+#: `x-mykronos-role` at the top of a compose file or on one service.
+#:
+#: The default is `service`, and that direction is deliberate: an undeclared
+#: image counts toward risk. Guessing "tool" from a name would quietly remove
+#: findings from the total, which is the one error this must not make.
+Role = Literal["service", "tool"]
 TagKind = Literal["digest", "pinned", "major_line", "floating"]
 
 #: `${NAME}`, `${NAME:-default}`, `${NAME-default}`, and the bare `$NAME`.
@@ -187,6 +196,11 @@ class ComposeService:
     #: should act on.
     reason: str
     unresolved_vars: tuple[str, ...] = ()
+    #: `service` unless a compose file says otherwise. See `Role`.
+    role: Role = "service"
+    #: Where that role came from, in the same form `reason` takes -- so a
+    #: reader can tell "declared a tool" from "nobody said, so it counts".
+    role_reason: str = "not declared; counted as a service"
 
     @property
     def tag_kind(self) -> TagKind:
@@ -221,6 +235,20 @@ class Derivation:
                 {
                     "reference": reference,
                     "tag_kind": classify_tag(reference),
+                    # An image is a `tool` only where a compose file said so.
+                    # Where two services disagree about one reference, the
+                    # stricter answer wins: anything running it as a service
+                    # makes it a service. Losing a finding to a disagreement
+                    # is the error worth avoiding.
+                    "role": (
+                        "service"
+                        if any(
+                            svc.role == "service"
+                            for svc in self.of_origin("upstream")
+                            if svc.reference == reference
+                        )
+                        else "tool"
+                    ),
                     "run_by": sorted(
                         f"{service.compose_path}::{service.service}"
                         for service in self.of_origin("upstream")
@@ -239,6 +267,39 @@ class Derivation:
             ),
             "warnings": self.warnings,
         }
+
+
+_ROLE_KEY = "x-mykronos-role"
+
+
+def _declared_role(
+    document: Mapping[str, Any],
+    where: str,
+    *,
+    default_reason: str | None,
+    inherited: Role = "service",
+) -> tuple[Role, str]:
+    """Read `x-mykronos-role`, or fall back without inventing anything.
+
+    `x-` is compose's own extension prefix, so this is a valid compose
+    document and `docker compose` ignores the key entirely.
+
+    An unrecognised value is NOT an error and NOT a tool. It falls back to
+    whatever was inherited and says so, because the alternative -- failing the
+    derivation on a typo -- takes the whole estate's image list out with it,
+    and the alternative to THAT -- treating an unknown string as `tool` --
+    removes findings from the total on the strength of a misspelling.
+    """
+    raw = document.get(_ROLE_KEY)
+    if raw is None:
+        return inherited, default_reason or "not declared; counted as a service"
+    value = str(raw).strip().lower()
+    if value in ("service", "tool"):
+        return value, f"{where} {_ROLE_KEY}: {value}"  # type: ignore[return-value]
+    return (
+        inherited,
+        f"{where} {_ROLE_KEY}: {raw!r}, which is not a role; counted as {inherited}",
+    )
 
 
 def _origin_of(
@@ -291,6 +352,10 @@ def services_from_compose(
     if not isinstance(raw_services, dict):
         return [], []
 
+    file_role, file_role_reason = _declared_role(
+        document, f"{compose_path} declares", default_reason=None
+    )
+
     found: list[ComposeService] = []
     for name, definition in raw_services.items():
         if not isinstance(definition, dict):
@@ -303,6 +368,12 @@ def services_from_compose(
 
         reference, unresolved = interpolate(raw_image.strip(), env)
         origin, reason = _origin_of(definition, raw_image, unresolved)
+        role, role_reason = _declared_role(
+            definition,
+            f"{compose_path}::{name} declares",
+            default_reason=file_role_reason,
+            inherited=file_role,
+        )
         if origin == "upstream" and not reference:
             origin, reason = "unresolved", "the image resolved to an empty reference"
 
@@ -310,6 +381,8 @@ def services_from_compose(
             ComposeService(
                 compose_path=compose_path,
                 service=str(name),
+                role=role,
+                role_reason=role_reason,
                 raw_image=raw_image.strip(),
                 reference=reference,
                 origin=origin,
@@ -370,7 +443,7 @@ def summarise(derivation: Derivation) -> str:
         for service in sorted(derivation.of_origin("upstream"), key=lambda s: s.reference)
     }
     for reference, service in sorted(by_reference.items()):
-        lines.append(f"  {reference}  [{service.tag_kind}]")
+        lines.append(f"  {reference}  [{service.tag_kind}, {service.role}]")
     for service in derivation.of_origin("built_here"):
         lines.append(
             f"  (skipped) {service.compose_path}::{service.service} "

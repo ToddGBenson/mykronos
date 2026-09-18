@@ -375,6 +375,8 @@ class TestTheCommandLine:
             {
                 "reference": "hashicorp/vault:1.21.4",
                 "tag_kind": "pinned",
+                # Undeclared, so a service — the fail-safe direction (#666).
+                "role": "service",
                 "run_by": ["docker-compose.yml::vault"],
             }
         ]
@@ -421,3 +423,89 @@ def _derivation_of(services: list[ComposeService]) -> Derivation:
     derivation = Derivation()
     derivation.services.extend(services)
     return derivation
+
+
+class TestDeclaredRole:
+    """An image is a tool only where a compose file says so (#666).
+
+    90% of this estate's container findings sat in one image — the ZAP
+    scanner, built and destroyed inside a single Concourse task — and they
+    were counted beside the 5 criticals in the process that holds every
+    credential the estate has. One number, and the big half was the
+    irrelevant one.
+
+    The role is DECLARED rather than inferred because it is not derivable.
+    `postgres:15` is a service in `deploy/concourse` and a throwaway fixture
+    in `deploy/demo`, and the reference is byte-identical in both.
+    """
+
+    def test_a_file_level_declaration_applies_to_its_services(self) -> None:
+        services, _ = services_from_compose(
+            "x-mykronos-role: tool\nservices:\n  zap:\n    image: zaproxy:2.17.0\n",
+            "deploy/demo/docker-compose.yml",
+        )
+        assert [s.role for s in services] == ["tool"]
+        assert "docker-compose.yml declares" in services[0].role_reason
+
+    def test_undeclared_counts_as_a_service(self) -> None:
+        """The direction that matters. Guessing `tool` from a name would
+        remove findings from a total on the strength of a guess."""
+        services, _ = services_from_compose(
+            "services:\n  db:\n    image: postgres:15\n", "deploy/x/docker-compose.yml"
+        )
+        assert services[0].role == "service"
+        assert "not declared" in services[0].role_reason
+
+    def test_one_service_can_override_its_file(self) -> None:
+        services, _ = services_from_compose(
+            "x-mykronos-role: tool\n"
+            "services:\n"
+            "  zap:\n    image: zaproxy:2.17.0\n"
+            "  db:\n    image: postgres:15\n    x-mykronos-role: service\n",
+            "deploy/demo/docker-compose.yml",
+        )
+        roles = {s.service: s.role for s in services}
+        assert roles == {"zap": "tool", "db": "service"}
+
+    def test_an_unrecognised_value_is_not_a_tool_and_says_so(self) -> None:
+        """A typo must not silently delete findings from the estate total,
+        and must not fail the whole derivation either — one bad key would
+        take the entire image list out with it."""
+        services, warnings = services_from_compose(
+            "services:\n  zap:\n    image: zaproxy:2.17.0\n    x-mykronos-role: Tooll\n",
+            "deploy/demo/docker-compose.yml",
+        )
+        assert services[0].role == "service"
+        assert "not a role" in services[0].role_reason
+        assert services[0].reference == "zaproxy:2.17.0", "the image survived the typo"
+
+    def test_a_reference_run_as_both_is_reported_as_a_service(self, tmp_path) -> None:
+        """`postgres:15` is a fixture in the demo stack and Concourse's
+        database. Losing its findings to that disagreement is the one error
+        this must not make, so the stricter answer wins."""
+        (tmp_path / "deploy" / "demo").mkdir(parents=True)
+        (tmp_path / "deploy" / "svc").mkdir(parents=True)
+        (tmp_path / "deploy" / "demo" / "docker-compose.yml").write_text(
+            "x-mykronos-role: tool\nservices:\n  db:\n    image: postgres:15\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "deploy" / "svc" / "docker-compose.yml").write_text(
+            "services:\n  db:\n    image: postgres:15\n", encoding="utf-8"
+        )
+
+        payload = derive(tmp_path).as_dict()
+        entry = next(i for i in payload["images"] if i["reference"] == "postgres:15")
+
+        assert entry["role"] == "service"
+
+    def test_the_demo_stack_is_declared_a_tool(self) -> None:
+        """The declaration itself, asserted so it cannot be dropped silently.
+
+        If it goes, the ZAP scanner's ~4,200 findings quietly rejoin the
+        estate total and nothing says the number changed meaning.
+        """
+        compose = (
+            Path(__file__).resolve().parents[2] / "deploy" / "demo" / "docker-compose.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "x-mykronos-role: tool" in compose
