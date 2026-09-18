@@ -24,11 +24,36 @@ would need rewriting every time a scanner renamed a rule. The manifest names
 the expected *capability*, which is a fact about which lane should have caught
 it.
 
+**A grade of 0% and a grade that could not be taken are different answers, and
+until #60015 this exited 0 for both.** The corpus repo does not exist yet
+(spec 23 §109: "Not built, and it cannot be from here"), so every real run of
+this today reads an empty lake, scores 0% on every capability and returns
+success. A typo in `--repo`, a lake that was never written, and a detector that
+genuinely missed every seeded issue were one number.
+
+They are now separated by asking a question the grade cannot answer on its own:
+**did anything scan this commit at all?** :func:`scan_runs_for` counts the scan
+runs in the lake for the `(repo, commit)` pair, and that count is the floor on
+what was examined —
+
+* no scan runs → nothing measured this commit, so there is no grade to report.
+  Exit :data:`EXIT_NOT_MEASURED`, and say which of the two missing things it
+  is.
+* scan runs but no findings → the detectors ran and caught nothing. That is a
+  real 0%, and with ``--fail-under`` it is a real failure.
+
+Grading before that question is answered is how a permanently-green lane
+reporting 0% gets built, which the story rejected as "strictly worse than
+leaving it uncalled, because it would look like coverage".
+
 Usage:
 
     python scripts/bench_grade.py bench/manifest.yaml \\
         --repo ToddGBenson/mykronos-bench --commit "$SHA" \\
         --lake ./datalake --out results/bench.xml
+
+Exit codes: 0 graded, 1 below ``--fail-under``, 2 the manifest could not be
+read, 3 the grade could not be taken.
 """
 
 from __future__ import annotations
@@ -48,6 +73,21 @@ import yaml
 #: stricter than the identity model would report regressions the platform
 #: itself does not believe in.
 LINE_TOLERANCE = 5
+
+#: The exit codes this grader speaks. Named because the number *is* the verdict
+#: [#60015]: a caller that only knows "0 or not 0" cannot tell a graded run from
+#: one that had nothing to grade, and that was the defect.
+#:
+#: `backend/mykronos/host_controls.py` declares the same four under the same
+#: names, and `test_the_two_controls_agree_on_what_the_numbers_mean` fails if
+#: they drift. They are duplicated rather than shared because this script runs
+#: standalone inside a pipeline container with no `mykronos` package on the path
+#: — a shared module would buy one definition and cost a runtime import that can
+#: fail in exactly the place this most needs to work.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+EXIT_NOT_MEASURED = 3
 
 
 @dataclass(frozen=True)
@@ -145,6 +185,13 @@ def findings_for(lake: Path, repo_full_name: str, commit_sha: str) -> list[dict[
     """
     import duckdb  # imported here so `--help` works without the lake deps
 
+    # An empty `findings` partition is a legitimate answer and not an unreadable
+    # lake [#60015]: a scan that ran and found nothing writes a scan run and no
+    # finding rows. Returning [] here reports a true 0% recall; raising would
+    # report it as "could not measure", which is the opposite fact.
+    if not _has_parquet(lake / "findings"):
+        return []
+
     pattern = (lake / "findings" / "**" / "*.parquet").as_posix()
     connection = duckdb.connect(":memory:")
     try:
@@ -161,6 +208,8 @@ def findings_for(lake: Path, repo_full_name: str, commit_sha: str) -> list[dict[
             """,
             [repo_full_name, repo_full_name, commit_sha],
         ).fetchall()
+    except Exception as exc:  # see CouldNotMeasure: not the same event as a low grade
+        raise CouldNotMeasure(f"the lake at {lake} could not be read: {exc}") from exc
     finally:
         connection.close()
 
@@ -175,6 +224,69 @@ def findings_for(lake: Path, repo_full_name: str, commit_sha: str) -> list[dict[
         }
         for r in rows
     ]
+
+
+def _has_parquet(directory: Path) -> bool:
+    """Is there anything under here for duckdb to read.
+
+    `read_parquet` over a glob that matches no file is an error, and an empty
+    partition is a normal state for both of the ones this reads — a commit that
+    was never scanned has no `scan_runs` rows, and a scan that correctly found
+    nothing writes no `findings` rows. Neither is a broken lake. [#60015]
+    """
+    return directory.is_dir() and any(directory.rglob("*.parquet"))
+
+
+class CouldNotMeasure(Exception):
+    """The lake could not be read, so no grade can be taken from it.
+
+    Raised rather than allowed to propagate as a bare DuckDB error [#60015]: an
+    unreadable lake used to reach the caller as an uncaught traceback, which the
+    shell reports as exit 1 — the same number as "a capability fell below the
+    floor". A missing lake and a failing detector are not the same event and
+    must not arrive as the same number.
+    """
+
+
+def scan_runs_for(lake: Path, repo_full_name: str, commit_sha: str) -> int:
+    """How many scan runs the lake holds for this commit.
+
+    This is the floor on what was examined [#60015]. The grade cannot establish
+    it: `grade()` over zero findings returns 0% whether nothing scanned the
+    commit or everything scanned it and found nothing, and those are opposite
+    facts. Counting the runs asks the lake directly.
+
+    Read from `scan_runs` rather than inferred from `findings`, deliberately: a
+    lane that ran and correctly reported no findings writes a scan run and no
+    finding rows, and inferring from findings would call that "not measured"
+    when it is the cleanest possible measurement.
+    """
+    import duckdb  # imported here so `--help` works without the lake deps
+
+    # Checked on the filesystem rather than by catching the read error, because
+    # "there are no scan_runs files" and "duckdb could not parse the files that
+    # are there" must not be the same answer, and telling them apart from an
+    # exception message means matching on a library's prose.
+    if not _has_parquet(lake / "scan_runs"):
+        return 0
+
+    pattern = (lake / "scan_runs" / "**" / "*.parquet").as_posix()
+    connection = duckdb.connect(":memory:")
+    try:
+        row = connection.execute(
+            f"""
+            SELECT count(*) FROM read_parquet(
+                '{pattern}', hive_partitioning = 1, union_by_name = 1
+            ) WHERE repo_full_name = ? AND commit_sha = ?
+            """,
+            [repo_full_name, commit_sha],
+        ).fetchone()
+    except Exception as exc:  # duckdb raises a family of them; all mean the same here
+        raise CouldNotMeasure(f"the lake at {lake} could not be read: {exc}") from exc
+    finally:
+        connection.close()
+
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def grade(
@@ -321,10 +433,33 @@ def main(argv: list[str] | None = None) -> int:
         seeds = load_manifest(args.manifest)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"Could not read the manifest: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_USAGE
 
-    findings = findings_for(args.lake, args.repo, args.commit)
+    # The floor, asked before anything is graded [#60015]. Everything below this
+    # point assumes the commit was scanned; if it was not, every number this
+    # would print is an artefact of an empty lake rather than a measurement of a
+    # detector.
+    try:
+        runs = scan_runs_for(args.lake, args.repo, args.commit)
+        if runs == 0:
+            print(
+                f"NOT MEASURED. The lake at {args.lake} holds no scan run for "
+                f"{args.repo} at {args.commit}, so nothing scanned this commit "
+                f"and there is no detection to grade. This is not 0% recall — "
+                f"0% would mean the detectors ran and missed "
+                f"{len(seeds)} seeded issue(s). Check that the corpus repo "
+                f"exists and was scanned, and that --repo and --commit name the "
+                f"scan you mean.",
+                file=sys.stderr,
+            )
+            return EXIT_NOT_MEASURED
+        findings = findings_for(args.lake, args.repo, args.commit)
+    except CouldNotMeasure as exc:
+        print(f"NOT MEASURED: {exc}", file=sys.stderr)
+        return EXIT_NOT_MEASURED
+
     grades, unmatched = grade(seeds, findings)
+    print(f"Graded against {runs} scan run(s) for {args.repo} at {args.commit}.\n")
 
     print(render_summary(grades, unmatched))
 
@@ -344,9 +479,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"\nBelow the {args.fail_under:.0%} floor: {', '.join(below)}",
                 file=sys.stderr,
             )
-            return 1
+            return EXIT_FAILED
 
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":  # pragma: no cover

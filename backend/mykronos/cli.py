@@ -203,7 +203,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Re-read the host firewall rule that scopes the deploy registry "
             "(#298). Reads the rule; does not probe the port, because a probe "
-            "from this host passes whether the rule exists or not."
+            "from this host passes whether the rule exists or not. "
+            "Exits 0 verified, 1 not verified, 2 usage, 3 verified-but-something"
+            "-was-never-measured (#60015)."
         ),
     )
     host_controls.add_argument(
@@ -1479,7 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.record_ports:
                 if not args.ports_baseline:
                     print("--record-ports needs --ports-baseline", file=sys.stderr)
-                    return 2
+                    return host_controls_module.EXIT_USAGE
                 Path(args.ports_baseline).write_text(
                     json.dumps(sorted(evidence.published_ports), indent=2),
                     encoding="utf-8",
@@ -1503,6 +1505,13 @@ def main(argv: list[str] | None = None) -> int:
                     json.dumps(
                         {
                             "ok": host_report.ok,
+                            # [#60015] `ok` alone let a run with an unestablished
+                            # check read as a clean one. A consumer of this JSON
+                            # needs both halves for the same reason the exit code
+                            # does.
+                            "complete": host_report.complete,
+                            "unmeasured": [a.key for a in host_report.unmeasured],
+                            "missing_assertions": host_report.missing_assertions,
                             "assertions": [
                                 dataclasses.asdict(a) for a in host_report.assertions
                             ],
@@ -1517,10 +1526,24 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print()
                 print(host_controls_module.verdict(host_report))
-            # Non-zero when anything failed OR when nothing was verified. The
-            # second half is the point: a document carrying only the local
-            # probe has no failures and still must not read as a pass.
-            return 0 if host_report.ok else 1
+            # Three numbers, because this control has three answers [#60015].
+            #
+            # 1 — something failed, or nothing was verified. The second half is
+            #     the point: a document carrying only the local probe has no
+            #     failures and still must not read as a pass.
+            # 3 — everything read holds, and something the control is defined to
+            #     establish was never established. Until today this returned 0,
+            #     which is how `ports.baseline` sat at "22 bindings observed and
+            #     compared to nothing" through a green run: the sentence was in
+            #     the table and the exit code said VERIFIED. A caller reading
+            #     only the number could not tell this from a clean run, and a
+            #     caller is what schedules this.
+            # 0 — everything was established and everything holds.
+            if not host_report.ok:
+                return host_controls_module.EXIT_FAILED
+            if not host_report.complete:
+                return host_controls_module.EXIT_NOT_MEASURED
+            return host_controls_module.EXIT_OK
 
         if args.command == "query":
             with catalog.connect_readonly() as con:

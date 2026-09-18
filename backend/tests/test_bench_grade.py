@@ -257,6 +257,12 @@ class TestTheFloor:
         )
         # Nothing detected: the worst possible grade.
         monkeypatch.setattr(bench_grade, "findings_for", lambda *a, **k: [])
+        # Something DID scan the commit — it just caught nothing. Stubbed
+        # alongside `findings_for` since #60015, because these two facts are
+        # now read separately and this class is about the case where the run
+        # happened. Without this the grader would (correctly) refuse to grade
+        # at all, and these tests would be asserting the wrong branch.
+        monkeypatch.setattr(bench_grade, "scan_runs_for", lambda *a, **k: 4)
         return bench_grade.main(
             [
                 str(manifest),
@@ -270,12 +276,22 @@ class TestTheFloor:
     def test_a_total_miss_still_exits_zero_without_a_floor(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
-        assert self._run(tmp_path, monkeypatch) == 0
+        """A measured 0% is still not a build failure unless a floor is set.
+
+        Unchanged by #60015 and worth keeping distinct from it: this run was
+        measured. Four scan runs looked at the commit and caught none of the
+        seeded issues, which is a real grade of zero — the thing the story
+        insisted must stay distinguishable from no grade at all.
+        """
+        assert self._run(tmp_path, monkeypatch) == bench_grade.EXIT_OK
 
     def test_the_same_run_fails_once_a_floor_is_set(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
-        assert self._run(tmp_path, monkeypatch, "--fail-under", "0.8") == 1
+        assert (
+            self._run(tmp_path, monkeypatch, "--fail-under", "0.8")
+            == bench_grade.EXIT_FAILED
+        )
 
     def test_a_capability_below_the_floor_is_named(self) -> None:
         grades, _ = bench_grade.grade([seed()], [])
@@ -286,3 +302,149 @@ class TestTheFloor:
         ]
 
         assert below == ["sast"]
+
+
+class TestAGradeThatCouldNotBeTaken:
+    """#60015: 0% recall and "no grade" must not be the same exit code.
+
+    Before this, every real run of the grader hit an empty lake — the corpus
+    repo does not exist — scored 0% on every capability and returned 0. A
+    typo'd `--repo`, a lake nobody wrote, and a detector that genuinely missed
+    everything were one number, so wiring this into a pipeline would have added
+    a permanently green lane reporting 0%.
+    """
+
+    def _manifest(self, tmp_path: Path) -> Path:
+        manifest = tmp_path / "manifest.yaml"
+        manifest.write_text(
+            yaml.safe_dump(
+                {"seeded": [{"file": "src/orders/lookup.py", "line": 42,
+                             "capability": "sast"}]}
+            ),
+            encoding="utf-8",
+        )
+        return manifest
+
+    def _run(self, tmp_path: Path, *extra: str) -> int:
+        return bench_grade.main(
+            [
+                str(self._manifest(tmp_path)),
+                "--repo", "acme/bench",
+                "--commit", "a" * 40,
+                "--lake", str(tmp_path),
+                *extra,
+            ]
+        )
+
+    def test_an_empty_lake_is_not_a_zero_percent_grade(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        """The exact run this script does today, and it must not be green.
+
+        No stub anywhere: `tmp_path` holds no `scan_runs` partition, which is
+        what the real lake looks like for a corpus that was never built.
+        """
+        assert self._run(tmp_path) == bench_grade.EXIT_NOT_MEASURED
+
+        error = capsys.readouterr().err
+        assert "NOT MEASURED" in error
+        # The message has to carry the distinction, not just the number: an
+        # operator reading "0%" and an operator reading this must not go and
+        # investigate the same thing.
+        assert "no scan run" in error
+        assert "0% would mean the detectors ran and missed" in error
+
+    def test_a_floor_does_not_turn_an_unmeasured_run_into_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """Still 3, not 1, with `--fail-under` set.
+
+        The floor grades detectors. Reporting "below the floor" for a commit
+        nothing scanned would blame the detectors for the corpus being absent,
+        and send somebody to fix a scanner that is working.
+        """
+        assert (
+            self._run(tmp_path, "--fail-under", "0.8")
+            == bench_grade.EXIT_NOT_MEASURED
+        )
+
+    def test_scan_runs_present_but_no_findings_is_a_real_zero(
+        self, tmp_path: Path, monkeypatch: Any, capsys: Any
+    ) -> None:
+        """The other side of the line, and the one easy to get wrong.
+
+        A lane that ran and correctly found nothing writes a scan run and no
+        finding rows. That is the cleanest possible measurement, and inferring
+        "not measured" from the absence of findings would report it as the
+        opposite of what it is.
+        """
+        monkeypatch.setattr(bench_grade, "scan_runs_for", lambda *a, **k: 2)
+        monkeypatch.setattr(bench_grade, "findings_for", lambda *a, **k: [])
+
+        assert self._run(tmp_path) == bench_grade.EXIT_OK
+        assert "Graded against 2 scan run(s)" in capsys.readouterr().out
+
+    def test_an_unreadable_lake_is_not_a_failing_grade(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """A corrupt lake used to arrive as an uncaught traceback — exit 1,
+        the same number as "a capability fell below the floor"."""
+        def explode(*a: Any, **k: Any) -> int:
+            raise bench_grade.CouldNotMeasure("parquet is not readable")
+
+        monkeypatch.setattr(bench_grade, "scan_runs_for", explode)
+
+        assert (
+            self._run(tmp_path, "--fail-under", "0.8")
+            == bench_grade.EXIT_NOT_MEASURED
+        )
+
+    def test_an_empty_parquet_directory_reads_as_no_runs_not_as_an_error(
+        self, tmp_path: Path
+    ) -> None:
+        """`_has_parquet` is checked on the filesystem, not by catching duckdb.
+
+        A `scan_runs/` directory that exists and holds no parquet is the state
+        a freshly-initialised lake is in, and it must reach the "nothing
+        scanned this commit" branch rather than the "lake is broken" one.
+        """
+        (tmp_path / "scan_runs").mkdir()
+
+        assert not bench_grade._has_parquet(tmp_path / "scan_runs")
+        assert bench_grade.scan_runs_for(tmp_path, "acme/bench", "a" * 40) == 0
+
+    def test_an_empty_findings_partition_is_no_findings_not_an_error(
+        self, tmp_path: Path
+    ) -> None:
+        """`findings_for` over a lake with no findings must return [], not raise.
+
+        This is the asymmetry between the two reads and the easy one to get
+        backwards. An absent `scan_runs` partition means nothing scanned the
+        commit, which is "could not measure". An absent `findings` partition
+        means the scanners ran and reported nothing, which is a perfect result.
+        Raising here would report a clean corpus as a broken lake.
+        """
+        assert bench_grade.findings_for(tmp_path, "acme/bench", "a" * 40) == []
+
+    def test_the_two_controls_agree_on_what_the_numbers_mean(self) -> None:
+        """#60015 asked for the distinction in BOTH tools' exit codes.
+
+        The constants are declared twice — `bench_grade` runs standalone in a
+        pipeline container with no `mykronos` package importable — so this is
+        what stops the two halves of one convention from drifting into two
+        conventions.
+        """
+        from mykronos import host_controls
+
+        for name in ("EXIT_OK", "EXIT_FAILED", "EXIT_USAGE", "EXIT_NOT_MEASURED"):
+            assert getattr(bench_grade, name) == getattr(host_controls, name), name
+
+        assert bench_grade.EXIT_NOT_MEASURED == 3
+        assert len(
+            {
+                bench_grade.EXIT_OK,
+                bench_grade.EXIT_FAILED,
+                bench_grade.EXIT_USAGE,
+                bench_grade.EXIT_NOT_MEASURED,
+            }
+        ) == 4
