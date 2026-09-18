@@ -209,31 +209,41 @@ class TestTheConfiguredSource:
         )
         gates = checker.gates(ours)
 
-        # Tightened back to the three-job list (#59999), on the condition this
-        # test's previous revision named for itself.
+        # BACK to `[oracle-gate]`, and this is the third revision of this
+        # assertion. Each one so far has been a real change of fact rather than
+        # a change of mind, and the history is kept because an assertion that
+        # flips without saying why is one the next reader will flip again.
         #
-        # That revision pinned `[oracle-gate]` alone and said so deliberately:
-        # under #59100 `deploy-prod`, `api-inventory` and `dast-demo` were
-        # deleted rather than demoted, `insider` gated nothing because nothing
-        # downstream of it deployed, and pinning three jobs the pipeline did
-        # not contain would have reported drift against TheHub's copy forever.
-        # It closed by saying that if delivery returned to Concourse,
-        # "#55167's reasoning is restated above `insider` in the pipeline and
-        # this assertion tightens with it."
+        #   #59100  pinned `[oracle-gate]`: `deploy-prod`, `api-inventory` and
+        #           `dast-demo` were deleted, so `insider` gated nothing.
+        #   #59999  pinned the three-job list: #491 had restored both jobs and
+        #           `deploy-prod` was a job whose `passed:` was `[insider]`, so
+        #           the promotion was real again and needed guarding.
+        #   #59990  pins `[oracle-gate]`: the operator retired `deploy-prod` on
+        #   /#60063 2026-09-18. It last ran 2026-08-19, and production ships
+        #           through TheHub's own `scripts/deploy.sh` from `develop`
+        #           (ADR 0072 Path A). With the job deleted there is no
+        #           promotion, so there is nothing for the wide list to gate.
         #
-        # Delivery returned. #491 restored `api-inventory` and `dast-demo`,
-        # `deploy-prod` is a job in the file whose `passed:` is `[insider]`,
-        # and all three run on the server. So the condition is met and this is
-        # the tightening it asked for -- not a revert of #59100's reasoning,
-        # which was sound for the pipeline it described.
+        # What would move it a fourth time is written above `insider` in the
+        # pipeline file: a job in that file whose success means "production now
+        # runs this commit". #55167's reasoning is the specification for
+        # rebuilding the gate if one appears, and none of the three revisions
+        # above disputes it.
         #
         # The gate itself is asserted in full, with the transitive property it
         # stands for, in `test_pipeline_gate_wiring.py`. What is asserted here
         # is the thing THIS test exists for: the extractor finds a real gate in
         # the real file. A refactor that made `gates()` return nothing would
         # pass every test above and fail this one.
-        assert gates["insider"]["source"] == ["api-inventory", "dast-demo", "oracle-gate"], (
-            "insider is the promotion gate again: a commit whose demo DAST or "
-            "API inventory failed must not stay eligible for deploy-prod (#55167, #59999)"
+        assert gates["insider"]["source"] == ["oracle-gate"], (
+            "insider gates on oracle-gate alone, because `deploy-prod` is "
+            "retired and there is no promotion left to guard (#59990/#59999/"
+            "#60063). `oracle-gate` still carries `passed: [deploy-demo]`, so "
+            "this is not an ungated `insider`."
         )
+        # The floor, and it is the assertion that makes the one above mean
+        # something: `gates()` returning `{"insider": {"source": []}}` for a
+        # file it failed to parse would otherwise read as agreement.
+        assert gates["insider"]["source"], "insider has no `passed:` at all"
         assert sum(1 for job in gates.values() if job) >= 10
