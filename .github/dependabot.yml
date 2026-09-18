@@ -160,6 +160,27 @@ updates:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
 
+      # #510 bumped eslint 9.39.5 -> 10.8.1 on the same day, and it is the
+      # same shape wearing different clothes. `npm ci` PASSES -- npm resolves
+      # a nested eslint 9 and only warns -- and `npm run build` passes too,
+      # because `next build` does not run eslint. `npm run lint`, which
+      # `deploy/concourse/pipelines/mykronos.yml:1041` runs, exits 2:
+      #
+      #   TypeError: Error while loading rule 'react/display-name':
+      #     contextOrFilename.getFilename is not a function
+      #
+      # `eslint-plugin-react@7.37.5` uses a rule-context API eslint 10
+      # removed. It arrives through `eslint-config-next@16.3.5`, whose own
+      # peer range says `eslint: >=9.0.0` -- wrong about its own transitive
+      # dependencies, which is exactly why the peer check passed and the run
+      # still died. Nothing in this repository can fix that.
+      #
+      # Remove this when `eslint-config-next` ships an `eslint-plugin-react`
+      # that supports eslint 10. Check it by running `npm run lint`, not by
+      # reading the peer range -- the peer range is what got this wrong.
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+
   # No `docker` entry. Both Dockerfiles use floating tags (`python:3.13-slim`,
   # `node:22-slim`, `gcr.io/distroless/nodejs22-debian13:nonroot`) rather than
   # digests, so there is no pin for Dependabot to roll forward -- a rebuild
