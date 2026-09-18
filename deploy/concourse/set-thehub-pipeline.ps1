@@ -45,6 +45,20 @@
     deploying TheHub - and it stays opt-in, because the quiet version of this
     is a cloud scan nobody notices never ran.
 
+.PARAMETER TheHubRepo
+    Where TheHub is checked out. After a successful `fly set-pipeline` this
+    script runs TheHub's `scripts/export_concourse_pipeline.py --pipeline
+    thehub`, so that the committed mirror of this pipeline is refreshed at the
+    moment the change is made rather than whenever somebody notices it has gone
+    stale (#59978). It writes the file and never commits it: the mirror has to
+    stay reviewed as well as current.
+
+    Optional. Without it the script tries $env:THEHUB_REPO and then a few
+    conventional siblings of this repository, confirming each by finding the
+    exporter inside it rather than by the directory name. If none resolves it
+    says so in red and names the command to run by hand - loudly, because a
+    silent skip is the defect this closes.
+
 .NOTES
     ASCII only - see setup.ps1.
 #>
@@ -145,7 +159,14 @@ param(
     # See the guard below, and the .PARAMETER note above. Never the default,
     # and never quiet.
     [switch]$AllowPipelineFromAnyBranch,
-    [switch]$Pause
+    [switch]$Pause,
+
+    # Where TheHub is checked out, for the mirror re-export at the end of this
+    # script (#59978). Left empty on purpose: the discovery below tries
+    # $env:THEHUB_REPO and then a few conventional siblings of this repository,
+    # and confirms each candidate by finding the exporter in it rather than by
+    # trusting the name. Pass this when TheHub lives somewhere else.
+    [string]$TheHubRepo = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -534,6 +555,127 @@ try {
 } finally {
     if (Test-Path $varsFile) { Remove-Item $varsFile -Force }
     if ($tempConfig -and (Test-Path $tempConfig)) { Remove-Item $tempConfig -Force }
+}
+
+# -- Re-export TheHub's committed mirror, at the point the change is MADE ----
+#
+# `concourse/pipelines/thehub.yml` in ToddGBenson/TheHub is a DOWNSTREAM EXPORT
+# of the pipeline this script has just applied. It exists so the definition
+# running on the server is reviewable in the repository that owns the
+# application, and its own header says that editing it reaches nothing.
+#
+# Nothing re-exported it. So every apply from here left it behind: it drifted
+# for five days and warned on six consecutive deploys before anybody read the
+# warning, and TheHub's deploy has gone on reporting "resources added on the
+# server: pipelines; jobs added on the server: set-pipeline" -- the #454
+# self-apply job, present here since it was merged and never mirrored.
+#
+# **Why here and not in the deploy.** The obvious fix is to have TheHub's
+# deploy re-export whenever its drift check fires. That was considered and
+# REJECTED, and the reasoning has to survive in this comment because it is the
+# more tempting design of the two:
+#
+#   Auto-re-exporting on drift makes the repository silently adopt whatever is
+#   on the server -- including an unreviewed hand-edit, which is exactly the
+#   case `export_concourse_pipeline.py --check` prints its two-causes warning
+#   for. A mirror that refreshes itself whenever it disagrees can never
+#   disagree. That is the same shape as a test that cannot fail: green forever
+#   and meaning nothing, with the drift detector quietly converted into the
+#   step that launders the drift away.
+#
+# Re-exporting HERE keeps the mirror both current AND reviewed. An apply is a
+# deliberate act by a person, and its output lands in a working tree that
+# person then commits. The export is written and never committed: adopting a
+# change and reviewing it stay two separate steps, which is the whole
+# difference between this and the rejected option.
+#
+# **The cross-repo awkwardness, resolved rather than hard-coded.** The exporter
+# lives in TheHub -- it reads Concourse's Postgres through `docker exec`, so it
+# has to run on this host -- and this script lives in mykronos. One repository
+# cannot know where the other is checked out, so the location is resolved in
+# this order, and every candidate is confirmed by the exporter actually being
+# present rather than by the directory name matching:
+#
+#   1. -TheHubRepo, passed explicitly
+#   2. $env:THEHUB_REPO
+#   3. a sibling of this repository's root, by conventional name
+#
+# If none resolves, this prints what to run by hand and does NOT fail: the
+# pipeline is already applied by this point, and throwing afterwards would
+# misreport what happened. Loud rather than fatal -- a silent skip here
+# recreates the exact defect this exists to close.
+$exporterRelative = "scripts\export_concourse_pipeline.py"
+
+# An explicit -TheHubRepo is the ONLY candidate when it is given, even if it
+# turns out not to hold the exporter. Falling through to a sibling would export
+# into a different checkout from the one that was named -- the one outcome
+# worse than not exporting at all, because the operator would then review a
+# diff in a repository they did not point at and believe the named one was
+# current. Getting it wrong is loud below; guessing past it would not be.
+$candidates = @()
+if ($TheHubRepo) {
+    $candidates += $TheHubRepo
+} else {
+    if ($env:THEHUB_REPO) { $candidates += $env:THEHUB_REPO }
+    $projects = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent
+    foreach ($name in @('TheHub-main', 'TheHub', 'thehub')) {
+        $candidates += (Join-Path $projects $name)
+    }
+}
+
+$theHubRoot = $candidates |
+    Where-Object { $_ -and (Test-Path (Join-Path $_ $exporterRelative)) } |
+    Select-Object -First 1
+
+if (-not $theHubRoot) {
+    Write-Host "`nTheHub's committed mirror was NOT re-exported." -ForegroundColor Red
+    Write-Host "  concourse/pipelines/thehub.yml in ToddGBenson/TheHub now lags this apply." -ForegroundColor Red
+    Write-Host "  Could not find $exporterRelative under any of:" -ForegroundColor DarkGray
+    foreach ($candidate in $candidates) { Write-Host "    $candidate" -ForegroundColor DarkGray }
+    Write-Host "  Re-run with -TheHubRepo <path>, or do it by hand in that repository:" -ForegroundColor Yellow
+    Write-Host "    python scripts/export_concourse_pipeline.py --pipeline $Pipeline" -ForegroundColor Yellow
+    Write-Host "  then review the diff and commit it." -ForegroundColor Yellow
+} else {
+    $mirror = Join-Path $theHubRoot "concourse\pipelines\$Pipeline.yml"
+    $before = if (Test-Path $mirror) { (Get-FileHash $mirror -Algorithm SHA256).Hash } else { "" }
+
+    Write-Host "`nRe-exporting TheHub's committed mirror from the server..." -ForegroundColor Cyan
+    Write-Host "  $theHubRoot" -ForegroundColor DarkGray
+
+    # Run from TheHub's root: the exporter resolves its output path relative to
+    # its own location, but `docker exec` and its yaml import are happier with
+    # a predictable working directory, and a relative path printed in its
+    # output then means what a reader expects.
+    #
+    # `--check` is deliberately NOT passed. That flag asks whether the two
+    # disagree and exits 1 when they do; the point here is to WRITE the file.
+    # Exit 2 is the exporter's "cannot export at all" -- an encryption key was
+    # configured, or the Concourse database container is not running.
+    $exportExit = 0
+    Push-Location $theHubRoot
+    try {
+        & python (Join-Path $theHubRoot $exporterRelative) --pipeline $Pipeline
+        $exportExit = $LASTEXITCODE
+    } catch {
+        $exportExit = -1
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkGray
+    } finally {
+        Pop-Location
+    }
+
+    if ($exportExit -ne 0) {
+        Write-Host "  Export FAILED (exit $exportExit); the mirror still lags this apply." -ForegroundColor Red
+        Write-Host "  The pipeline itself applied cleanly - only the committed copy is behind." -ForegroundColor DarkGray
+    } else {
+        $after = if (Test-Path $mirror) { (Get-FileHash $mirror -Algorithm SHA256).Hash } else { "" }
+        if ($before -eq $after) {
+            Write-Host "  Mirror already matched the server; nothing to commit." -ForegroundColor DarkGray
+        } else {
+            Write-Host "  Mirror updated. REVIEW AND COMMIT IT - this script deliberately" -ForegroundColor Yellow
+            Write-Host "  does not commit, so the change stays something a person read:" -ForegroundColor Yellow
+            Write-Host "    git -C `"$theHubRoot`" diff -- concourse/pipelines/$Pipeline.yml" -ForegroundColor Yellow
+        }
+    }
 }
 
 if ($Pause) {

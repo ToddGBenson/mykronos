@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from mykronos import guidance, supply_chain
+from mykronos import guidance, prior_disposition, supply_chain
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,28 @@ def package_for(
                 "advisories": package.advisories,
             }
     return None
+
+
+def prior_decision(
+    catalog: Any, *, repo_full_name: str, row: dict[str, Any]
+) -> dict[str, Any] | None:
+    """A decision this finding is about to re-ask, because a placeholder
+    advisory id was replaced under it (#280).
+
+    The block that stops the same investigation being done twice. A Debian
+    `TEMP-` id becoming a CVE changes `finding_id`, so the acceptance stays on
+    the retired row and the new one arrives untriaged — which on 2026-09-11
+    cost four written acceptances and produced six rows needing the identical
+    `apt-cache policy` check that had already been run.
+
+    Evidence, never a verdict: nothing here changes a status. Four placeholders
+    became six CVEs, so there is no pairing to infer, and carrying an
+    acceptance onto a vulnerability nobody has looked at would suppress real
+    findings.
+    """
+    found = prior_disposition.for_findings(catalog, repo_full_name, [row])
+    match = found.get(str(row.get("finding_id") or ""))
+    return None if match is None else match.as_dict()
 
 
 def missing_context(
