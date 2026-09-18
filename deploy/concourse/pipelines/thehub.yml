@@ -2416,7 +2416,28 @@ jobs:
                 # compares against it. Without this the signal is skipped
                 # rather than guessed (spec 06 section 7) - which is safe, and
                 # is still less than this could see.
-                git fetch --quiet origin "$BASE" || true
+                # [#496] BatchMode, because `|| true` does not protect against
+                # a PROMPT. The `source` resource clones over SSH with a deploy
+                # key (see the resource above for why), so this fetch speaks SSH
+                # in a task container that has no known_hosts. ssh then asks
+                #
+                #   The authenticity of host 'github.com' can't be established.
+                #   Are you sure you want to continue connecting (yes/no)?
+                #
+                # on a terminal nobody is attached to, and waits. The build does
+                # not fail — it HANGS to the task timeout, which is the failure
+                # shape that cost deploy-demo ~26 minutes a build before #388.
+                # `|| true` catches a non-zero exit; it cannot catch a question.
+                #
+                # BatchMode=yes turns the question into an immediate non-zero
+                # exit, so `|| true` does what its author intended: skip the
+                # author-baseline signal rather than guess it (spec 06 §7).
+                #
+                # This makes the failure fast and honest. It does NOT make the
+                # fetch succeed — that needs github.com's host keys in the task
+                # image, which is infrastructure rather than a pipeline edit and
+                # is left to #496.
+                GIT_SSH_COMMAND='ssh -o BatchMode=yes'                   git fetch --quiet origin "$BASE" || true
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"

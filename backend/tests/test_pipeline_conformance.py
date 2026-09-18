@@ -940,3 +940,42 @@ def test_every_gate_payload_names_a_scope_the_api_accepts() -> None:
                 f"{name}: decision_type {found.group(1)!r} is not one "
                 f"`/api/oracle/evaluate` accepts"
             )
+
+
+def test_no_git_over_ssh_can_ask_a_question() -> None:
+    """[#496] A prompt is not a failure, and `|| true` cannot catch one.
+
+    `thehub/insider` ran `git fetch origin "$BASE" || true` in a task whose
+    remote is SSH (the `source` resource uses a deploy key deliberately) and
+    whose container has no known_hosts. ssh asked
+
+        Are you sure you want to continue connecting (yes/no/[fingerprint])?
+
+    on a terminal nobody was attached to, and the build hung to its timeout.
+    The guard against a non-zero exit was intact the whole time; it just does
+    not apply to a question.
+
+    Any `git fetch`/`git clone`/`git ls-remote` in a pipeline task must run
+    under BatchMode so the question becomes an exit code.
+    """
+    offenders: list[str] = []
+    for path in sorted((CONCOURSE_DIR / "pipelines").glob("*.yml")):
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if not re.search(r"\bgit\s+(fetch|clone|ls-remote)\b", stripped):
+                continue
+            # The Concourse git resource does its own host-key handling; this
+            # is about git invoked inside a task script.
+            if "BatchMode" in line or "GIT_SSH_COMMAND" in line:
+                continue
+            offenders.append(f"{path.name}:{number}: {stripped[:70]}")
+
+    assert not offenders, (
+        "These git invocations can block on an SSH host-key prompt, which "
+        "hangs the task to its timeout rather than failing it:\n  "
+        + "\n  ".join(offenders)
+    )
