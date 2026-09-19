@@ -76,13 +76,20 @@ class FindingStatus(StrEnum):
     FALSE_POSITIVE = "false_positive"
     ACCEPTED_RISK = "accepted_risk"
     SUPPRESSED = "suppressed"
-    #: Withdrawn because the adapter that produced it was wrong (spec 05 §5a).
+    #: Withdrawn because this record no longer describes reality (spec 05 §5a).
     #: A statement about the record, not the vulnerability — which is very
     #: likely still open under a new id, named in `superseded_by`.
     #:
+    #: Two machine setters, and no human: `reprocess` when the adapter that
+    #: produced the record was wrong, and `carry_forward` when the code the
+    #: record described changed and the decision moved to its successor
+    #: (spec 05 §5b, D-122).
+    #:
     #: Deliberately not `fixed`. That is the only input to mean-time-to-fix,
     #: so retiring mis-identified findings as fixed would report a mass
-    #: remediation every time an adapter was corrected.
+    #: remediation every time an adapter was corrected — and carrying a
+    #: dismissal onto edited code would report one every time somebody
+    #: touched a line near a finding.
     SUPERSEDED = "superseded"
     #: Open when its capability lost the grant that lets it report (B-047).
     #: Closure needs two consecutive successful scans that no longer observe

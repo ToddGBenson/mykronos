@@ -309,15 +309,29 @@ Letting the absence reconciler above deal with them is worse rather than
 neutral: it also writes `fixed`, and it requires two further scans, which a
 repository that cannot currently run its workflows will never produce.
 
-`superseded` therefore means: **this record was withdrawn because the adapter
-that produced it was wrong.** It is a statement about the record, not about
-the vulnerability — which is very likely still open, under a new id.
+`superseded` therefore means: **this record no longer describes reality.** It
+is a statement about the record, not about the vulnerability — which is very
+likely still open, under a new id.
+
+Two machine paths reach it, and they are different sentences with the same
+honest core. Reprocessing sets it when **the adapter that produced the record
+was wrong** (above). `carry_forward` sets it when **the code the record
+described changed** (§5b): identity is a hash of the matched snippet, so
+editing the matched code orphans the row, and the decision somebody recorded
+against it is moved onto the successor rather than lost. Neither claims the
+defect was resolved, which is the whole point of the status. The ratified
+extension is recorded in D-122, together with the standing caution that a state
+with two machine setters meaning different things is how a status stops
+answering the question people ask of it — if a third is ever proposed, that is
+the moment to split the state rather than extend it again.
 
 Normative:
 
-- **Terminal, and machine-set only.** Reprocessing sets it. No human
-  disposition may, for the same reason no human may set `fixed`: it is a claim
-  about what a tool produced, and a person is not in a position to make it.
+- **Terminal, and machine-set only.** Two setters, both machines: reprocessing
+  (the adapter was wrong) and `carry_forward` (the code this record described
+  changed, §5b). No human disposition may, for the same reason no human may set
+  `fixed`: it is a claim about what a tool produced, or about what happened to
+  the code it matched, and a person is not in a position to make either.
 - **`superseded_by` names the replacing `finding_id` where there is one**, so
   the chain is auditable and somebody challenging a disappearance can follow
   it. It is null when a record is withdrawn with nothing taking its place —

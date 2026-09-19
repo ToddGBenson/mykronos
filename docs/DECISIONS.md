@@ -5246,6 +5246,76 @@ carry that one and names it, which is correct on both counts: 0.33 is a
 different finding by any honest reading, and a person should know the decision
 is there to be re-made.
 
+**Ratified 2026-09-18 (#59085).** Both choices above were made by an agent in
+order to ship and flagged for ratification rather than left in a commit
+message. The operator accepted both as written, and the floor and margin stay
+at 0.60 and 0.20. The caveat was not waved away: they were derived from *one*
+real case, a sample of one is a starting point and not a calibration, and the
+instruction attached to the ratification was to revisit once there are three or
+four more cases and to **record the cases rather than adjust by feel**. What
+follows is that record.
+
+**The confirming measurement, 2026-09-18.** Read-only against the production
+lake — 8,424 findings, 4,897 scan runs, across `ToddGBenson/{TheHub, mykronos,
+keel}`. `carry_forward` has carried three findings in production, all of them
+*after* the constants were chosen, so they are confirmation rather than
+calibration:
+
+| score | file |
+| --- | --- |
+| 0.750 | TheHub `backend/services/devops/lifecycle.py` |
+| 0.794 | TheHub `backend/services/proactive_engine.py` |
+| 0.714 | mykronos `.github/workflows/demo-and-dast.yml` |
+
+All three moved a `false_positive` onto the successor and all three inherited
+`first_seen_at`, which is what stops a gate blaming the commit that moved the
+line. Against them, the refusals the same policy is making every hour:
+
+| score | file |
+| --- | --- |
+| 0.538 | mykronos `backend/mykronos/jobs.py` |
+| 0.333 | mykronos `backend/mykronos/db/session.py` |
+| 0.000 | TheHub `backend/services/incident_response/ir_service.py` |
+| n/a | keel `.github/workflows/release.yml` (nothing comparable) |
+
+**So the floor sits in a measured empty band.** Lowest accepted score 0.714,
+highest refused score 0.538: a band 0.176 wide, with 0.60 inside it and 0.114
+of headroom below the nearest carry and 0.062 above the nearest refusal. That
+is a gap in the data, not a preference.
+
+**Option B — raise the floor to 0.75 — is now measurably wrong**, not merely
+more conservative. It changes exactly one outcome in the whole estate: it would
+refuse the 0.714 carry, which is an `actions/checkout` pin bump (`v4.4.0` ->
+`v7.0.1`) whose snippets are otherwise byte-identical — same `ref:`, same
+comment, same `fetch-depth: 0`. Refusing it would resurrect a dismissal over a
+SHA bump and send somebody to re-triage a version pin.
+
+**The margin is the part doing nothing.** Measured margin on each real carry:
+0.397, 0.790, 0.714. Nothing in this estate has ever been refused by the
+margin, and every value from 0.00 to 0.30 produces byte-identical results on
+all real data. That is not an argument to remove it — it is a cheap guard
+against the copy-pasted-call case it was written for and it costs nothing when
+it does not bind — but it is an argument that the 0.20 is untested, and that
+any future recalibration is about the **floor**.
+
+**The `superseded` extension was ratified too, and the risk was recorded
+rather than dismissed.** `superseded` now has a second machine setter: this
+mechanism, meaning "the code this record described changed", alongside §5a's
+original "the adapter was wrong". `fixed` was the alternative and it would have
+been the lie §5a exists to prevent — the defect was not fixed, the code around
+it was edited. It is accepted because both meanings share an honest core,
+**this record no longer describes reality**, and neither claims the defect was
+resolved. The standing caution is that a state with two machine setters meaning
+different things is how a status stops answering the question people ask of it.
+Measured the same day: 460 `superseded` rows, 457 from reprocessing and 3 from
+this mechanism, and the two are currently told apart only by whether
+`superseded_by` is set. §5a explicitly allows reprocessing to set
+`superseded_by` "where there is one", so that split is clean only until the
+first reprocess that re-derives an equivalent finding; no column records which
+setter acted. That is latent, not active — no wrong number is being reported
+today — and whether to record the setter is an open decision, filed separately
+rather than settled here.
+
 ## D-123 — Retry the fetch, never the verdict
 
 **2026-09-12.** Seven lanes across the four Concourse pipelines were red on
