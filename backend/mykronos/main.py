@@ -516,6 +516,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     result.epss_error,
                 )
 
+        if settings.digest_enabled and not app.state.notifier.enabled:
+            logger.warning(
+                "Weekly digest is enabled and no Slack transport is configured, "
+                "so it will build digests every %ss and deliver none. Set "
+                "MYKRONOS_SLACK_WEBHOOK_URL, or MYKRONOS_SLACK_BOT_TOKEN with "
+                "MYKRONOS_SLACK_CHANNEL - or unset MYKRONOS_DIGEST_ENABLED.",
+                settings.weekly_digest_interval_seconds,
+            )
+
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
@@ -533,6 +542,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.deployment_probe_interval_seconds,
                 _deployment_probe,
             ),
+            # `digest_enabled` and the notifier's transport are separate
+            # switches, and one without the other is silent (#412). A disabled
+            # notifier is a supported state -- `digest.send_all` says so and is
+            # right -- but a digest turned ON with nothing to send through is
+            # somebody asking for delivery that cannot happen, and the only
+            # symptom is an INFO line inside a job that reports success.
+            #
+            # Said once at startup rather than weekly at send time, because
+            # that is when somebody is looking, and named with both switches
+            # because neither is wrong on its own.
             # Off unless opted in: this job messages people.
             *(
                 [("digest", settings.weekly_digest_interval_seconds, _digest)]

@@ -11,6 +11,7 @@ import gc
 import json
 import warnings
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -372,3 +373,67 @@ class TestThroughput:
 
         assert body["this_week"]["opened"] == 2
         assert "dismissal is not a closure" in body["note"]
+
+
+class TestTheDigestCannotBeEnabledIntoAVoid:
+    """`digest_enabled` and the Slack transport are separate switches (#412).
+
+    A disabled notifier is a supported state and `digest.send_all` says so
+    correctly — it logs "sent to nobody" and returns 0 rather than claiming
+    delivery. What was missing is the case where somebody turns the digest ON
+    while no transport is set: that is a request for delivery that cannot
+    happen, and its only symptom was an INFO line inside a weekly job whose
+    own result is 0, which reads the same as a week with nothing to send.
+
+    Said once at startup, where somebody is looking.
+    """
+
+    def test_the_variables_are_documented(self) -> None:
+        """All five were referenced by compose and written down nowhere, so
+        the set needed to make notifications work had to be reconstructed by
+        reading the compose file against a running container."""
+        example = (
+            Path(__file__).resolve().parents[2] / "backend" / ".env.example"
+        ).read_text(encoding="utf-8")
+
+        for name in (
+            "MYKRONOS_SLACK_WEBHOOK_URL",
+            "MYKRONOS_SLACK_BOT_TOKEN",
+            "MYKRONOS_SLACK_CHANNEL",
+            "MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY",
+            "MYKRONOS_DIGEST_ENABLED",
+        ):
+            assert f"{name}=" in example, f"{name} is referenced by compose and undocumented"
+
+    def test_the_startup_warning_names_both_switches(self) -> None:
+        """A warning that says only "no transport" sends the reader to set one
+        up; the digest may be what they wanted to turn off. Both are named."""
+        source = (
+            Path(__file__).resolve().parents[1] / "mykronos" / "main.py"
+        ).read_text(encoding="utf-8")
+
+        guard = "settings.digest_enabled and not app.state.notifier.enabled"
+        assert guard in source, "the startup guard is gone"
+
+        start = source.index(guard)
+        message = source[start : start + 700]
+        assert "MYKRONOS_SLACK_WEBHOOK_URL" in message
+        assert "MYKRONOS_SLACK_BOT_TOKEN" in message
+        assert "MYKRONOS_SLACK_CHANNEL" in message
+        assert "MYKRONOS_DIGEST_ENABLED" in message, (
+            "the reader is told how to add a transport but not that turning "
+            "the digest off is the other valid answer"
+        )
+
+    def test_it_fires_only_for_the_misconfigured_combination(self) -> None:
+        """The guard against making this noisy. Three of the four states are
+        fine and must stay silent — most deployments run with both off."""
+        source = (
+            Path(__file__).resolve().parents[1] / "mykronos" / "main.py"
+        ).read_text(encoding="utf-8")
+
+        assert "if settings.digest_enabled and not app.state.notifier.enabled:" in source, (
+            "the condition must be the conjunction: a disabled digest with no "
+            "transport is the default and ordinary state, and warning about it "
+            "on every boot is how a warning stops being read"
+        )
