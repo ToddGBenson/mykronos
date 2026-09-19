@@ -439,14 +439,26 @@ def carry_forward(catalog: Catalog, *, dry_run: bool = False) -> CarryForwardRes
             )
         )
 
+    # Above the early return, deliberately. A refusal is a finished fact the
+    # moment `match` returns it: it does not wait on a carry existing, and
+    # `dry_run` does not make it provisional. Below the return — where these
+    # two lines used to sit — the estate's own steady state, no carries and
+    # four refusals every hour, computed all four and emitted none of them,
+    # so a run that discarded four operator decisions was indistinguishable
+    # from one that had nothing to do (#60273). The scheduled caller reads
+    # the log, not this object, and `summary()` gives it a count with no
+    # finding, no file and no reason in it.
+    for stranded in result.stranded:
+        logger.warning("Decision stranded: %s", stranded.describe())
+
     if dry_run or not pairs:
         return result
 
     result.partitions_written = _apply(catalog, pairs)
+    # Below `_apply`, equally deliberately: this line asserts that a link was
+    # written, so a run that wrote nothing must not emit it.
     for carried in result.carried:
         logger.info("Carried forward: %s", carried.describe())
-    for stranded in result.stranded:
-        logger.warning("Decision stranded: %s", stranded.describe())
     return result
 
 
