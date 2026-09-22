@@ -16,8 +16,9 @@ snippets out of the lake.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -605,3 +606,394 @@ def test_an_empty_lake_is_a_no_op(catalog: Catalog) -> None:
     result = carry_forward(catalog)
     assert result.carried == []
     assert result.stranded == []
+
+
+# ---------------------------------------------------------------------------
+# #60273 — the refusals reach a person, in the configuration production is in
+# ---------------------------------------------------------------------------
+#
+# Measured against the production lake on 2026-09-18 (8,424 findings / 4,897
+# scan runs): `carry_forward` returns **0 carried and 4 stranded**, and will
+# return exactly that every hour until one of the four inputs changes. The
+# refusals are all computed correctly and all four land in
+# `CarryForwardResult` — the defect was that the two `logger.warning` lines
+# naming them sat *below* `if dry_run or not pairs: return result`, so with no
+# carries the function returned first and threw them away. The scheduled job in
+# `main.py` reads the log, not the object, so none of those four names has ever
+# reached a log line.
+#
+# The four, and what each one exercises here:
+#
+#   mykronos backend/mykronos/jobs.py                false_positive  0.538
+#   mykronos backend/mykronos/db/session.py          false_positive  0.333
+#   TheHub   .../incident_response/ir_service.py     false_positive  0.000
+#   keel     .github/workflows/release.yml           accepted_risk   no snippet
+#
+# The three scores are reproduced exactly by `TestTheLiveRefusalScores` below
+# (7/13, 1/3 and 0). The fourth is production's "nothing comparable" case,
+# modelled as the stored-no-snippet refusal — the one reason `_refusal` gives
+# that carries no score at all.
+#
+# These tests deliberately run with *zero* carries. A test that also carried
+# something would keep the function past the early return and would pass
+# against the defect.
+
+STRANDED_LOGGER = "mykronos.lake.carry_forward"
+
+FILE_JOBS = "backend/mykronos/jobs.py"
+FILE_SESSION = "backend/mykronos/db/session.py"
+FILE_IR = "backend/services/incident_response/ir_service.py"
+FILE_RELEASE = ".github/workflows/release.yml"
+
+RULE_ACTION_PIN = "yaml.github-actions.security.third-party-action-not-pinned"
+
+# --- 0.538: seven normalized lines in common out of thirteen ---------------
+
+JOBS_DISMISSED = '''    def _sweep_stale_scan_runs(session: Session) -> int:
+        cutoff = utcnow() - timedelta(hours=6)
+        rows = session.execute(
+            text("SELECT scan_run_id FROM scan_runs WHERE started_at < :cutoff"),
+            {"cutoff": cutoff},
+        )
+        swept = [r[0] for r in rows]
+        logger.info("swept %d stale scan runs", len(swept))
+        session.commit()
+        return len(swept)'''
+
+JOBS_SUCCESSOR = '''    def _sweep_stale_scan_runs(session: Session) -> int:
+        cutoff = utcnow() - timedelta(hours=6)
+        rows = session.execute(
+            text("SELECT scan_run_id, finished FROM scan_runs WHERE started_at < :c"),
+            {"cutoff": cutoff},
+        )
+        swept = [r[0] for r in rows if r[1] is None]
+        logger.warning("swept %d running scan runs", len(swept))
+        session.commit()
+        return len(swept)'''
+
+# --- 0.333: four in common out of twelve, the `_identifier(...)` rewrite ----
+
+SESSION_DISMISSED = '''    def _configure(engine: Engine) -> None:
+        engine.execute(text("SET search_path TO mykronos"))
+        engine.execute(text("SET statement_timeout TO 30000"))
+        engine.execute(text("SET lock_timeout TO 5000"))
+        engine.execute(text("SET timezone TO 'UTC'"))
+        register_vector(engine)
+        engine.dispose()
+        return None'''
+
+SESSION_SUCCESSOR = '''    def _configure(engine: Engine) -> None:
+        engine.execute(_identifier(text("SET search_path TO :schema"), schema))
+        engine.execute(_identifier(text("SET statement_timeout TO :ms"), timeout))
+        engine.execute(_identifier(text("SET lock_timeout TO :ms"), lock_ms))
+        engine.execute(_identifier(text("SET timezone TO :tz"), tz))
+        register_vector(engine)
+        engine.dispose()
+        return None'''
+
+# --- 0.000: nothing in common at all ---------------------------------------
+
+IR_DISMISSED = '''    severity_counts = collections.Counter(a.severity for a in alerts)
+    if severity_counts["critical"]:
+        page_oncall(incident, reason="critical alert present")'''
+
+IR_SUCCESSOR = '''    window = timedelta(minutes=settings.correlation_window_minutes)
+    grouped = itertools.groupby(sorted(events, key=_by_host), _by_host)
+    return [Correlation(host=h, events=list(g)) for h, g in grouped]'''
+
+# --- the fourth: an unpinned action, accepted, with no snippet ever stored --
+
+RELEASE_SUCCESSOR = '''      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0'''
+
+
+class TestTheLiveRefusalScores:
+    """The three scored refusals production is sitting on, reproduced exactly.
+
+    Not decoration: these are what make the configuration below the real one.
+    Each is a Jaccard over normalized snippet lines with an exact rational
+    value, so the numbers in the log assertions are measured rather than
+    guessed at.
+    """
+
+    def test_jobs_scores_the_measured_0_538(self) -> None:
+        score = snippet_similarity(JOBS_DISMISSED, JOBS_SUCCESSOR)
+        assert score == pytest.approx(7 / 13)
+        assert score == pytest.approx(0.538, abs=5e-4)
+        assert score < MIN_SIMILARITY
+
+    def test_session_scores_the_measured_0_333(self) -> None:
+        score = snippet_similarity(SESSION_DISMISSED, SESSION_SUCCESSOR)
+        assert score == pytest.approx(1 / 3)
+        assert score == pytest.approx(0.333, abs=5e-4)
+        assert score < MIN_SIMILARITY
+
+    def test_ir_service_scores_the_measured_0_000(self) -> None:
+        assert snippet_similarity(IR_DISMISSED, IR_SUCCESSOR) == 0.0
+
+    def test_all_three_sit_below_the_floor_by_a_clear_margin(self) -> None:
+        """The floor is 0.60 and the nearest refusal is 0.538, so none of
+        these is a borderline call that a small retune would flip."""
+        assert MIN_SIMILARITY - snippet_similarity(
+            JOBS_DISMISSED, JOBS_SUCCESSOR
+        ) == pytest.approx(0.0615, abs=5e-4)
+
+
+def _accept_risk(client: TestClient, finding_id: str) -> None:
+    """Production's fourth stranded decision is an accepted risk, not a false
+    positive, and accepting one takes more than a status (spec 24 §3.2): a
+    machine-revisitable code and an end date."""
+    response = client.patch(
+        f"/api/dashboard/findings/{finding_id}/status",
+        json={
+            "status": "accepted_risk",
+            "reason": "the release workflow runs only on a protected tag ref",
+            "accepted_reason_code": "compensating_control",
+            "accepted_until": (
+                datetime.now(UTC).date() + timedelta(days=30)
+            ).isoformat(),
+        },
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert response.status_code == 200, response.text
+
+
+def _ids_by_file_and_line(catalog: Catalog) -> dict[tuple[str, int], str]:
+    rows = catalog.query("SELECT file_path, line_start, finding_id FROM findings")
+    return {(str(f), int(line)): str(fid) for f, line, fid in rows}
+
+
+def _the_production_four(
+    client: TestClient,
+    auth: dict[str, str],
+    catalog: Catalog,
+    run_compaction: Callable[[], Any],
+) -> dict[str, str]:
+    """Put the lake in the state production is in: four decisions, no carry.
+
+    The four live in one repository here rather than three, because the lane
+    and the group are what the matcher keys on and the log line is what is
+    under test; the file, rule, status and score of each are production's.
+
+    In every one of them something *did* appear under the same rule in the
+    same file afterwards — so each is a refusal to choose, not a report that
+    the code was deleted (spec 05 §5b, "Absence is not a refusal").
+    """
+    _scan(client, auth, SCAN_ONE, "7197a02", minute=0)
+    assert (
+        post_findings(
+            client,
+            auth,
+            [
+                _sast_finding(JOBS_DISMISSED, 140, file_path=FILE_JOBS),
+                _sast_finding(SESSION_DISMISSED, 61, file_path=FILE_SESSION),
+                _sast_finding(IR_DISMISSED, 388, file_path=FILE_IR),
+                # Ingested before snippets were captured: nothing to match on.
+                _sast_finding(
+                    RELEASE_SUCCESSOR,
+                    22,
+                    file_path=FILE_RELEASE,
+                    rule_id=RULE_ACTION_PIN,
+                    code_snippet=None,
+                    symbol=None,
+                ),
+            ],
+            scan_run_id=SCAN_ONE,
+        ).status_code
+        == 200
+    )
+    run_compaction()
+
+    ids = _ids_by_file_and_line(catalog)
+    dismissed = {
+        "jobs_0_538": ids[(FILE_JOBS, 140)],
+        "session_0_333": ids[(FILE_SESSION, 61)],
+        "ir_0_000": ids[(FILE_IR, 388)],
+        "release_no_snippet": ids[(FILE_RELEASE, 22)],
+    }
+    for key, finding_id in dismissed.items():
+        # Production's fourth is an accepted risk, not a false positive. Both
+        # are in HUMAN_DISPOSITIONS and both must be reported when stranded.
+        if key == "release_no_snippet":
+            _accept_risk(client, finding_id)
+        else:
+            _dispose(client, finding_id)
+
+    _scan(client, auth, SCAN_TWO, "bd9e3c6b", minute=30)
+    assert (
+        post_findings(
+            client,
+            auth,
+            [
+                _sast_finding(JOBS_SUCCESSOR, 140, file_path=FILE_JOBS),
+                _sast_finding(SESSION_SUCCESSOR, 61, file_path=FILE_SESSION),
+                _sast_finding(IR_SUCCESSOR, 402, file_path=FILE_IR),
+                _sast_finding(
+                    RELEASE_SUCCESSOR,
+                    24,
+                    file_path=FILE_RELEASE,
+                    rule_id=RULE_ACTION_PIN,
+                ),
+            ],
+            scan_run_id=SCAN_TWO,
+        ).status_code
+        == 200
+    )
+    run_compaction()
+    return dismissed
+
+
+def test_the_stranded_decisions_are_logged_when_nothing_was_carried(
+    client: TestClient,
+    auth: dict[str, str],
+    catalog: Catalog,
+    run_compaction: Callable[[], Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#60273. Nothing is carried, four decisions are refused, and a person can
+    read all four out of the log.
+
+    This is production's hourly state. Before this change it computed four
+    refusals and emitted none of them, because the two `logger.warning` lines
+    sat below `if dry_run or not pairs: return result`.
+    """
+    dismissed = _the_production_four(client, auth, catalog, run_compaction)
+
+    with caplog.at_level(logging.DEBUG, logger=STRANDED_LOGGER):
+        result = carry_forward(catalog)
+
+    # The configuration under test, asserted rather than assumed.
+    assert result.carried == [], "this must be the zero-carry path or it proves nothing"
+    assert len(result.stranded) == 4
+    assert result.summary() == "0 finding(s) carried forward, 4 decision(s) stranded"
+
+    stranded_records = [
+        record
+        for record in caplog.records
+        if record.name == STRANDED_LOGGER and "Decision stranded" in record.getMessage()
+    ]
+    assert len(stranded_records) == 4
+
+    # At WARNING. A refusal somebody has to act on must not arrive at a level
+    # the scheduled process filters out.
+    assert {record.levelno for record in stranded_records} == {logging.WARNING}
+
+    logged = "\n".join(record.getMessage() for record in stranded_records)
+
+    # Each names its own finding, its file, and the disposition at stake.
+    for finding_id in dismissed.values():
+        assert finding_id[:12] in logged
+    for file_path in (FILE_JOBS, FILE_SESSION, FILE_IR, FILE_RELEASE):
+        assert file_path in logged
+    assert "accepted_risk" in logged
+    assert "false_positive" in logged
+
+    # And the reason, with the measured number in it — not just the fact.
+    assert f"scored 0.54, below the {MIN_SIMILARITY:.2f} floor" in logged
+    assert f"scored 0.33, below the {MIN_SIMILARITY:.2f} floor" in logged
+    assert f"scored 0.00, below the {MIN_SIMILARITY:.2f} floor" in logged
+    assert "no code snippet was stored" in logged
+
+    # Nothing was carried, so nothing may claim to have been.
+    assert [
+        record for record in caplog.records if "Carried forward" in record.getMessage()
+    ] == []
+
+
+def test_a_carry_forward_with_nothing_to_do_is_distinguishable_from_one_that_refused(
+    client: TestClient,
+    auth: dict[str, str],
+    catalog: Catalog,
+    run_compaction: Callable[[], Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The house rule, stated as a test: a control that reported nothing must
+    not look like a control that reported fine.
+
+    A lane where the dismissed call is still being reported genuinely has
+    nothing to say, and says nothing. The four-refusal run above says four
+    things. If those two produced the same log, the log would be worthless —
+    and until this change they did.
+    """
+    _scan(client, auth, SCAN_ONE, "7197a02", minute=0)
+    post_findings(client, auth, [_sast_finding(DISMISSED_821, 821)], scan_run_id=SCAN_ONE)
+    run_compaction()
+    _dispose(client, _ids_by_line(catalog)[821])
+
+    _scan(client, auth, SCAN_TWO, "bd9e3c6b", minute=30)
+    post_findings(
+        client,
+        auth,
+        [_sast_finding(DISMISSED_821, 821), _sast_finding(NEW_991, 991)],
+        scan_run_id=SCAN_TWO,
+    )
+    run_compaction()
+
+    with caplog.at_level(logging.DEBUG, logger=STRANDED_LOGGER):
+        result = carry_forward(catalog)
+
+    assert result.carried == []
+    assert result.stranded == []
+    assert [r for r in caplog.records if r.name == STRANDED_LOGGER] == []
+
+
+def test_a_dry_run_still_reports_the_decisions_it_refused(
+    client: TestClient,
+    auth: dict[str, str],
+    catalog: Catalog,
+    run_compaction: Callable[[], Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`dry_run` withholds the writes, not the refusals.
+
+    A refusal is finished the moment `match` returns it — no row has to be
+    written for a decision to have been stranded — so a preview that hid them
+    would be a preview of the wrong thing.
+    """
+    _the_production_four(client, auth, catalog, run_compaction)
+
+    with caplog.at_level(logging.DEBUG, logger=STRANDED_LOGGER):
+        result = carry_forward(catalog, dry_run=True)
+
+    assert result.partitions_written == 0
+    assert len(result.stranded) == 4
+    assert len([r for r in caplog.records if "Decision stranded" in r.getMessage()]) == 4
+    # Nothing was written, so nothing may be logged as though it had been.
+    assert [r for r in caplog.records if "Carried forward" in r.getMessage()] == []
+
+
+def test_a_dry_run_does_not_announce_carries_it_did_not_write(
+    client: TestClient,
+    auth: dict[str, str],
+    catalog: Catalog,
+    run_compaction: Callable[[], Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other half of the same rule, from the other direction: when there
+    *is* a carry to make, a dry run must not log it as made.
+
+    This is what keeps the fix from being "log everything unconditionally",
+    and it pins that `_apply` and the `Carried forward` line stay gated on
+    there being pairs (#60273 AC3).
+    """
+    _scan(client, auth, SCAN_ONE, "7197a02", minute=0)
+    post_findings(client, auth, [_sast_finding(DISMISSED_821, 821)], scan_run_id=SCAN_ONE)
+    run_compaction()
+    _dispose(client, _ids_by_line(catalog)[821])
+
+    _scan(client, auth, SCAN_TWO, "bd9e3c6b", minute=30)
+    post_findings(client, auth, [_sast_finding(EDITED_917, 917)], scan_run_id=SCAN_TWO)
+    run_compaction()
+
+    with caplog.at_level(logging.DEBUG, logger=STRANDED_LOGGER):
+        dry = carry_forward(catalog, dry_run=True)
+    assert len(dry.carried) == 1
+    assert dry.partitions_written == 0
+    assert [r for r in caplog.records if "Carried forward" in r.getMessage()] == []
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=STRANDED_LOGGER):
+        wet = carry_forward(catalog)
+    assert len(wet.carried) == 1
+    assert len([r for r in caplog.records if "Carried forward" in r.getMessage()]) == 1
