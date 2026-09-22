@@ -5314,7 +5314,8 @@ this mechanism, and the two are currently told apart only by whether
 first reprocess that re-derives an equivalent finding; no column records which
 setter acted. That is latent, not active — no wrong number is being reported
 today — and whether to record the setter is an open decision, filed separately
-rather than settled here.
+rather than settled here. Settled in D-124: the setter is recorded, and the
+460 existing rows are attributed while their provenance still decides it.
 
 ## D-123 — Retry the fetch, never the verdict
 
@@ -5406,3 +5407,79 @@ coverage cross-check leads the briefing with lanes that cannot close a finding
 `CAPABILITY_BY_JOB`. Whether that is a detector that failed or a lane outside
 the detector's scope is the question that decides the fix, and it is a story of
 its own. Both are open items 7 and 8 in `docs/pipeline-standard.md`.
+## D-124 — Record which machine withdrew a finding, while that is still knowable
+
+**2026-09-21.** D-122 ratified `superseded` having a second machine setter and
+deferred the risk with a stated trigger: "if a third setter is ever proposed,
+that is the moment to split the state rather than extend it again." The
+measurement says the ambiguity arrives before the third setter does.
+
+The lake holds 460 `superseded` findings. 457 have `superseded_by` null — the
+four reprocess batches of 2026-08-12. Three have it set — `carry_forward`, on
+2026-09-14 and 2026-09-18. So the two setters *are* separable today, and that
+is the problem rather than the reassurance: they are separable **by accident**,
+on a field that does not mean that. Spec 05 §5a explicitly permits reprocessing
+to set `superseded_by` "where there is one". The first reprocess that
+re-derives an equivalent finding writes a `superseded` row with a replacement
+named that is, on that evidence, indistinguishable from a carry-forward, and
+the backfill stops being a lookup and becomes guesswork. The information is
+perishing on its own schedule, which is why this is a decision about *when*
+rather than about *whether*.
+
+**What is actually lost if it perishes.** "The adapter was wrong" and "the code
+this record described changed" are different claims about a defect. The first
+says the finding should never have existed in that shape; the second says it is
+still live under a new identity. §5a requires a repository whose finding count
+drops by a hundred overnight to be able to show why on its own page, and those
+two answers have opposite implications for whether anybody should go and look.
+
+**Not a seventh status.** D-122's trigger has not fired — there is no third
+setter — and splitting would cost every consumer that special-cases
+`superseded`: open counts, mean time to fix, Oracle scoring, the dashboard's
+`superseded_by` rendering, all of which would then treat the two identically
+anyway. Both meanings share an honest core: this record no longer describes
+reality. A reason column is the smaller change that buys the time, and it does
+not foreclose splitting later.
+
+**`superseded_source`, named for the family it joins.** The findings table
+already carries `owner_source`, `due_source` and `accepted_reason_code` — the
+value beside the fact, saying where the fact came from. None was about
+withdrawal. `superseded_source` is `reprocess` or `carry_forward`, written by
+the two call sites that already exist (`reprocess._mark_superseded` and
+`carry_forward._apply`), and null on everything that was not withdrawn, which
+is the honest value rather than a default.
+
+**The column and the backfill are one change.** A column that exists and is
+null for 460 rows is the ambiguity with extra steps.
+
+**The backfill reads provenance, not `superseded_by`.** Reading the field would
+encode the very coincidence that is about to end. Three rules, in order:
+
+1. `carry_forward` writes *both halves* of a link — it copies the predecessor's
+   `first_seen_scan_run_id` onto the successor, which is what stops a gate
+   blaming the commit that moved a line, and the successor is by construction
+   a finding a **later scan of the same lane** reported. A predecessor whose
+   replacement carries its own first-seen run and belongs to a different scan
+   run is a carry-forward.
+2. No replacement at all is a reprocess: `carry_forward` only withdraws a
+   predecessor it has matched, so it can never be the origin of a null
+   `superseded_by`.
+3. A replacement ingested under the **same** scan run the record was last seen
+   in is a reprocess re-reading that run's archived output.
+
+A row matching none of them is left null and named. An invented setter is worse
+than an absent one: it is the guesswork this change exists to avoid, wearing
+the answer's clothes. Against the live lake the three rules reproduce the
+457/3 split exactly, with nothing undetermined.
+
+**How it decided is written down.** The lake records *what* a finding is;
+spec 12 §7's audit log records who set it and why — the division `groom.py`
+already relies on to say who dispositioned a finding. One
+`finding.superseded_source_backfilled` entry per attributed row carries the
+rule that decided it and the provenance it read, so the attribution can be
+re-checked rather than taken on trust.
+
+**Run as `mykronos backfill-superseded-source`,** `--dry-run` first. It goes
+through `update_findings` rather than the write-ahead buffer, for the reason
+`migrate_assets` does: compaction's findings upsert reopens a row whose stored
+status is `fixed`, and a backfill is not a rescan.

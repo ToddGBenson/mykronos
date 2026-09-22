@@ -61,6 +61,25 @@ FINDINGS_COLUMNS: Final[list[Column]] = [
     # The finding_id that replaced this record, when `status = superseded`
     # (spec 05 §5a). Null otherwise, which is the overwhelming majority.
     ("superseded_by", "VARCHAR"),
+    # Which machine withdrew the record: reprocess | carry_forward (spec 05
+    # §5a). Null on everything that was not withdrawn, which is the honest
+    # value — this column is about withdrawal, not a default anybody holds.
+    #
+    # Named for the `owner_source` / `due_source` family: the value beside it
+    # is the fact, and this says where the fact came from. `superseded` has
+    # two machine setters making different claims — reprocessing says the
+    # adapter that produced the record was wrong, `carry_forward` says the
+    # code the record described changed — and a page that shows a hundred
+    # rows withdrawn overnight has to be able to say which, because only one
+    # of them means the defect is still live under a new id.
+    #
+    # Added rather than split into a seventh status: D-122 deferred splitting
+    # until a *third* setter is proposed, and that trigger has not fired.
+    # Until this column existed the two were separable only by accident, on
+    # `superseded_by` being null for every reprocess withdrawal so far — and
+    # §5a explicitly permits reprocessing to name a replacement, so the first
+    # one that does would have ended that. D-124.
+    ("superseded_source", "VARCHAR"),
     ("first_seen_scan_run_id", "VARCHAR"),
     ("last_seen_scan_run_id", "VARCHAR"),
     ("first_seen_at", "TIMESTAMP"),

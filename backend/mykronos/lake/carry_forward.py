@@ -519,7 +519,13 @@ def _apply(
         outcome = update_findings(
             catalog,
             locate_findings(catalog, [predecessor.finding_id]),
-            "status = 'superseded', superseded_by = ?, resolved_at = ?",
+            # `superseded_source` names this function, so the row says which
+            # of the status's two machine setters acted. Without it the only
+            # thing separating a carry-forward from a reprocess withdrawal is
+            # that reprocessing has so far left `superseded_by` null, which
+            # §5a does not require it to (D-124).
+            "status = 'superseded', superseded_by = ?, resolved_at = ?, "
+            "superseded_source = 'carry_forward'",
             [successor.finding_id, now],
             only_if_status=predecessor.status,
         )

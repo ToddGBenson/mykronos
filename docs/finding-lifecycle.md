@@ -56,6 +56,13 @@ load-bearing:
 report a mass remediation every time an adapter was corrected. There are 457 of
 them, so this is not hypothetical.
 
+Two machines set it and they say different things, so the row records which:
+`superseded_source` is `reprocess` (the adapter that produced the record was
+wrong) or `carry_forward` (the code the record described changed, §5b). Only
+the second means the defect is still live under a new id, which is the whole
+reason the distinction has to survive on the row rather than in a reader's
+head (D-124).
+
 ---
 
 ## 1. Deduplication

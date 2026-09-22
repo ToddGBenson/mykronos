@@ -867,6 +867,10 @@ class DashboardQueries:
             # was previously not selected here, so there was no way to follow
             # a re-fingerprinted finding to what replaced it (spec 17 §5.1).
             "superseded_by",
+            # And which machine withdrew it (D-124). The pointer alone cannot
+            # say: a reprocess withdrawal may name a replacement too, and only
+            # a carry-forward means the defect is still live under a new id.
+            "superseded_source",
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
@@ -2530,6 +2534,7 @@ class DashboardQueries:
             # finding -- was the only surface that could not follow a
             # superseded row to its replacement.
             "superseded_by",
+            "superseded_source",
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
