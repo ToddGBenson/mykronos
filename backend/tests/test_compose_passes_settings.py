@@ -13,6 +13,7 @@ than a third comment.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -132,4 +133,35 @@ def test_the_app_key_variable_is_documented_for_an_operator() -> None:
     assert "MYKRONOS_GITHUB_APP_KEY_HOST_PATH" in example, (
         "compose refuses to start without this variable and nothing tells an "
         "operator it exists"
+    )
+
+
+def test_every_variable_compose_interpolates_is_documented() -> None:
+    """The general form of the three point-fixes that preceded it.
+
+    `MYKRONOS_GITHUB_APP_KEY_HOST_PATH` (#664) and the five Slack variables
+    (#412) were each found the same way: by reading the compose file against a
+    running container, because nothing else recorded that they existed. Twelve
+    of the eighteen variables compose interpolates were undocumented when this
+    test was written.
+
+    A variable reaching the container through compose is not necessarily a
+    `Settings` field, so reading the code does not find it either. `.env.example`
+    is the only place an operator has to look, which makes "compose references
+    it" the right trigger rather than "the application reads it".
+    """
+    compose = COMPOSE.read_text(encoding="utf-8")
+    example = (
+        Path(__file__).resolve().parents[2] / "backend" / ".env.example"
+    ).read_text(encoding="utf-8")
+
+    referenced = set(re.findall(r"\$\{(MYKRONOS_[A-Z0-9_]+)", compose))
+    documented = set(re.findall(r"^(MYKRONOS_[A-Z0-9_]+)=", example, re.MULTILINE))
+
+    undocumented = sorted(referenced - documented)
+
+    assert not undocumented, (
+        "compose interpolates these and `backend/.env.example` does not "
+        "mention them, so an operator has no way to know they exist: "
+        + ", ".join(undocumented)
     )
