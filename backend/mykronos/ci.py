@@ -1545,7 +1545,18 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "publish-frontend",
         "pushes the frontend image to the registry, produces no findings",
     ),
+    # [D-125] This is the CONCOURSE `promote` job in mykronos.yml, which retags
+    # on the LAN registry (192.168.0.14:5000) with crane. It is NOT the GitHub
+    # Actions `promote.yml` that D-125 retired -- that one moved `:latest` on
+    # GHCR, which is what deploy.ps1 pulls. Two mechanisms, two registries; the
+    # acknowledgement here was removed once in error while retiring the other.
     ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
+    # [#60073] Compares deploy.sh's stages against the GHA workflows' jobs and
+    # publishes a memo. It uploads nothing to the lake, so there is no scan
+    # record for the cross-check to find absent -- but it CAN go red, and its
+    # verdict reaches Atlas through deploy_stage_events and Slack rather than
+    # through a capability.
+    ((THEHUB,), "cicd-drift", "audits pipeline drift and publishes a memo, uploads no findings"),
     # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
     # premise that removed it expired before the change landed.
     #
