@@ -35,13 +35,6 @@ on:
         description: The commit to promote. Must already be published as :<sha>.
         required: true
 
-concurrency:
-  group: promote-${{ github.ref }}
-  # Never cancel a promote in flight: it moves a tag two images share, and a
-  # half-applied retag points `:latest` at one component's new build and the
-  # other's old one.
-  cancel-in-progress: false
-
 permissions:
   contents: read
   packages: write
@@ -60,6 +53,29 @@ jobs:
     # (spec 16 §3). Only real once the environment has required reviewers: one
     # with none approves itself instantly and looks identical in this file.
     environment: production
+
+    # [#60484] MOVED DOWN HERE FROM THE WORKFLOW LEVEL, where it deadlocked
+    # this workflow for its entire history: 99 runs, 99 cancelled, 0 ever
+    # completed. `:latest` was never once moved by the gate that owns it.
+    #
+    # A workflow-level `concurrency` is evaluated BEFORE the run is realised,
+    # so a run blocked by it sits at status=`pending` with zero jobs and an
+    # empty `pending_deployments` -- it never reaches `environment: production`
+    # and so never surfaces an approval. Measured 2026-09-23: an operator went
+    # to approve and found nothing to approve, because there was no button.
+    # Each run was then cancelled when the next Delivery queued its successor
+    # (GitHub cancels QUEUED runs in a group even though `cancel-in-progress:
+    # false` protects in-flight ones), so the queue perpetuated itself.
+    #
+    # At JOB level the run is realised first: it starts, reaches the
+    # environment, and waits on a person the way it was always meant to. The
+    # serialisation the original comment wanted is unchanged and is restated
+    # here rather than dropped -- this job moves a tag two images share, and a
+    # half-applied retag points `:latest` at one component's new build and the
+    # other's old one. `cancel-in-progress: false` keeps that indivisible.
+    concurrency:
+      group: promote-${{ github.ref }}
+      cancel-in-progress: false
 
     env:
       REGISTRY: ghcr.io
