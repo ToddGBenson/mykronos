@@ -816,6 +816,35 @@ jobs:
   - name: cicd-drift
     public: true
     serial_groups: [worker]
+    # [#60073] Reports to TheHub, not only to Slack. The first version of this
+    # job carried `notify-slack` and nothing else, and
+    # `test_no_job_is_silent` caught it: a Slack message scrolls away and
+    # leaves no row anywhere, so a quarterly audit that went red in October
+    # would be unanswerable in January. `deploy_stage_events` is where a
+    # verdict becomes durable, and Mission Control reads it from there.
+    #
+    # All four terminal states, per `test_every_job_reports_all_four_terminal_
+    # states_per_stage`: a stage that can only ever report success is a stage
+    # whose green means nothing.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: aborted, TARGET_ENV: prod }
     plan:
       # The clock triggers this, not the checkout. Drift is a property of the
       # two files' relationship, not of any one commit, and re-auditing on
@@ -874,10 +903,6 @@ jobs:
           params:
             file: memo/cicd-drift-audit-*.md
           get_params: { skip_download: true }
-    on_failure: *slack_alert
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
 
   # Every build and scan job below shares one `serial_groups: [worker]`, so at
   # most one of them runs at a time.
