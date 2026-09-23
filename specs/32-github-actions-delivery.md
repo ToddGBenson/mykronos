@@ -152,12 +152,24 @@ and no secret to manage, and Trivy scans a GHCR reference exactly as it scans
 a LAN one — `containers` already scans "the published images out of the
 registry directly. No daemon", so it is a hostname change.
 
-**`promote` stays a tag move and stays gated.** Spec 15 §3's rule that the
-gate holds the tag rather than the artifact (D-047) is unaffected: images
-publish as `:${SHA}`, `containers` scans that SHA, and `:latest` moves only
-after an Oracle `go`. On GHCR the retag is `docker buildx imagetools create`
-against the digest, which is *better* than the current `crane` step because a
-digest cannot be raced by a second push to the same tag.
+**`promote` stayed a tag move and stayed gated — until D-125 retired both.**
+The rule below is kept as written because it is what this section decided at
+the time; it no longer describes the estate.
+
+> Spec 15 §3's rule that the gate holds the tag rather than the artifact
+> (D-047) is unaffected: images publish as `:${SHA}`, `containers` scans that
+> SHA, and `:latest` moves only after an Oracle `go`. On GHCR the retag is
+> `docker buildx imagetools create` against the digest, which is *better* than
+> the current `crane` step because a digest cannot be raced by a second push to
+> the same tag.
+
+**Retired 2026-09-23 (D-125, #60484).** The promote workflow never once ran —
+99 runs, 99 cancelled, zero completions — and left `:latest` pointing at an
+image older than the last production deploy. Images still publish as `:${SHA}`
+on every push, which is unchanged and is now the *whole* tagging model;
+`deploy.ps1` takes a mandatory `-Tag <sha>`. The consequence for the gate is
+stated in spec 15 §3 rather than softened here: with no tag to hold, nothing
+mechanically stops a `no_go` commit being deployed.
 
 **What this gains beyond reachability**, worth stating so the migration is not
 read as pure cost: authentication where there is none today, immutable
@@ -378,7 +390,9 @@ button in Concourse" (spec 16 §3) into the same act with an audit trail and an
 identity attached.
 
 **And `promote` must be its own workflow, which the first live run proved
-(2026-08-29).** Held behind the environment, it kept the entire `Delivery` run
+(2026-08-29).** *(Superseded by D-125, which retired the workflow altogether.
+Kept because the ordering argument below still governs where a future gate may
+sit: never upstream of the scans that inform it.)* Held behind the environment, it kept the entire `Delivery` run
 in `waiting` — and `demo-and-dast` triggers on Delivery *completing*. So DAST
 and the functional suite could not run until somebody approved a production
 promote: **the security scan was gated behind the deploy decision it exists to

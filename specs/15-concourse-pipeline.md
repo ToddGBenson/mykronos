@@ -69,11 +69,7 @@ security configuration.
                           └─────────┬──────────┘
                                     │ go
                           ┌─────────▼──────────┐
-                          │  promote           │──▶ :SHA retagged :latest
-                          └─────────┬──────────┘
-                                    │
-                          ┌─────────▼──────────┐
-                          │  deploy (by hand)  │  deploy.ps1 pulls :latest
+                          │  deploy (by hand)  │  deploy.ps1 -Tag <sha>
                           └────────────────────┘
 ```
 
@@ -83,10 +79,28 @@ this spec put them. An image has to exist before `containers` can scan it, and
 gating the build deadlocked the pipeline against its own container findings
 (D-045).
 
-What the gate holds is therefore the tag, not the artifact. Images publish as
-`:${SHA}`, `containers` scans that SHA, and `promote` moves `:latest` — the
-tag `deploy.ps1` pulls — only after a `go` (D-047). A refused commit leaves an
-image in the registry that nothing points at.
+What the gate held was therefore the tag, not the artifact: images publish as
+`:${SHA}`, `containers` scans that SHA, and `promote` moved `:latest` — the tag
+`deploy.ps1` pulled — only after a `go` (D-047).
+
+**`promote` and `:latest` were retired 2026-09-23 (D-125), and this paragraph
+is now history.** The gate never once ran: 99 runs, 99 cancelled, zero
+completions, and `:latest` was left pointing at an image older than the last
+production deploy. `deploy.ps1` now takes a mandatory `-Tag <sha>`.
+
+**Say plainly what that costs, because it is the thing D-047 existed to
+prevent.** With no tag for the gate to hold, *nothing mechanically stops a
+`no_go` commit being deployed* — the operator names a sha and it ships. D-047's
+own words were that before it, "a `no_go` changed nothing an operator would
+ever meet". Retiring the tag returns the pipeline to that shape, and the honest
+reading is that the Oracle gate is again advisory at deploy time.
+
+What replaces it for now is a person: running `deploy.ps1` has always been a
+manual act on the host, and naming the sha is the decision. That is weaker than
+a machine refusing, and it is not pretended otherwise. Restoring a mechanical
+gate — `deploy.ps1` refusing a sha whose Oracle decision is `no_go` — is filed
+rather than assumed, because it needs the deploy host to reach the platform and
+that is a new dependency for a script that currently needs only a registry.
 
 The security jobs run **in parallel** and all of them complete before the
 Oracle gate. That ordering is deliberate: Oracle scores the whole picture

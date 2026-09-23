@@ -5483,3 +5483,87 @@ re-checked rather than taken on trust.
 through `update_findings` rather than the write-ahead buffer, for the reason
 `migrate_assets` does: compaction's findings upsert reopens a row whose stored
 status is `fixed`, and a backfill is not a rescan.
+
+## D-125 — `:latest` is retired; the deploy names a sha
+
+**2026-09-23.** **Status:** Decided by the operator, specs updated
+**Spec:** [15 §3](../specs/15-concourse-pipeline.md), [32 §4.1](../specs/32-github-actions-delivery.md) · **Story:** #60484 · **Supersedes the tagging half of** D-038, D-042, D-047
+
+**The gate that owned `:latest` has never run.** Measured against the GitHub
+API: `promote.yml`, all time — **99 runs, 99 cancelled, 0 successful**. Not a
+regression; there is no successful run anywhere in its history.
+
+It failed in the most reassuring way available. A run was created on every
+Delivery completion and sat at `pending` with **zero jobs** and an **empty
+`pending_deployments`**. A run genuinely waiting on a reviewer reports
+`waiting` and lists a pending deployment; this one never reached the gate, so
+there was no button. The operator went to approve one and found nothing to
+approve. Each run was then cancelled when the next Delivery queued its
+successor — GitHub cancels *queued* runs in a concurrency group even though
+`cancel-in-progress: false` protects in-flight ones — so the queue perpetuated
+itself.
+
+**What it cost, measured rather than reasoned:** `:latest` for
+`mykronos-backend` was `sha256:d89e3378…`, matching none of the recent commits
+and not even `0227a5ab`, the commit of the last `production` deployment
+(2026-09-12). `deploy.ps1` defaulted to `:latest`. **A default deploy would
+have shipped something older than what was already running.**
+
+**Why that went unnoticed for months:** `-Tag <sha>` was added in #402 when
+fourteen merged commits sat built and undeployable, and every real deploy has
+used it since. The broken default was never exercised.
+
+**Two probes before this.** Moving the workflow-level `concurrency` to job
+level (#677) *did* change things — a job was created for the first time in 99
+runs, proving that block was a real cause — but the job then sat `pending` and
+still never reached the environment. A second blocker exists and was not
+identified. Rather than keep mutating a production CI workflow on diminishing
+evidence, the operator chose to retire the mechanism.
+
+**Decided: option C.** `promote.yml` is deleted, `:latest` is no longer
+published or pulled, and `deploy.ps1 -Tag <sha>` is mandatory and validated
+(7–40 hex). Rollback is unchanged: the same command with the previous sha.
+
+**SAY WHAT THIS LOSES, BECAUSE IT IS EXACTLY WHAT D-047 EXISTED TO PREVENT.**
+D-047's finding was that `publish` pushed `:latest` and `deploy.ps1` pulled
+`:latest`, so an Oracle `no_go` "changed nothing an operator would ever meet"
+— the gate was decoration. With no tag for a gate to hold, **nothing
+mechanically stops a `no_go` commit being deployed.** The pipeline is back in
+D-047's shape on that specific point, and the Oracle gate is advisory at
+deploy time.
+
+What stands in its place is a person: running `deploy.ps1` is and always was a
+manual act on the host, and naming the sha is the decision. That is weaker
+than a machine refusing, and it is recorded as weaker rather than dressed up.
+The difference from the pre-D-047 state is that the weakness is now *stated*
+and the tag no longer implies a blessing nobody conferred.
+
+**Restoring a mechanical gate is filed, not assumed.** `deploy.ps1` refusing a
+sha whose Oracle decision is `no_go` would close this properly, and it needs
+the deploy host to reach the platform — a new dependency for a script that
+today needs only a registry. That is a decision of its own, not a detail of
+this one.
+
+**THIS RETIRES ONE OF TWO PROMOTE MECHANISMS, AND THE SCOPE IS EXACT.** Found
+while the job-audit test refused a change made on the assumption there was only
+one:
+
+| mechanism | registry | moves | status |
+| --- | --- | --- | --- |
+| GitHub Actions `promote.yml` | `ghcr.io/toddgbenson` | `:latest` | **retired here** — never once ran |
+| Concourse `mykronos.yml` job `promote` | `192.168.0.14:5000` (LAN) | `:latest` via `crane tag` | **untouched** |
+
+`deploy.ps1` defaults to GHCR, so the GHCR tag is the one a deploy actually
+reads and the one that was eleven days stale. The LAN registry is the
+pre-spec-32 path, still published to while both run, and its promote job is a
+different pipeline needing `fly set-pipeline` to change.
+
+**Whether the Concourse promote works was NOT measured**, and this decision
+does not claim it is broken. It says only that it was not in scope and that
+`:latest` therefore still exists on the LAN registry. Anyone reading "`:latest`
+is retired" should read it as "on GHCR, which is where deploys pull from".
+
+**Also not fixed here:** why a job that *is* created still never starts. If
+that is ever understood, this decision is revisitable — but a gate that has
+never run in its entire history is not a gate, and keeping it while it does
+not work is how `:latest` came to point at an eleven-day-old image.

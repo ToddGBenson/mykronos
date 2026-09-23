@@ -22,24 +22,34 @@
     in the package's settings. A private package needs `docker login ghcr.io`
     on this host with a token carrying `read:packages`.
 
-    And `:latest` only exists once `promote` has run. `delivery.yml` publishes
-    `:${SHA}` on every push and moves `:latest` only after the production
-    environment's approval, which is D-047's rule that the gate holds the tag
-    rather than the artifact. A first deploy after the cutover therefore has
-    nothing to pull until a promote has happened - which reads as a broken
-    script unless it says so.
+    THERE IS NO `:latest` ANY MORE (D-125). `delivery.yml` publishes `:${SHA}`
+    on every push and that is the whole tagging model. The `promote` workflow
+    that used to move `:latest` behind a production approval has been retired:
+    it never once ran in its entire history - 99 runs, 99 cancelled, zero
+    completions - and left `:latest` pointing at an image OLDER than the last
+    production deploy. A default that ships something older than what is
+    already running is worse than having no default.
 
-    `-Tag` is the way out of that. Every push publishes `:<sha>`, so the
-    artifact is always there even when `:latest` has not moved; before the
-    parameter existed those tags were unreachable from here and the only
-    deployable image was one promote had blessed (#402).
+    So the sha is mandatory. That is not a new burden: every real deploy for
+    months already passed `-Tag <sha>`, because `:latest` could not be
+    trusted. D-125 makes the practice the contract.
+
+    WHERE THE HUMAN GATE WENT. It did not disappear - it was never anywhere
+    else. Running this script is the deploy decision, and it has always been a
+    manual action on this host. The promote approval was a second gate layered
+    on top, and it was the one that never worked.
+
+    SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
+    default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
+    and still retags `:latest` on the LAN registry (192.168.0.14:5000). If you
+    pass `-Registry localhost:5000` you are on that path, and a `:latest` may
+    still exist there. `-Tag` is mandatory either way.
 
 .PARAMETER Tag
-    The published image tag to deploy. Defaults to `latest`.
+    REQUIRED. The commit sha to deploy - 7 to 40 hex characters, validated.
 
-    Pass a commit sha to deploy that exact build - and to roll back, which is
-    the same command with the previous sha. When a sha is given the deploy
-    reads `/healthz` afterwards and says whether the running commit is the one
+    Rollback is the same command with the previous sha. The deploy reads
+    `/healthz` afterwards and says whether the running commit is the one
     requested, because "healthy" and "running what you asked for" are different
     facts and only the second one is the deploy's job.
 
@@ -59,19 +69,23 @@ param(
     # `$Registry/$name` join below is unchanged. Pass `localhost:5000` to pull
     # from the old LAN registry while both are still publishing.
     [string]$Registry = "ghcr.io/toddgbenson",
-    # Which published image to deploy. `latest` by default, so every existing
-    # invocation behaves exactly as it did.
+    # Which published image to deploy. REQUIRED, and a commit sha (D-125).
     #
-    # The pipeline tags every image with its commit sha and moves `:latest`
-    # only on promote (D-047). Before this parameter existed the per-commit
-    # tags were unreachable from here, so the only deployable artifact was one
-    # that promote had moved -- and on 2026-09-15 that left fourteen merged
-    # commits built, tagged, sitting in the registry and undeployable (#402).
+    # There is no default and `latest` is no longer a thing to pass. `:latest`
+    # was retired because the gate that owned it never once ran: 99 promote
+    # runs, 99 cancelled, zero completions, and the tag left pointing at an
+    # image OLDER than the last production deploy. A default that ships
+    # something older than what is already running is worse than no default.
     #
-    # It is also what makes rollback a command. `-Tag <previous sha>` is the
-    # whole procedure; without it, going back meant finding a `:latest` that
-    # pointed at the old build, which is to say it meant nothing.
-    [string]$Tag = "latest",
+    # Naming the sha is now the deploy decision. It was always the real one --
+    # every deploy for months passed `-Tag <sha>` because `:latest` could not
+    # be trusted -- and D-125 makes the practice the contract.
+    #
+    # Rollback is unchanged and is still the whole procedure: the same command
+    # with the previous sha.
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-f]{7,40}$')]
+    [string]$Tag,
     [string]$MigrateFrom,
     [switch]$NoStart
 )
@@ -100,22 +114,10 @@ foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
             "Could not pull $Registry/$name`:$Tag.",
             ""
         )
-        if ($Tag -eq "latest") {
-            $lines += @(
-                "  * Has delivery.yml promoted yet? It publishes :<sha> on every",
-                "    push and moves :latest only after the production",
-                "    environment's approval (D-047). Before the first promote",
-                "    there is no :latest to pull -- but the per-commit tag is",
-                "    already there. Pass -Tag <sha> to deploy it."
-            )
-        } else {
-            $lines += @(
-                "  * Is that a commit the pipeline built? Only commits whose",
-                "    publish-backend job succeeded have an image. A merged",
-                "    commit whose build failed or never ran has no tag."
-            )
-        }
         $lines += @(
+            "  * Is that a commit the pipeline built? Only commits whose",
+            "    publish-backend job succeeded have an image. A merged",
+            "    commit whose build failed or never ran has no tag.",
             "  * Is the package public? A GHCR package is private by default",
             "    even in a public repository. Either make it public in the",
             "    package settings, or run: docker login ghcr.io",
@@ -206,23 +208,24 @@ try {
     # Never fatal when it cannot be answered: an older image that predates
     # MYKRONOS_BUILD_SHA reports no sha, and refusing to finish a deploy over a
     # missing field would be worse than saying so.
-    if ($Tag -ne "latest") {
-        $running = $null
-        try {
-            $running = (Invoke-RestMethod -Uri "http://127.0.0.1:8100/healthz" -TimeoutSec 15).build.sha
-        } catch {
-            Write-Host "Could not read /healthz to confirm the running commit." -ForegroundColor Yellow
-        }
-        if (-not $running) {
-            Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
-        } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
-            Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
-        } else {
-            # Not a throw. The stack is up and healthy; what failed is the
-            # deploy's intent, and the operator needs both facts.
-            Write-Host "MISMATCH: asked for $Tag, /healthz reports $running." -ForegroundColor Red
-            Write-Host "          The stack is healthy but it is not the artifact you asked for." -ForegroundColor Red
-        }
+    # [D-125] No longer conditional on the tag not being `latest`: every deploy
+    # now names a sha, so "healthy" and "running what you asked for" can always
+    # be told apart. That is the whole reason the sha is mandatory.
+    $running = $null
+    try {
+        $running = (Invoke-RestMethod -Uri "http://127.0.0.1:8100/healthz" -TimeoutSec 15).build.sha
+    } catch {
+        Write-Host "Could not read /healthz to confirm the running commit." -ForegroundColor Yellow
+    }
+    if (-not $running) {
+        Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
+    } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
+        Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
+    } else {
+        # Not a throw. The stack is up and healthy; what failed is the
+        # deploy's intent, and the operator needs both facts.
+        Write-Host "MISMATCH: asked for $Tag, /healthz reports $running." -ForegroundColor Red
+        Write-Host "          The stack is healthy but it is not the artifact you asked for." -ForegroundColor Red
     }
 
     Write-Host "`nDeployed. http://localhost:3100 and http://localhost:8100" -ForegroundColor Green

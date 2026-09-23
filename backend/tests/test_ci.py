@@ -445,6 +445,10 @@ class TestReporting:
         the cross-check is the *only* thing that can notice its absence -
         there is no finding count to be conspicuously zero."""
         built = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+        # `promote` STAYS. D-125 retired the GitHub Actions `promote.yml`, not
+        # the Concourse `promote` job in mykronos.yml that this name refers to
+        # -- two mechanisms on two registries. Removing it here once made this
+        # test fail exactly as it should have.
         names = ("build", "publish-backend", "publish-frontend", "promote")
         jobs = [self._job(n, finished=built) for n in names]
 
