@@ -104,7 +104,7 @@ groups:
   # that is in no group, and the job that applies this pipeline is the last one
   # anybody should have to go looking for.
   - name: pipeline
-    jobs: [set-pipeline]
+    jobs: [set-pipeline, cicd-drift]
 
 resource_types:
   - name: registry-image
@@ -221,6 +221,42 @@ resources:
       location: ((scan-timezone))
       start: "2:00 AM"
       stop: "3:00 AM"
+
+  # [#60073] The CI/CD drift audit's clock. `interval` rather than
+  # `start`/`stop`, because the `time` resource has no notion of a quarter and
+  # a daily window would fire this ninety times more often than the audit is
+  # worth reading -- which is how a quarterly check trains people to ignore it.
+  # 2160h is 90 days. The first tick lands 90 days after this resource is first
+  # applied, not on a calendar boundary; "quarterly" here means "four times a
+  # year", not "on the first of January".
+  - name: quarterly
+    type: time
+    icon: calendar-clock
+    source:
+      location: ((scan-timezone))
+      interval: 2160h
+
+  # Where the memo goes. The same MinIO the SBOMs use, deliberately: a bucket
+  # that does not exist yet is an operator action this change does not need,
+  # and both artefacts answer the same kind of question long after the build
+  # that produced them is pruned. `cicd-drift-audit-(.*).md` keeps them from
+  # colliding with `sbom-(.*).cdx.json` in the same bucket.
+  #
+  # AC3 of #60073 asks for the first run's output to be COMMITTED as the next
+  # quarter's memo. This publishes it; it does not commit it. The `source`
+  # resource's deploy key is read-only by design (see its note above), so a
+  # job that committed to TheHub would need a write credential this pipeline
+  # has deliberately never held. Retrieving the object and committing it stays
+  # an operator step, and the job's Slack message says so.
+  - name: drift-memo
+    type: s3
+    icon: file-document-outline
+    source:
+      endpoint: ((minio-endpoint))
+      bucket: thehub-sboms
+      regexp: cicd-drift-audit-(.*).md
+      access_key_id: ((minio-access-key))
+      secret_access_key: ((minio-secret-key))
 
   # The repository this FILE lives in, which is not the repository this
   # pipeline scans. That is the one thing keel's set-pipeline job does not have
@@ -747,6 +783,97 @@ jobs:
       - set_pipeline: self
         file: pipelines/deploy/concourse/pipelines/thehub.yml
         var_files: [pipelines/deploy/concourse/vars/thehub.yml]
+    on_failure: *slack_alert
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored }
+
+  # [#60073] The quarterly CI/CD drift audit. `scripts/audit-cicd-drift.sh`
+  # compares `deploy.sh`'s stages against the GHA workflows' jobs, and until
+  # now NOTHING RAN IT: every reference to it in TheHub's `docs/runbooks/` was
+  # a sentence saying it runs quarterly. The 2026q2 memo is what that produces
+  # -- it claimed a cadence it did not have, and the quarter it was written to
+  # cover came and went.
+  #
+  # Concourse rather than a `deploy.sh` step or a Windows scheduled task, for
+  # two reasons that are about failure and not convenience. It is OUTSIDE the
+  # Hub, so it still runs when the Hub is down -- unlike the Hub's own sweeps.
+  # And a red job is on a board somebody already looks at, where a scheduled
+  # task pointed at a path that no longer exists is silent, which this estate
+  # has already been bitten by.
+  #
+  # THIS JOB IS EXPECTED TO GO RED, POSSIBLY ON ITS FIRST RUN. That is the
+  # whole point of #60006: an empty half of the comparison now prints a BROKEN
+  # marker and exits non-zero instead of rendering as a clean report. Before
+  # that change the audit could only ever say "no drift", including when it
+  # had compared nothing at all.
+  #
+  # THE NAMED READER IS ATLAS (DevOps) -- the Accountable role for automated
+  # testing, gates and build artefacts in TheHub's `CLAUDE.md` RACI table.
+  # Choosing a mechanism without choosing a reader only relocates the silence,
+  # so the Slack line below names Atlas explicitly rather than leaving "the
+  # pipeline failed" to find an owner on its own.
+  - name: cicd-drift
+    public: true
+    serial_groups: [worker]
+    plan:
+      # The clock triggers this, not the checkout. Drift is a property of the
+      # two files' relationship, not of any one commit, and re-auditing on
+      # every push would produce ninety identical memos a quarter.
+      - get: quarterly
+        trigger: true
+        attempts: *retry_fetch
+      - get: source
+        attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      - *preflight
+      - task: audit
+        image: python
+        timeout: 15m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: memo }, { name: notify }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+
+                # The audit's own exit code is the verdict and must survive to
+                # the end of this task, so it is captured rather than allowed
+                # to kill the shell -- the memo has to be written and shipped
+                # even when the audit failed, because a BROKEN memo is the most
+                # useful one there is. `set -e` is off for exactly this line.
+                STAMP="$(date +%Y%m%d)"
+                OUT="memo/cicd-drift-audit-${STAMP}.md"
+                bash source/scripts/audit-cicd-drift.sh > "$OUT" 2> memo/stderr.txt
+                RC=$?
+
+                echo "audit exit code: ${RC}"
+                cat memo/stderr.txt || true
+
+                # The Slack line, written whether or not this goes red. The
+                # hook reads notify/message.txt verbatim when it is non-empty,
+                # so this is the one chance to say who should read it and what
+                # to do -- "cicd-drift failed" on its own sends nobody
+                # anywhere.
+                if [ "$RC" -ne 0 ]; then
+                  echo "cicd-drift: the CI/CD drift audit exited ${RC} - at least one half of the comparison produced NOTHING. This is a broken audit, not a clean estate. Atlas (DevOps) is accountable. Memo published to MinIO as cicd-drift-audit-${STAMP}.md; read the BROKEN markers before drawing any conclusion, then commit it to TheHub as docs/runbooks/cicd-drift-audit-${STAMP}.md." > notify/message.txt
+                fi
+
+                exit "$RC"
+        # `ensure`, not a plain following step: the memo is published whether
+        # the audit passed or failed. A failed audit is precisely the run whose
+        # output somebody needs to read, and the first version of this lost it.
+        ensure:
+          put: drift-memo
+          inputs: [memo]
+          params:
+            file: memo/cicd-drift-audit-*.md
+          get_params: { skip_download: true }
     on_failure: *slack_alert
     on_error:
       <<: *slack_alert
