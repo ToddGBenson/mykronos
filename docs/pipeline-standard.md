@@ -496,3 +496,33 @@ These are named rather than done, each with the reason.
    scope, and the answer decides whether the fix is a backend change or a
    grant. That is a story of its own; PS-12 does not close it and does not
    claim to.
+
+   **ANSWERED 2026-09-23 (#59083), by measurement: a lane outside the
+   detector's scope.** The detector did not fail -- it was never pointed at
+   these jobs.
+
+   ```
+   job                    mapped?    acknowledged?
+   ai-guardrails          False      False
+   agent-assurance        False      False
+   compliance-weekly      False      False
+   compliance-monthly     False      False
+   metrics-snapshot       False      False
+   sca                    False      False
+   ```
+
+   `keel` has exactly three mapped jobs -- `mykronos-atlas`, `mykronos-sast`,
+   `mykronos-secrets` -- and ZERO acknowledgements. The five lanes that stayed
+   dark for three days were in neither table, so `_DID_NOT_SUCCEED` never had
+   them to count.
+
+   `test_every_job_is_mapped_or_acknowledged` cannot catch that either, for the
+   same reason item 7 cannot be fixed here: it parametrises over the pipeline
+   FILES in this repository, and keel's pipeline is not one of them. The test
+   that refuses an unmapped job in `thehub.yml` is structurally blind to keel.
+
+   So the fix is a BACKEND change -- get keel's jobs into `CAPABILITY_BY_JOB`
+   or the acknowledgement table -- but it needs the job list first, which is
+   either an authenticated `fly` query against the server or a read of keel's
+   own repository. Neither is available from this checkout, and that is where
+   this stops until one is.
