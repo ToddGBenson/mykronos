@@ -47,6 +47,7 @@ from mykronos import briefing as briefing_report
 from mykronos import ci_repeat, grants
 from mykronos import host_controls as host_controls_module
 from mykronos.auth import TokenRegistry
+from mykronos.backfill_superseded_source import backfill_superseded_source
 from mykronos.ci import (
     ACTIONS,
     ActionsClient,
@@ -300,6 +301,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Report what would change and write nothing.",
+    )
+
+    setter = sub.add_parser(
+        "backfill-superseded-source",
+        help="Name which machine withdrew each older finding (spec 05 §5a)",
+    )
+    setter.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report the attribution and write nothing. Do this first.",
     )
 
     rescore = sub.add_parser(
@@ -1141,6 +1152,33 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.dry_run:
                 print("Dry run - nothing was written.")
+            return 0
+
+        if args.command == "backfill-superseded-source":
+            setters = backfill_superseded_source(catalog, db, dry_run=args.dry_run)
+            _print_table(
+                ["finding", "setter", "rule"],
+                [
+                    (row.finding_id[:12], row.superseded_source, row.rule)
+                    for row in setters.attributed
+                ],
+            )
+            print()
+            print(setters.summary())
+            if setters.undetermined:
+                print(
+                    f"{len(setters.undetermined)} withdrawal(s) matched neither "
+                    "setter's provenance and were left null rather than guessed "
+                    "at: " + ", ".join(f[:12] for f in setters.undetermined)
+                )
+            if args.dry_run:
+                print("Dry run - nothing was written.")
+            else:
+                print(
+                    "Each attribution is in the audit log as "
+                    "`finding.superseded_source_backfilled`, with the rule and "
+                    "the provenance it read."
+                )
             return 0
 
         if args.command == "rescore-sscs":

@@ -473,6 +473,12 @@ class FindingOut(BaseModel):
     #: that replaced this record. Previously not selected at all, so a
     #: superseded row had no way to point at what replaced it (spec 17 §5.1).
     superseded_by: str | None = None
+    #: Which machine withdrew it: reprocess | carry_forward (spec 05 §5a,
+    #: D-124). `superseded_by` cannot answer this — §5a permits reprocessing
+    #: to name a replacement too — and only `carry_forward` means the defect
+    #: is still live under a new id, so a reader deciding whether to go and
+    #: look needs this and not the pointer.
+    superseded_source: str | None = None
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
     resolved_at: datetime | None = None

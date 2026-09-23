@@ -373,6 +373,11 @@ def _mark_superseded(
     same scan run is enough to follow the trail. Where the scan produced
     nothing at all, it stays null and the status alone says the record was
     withdrawn.
+
+    `superseded_source` names this function as the setter. `superseded_by` was
+    never able to: it is null here only when the re-derivation produced
+    nothing, and the moment one produces a replacement the row is shaped like
+    a carry-forward and means something else entirely (D-124).
     """
     replacement = sorted(fresh_ids)[0] if fresh_ids else None
     located = locate_findings(catalog, stale)
@@ -381,7 +386,7 @@ def _mark_superseded(
     update_findings(
         catalog,
         located,
-        "status = ?, superseded_by = ?, resolved_at = ?",
+        "status = ?, superseded_by = ?, resolved_at = ?, superseded_source = 'reprocess'",
         [FindingStatus.SUPERSEDED.value, replacement, utcnow()],
         only_if_status="open",
     )

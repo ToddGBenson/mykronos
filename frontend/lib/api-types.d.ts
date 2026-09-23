@@ -3802,6 +3802,8 @@ export interface components {
             fingerprint_version?: string | null;
             /** Superseded By */
             superseded_by?: string | null;
+            /** Superseded Source */
+            superseded_source?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
             /** Last Seen At */

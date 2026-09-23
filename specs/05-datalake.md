@@ -85,6 +85,7 @@ results siloed in its own tool's UI only.
 | `package_name` / `package_version` | string, nullable | for SCA/dependency findings |
 | `status` | enum | `open, fixed, false_positive, accepted_risk, suppressed, superseded` |
 | `superseded_by` | string, nullable | The `finding_id` that replaced this record. Set only with `status = superseded` (§5a). |
+| `superseded_source` | enum, nullable | Which machine withdrew the record: `reprocess, carry_forward`. Set only with `status = superseded` (§5a); null everywhere else, because the column is about withdrawal. |
 | `first_seen_scan_run_id` | UUID | |
 | `last_seen_scan_run_id` | UUID | |
 | `first_seen_at` / `last_seen_at` | datetime | |
@@ -332,6 +333,18 @@ Normative:
   changed, §5b). No human disposition may, for the same reason no human may set
   `fixed`: it is a claim about what a tool produced, or about what happened to
   the code it matched, and a person is not in a position to make either.
+- **`superseded_source` names the setter.** `reprocess` or `carry_forward`,
+  written by whichever acted. The status keeps its single honest meaning —
+  this record no longer describes reality — and the row can still answer
+  which of the two sentences above it is making, which is what a page
+  explaining a hundred overnight withdrawals has to say. Added rather than
+  split into a seventh status: D-122 deferred splitting until a *third*
+  setter is proposed and that trigger has not fired. Until it existed the two
+  were separable only by accident, on `superseded_by` being null for every
+  reprocess withdrawal so far — which the very next bullet does not require.
+  The 460 rows written before the column are attributed from scan-run
+  provenance by `mykronos backfill-superseded-source`, with each attribution's
+  rule and evidence in the audit log. D-124.
 - **`superseded_by` names the replacing `finding_id` where there is one**, so
   the chain is auditable and somebody challenging a disappearance can follow
   it. It is null when a record is withdrawn with nothing taking its place —
