@@ -52,6 +52,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import text
+
 from mykronos.db import Database
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
@@ -87,6 +89,10 @@ class BackfillResult:
     #: Withdrawals matching none of the three rules. Left null and named.
     undetermined: list[str] = field(default_factory=list)
     partitions_written: int = 0
+    #: [#60485] Entries actually written this run. Lower than `attributed` on a
+    #: re-run that is repairing a half-applied backfill, which is the case the
+    #: count exists to make visible rather than leave to inference.
+    audit_entries_written: int = 0
 
     @property
     def by_setter(self) -> dict[str, int]:
@@ -101,7 +107,9 @@ class BackfillResult:
             f"{self.examined} withdrawal(s) examined, "
             f"{len(self.attributed)} attributed ({split or 'none'}), "
             f"{self.already_sourced} already named their setter, "
-            f"{len(self.undetermined)} undetermined"
+            f"{len(self.undetermined)} undetermined, "
+            f"{self.audit_entries_written} audit entr"
+            f"{'y' if self.audit_entries_written == 1 else 'ies'} written"
         )
 
 
@@ -200,6 +208,42 @@ def backfill_superseded_source(
     if dry_run or not result.attributed:
         return result
 
+    # [#60485] THE AUDIT IS WRITTEN FIRST, AND THE ORDER IS THE WHOLE POINT.
+    #
+    # It used to run after the lake update, in a different store with no
+    # compensation between them. On 2026-09-23 the lake write committed, the
+    # audit INSERT died on "database is locked", and the result was 460
+    # findings naming a setter with nothing anywhere saying how it was decided
+    # -- unrecoverable through this function, because the `already_sourced`
+    # guard then skips every one of them.
+    #
+    # Inverted, the surviving failure is the detectable one. An audit entry for
+    # a finding whose `superseded_source` is still null CONTRADICTS ITSELF and
+    # is visible to anyone who looks; the old order produced a lake that looked
+    # settled and a silence nobody could distinguish from "nothing happened".
+    #
+    # `Database.audit` says it takes the caller's session "so the log entry
+    # commits in the same transaction as the change it describes -- an audit
+    # log that can be missing entries for changes that succeeded is worse than
+    # none". That holds inside SQLite and cannot span the lake, so ordering is
+    # the only instrument left.
+    already_logged = _already_logged(db)
+    pending = [a for a in result.attributed if a.finding_id not in already_logged]
+    if pending:
+        with db.session() as session:
+            for attribution in pending:
+                db.audit(
+                    session,
+                    actor=actor,
+                    action=AUDIT_ACTION,
+                    entity_type="finding",
+                    entity_id=attribution.finding_id,
+                    superseded_source=attribution.superseded_source,
+                    rule=attribution.rule,
+                    **attribution.evidence,
+                )
+    result.audit_entries_written = len(pending)
+
     # One update per setter, so the value is a single bound parameter rather
     # than one per row.
     for setter in sorted(result.by_setter):
@@ -221,20 +265,23 @@ def backfill_superseded_source(
             setter,
         )
 
-    with db.session() as session:
-        for attribution in result.attributed:
-            db.audit(
-                session,
-                actor=actor,
-                action=AUDIT_ACTION,
-                entity_type="finding",
-                entity_id=attribution.finding_id,
-                superseded_source=attribution.superseded_source,
-                rule=attribution.rule,
-                **attribution.evidence,
-            )
-
     return result
+
+
+def _already_logged(db: Database) -> set[str]:
+    """Finding ids this backfill has already logged an entry for.
+
+    [#60485] What makes a re-run REPAIR rather than duplicate. If the lake
+    write failed after the audit succeeded, the findings are still unsourced,
+    so they are re-derived and re-attempted -- and skipping the entries that
+    already exist is what stops the second pass writing 460 duplicates.
+    """
+    with db.session() as session:
+        rows = session.execute(
+            text("SELECT entity_id FROM audit_log WHERE action = :a"),
+            {"a": AUDIT_ACTION},
+        ).fetchall()
+    return {str(r[0]) for r in rows}
 
 
 def _text(value: Any) -> str | None:

@@ -314,4 +314,16 @@ def _enable_sqlite_pragmas(engine: Engine) -> None:
         # SQLite does not enforce foreign keys unless asked.
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        # [#60485] Wait for a lock rather than failing on it. SQLite permits
+        # ONE writer, and this database has more than one: the API in the
+        # container, and any `mykronos ...` CLI run through `docker exec`
+        # against the same file. Without this the second writer raises
+        # "database is locked" IMMEDIATELY -- there is no default wait at all.
+        #
+        # Measured 2026-09-23: `backfill-superseded-source` wrote 460 findings
+        # to the lake and then lost all 460 audit entries to exactly that, so
+        # the lake said which machine withdrew each record and nothing said how
+        # it was decided. Thirty seconds is far longer than any write here
+        # takes and is bounded, which a retry loop in each caller would not be.
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()

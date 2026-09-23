@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 
 from mykronos.backfill_superseded_source import backfill_superseded_source
 from mykronos.dashboard import DashboardQueries
@@ -485,3 +486,148 @@ class TestTheSurfacesServeIt:
 
         assert record is not None
         assert record["superseded_source"] == "reprocess"
+
+
+# ---------------------------------------------------------------------------
+# The write order, and what survives a half-failure (#60485)
+# ---------------------------------------------------------------------------
+
+
+class TestTheAuditIsWrittenBeforeTheLake:
+    """On 2026-09-23 this ran against the production lake, wrote all 460
+    findings, and lost all 460 audit entries to `database is locked`. The lake
+    said which machine withdrew each record and nothing said how it was
+    decided — and the `already_sourced` guard then made it unrepairable by the
+    tool that caused it.
+
+    The order is the fix. It cannot make two stores atomic, but it decides
+    WHICH inconsistency survives: an audit entry for a finding that has no
+    setter contradicts itself and is findable, where a sourced finding with no
+    entry is indistinguishable from one nobody ever touched.
+    """
+
+    def test_a_failed_audit_write_leaves_the_lake_untouched(
+        self, client, admin_auth, run_compaction, db, monkeypatch
+    ) -> None:
+        catalog = _reprocess_withdrawal(client, admin_auth, run_compaction)
+        _forget_the_setter(catalog)
+        before = _withdrawn(catalog)
+        assert [src for _, src in before] == [None], "fixture must start unsourced"
+
+        def _explode(*_a: Any, **_k: Any) -> None:
+            raise OperationalError("INSERT INTO audit_log", {}, Exception("locked"))
+
+        monkeypatch.setattr(db, "audit", _explode)
+
+        with pytest.raises(OperationalError):
+            backfill_superseded_source(catalog, db)
+
+        assert _withdrawn(catalog) == before, (
+            "the lake was written even though the audit trail could not be — "
+            "this is the exact 2026-09-23 failure"
+        )
+
+    def test_the_entries_exist_before_the_lake_is_touched(
+        self, client, admin_auth, run_compaction, db
+    ) -> None:
+        """Not just 'both end up written' — the audit has to be durable at the
+        moment the lake changes, which is what ordering buys."""
+        catalog = _reprocess_withdrawal(client, admin_auth, run_compaction)
+        ids = _forget_the_setter(catalog)
+
+        seen: list[int] = []
+        real = update_findings
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            with db.session() as session:
+                seen.append(
+                    session.execute(
+                        select(AuditLogEntry).where(
+                            AuditLogEntry.action == "finding.superseded_source_backfilled"
+                        )
+                    )
+                    .scalars()
+                    .all()
+                    .__len__()
+                )
+            return real(*args, **kwargs)
+
+        import mykronos.backfill_superseded_source as mod
+
+        mod.update_findings = _spy  # type: ignore[assignment]
+        try:
+            backfill_superseded_source(catalog, db)
+        finally:
+            mod.update_findings = real  # type: ignore[assignment]
+
+        assert seen, "the lake update never ran, so this proves nothing"
+        assert min(seen) == len(ids), (
+            "the lake was updated while the audit log was still short — "
+            f"entries present at first lake write: {min(seen)}, expected {len(ids)}"
+        )
+
+    def test_a_rerun_repairs_a_half_applied_backfill_without_duplicating(
+        self, client, admin_auth, run_compaction, db
+    ) -> None:
+        """The property the `already_sourced` guard destroyed last time. A run
+        whose lake write failed leaves findings unsourced, so a second run
+        re-derives them — and must not write the entries a second time."""
+        catalog = _reprocess_withdrawal(client, admin_auth, run_compaction)
+        ids = _forget_the_setter(catalog)
+
+        import mykronos.backfill_superseded_source as mod
+
+        real = update_findings
+
+        def _fail(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("lake write failed after the audit committed")
+
+        mod.update_findings = _fail  # type: ignore[assignment]
+        try:
+            with pytest.raises(RuntimeError):
+                backfill_superseded_source(catalog, db)
+        finally:
+            mod.update_findings = real  # type: ignore[assignment]
+
+        with db.session() as session:
+            after_first = (
+                session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.action == "finding.superseded_source_backfilled"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(after_first) == len(ids), "the audit half did not commit first"
+        assert [src for _, src in _withdrawn(catalog)] == [None] * len(ids)
+
+        result = backfill_superseded_source(catalog, db)
+
+        assert result.audit_entries_written == 0, "the re-run duplicated the trail"
+        with db.session() as session:
+            after_second = (
+                session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.action == "finding.superseded_source_backfilled"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(after_second) == len(ids)
+        assert all(src is not None for _, src in _withdrawn(catalog)), (
+            "the re-run did not repair the lake"
+        )
+
+
+def test_the_operational_database_waits_for_a_lock_instead_of_failing(db) -> None:
+    """[#60485] The trigger, not the defect. SQLite permits one writer and this
+    file has two — the API in the container and any CLI run through
+    `docker exec`. With no `busy_timeout` the second raises immediately; there
+    is no default wait."""
+    with db.session() as session:
+        timeout = session.execute(text("PRAGMA busy_timeout")).scalar()
+    assert timeout and int(timeout) >= 30000, (
+        f"busy_timeout is {timeout!r}; a second writer fails instantly again"
+    )
