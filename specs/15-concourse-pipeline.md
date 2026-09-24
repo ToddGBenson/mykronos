@@ -70,6 +70,7 @@ security configuration.
                                     │ go
                           ┌─────────▼──────────┐
                           │  deploy (by hand)  │  deploy.ps1 -Tag <sha>
+                          │  re-asks the gate  │  refuses no_go (D-126)
                           └────────────────────┘
 ```
 
@@ -88,19 +89,36 @@ is now history.** The gate never once ran: 99 runs, 99 cancelled, zero
 completions, and `:latest` was left pointing at an image older than the last
 production deploy. `deploy.ps1` now takes a mandatory `-Tag <sha>`.
 
-**Say plainly what that costs, because it is the thing D-047 existed to
-prevent.** With no tag for the gate to hold, *nothing mechanically stops a
-`no_go` commit being deployed* — the operator names a sha and it ships. D-047's
-own words were that before it, "a `no_go` changed nothing an operator would
-ever meet". Retiring the tag returns the pipeline to that shape, and the honest
-reading is that the Oracle gate is again advisory at deploy time.
+**Say plainly what that cost, because it was the thing D-047 existed to
+prevent.** With no tag for the gate to hold, *nothing mechanically stopped a
+`no_go` commit being deployed* — the operator named a sha and it shipped.
+D-047's own words were that before it, "a `no_go` changed nothing an operator
+would ever meet". Retiring the tag returned the pipeline to that shape, and
+for one day the Oracle gate was advisory at deploy time.
 
-What replaces it for now is a person: running `deploy.ps1` has always been a
-manual act on the host, and naming the sha is the decision. That is weaker than
-a machine refusing, and it is not pretended otherwise. Restoring a mechanical
-gate — `deploy.ps1` refusing a sha whose Oracle decision is `no_go` — is filed
-rather than assumed, because it needs the deploy host to reach the platform and
-that is a new dependency for a script that currently needs only a registry.
+**That is closed as of D-126 (#60487), and the phrase above is history.**
+`deploy.ps1` asks the platform what the gate decided about the sha — `GET
+/api/oracle/decisions/by-commit/{sha}`, on the backend it already reads
+`/healthz` from — before it pulls anything, and **refuses a `no_go`** unless
+`-Force` is passed with a reason that is recorded. A machine says no again.
+
+**It fails open, deliberately.** If the platform cannot be reached the deploy
+warns and proceeds, because that is never worse than the state it replaces:
+with no check at all, an unreachable platform already meant no gate. Fail
+closed was rejected on a measured case — Vault was sealed four days in
+September 2026 and the estate was down (#60474), and a fail-closed gate would
+have blocked the deploy that fixed it.
+
+**So the warning must not go invisible**, which is the failure mode a
+warn-and-proceed path always risks. `go` is one grey line; "could not ask" and
+"nothing ever scored this sha" are separate banner states with a pause, the
+verdict is repeated as the last line of the run, and every run — not only the
+overrides — appends to `deploy/mykronos/deploy-risk-log.jsonl`. "Could not
+ask" is not "asked and it was fine".
+
+The human gate is unchanged underneath all of it: running `deploy.ps1` has
+always been a manual act on the host, and naming the sha is still the
+decision. What D-126 adds is a machine that can now refuse it.
 
 The security jobs run **in parallel** and all of them complete before the
 Oracle gate. That ordering is deliberate: Oracle scores the whole picture

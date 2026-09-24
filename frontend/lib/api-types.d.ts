@@ -1952,6 +1952,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/oracle/decisions/by-commit/{commit_sha}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Decision For Commit
+         * @description The risk decision for one commit, for the deploy host (#60487, D-125).
+         *
+         *     D-125 retired `:latest` and with it the tag the Oracle gate used to hold,
+         *     leaving the gate advisory at deploy time — nothing mechanically stopped a
+         *     `no_go` sha shipping. `deploy.ps1` closes that by asking this endpoint
+         *     before it pulls anything.
+         *
+         *     **A missing decision is 200 with `found: false`, never 404.** To a script,
+         *     a 404 for "no decision about this sha" is indistinguishable from a 404 for
+         *     "this backend is too old to have the route" or "the proxy rewrote the
+         *     path" — and under the fail-open posture the operator chose, an
+         *     indistinguishable error is an open gate. The two outcomes must look
+         *     different on the wire because the deploy says different things about them.
+         *
+         *     Readable by viewers as well as admins, on `/policy`'s reasoning and one of
+         *     its own: the deploy host holds a token in `backend/.env`, and making this
+         *     need the admin token would push the most privileged credential in the
+         *     system onto a machine that only needs to read one word.
+         *
+         *     Ordered before `/decisions/{repo_id}` because a literal path must not be
+         *     shadowed by the parameterised one.
+         */
+        get: operations["decision_for_commit_api_oracle_decisions_by_commit__commit_sha__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/decisions/{repo_id}": {
         parameters: {
             query?: never;
@@ -3057,6 +3097,53 @@ export interface components {
             runs?: number | null;
             /** Failure Rate */
             failure_rate?: number | null;
+        };
+        /**
+         * CommitDecisionOut
+         * @description What a deploy host gets back when it asks about a sha (#60487).
+         */
+        CommitDecisionOut: {
+            /**
+             * Commit Sha
+             * @description The sha that was asked about, as sent.
+             */
+            commit_sha: string;
+            /**
+             * Found
+             * @description Whether any decision exists for this commit. **False is not a pass.** A commit nothing ever scored is unjudged, which is a different fact from judged and cleared, and a caller that collapses the two has rebuilt the gap D-125 recorded.
+             */
+            found: boolean;
+            /**
+             * Recommendation
+             * @description As recorded: go | review_recommended | no_go.
+             */
+            recommendation?: string | null;
+            /**
+             * Effective Recommendation
+             * @description What stands today: the override's `accepted_recommendation` when a human has overridden this decision through `/override`, otherwise `recommendation`. A recorded override IS the human decision, so a gate that ignored it would demand the same call be made twice.
+             */
+            effective_recommendation?: string | null;
+            /**
+             * Overridden
+             * @default false
+             */
+            overridden: boolean;
+            /** Override Reason */
+            override_reason?: string | null;
+            /** Decision Id */
+            decision_id?: string | null;
+            /** Decision Type */
+            decision_type?: string | null;
+            /** Repo Full Name */
+            repo_full_name?: string | null;
+            /** Overall Risk Score */
+            overall_risk_score?: number | null;
+            /** Reasoning */
+            reasoning?: string | null;
+            /** Policy Version */
+            policy_version?: string | null;
+            /** Evaluated At */
+            evaluated_at?: string | null;
         };
         /** ConsultAnswerOut */
         ConsultAnswerOut: {
@@ -8462,6 +8549,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decision_for_commit_api_oracle_decisions_by_commit__commit_sha__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commit_sha: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitDecisionOut"];
                 };
             };
             /** @description Validation Error */

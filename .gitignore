@@ -34,6 +34,13 @@ mykronos.db
 mykronos.db-shm
 mykronos.db-wal
 
+# The deploy host's risk-gate ledger (D-126): one line per deploy saying what
+# the risk gate said about the sha, and the reason for any -Force override.
+# Host-local operational history, like the lake above — and it must never be
+# swept into an unrelated commit by a `git add -A`, because the record is only
+# trustworthy if nothing rewrites it.
+deploy/mykronos/deploy-risk-log.jsonl
+
 # --- Secrets (spec 12 §8: no real secret is ever committed) ---
 .env
 .env.*

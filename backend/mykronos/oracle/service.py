@@ -697,6 +697,62 @@ class OracleService:
             for repo, score, recommendation, evaluated_at, raw in rows
         }
 
+    def decision_for_commit(self, commit_sha: str) -> dict[str, Any] | None:
+        """The newest decision recorded against a commit, or None (#60487).
+
+        The question the deploy host asks before it ships a sha, and the one
+        thing the existing endpoints could not answer: `/decisions/{repo_id}`
+        needs an onboarding id and returns a page to filter client-side, which
+        turns "this sha fell off the end of a 200-row window" into "this sha
+        is clean". A lookup keyed by the thing the operator actually types
+        cannot make that mistake.
+
+        **Prefix match, because a deploy names a short sha.** `deploy.ps1
+        -Tag` accepts 7 to 40 hex characters and the lake stores whatever the
+        gate workflow sent. Matching in both directions means a 7-character
+        tag finds a decision filed under the full sha and vice versa; an
+        equality test would silently find nothing, which under a fail-open
+        gate reads as permission.
+
+        Newest wins when a commit has several — a pr_gate and a commit_gate
+        decision are both real, and the later one saw more.
+        """
+        prefix = commit_sha.strip()
+        if not prefix:
+            return None
+        rows = self.catalog.query(
+            """
+            SELECT decision_id, repo_full_name, decision_type, commit_sha,
+                   overall_risk_score, recommendation, reasoning, policy_version,
+                   evaluated_at, human_override
+            FROM risk_decisions
+            WHERE commit_sha IS NOT NULL AND commit_sha <> ''
+              AND (starts_with(commit_sha, ?) OR starts_with(?, commit_sha))
+            ORDER BY evaluated_at DESC
+            LIMIT 1
+            """,
+            [prefix, prefix],
+        )
+        if not rows:
+            return None
+        keys = [
+            "decision_id",
+            "repo_full_name",
+            "decision_type",
+            "commit_sha",
+            "overall_risk_score",
+            "recommendation",
+            "reasoning",
+            "policy_version",
+            "evaluated_at",
+            "human_override",
+        ]
+        record = dict(zip(keys, rows[0], strict=True))
+        if record.get("human_override"):
+            with suppress(TypeError, json.JSONDecodeError):
+                record["human_override"] = json.loads(record["human_override"])
+        return record
+
     def find_decision(self, decision_id: str) -> dict[str, Any] | None:
         rows = self.catalog.query(
             "SELECT repo_full_name, decision_type, pr_number, recommendation, "
