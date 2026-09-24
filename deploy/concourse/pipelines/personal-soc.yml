@@ -59,7 +59,7 @@ groups:
   # commit, which is why they are worth their own tab: after an outage or a
   # holiday, this is the list you check.
   - name: exposure
-    jobs: [external-exposure, netassess-ingest, netassess-freshness, breach-check]
+    jobs: [external-exposure, netassess-ingest, netassess-freshness]
 
   # Publishing.
   - name: release
@@ -2336,164 +2336,31 @@ jobs:
   # A helpful one-line summary here would put exactly the confidential list
   # into a chat channel.
   # Clock-triggered: no serial group. See the note on external-exposure.
-  - name: breach-check
-    public: false
-    on_failure: *slack_alert
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
-    plan:
-      - get: weekly
-        attempts: *retry_fetch
-        trigger: true
-      - get: source
-        attempts: *retry_fetch
-      - get: pwsh
-        attempts: *retry_fetch
-      - task: hibp
-        # PS-7.
-        # No observed durations: `breach-check` is paused, so this is the estate's
-        # default for a lane that calls one external API rather than a measurement.
-        timeout: 15m
-        image: pwsh
-        params:
-          HIBP_API_KEY: ((hibp-api-key))
-          MONITOR_EMAILS: ((monitor-emails))
-          MINIO_ENDPOINT: ((minio-endpoint))
-          # Pinned and verified where it is fetched (PS-8). dl.min.io now
-          # returns 410 Gone -- MinIO archived the open-source client -- so
-          # the release asset on GitHub is the only served copy.
-          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
-          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
-          MINIO_ACCESS_KEY: ((minio-access-key))
-          MINIO_SECRET_KEY: ((minio-secret-key))
-          BUCKET: ((monitor-bucket))
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          outputs: [{ name: results }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -uo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
-                # dl.min.io returns 410 Gone: MinIO archived the open-source
-                # client and stopped serving it, so `curl -f` fails and this
-                # task dies before it starts. Pinned GitHub release instead,
-                # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
-                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
-                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
-                chmod +x /usr/local/bin/mc
-                SCHEME=${MINIO_ENDPOINT%%://*}
-                HOSTPORT=${MINIO_ENDPOINT#*://}
-                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
+  # [#60004, RETIRED 2026-09-23 by operator decision] `breach-check` was here.
+  #
+  # IT NEVER PASSED. One build ever -- 2026-08-14, failed in 5m29s -- and the
+  # cause was never a defect in the job. Its own preflight said so:
+  #
+  #     ::error:: no HIBP API key. Set HIBP_API_KEY in deploy/concourse/.env
+  #     ::error:: MONITOR_EMAILS is empty - nothing to check.
+  #     ::error:: the HIBP query did not complete - this is not a clean result.
+  #
+  # It was then PAUSED while red, which is the shape #60004 was filed about: a
+  # paused red job shows a stale failure forever, and pausing does NOT detach
+  # the trigger. `weekly` kept firing every Sunday and Concourse silently
+  # skipped this job for over a month while its two siblings on the same timer
+  # -- external-exposure and netassess-freshness -- ran. The schedule looked
+  # healthy and a credential-breach control was simply absent.
+  #
+  # REMOVED RATHER THAN LEFT PAUSED, deliberately. Deleting it stops the timer
+  # firing into nothing, which pausing never did. Leaving a tombstone rather
+  # than deleting silently, because #59101 established that a control removed
+  # without saying why is the same silence one level up.
+  #
+  # "Retire FOR NOW": this is a decision not to buy the control today, not a
+  # judgement that breach monitoring is worthless. Restoring it is `git revert`
+  # plus the two settings it always needed -- HIBP_API_KEY and MONITOR_EMAILS.
+  # Note what it got RIGHT and keep it if it returns: it refused to report a
+  # clean result it had not earned, which is the property #60002 found missing
+  # elsewhere in this estate.
 
-                # Checked before anything else so the failure names the cause.
-                # Invoke-BreachCheck throws on a missing key too, but from
-                # inside a PowerShell stack trace that reads like a bug.
-                if [ -z "${HIBP_API_KEY:-}" ]; then
-                  echo "::error:: no HIBP API key. Set HIBP_API_KEY in deploy/concourse/.env"
-                  echo "          and re-run set-personal-soc-pipeline.ps1."
-                  echo "          A key is ~\$4/month from haveibeenpwned.com/API/Key - there is"
-                  echo "          no free endpoint for account breach lookup."
-                  exit 1
-                fi
-                if [ -z "${MONITOR_EMAILS:-}" ]; then
-                  echo "::error:: MONITOR_EMAILS is empty - nothing to check."
-                  exit 1
-                fi
-
-                mc --quiet mb --ignore-existing "store/$BUCKET" >/dev/null
-
-                # A wrapper rather than calling the script directly: -Emails
-                # is [string[]], and a comma-separated argument through
-                # `pwsh -File` binds as one string on some paths and an array
-                # on others. Splitting it here removes the ambiguity.
-                cat > run-breach.ps1 <<'PS'
-                param([string]$EmailCsv, [string]$Key, [string]$Out)
-                $emails = $EmailCsv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-                Write-Host "Checking $($emails.Count) address(es) against HIBP."
-                & ./source/skills/personal-threat-monitor/scripts/Invoke-BreachCheck.ps1 `
-                    -Emails $emails -ApiKey $Key -OutDir $Out
-                PS
-
-                rc=0
-                pwsh -NonInteractive -NoProfile -File run-breach.ps1 \
-                  -EmailCsv "$MONITOR_EMAILS" -Key "$HIBP_API_KEY" -Out results || rc=$?
-                if [ "$rc" -ne 0 ] || [ ! -f results/breaches.json ]; then
-                  echo "::error:: the HIBP query did not complete - this is not a clean result."
-                  exit 1
-                fi
-
-                # Previous run, for the diff. Absent on the first run, which
-                # is not an error - it just means everything is "new" and
-                # there is nothing to alert on yet.
-                mc --quiet cp "store/$BUCKET/breaches/latest.json" prev.json >/dev/null 2>&1 \
-                  || echo "(no previous run - this is the first, so nothing is reported as new)"
-
-                cat > diff.ps1 <<'PS'
-                param([string]$CurPath, [string]$PrevPath)
-                function Pairs($set){
-                  foreach($e in $set){ foreach($b in @($e.breaches)){ "{0}|{1}|{2}" -f $e.email, $b.name, $b.date } }
-                }
-                # @() around ConvertFrom-Json: a single-email report
-                # serialises as an object, not an array, and iterating an
-                # object yields one useless item.
-                #
-                # $CurPath/$PrevPath rather than $Cur/$Prev: PowerShell
-                # variable names are case-insensitive, so a local $prev
-                # overwrites the parameter $Prev. That made Test-Path see an
-                # empty array, so every run reported itself as the first one
-                # and no diff was ever performed - a silent pass, which is
-                # the worst way for an alerting job to break.
-                $curSet  = @(Get-Content $CurPath -Raw | ConvertFrom-Json)
-                $prevSet = @()
-                $first = -not (Test-Path $PrevPath)
-                if(-not $first){ $prevSet = @(Get-Content $PrevPath -Raw | ConvertFrom-Json) }
-
-                $c = @(Pairs $curSet); $p = @(Pairs $prevSet)
-                Write-Host ""
-                Write-Host ("confirmed breach appearances: {0} across {1} address(es)" -f $c.Count, $curSet.Count)
-                foreach($e in $curSet){
-                  Write-Host ("  {0,-32} {1} breach(es), {2} paste(s)" -f $e.email, $e.breach_count, $e.paste_count)
-                }
-
-                if($first){
-                  Write-Host ""
-                  Write-Host "First run - recording this as the baseline. Next run reports what is new."
-                  exit 0
-                }
-
-                $new = @($c | Where-Object { $p -notcontains $_ })
-                Write-Host ""
-                if($new.Count -eq 0){ Write-Host "No new breach appearances since the previous run."; exit 0 }
-
-                Write-Host ("::error:: {0} NEW breach appearance(s) since the previous run:" -f $new.Count)
-                foreach($n in $new){
-                  $f = $n -split '\|'
-                  Write-Host ("          {0,-32} {1} ({2})" -f $f[0], $f[1], $f[2])
-                }
-                Write-Host "          Rotate credentials and check recovery chains for these addresses."
-                exit 1
-                PS
-
-                drc=0
-                pwsh -NonInteractive -NoProfile -File diff.ps1 \
-                  -CurPath results/breaches.json -PrevPath prev.json || drc=$?
-
-                # The baseline advances even when the diff failed, so a new
-                # breach alerts once rather than every week forever. Same
-                # alert-once semantics as the netassess posture check.
-                TODAY=$(date -u +%F)
-                mc --quiet cp results/breaches.json "store/$BUCKET/breaches/latest.json"
-                mc --quiet cp results/breaches.json "store/$BUCKET/breaches/breaches-$TODAY.json"
-                echo "baseline updated ($TODAY)"
-
-                exit $drc
