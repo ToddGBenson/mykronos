@@ -1659,11 +1659,6 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "netassess-freshness",
         "ages the newest network scan and alerts when it is stale; files nothing",
     ),
-    (
-        (PERSONAL_SOC,),
-        "breach-check",
-        "queries HIBP for the monitored addresses and alerts; uploads nothing",
-    ),
 )
 
 

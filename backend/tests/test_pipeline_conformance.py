@@ -456,7 +456,11 @@ EXTRA_VAULT_VARS = {
 #: being added quietly, and what goes red when one is finally closed.
 UNRESOLVED_AFTER_SELF_APPLY = {
     "mykronos": frozenset(),
-    "personal-soc": frozenset({"hibp-api-key", "monitor-emails"}),
+    # [#60004] `breach-check` was retired, and these two vars went with it --
+    # they were only ever used by that job. Emptied rather than left behind:
+    # this set records vars a self-apply CANNOT resolve, so a name that no
+    # pipeline references any more is a claim about nothing.
+    "personal-soc": frozenset(),
     "thehub": frozenset(
         {
             "github-token",
