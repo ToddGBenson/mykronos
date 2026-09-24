@@ -86,7 +86,7 @@
 # that claimed otherwise, and it is retired (#59990/#59999/#60063).
 groups:
   - name: quality
-    jobs: [unit, qa, prompt-evals]
+    jobs: [unit, qa, prompt-evals, post-merge]
   - name: security
     jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture, dast-staging]
   - name: build
@@ -235,6 +235,32 @@ resources:
     source:
       location: ((scan-timezone))
       interval: 2160h
+
+  # [#59326] The post-merge check's clock, and deliberately NOT `quarterly`
+  # above. That one is 2160h because CI/CD drift is slow; this grades
+  # `origin/develop`, which moves several times a day, so reusing it would put
+  # a ninety-day ceiling on a window the story measured at 35 minutes and the
+  # check would read as coverage while providing none.
+  #
+  # 30m is the incident's own number. Two sessions fixed one story, the merged
+  # combination was tested by neither gate, and develop was red for 35 minutes
+  # (#59316). Hourly halves the cost and roughly doubles the exposure.
+  #
+  # `interval` rather than `start`/`stop` for the same reason `quarterly` uses
+  # it: this is a cadence, not a window. `location` is carried anyway -- a
+  # timer that does not name the zone it reads its window in is the gap
+  # `test_every_timer_names_the_timezone_it_reads_its_window_in` exists for,
+  # and an interval timer acquiring a window later would inherit the fault.
+  #
+  # A tick with nothing to grade costs seconds: the job compares the tip
+  # against its watermark before it installs anything, so the frequency buys
+  # latency rather than load.
+  - name: half-hourly
+    type: time
+    icon: clock-fast
+    source:
+      location: ((scan-timezone))
+      interval: 30m
 
   # Where the memo goes. The same MinIO the SBOMs use, deliberately: a bucket
   # that does not exist yet is an operator action this change does not need,
@@ -951,6 +977,560 @@ jobs:
           params:
             file: memo/cicd-drift-audit-*.md
           get_params: { skip_download: true }
+
+  # [#59326] The post-merge check, on a clock.
+  #
+  # `scripts/check_post_merge.py` grades `origin/develop` AS IT LANDED, and
+  # until now NOTHING RAN IT. The story's own words: "the script works and
+  # nothing calls it, which is the precise shape of defect this whole sweep
+  # kept finding."
+  #
+  # WHAT IT IS FOR. 2026-09-11, two sessions independently fixed #59310. One
+  # committed straight to develop, the other landed PR #307 on top. Both
+  # changes were correct in isolation; the merge kept only the PR's
+  # non-overlapping hunks and dropped the functions the other side had
+  # rewritten underneath them. develop was RED for about 35 minutes with three
+  # failing crypto tests, and EVERY GATE HAD PASSED -- the direct commit's
+  # gates ran on the direct commit, the PR's CI ran on the PR's base, and the
+  # merged result was tested by neither. It ended because the next session
+  # happened to run the suite. That is luck, not a control.
+  #
+  # -- Why a clock, and emphatically not `quarterly` -----------------------
+  #
+  # `quarterly` above is 2160h because CI/CD drift is slow. This grades a
+  # branch that moves several times a day; on that timer the window the story
+  # measured at 35 minutes would acquire a ninety-day ceiling, and the check
+  # would be worse than absent because it would look like coverage.
+  #
+  # 30m rather than hourly, and the number is the incident's: it lasted 35.
+  # Hourly halves the cost and roughly doubles the exposure. A tick with
+  # nothing to grade costs seconds -- the watermark comparison below happens
+  # before anything is installed -- so the price of the frequency is the check
+  # itself, not the timer.
+  #
+  # The `source` git resource was the other candidate and is the one this does
+  # NOT use, for a reason the repository enforces: PS-4 requires a
+  # commit-triggered job to wait on the quality gate, and this job has to run
+  # PRECISELY WHEN THE QUALITY GATE IS RED -- that is the state it exists to
+  # report. A clock owes nothing to a gate, so the standard and the control
+  # agree rather than trade against each other.
+  #
+  # -- The watermark, and why it is a task cache ---------------------------
+  #
+  # `should_grade()` says: if the tip moved, grade the tip. The script keeps
+  # that state in `docs/sbom/latest-post-merge-check.json`, written on the
+  # host and unreachable from here. A worker-local task cache holds the same
+  # one line, and its failure mode is the right way round: a cache swept by a
+  # worker restart (which has happened -- see /pipcache in `unit`) costs ONE
+  # redundant grading and can never produce a wrong verdict.
+  #
+  # An INDETERMINATE run does NOT advance it, exactly as the script does not,
+  # so a tip nobody could measure is graded again on the next tick rather than
+  # marked covered by a run nobody trusts.
+  #
+  # -- THREE VERDICTS, AND CONCOURSE HAS TWO -------------------------------
+  #
+  # green / red / INDETERMINATE. The third is not a rounding error: the unit
+  # tier OOMs on this host under memory pressure (#59092), and that run is
+  # neither a red tree nor a green one. Reporting it red cries wolf on a
+  # develop that is fine; reporting it green is a control announcing that it
+  # checked when it did not.
+  #
+  # A Concourse build is succeeded / failed / errored / aborted, and a task
+  # cannot choose between them -- any non-zero exit is `failed`. So the third
+  # verdict is NOT carried by the build colour. It is carried where it can be:
+  #
+  #   * `post_merge_verdict` -- posted by the task itself, three-valued:
+  #     success (green), failed (RED), errored (INDETERMINATE). `notes` holds
+  #     the one-line verdict and `meta.verdict` holds the word itself, so
+  #     nothing downstream has to infer the third state from the second.
+  #   * `notify/message.txt` -- the RED line and the INDETERMINATE line are
+  #     different sentences carrying opposite instructions, and the Slack hook
+  #     uses whichever is written, verbatim.
+  #   * `post_merge_check` -- the four job-level hooks below. That stage is
+  #     about THE LANE, not about develop: did the check run and finish.
+  #
+  # WHAT THAT COSTS, stated rather than glossed. A red develop and a run that
+  # measured nothing produce the SAME COLOUR on the board -- both fail the
+  # build, because "I could not check" must never share an outcome with
+  # "verified green", which is the script's own doctrine (exit 2, never 0).
+  # The board cannot tell them apart; the Hub row and the Slack line can, and
+  # a reader who acts on the colour alone will re-trigger a red or escalate an
+  # indeterminate. That is the price of grading a three-state thing with a
+  # two-colour instrument. The alternative -- letting INDETERMINATE go green
+  # -- is the defect this check was built to prevent.
+  #
+  # -- Why it re-runs the tier rather than reading `unit` ------------------
+  #
+  # `unit` runs the same tests on the same tree, and this lane deliberately
+  # does not read its verdict. `unit` is a GATE: two-valued, and a bootstrap
+  # that half-succeeded reads there as a red tree. This is a MEASUREMENT: a
+  # bootstrap that half-succeeded reads here as "not measured". They ask
+  # different questions of one suite, and a control that inherits another
+  # gate's blind spots is not a control. `unit` also grades the commit that
+  # triggered it; this grades THE TIP, which after a burst of commits is a
+  # tree no single `unit` build ever saw -- which is the whole of #59316.
+  #
+  # The environment bootstrap below is therefore a second copy of `unit`'s,
+  # and that is a real cost: two copies of one bootstrap drift. It is written
+  # so the drift is SAFE -- every bootstrap shortfall lands on INDETERMINATE,
+  # never on RED -- so the worst a drifted copy can do is stop measuring
+  # loudly, rather than file a false red against a develop that is fine.
+  #
+  # -- The named reader ----------------------------------------------------
+  #
+  # Atlas (DevOps) is Accountable for automated testing and the coverage gate
+  # in TheHub's CLAUDE.md RACI table, and the task writes that name into
+  # notify/message.txt itself. "post-merge failed" on its own sends nobody
+  # anywhere.
+  - name: post-merge
+    public: true
+    serial_groups: [worker]
+    # Reports to TheHub on all four terminal states, per
+    # `test_every_job_reports_all_four_terminal_states_per_stage`. This stage
+    # is the LANE's own health: a stage that can only ever report success is a
+    # stage whose green means nothing, and a check nobody can see fail is
+    # #59100's defect -- a scheduled task reporting `Ready` while exiting
+    # non-zero -- arriving by another road. AC4.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: aborted, TARGET_ENV: prod }
+    plan:
+      - get: half-hourly
+        trigger: true
+        attempts: *retry_fetch
+      - get: source
+        attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      - *preflight
+      - task: grade
+        image: python
+        # Two tiers at a 45m soft cap each, plus the bootstrap and the report.
+        # The SOFT cap inside the task is the one that matters: a run killed by
+        # the hard cap produces no verdict at all, and a run that produced no
+        # verdict must say so rather than vanish. That is the entire third
+        # verdict, arriving as a timeout.
+        timeout: 120m
+        params:
+          <<: *hub_params
+          PIP_CACHE_DIR: /pipcache
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: notify }]
+          # /pipcache for the reason `unit` has one: a cold install of TheHub's
+          # dependency set is most of this lane's wall clock. /watermark is the
+          # last determinately-graded sha, one line.
+          caches:
+            - { path: /pipcache }
+            - { path: /watermark }
+          run:
+            path: bash
+            # `-c`, not `-ec`. Every verdict in this script is carried by a
+            # captured exit code, and `-e` would take the shell down at the
+            # first failing command -- before the classifier, before the
+            # report, and before the notify line. The `set` below is written
+            # out rather than inherited for the same reason.
+            args:
+              - -c
+              - |
+                set -uo pipefail
+
+                mkdir -p notify /watermark
+                WATERMARK=/watermark/last-graded-sha
+                SOFT_TIMEOUT_S=2700
+
+                # -- The tip, read WITHOUT git ------------------------------
+                #
+                # Concourse's git resource writes the checked-out sha to
+                # `.git/ref` and the subject to `.git/commit_message`, so the
+                # watermark comparison happens before anything is installed.
+                # A tick with nothing to grade therefore costs seconds, which
+                # is what makes a 30-minute cadence affordable at all.
+                TIP="$(tr -d '[:space:]' < source/.git/ref 2>/dev/null || true)"
+                MSG="$(head -1 source/.git/commit_message 2>/dev/null || true)"
+                LAST="$(tr -d '[:space:]' < "$WATERMARK" 2>/dev/null || true)"
+
+                if [ -z "$TIP" ]; then
+                  echo "::error::the checkout carries no .git/ref, so there is"
+                  echo "          no tip to grade and no watermark to compare"
+                  echo "          it against. This is the lane failing, not"
+                  echo "          develop."
+                  echo "*TheHub*: post-merge could not read the sha it was asked to grade - the checkout carries no .git/ref. Nothing was measured about develop and the previous verdict still stands. Atlas (DevOps) is accountable." > notify/message.txt
+                  exit 1
+                fi
+
+                echo "tip of ${SCANNED_BRANCH}:       ${TIP}"
+                echo "last determinate grading: ${LAST:-none}"
+
+                if [ "$TIP" = "${LAST:-}" ]; then
+                  echo "Nothing to grade: this tip already has a determinate"
+                  echo "verdict. should_grade() in check_post_merge.py is the"
+                  echo "same rule - if the tip moved, grade the tip."
+                  exit 0
+                fi
+
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+                # curl and jq first and on their own, because the verdict this
+                # lane most needs to deliver is the one where the REST of the
+                # bootstrap failed. A reporter installed inside the thing it
+                # reports on cannot report on it.
+                apt-get update -qq >/dev/null 2>&1
+                apt-get install -y -qq curl jq >/dev/null 2>&1 || true
+
+                # -- The environment tests/unit needs -----------------------
+                #
+                # A second copy of `unit`'s bootstrap, in a subshell under
+                # `set -e` so that ANY shortfall collapses into one exit code.
+                # It is read as INDETERMINATE below and never as RED:
+                # tests/unit on the SQLite fallback produces 258 failures and
+                # 113 errors, and filing that as "develop is red" is how a
+                # control comes to be ignored.
+                echo "--- building the environment (log tail follows) -------"
+                (
+                  set -e
+                  apt-get install -y -qq git build-essential postgresql postgresql-contrib
+
+                  cd source
+                  for req in requirements.txt requirements-dev.txt \
+                             */requirements.txt */requirements-dev.txt; do
+                    [ -f "$req" ] || continue
+                    echo "Installing $req"
+                    pip install --quiet -r "$req"
+                  done
+                  pip install --quiet pytest
+
+                  PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
+                  [ -n "$PGVER" ]
+                  apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1 \
+                    || echo "note: pgvector unavailable - vector-typed models will not build"
+
+                  service postgresql start >/dev/null 2>&1 \
+                    || pg_ctlcluster "$PGVER" main start
+                  for _ in $(seq 1 30); do
+                    su postgres -c "pg_isready -q" && break
+                    sleep 1
+                  done
+                  su postgres -c "pg_isready"
+
+                  su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\""
+                  su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'"
+                  for ext in vector pgcrypto "uuid-ossp"; do
+                    su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'" \
+                      >/dev/null 2>&1 || echo "note: extension $ext unavailable"
+                  done
+
+                  # The native enum types, replayed from the migrations rather
+                  # than transcribed here, for the reason `unit` gives: a list
+                  # typed into this file is right until somebody adds a fifth.
+                  python - <<'ENUMS'
+                import glob, re, subprocess
+                pattern = re.compile(
+                    r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
+                    re.IGNORECASE | re.DOTALL,
+                )
+                seen = {}
+                paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
+                if not paths:
+                    print("  no db/migrations/*.sql found anywhere in the checkout")
+                for path in paths:
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        for name, values in pattern.findall(handle.read()):
+                            seen.setdefault(name.lower(), " ".join(values.split()))
+                print(f"  found {len(seen)} enum type(s)")
+                for name, values in seen.items():
+                    subprocess.run(
+                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                        input=f"CREATE TYPE {name} AS ENUM ({values});",
+                        text=True,
+                        check=False,
+                    )
+                ENUMS
+
+                  MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
+                  echo "  created ${MADE} enum type(s)"
+                  [ "${MADE:-0}" -gt 0 ]
+
+                  export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                  export TEST_DATABASE_URL="$DATABASE_URL"
+
+                  cd backend
+                  python scripts/init_db.py 2>&1 | tail -3
+
+                  applied=0; skipped=0
+                  for f in $(ls db/migrations/*.sql | sort -V); do
+                    if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
+                      applied=$((applied+1))
+                    else
+                      skipped=$((skipped+1))
+                    fi
+                  done
+                  echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
+
+                  su postgres -c "psql -q -d thehub_test" <<'SEED' || true
+                INSERT INTO users (id, email, username, password_hash, is_active)
+                VALUES ('00000000-0000-0000-0000-000000000001',
+                        'ci@invalid.test', 'ci', 'x-not-a-hash', true)
+                ON CONFLICT DO NOTHING;
+                SEED
+
+                  python - <<'DEFAULTS'
+                import subprocess
+                import models  # noqa: F401 - populates the metadata
+                from db.session import Base
+                from sqlalchemy import DateTime
+
+
+                def literal_for(d, col):
+                    """SQL literal for a Python-side default, or None to skip.
+
+                    bool before int on purpose: in Python False == 0, so a dict
+                    keyed on both collapses and every boolean column would emit
+                    SET DEFAULT 0, which Postgres refuses for a boolean.
+                    """
+                    if d is list:
+                        return "'[]'::jsonb"
+                    if d is dict:
+                        return "'{}'::jsonb"
+                    if callable(d):
+                        return "now()" if isinstance(col.type, DateTime) else None
+                    if isinstance(d, bool):
+                        return "true" if d else "false"
+                    if isinstance(d, int) and not isinstance(d, bool):
+                        return str(d)
+                    if isinstance(d, str):
+                        return "'" + d.replace("'", "''") + "'"
+                    return None
+
+
+                stmts = []
+                for table in Base.metadata.tables.values():
+                    for col in table.columns:
+                        if col.nullable or col.server_default is not None:
+                            continue
+                        d = getattr(col.default, "arg", None)
+                        if d is None:
+                            continue
+                        literal = literal_for(d, col)
+                        if literal is None:
+                            continue
+                        stmts.append(
+                            f"ALTER TABLE {table.name} "
+                            f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
+                        )
+
+                print(f"  {len(stmts)} column default(s) to mirror")
+                if stmts:
+                    subprocess.run(
+                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                        input="\n".join(stmts), text=True, check=False,
+                    )
+                DEFAULTS
+
+                  TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
+                  echo "  schema has ${TABLES} table(s)"
+                  [ "${TABLES:-0}" -ge 50 ]
+                ) > /tmp/bootstrap.log 2>&1
+                BOOT_RC=$?
+                tail -40 /tmp/bootstrap.log
+                echo "--- bootstrap exit ${BOOT_RC} -------------------------"
+
+                # -- One graded run of the tier -----------------------------
+                #
+                # PYTEST_RC is appended so the classifier sees all three of the
+                # signals it was written to cross-check: the process exit code,
+                # pytest's own status, and pytest's summary line. TheHub's own
+                # runner emits that line, and the classifier refuses to let any
+                # one of the three decide alone -- the runner's container
+                # command once ended with `tail`, so it exited 0 for a run with
+                # real failures.
+                run_tier() {
+                  (
+                    cd source/backend
+                    export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                    export TEST_DATABASE_URL="$DATABASE_URL"
+                    export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
+                    export CONFIG_DIR="$HUB_CONFIG_DIR"
+                    if command -v timeout >/dev/null 2>&1; then
+                      timeout -s INT "${SOFT_TIMEOUT_S}s" \
+                        python -m pytest tests/unit -q -p no:cacheprovider
+                    else
+                      python -m pytest tests/unit -q -p no:cacheprovider
+                    fi
+                  ) > "$1" 2>&1
+                  rc=$?
+                  echo "PYTEST_RC=${rc}" >> "$1"
+                  return "$rc"
+                }
+
+                # The classifier is IMPORTED FROM THE CHECKOUT, never
+                # reimplemented here. The three-verdict rule, the OOM
+                # signatures, the ANSI stripping and the precedence between the
+                # exit code, PYTEST_RC and the summary line all belong to
+                # TheHub, and a second opinion about what "red" means is how two
+                # controls come to disagree about one tree.
+                classify() {
+                  python - "$1" "$2" <<'CLASSIFY'
+                import importlib.util
+                import pathlib
+                import sys
+
+                spec = importlib.util.spec_from_file_location(
+                    "check_post_merge", "source/scripts/check_post_merge.py")
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+                verdict, detail = module.classify_run(int(sys.argv[1]), text)
+                print(verdict + "|" + " ".join(detail.split())[:400])
+                CLASSIFY
+                }
+
+                VERDICT=""
+                DETAIL=""
+
+                if [ "$BOOT_RC" -ne 0 ]; then
+                  VERDICT="indeterminate"
+                  DETAIL="the environment this lane needs was not built (bootstrap exited ${BOOT_RC}), so nothing was measured about develop"
+                else
+                  STARTED=$(date +%s)
+                  run_tier /tmp/run1.log
+                  RC1=$?
+                  ELAPSED=$(( $(date +%s) - STARTED ))
+                  tail -25 /tmp/run1.log
+
+                  if [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                    # A partial run that happens to contain no failures reads
+                    # as a clean summary, so the timeout must be caught before
+                    # the classifier ever sees it. `unit` learned the same
+                    # thing at its own cap: a hard kill produces no verdict,
+                    # and a soft one produces a verdict about a fraction of
+                    # the suite.
+                    VERDICT="indeterminate"
+                    DETAIL="the unit tier did not finish within ${SOFT_TIMEOUT_S}s, so these results cover only the tests that ran"
+                  else
+                    LINE1="$(classify "$RC1" /tmp/run1.log | tail -1)"
+                    if [ -z "$LINE1" ]; then
+                      VERDICT="indeterminate"
+                      DETAIL="scripts/check_post_merge.py could not be imported from the checkout, so this run has no classifier and therefore no verdict"
+                    else
+                      VERDICT="${LINE1%%|*}"
+                      DETAIL="${LINE1#*|}"
+                    fi
+                  fi
+
+                  # A RED IS CONFIRMED BEFORE IT IS ASSERTED. "develop is red"
+                  # is a claim about the TREE, and a failure that does not
+                  # reproduce on the identical tree is not evidence for it.
+                  # Measured on this control's first real run: 6a5ccd4f gave
+                  # "1 failed, 8857 passed" and the same tree re-run gave
+                  # "8858 passed" -- #59092's memory pressure surfacing through
+                  # the one test written to refuse a vacuous result.
+                  #
+                  # The finding is RECLASSIFIED, never discarded: the first
+                  # run's summary stays in the reason, and the watermark does
+                  # not advance, so the tip is graded again rather than marked
+                  # covered by a run nobody trusts.
+                  if [ "$VERDICT" = "red" ]; then
+                    echo "--- RED on the first run; re-running the identical tree ---"
+                    STARTED=$(date +%s)
+                    run_tier /tmp/run2.log
+                    RC2=$?
+                    ELAPSED=$(( $(date +%s) - STARTED ))
+                    tail -25 /tmp/run2.log
+                    if [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                      LINE2="indeterminate|the retry did not finish within ${SOFT_TIMEOUT_S}s"
+                    else
+                      LINE2="$(classify "$RC2" /tmp/run2.log | tail -1)"
+                      [ -n "$LINE2" ] || LINE2="indeterminate|the retry could not be classified"
+                    fi
+                    V2="${LINE2%%|*}"
+                    D2="${LINE2#*|}"
+                    if [ "$V2" = "red" ]; then
+                      DETAIL="${DETAIL} (confirmed on retry: ${D2})"
+                    else
+                      VERDICT="indeterminate"
+                      DETAIL="RED on the first run (${DETAIL}) and ${V2} on an immediate retry of the identical tree (${D2}) - not reproducible, so it is NOT reported as a red tree"
+                    fi
+                  fi
+                fi
+
+                echo "=================================================="
+                echo "VERDICT: ${VERDICT} - ${DETAIL}"
+                echo "=================================================="
+
+                # -- The three-valued row, and the exit code ----------------
+                #
+                # `errored` is TheHub's existing word for a stage that did not
+                # reach a verdict, and it is the one the Slack hook already
+                # gives different wording and a different instruction. That is
+                # why INDETERMINATE lands there rather than on a fourth name
+                # nothing downstream would recognise.
+                case "$VERDICT" in
+                  green) STATUS=success; CODE=0 ;;
+                  red)   STATUS=failed;  CODE=1 ;;
+                  *)     STATUS=errored; CODE=2; VERDICT=indeterminate ;;
+                esac
+
+                if [ -n "${HUB_URL:-}" ] && [ -n "${HUB_DEPLOY_TOKEN:-}" ] && command -v jq >/dev/null 2>&1; then
+                  BODY=$(jq -nc \
+                    --arg d "$TIP" --arg sha "$TIP" --arg br "${SCANNED_BRANCH:-develop}" \
+                    --arg msg "${MSG:-unknown}" --arg st "$STATUS" --arg v "$VERDICT" \
+                    --arg note "$DETAIL" --argjson ec "$CODE" \
+                    '{deploy_id: $d, stage: "post_merge_verdict", status: $st,
+                      git_sha: $sha, git_branch: $br, commit_message: $msg,
+                      actor: "concourse", target_env: "prod", exit_code: $ec,
+                      notes: $note,
+                      meta: {source: "concourse", pipeline: "thehub",
+                             verdict: $v, check: "post_merge"}}')
+                  curl -sS --fail --max-time 20 -X POST \
+                    -H "Content-Type: application/json" \
+                    -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
+                    -d "$BODY" "$HUB_URL/api/ops/deploys" >/dev/null \
+                    && echo "Reported post_merge_verdict=${STATUS} (${VERDICT}) for ${TIP}." \
+                    || echo "Could not report the verdict to TheHub; the verdict stands."
+                else
+                  echo "TheHub reporting is not configured or jq is missing; the verdict is in this log only."
+                fi
+
+                # Only a DETERMINATE grading advances the watermark, exactly as
+                # in the script. An indeterminate run measured nothing, so the
+                # next tick must try the same tip again.
+                if [ "$VERDICT" = "green" ] || [ "$VERDICT" = "red" ]; then
+                  printf '%s' "$TIP" > "$WATERMARK"
+                fi
+
+                # The Slack line, written only when there is something to say
+                # and DIFFERENT for the two non-green verdicts, because they
+                # call for opposite actions. The hook uses it verbatim; "the
+                # job failed" on its own sends nobody anywhere.
+                if [ "$VERDICT" = "red" ]; then
+                  echo "*TheHub*: post-merge - DEVELOP IS RED at ${TIP} on ${SCANNED_BRANCH}. The unit tier failed on the tree AS IT LANDED and the failure reproduced on an immediate re-run of the identical tree: ${DETAIL}. This is the merged tree, not one commit - both sides' gates can have passed. Atlas (DevOps) is accountable. Re-triggering does not clear this." > notify/message.txt
+                elif [ "$VERDICT" = "indeterminate" ]; then
+                  echo "*TheHub*: post-merge - NO VERDICT for ${TIP} on ${SCANNED_BRANCH}. ${DETAIL}. This is NOT a red develop and NOT a green one: nothing was learned, the previous verdict still stands, any open red stays open, and the tip is deliberately NOT marked graded so the next tick grades it again. Atlas (DevOps) is accountable. Re-triggering is the correct response here, and would be the wrong one for a red." > notify/message.txt
+                fi
+
+                exit "$CODE"
 
   # Every build and scan job below shares one `serial_groups: [worker]`, so at
   # most one of them runs at a time.
