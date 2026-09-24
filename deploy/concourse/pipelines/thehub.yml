@@ -595,11 +595,52 @@ anchors:
             # and they are exactly the ones with no `source` on disk. An
             # unguarded rev-parse here drops the report for every job that died
             # before its checkout landed.
-            SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
-            MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo unknown)
+            #
+            # [#60492] deploy_id AND git_sha WERE THE SAME VALUE, AND THEY ARE
+            # DIFFERENT QUESTIONS.
+            #
+            # Both read $SHA, so a job with no `source` input reported
+            # deploy_id='unknown'. `record_deploy_stage` resolves a run with
+            # `_newest_run_in_family`, which matches
+            # `deploy_id = :d OR deploy_id LIKE :d || '#%'` — so EVERY such
+            # job, on every build, forever, resolved into one 'unknown' family.
+            # Measured after #60478 shipped: row 6341, deploy_id='unknown', one
+            # stage event, stuck `running` and destined to be reconciled as an
+            # abandoned deploy by a sweep with no business filing about it.
+            #
+            # `set-pipeline` is the job that hits this — it gets `pipelines`
+            # (mykronos) and has no `source` (TheHub) — and it is the job
+            # #59073 spent four incidents establishing is the riskiest control
+            # in this estate. "Which apply broke this?" had no answer.
+            #
+            # BEHAVIOUR IS UNCHANGED FOR EVERY JOB THAT HAS A `source`, which
+            # is 87 of the 88 call sites of this anchor: $SHA is found, and
+            # deploy_id stays the sha exactly as before. Giving every Concourse
+            # job a per-build deploy_id would split one run per commit into one
+            # run per job, which is a far larger change than this defect needs.
+            #
+            # A SHA IS NOT ENOUGH ON ITS OWN for the job that lacks `source`.
+            # `set-pipeline` is re-run on UNCHANGED commits routinely — a
+            # re-apply after a server-side change, a retry after an errored
+            # build — so keying on the applied commit would put two applies
+            # back in one family. The build identifier is unique by
+            # construction; the applied commit still travels, as git_sha.
+            SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo "")
+            if [ -n "$SHA" ]; then
+              DEPLOY_ID="$SHA"
+              MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo unknown)
+            else
+              DEPLOY_ID="$BUILD_PIPELINE_NAME/$BUILD_JOB_NAME/$BUILD_NAME"
+              # `pipelines` is what set-pipeline actually applied. Reporting it
+              # as git_sha is the honest answer to "what was applied", and it
+              # is read from an input the job already has rather than one it
+              # would have to be given.
+              SHA=$(git -C pipelines rev-parse HEAD 2>/dev/null || echo unknown)
+              MSG=$(git -C pipelines log -1 --pretty=%s 2>/dev/null || echo unknown)
+            fi
 
             BODY=$(jq -nc \
-              --arg d "$SHA" --arg s "$STAGE" --arg st "$STATUS" \
+              --arg d "$DEPLOY_ID" --arg s "$STAGE" --arg st "$STATUS" \
               --arg sha "$SHA" --arg br "$SCANNED_BRANCH" --arg msg "$MSG" \
               --arg env "${TARGET_ENV:-prod}" \
               '{deploy_id: $d, stage: $s, status: $st, git_sha: $sha,
