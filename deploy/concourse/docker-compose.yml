@@ -184,8 +184,12 @@ services:
   # With this, pipelines carry `((var))` references and the values never enter
   # the config at all.
   #
-  # Sealed after every restart by design. `vault-unseal.ps1` opens it; until
-  # then, credential lookups fail loudly rather than resolving to empty.
+  # Sealed after every restart AND every recreate, by design. `vault-unseal.ps1`
+  # opens it; until then, credential lookups fail loudly rather than resolving
+  # to empty. `Install-VaultUnsealTask.ps1` registers the Scheduled Task that
+  # runs that script on a five-minute cycle, so the estate reopens itself
+  # instead of waiting for somebody to notice - which took four days once
+  # (#60474). See the healthcheck below for the half that does the noticing.
   vault:
     image: hashicorp/vault:1.21.4
     container_name: mykronos-vault
@@ -210,11 +214,34 @@ services:
       - "127.0.0.1:8200:8200"
     networks: [concourse]
     healthcheck:
-      # sealedcode=200 and uninitcode=200: a sealed or uninitialised Vault is
-      # STARTED, just not usable yet. Reporting it unhealthy would make compose
-      # restart it forever and make a normal post-reboot state look like a
-      # crash loop.
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"]
+      # No sealedcode / uninitcode overrides, and that absence is the whole
+      # point (#60474).
+      #
+      # This probe used to pass `sealedcode=200&uninitcode=200`, which are not
+      # documentation — they INSTRUCT Vault to answer HTTP 200 in the two
+      # states where it cannot serve a single secret. So when the engine
+      # recreated this container on 2026-09-19 and it came back sealed, Docker
+      # reported `health=healthy` with `failingStreak=0` for four days while
+      # 20 of keel's 26 jobs errored in three seconds each on "Vault is
+      # sealed", and `thehub` and `personal-soc` resolved nothing either. The
+      # instrument was configured to be incapable of reporting the outage.
+      #
+      # The old comment justified the override by saying an unhealthy result
+      # "would make compose restart it forever". It would not: a healthcheck
+      # sets `State.Health` and nothing else, while `restart:` acts on process
+      # EXIT. A sealed Vault has not exited. The crash loop being avoided
+      # could not have happened, and the blind spot it bought was real.
+      #
+      # Left off, Vault's own defaults are the truthful answer — 503 sealed,
+      # 501 uninitialised — and `wget -q` exits non-zero on both, so the
+      # container goes unhealthy after retries x interval (2.5 min) instead of
+      # never. `standbyok=true` stays: a standby node forwards requests and IS
+      # serving, so it must keep reading healthy. It cannot mask a seal.
+      #
+      # Making it VISIBLE is not the same as making it stop happening — a file
+      # backend seals on every recreate. `Install-VaultUnsealTask.ps1` is the
+      # half that reopens it; this is the half that tells you when that failed.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true"]
       interval: 15s
       timeout: 5s
       retries: 10

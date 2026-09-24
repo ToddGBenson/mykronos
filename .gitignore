@@ -81,3 +81,6 @@ deploy/thehub/registry-pull-deploy.log
 # Held open for the life of a deploy so two of them cannot interleave. Purely
 # a runtime handle - it exists only while a deploy is in flight.
 deploy/thehub/.deploy-lock-*
+
+# Vault unseal task log (#60474). Timestamps and outcomes, no key material.
+deploy/concourse/vault-unseal.log
