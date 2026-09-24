@@ -1557,6 +1557,15 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # verdict reaches Atlas through deploy_stage_events and Slack rather than
     # through a capability.
     ((THEHUB,), "cicd-drift", "audits pipeline drift and publishes a memo, uploads no findings"),
+    # [#59326] Grades the TIP of TheHub's develop as it landed, on a 30-minute
+    # clock, and reports a three-valued verdict -- green / red / INDETERMINATE
+    # -- through `deploy_stage_events` and Slack. It deliberately uploads no
+    # capability: `unit` already produces the `unit` capability from the same
+    # suite, and a second junit upload for the same tests would double-count
+    # the lane in the coverage cross-check while saying nothing new about it.
+    # What this job adds is the third verdict and the confirm-on-red retry,
+    # neither of which is a capability.
+    ((THEHUB,), "post-merge", "grades the develop tip as it landed, reports a verdict rather than findings"),
     # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
     # premise that removed it expired before the change landed.
     #
