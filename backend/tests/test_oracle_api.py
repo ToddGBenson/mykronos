@@ -401,6 +401,123 @@ class TestDecisionHistory:
         )
 
 
+class TestDecisionForCommit:
+    """The lookup `deploy.ps1` makes before it ships a sha (#60487, D-125)."""
+
+    def test_finds_the_decision_for_a_commit(
+        self, client, oracle_auth, viewer_auth, seeded, run_compaction
+    ) -> None:
+        evaluate(client, oracle_auth, commit_sha="deadbee1234")
+        run_compaction()
+
+        body = client.get(
+            "/api/oracle/decisions/by-commit/deadbee1234", headers=viewer_auth
+        ).json()
+
+        assert body["found"] is True
+        assert body["recommendation"] in {"go", "review_recommended", "no_go"}
+        assert body["effective_recommendation"] == body["recommendation"]
+        assert body["repo_full_name"] == REPO
+        assert body["decision_id"]
+
+    def test_a_short_tag_finds_a_decision_filed_under_the_full_sha(
+        self, client, oracle_auth, viewer_auth, seeded, run_compaction
+    ) -> None:
+        """`-Tag` takes 7 hex; the gate files 40. Equality would find nothing.
+
+        Under a fail-open gate, finding nothing reads as permission, so this
+        is the difference between a gate and a decoration.
+        """
+        full = "0123456789abcdef0123456789abcdef01234567"
+        evaluate(client, oracle_auth, commit_sha=full)
+        run_compaction()
+
+        short = client.get(
+            f"/api/oracle/decisions/by-commit/{full[:7]}", headers=viewer_auth
+        ).json()
+        assert short["found"] is True
+        assert short["commit_sha"] == full[:7], "echoes what was asked, not what matched"
+
+    def test_an_unscored_commit_is_200_and_not_found(
+        self, client, viewer_auth, seeded
+    ) -> None:
+        """Never 404.
+
+        A 404 for "no decision" is indistinguishable to a script from a 404
+        for "this backend has no such route" or "a proxy ate the path". The
+        deploy says different things about those, so they must look different
+        on the wire.
+        """
+        response = client.get(
+            "/api/oracle/decisions/by-commit/ffffffffff", headers=viewer_auth
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["found"] is False
+        assert body["recommendation"] is None
+        assert body["effective_recommendation"] is None
+
+    def test_a_recorded_override_changes_the_effective_answer(
+        self, client, oracle_auth, admin_auth, viewer_auth, seeded, run_compaction
+    ) -> None:
+        decision_id = evaluate(client, oracle_auth, commit_sha="cafe1234").json()[
+            "decision_id"
+        ]
+        run_compaction()
+        client.post(
+            f"/api/oracle/decisions/{decision_id}/override",
+            json={"reason": "Accepted for the hotfix.", "accepted_recommendation": "go"},
+            headers=admin_auth,
+        )
+        run_compaction()
+
+        body = client.get(
+            "/api/oracle/decisions/by-commit/cafe1234", headers=viewer_auth
+        ).json()
+
+        assert body["overridden"] is True
+        assert body["effective_recommendation"] == "go"
+        assert body["override_reason"] == "Accepted for the hotfix."
+        assert body["recommendation"] == body["recommendation"], (
+            "the decision itself is never rewritten -- spec 09 section 10"
+        )
+
+    def test_the_newest_decision_wins(
+        self, client, oracle_auth, viewer_auth, seeded, run_compaction
+    ) -> None:
+        evaluate(client, oracle_auth, commit_sha="beef5678", decision_type="pr_gate")
+        evaluate(
+            client,
+            oracle_auth,
+            commit_sha="beef5678",
+            decision_type="commit_gate",
+            pr_number=None,
+        )
+        run_compaction()
+
+        body = client.get(
+            "/api/oracle/decisions/by-commit/beef5678", headers=viewer_auth
+        ).json()
+
+        assert body["decision_type"] == "commit_gate"
+
+    def test_it_needs_authentication(self, client) -> None:
+        assert (
+            client.get("/api/oracle/decisions/by-commit/abc1234").status_code == 401
+        ), "the deploy host presents a token; an unauthenticated read must not work"
+
+    def test_the_literal_route_is_not_shadowed_by_the_repo_route(
+        self, client, viewer_auth, seeded
+    ) -> None:
+        """`/decisions/{repo_id}` would answer 404 for `by-commit` as an id."""
+        response = client.get(
+            "/api/oracle/decisions/by-commit/abc1234", headers=viewer_auth
+        )
+        assert response.status_code == 200
+        assert "found" in response.json()
+
+
 class TestGateTemplate:
     @pytest.fixture
     def library(self) -> TemplateLibrary:

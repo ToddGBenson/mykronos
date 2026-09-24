@@ -334,6 +334,109 @@ async def term_analytics(
     return _service(request).term_analytics(days=days)
 
 
+class CommitDecisionOut(BaseModel):
+    """What a deploy host gets back when it asks about a sha (#60487)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    commit_sha: str = Field(description="The sha that was asked about, as sent.")
+    found: bool = Field(
+        description=(
+            "Whether any decision exists for this commit. **False is not a "
+            "pass.** A commit nothing ever scored is unjudged, which is a "
+            "different fact from judged and cleared, and a caller that "
+            "collapses the two has rebuilt the gap D-125 recorded."
+        )
+    )
+    recommendation: str | None = Field(
+        default=None, description="As recorded: go | review_recommended | no_go."
+    )
+    effective_recommendation: str | None = Field(
+        default=None,
+        description=(
+            "What stands today: the override's `accepted_recommendation` when "
+            "a human has overridden this decision through `/override`, "
+            "otherwise `recommendation`. A recorded override IS the human "
+            "decision, so a gate that ignored it would demand the same call "
+            "be made twice."
+        ),
+    )
+    overridden: bool = False
+    override_reason: str | None = None
+    decision_id: str | None = None
+    decision_type: str | None = None
+    repo_full_name: str | None = None
+    overall_risk_score: int | None = None
+    reasoning: str | None = None
+    policy_version: str | None = None
+    evaluated_at: str | None = None
+
+
+@router.get("/decisions/by-commit/{commit_sha}", response_model=CommitDecisionOut)
+async def decision_for_commit(
+    request: Request, commit_sha: str, principal: PrincipalDep
+) -> CommitDecisionOut:
+    """The risk decision for one commit, for the deploy host (#60487, D-125).
+
+    D-125 retired `:latest` and with it the tag the Oracle gate used to hold,
+    leaving the gate advisory at deploy time — nothing mechanically stopped a
+    `no_go` sha shipping. `deploy.ps1` closes that by asking this endpoint
+    before it pulls anything.
+
+    **A missing decision is 200 with `found: false`, never 404.** To a script,
+    a 404 for "no decision about this sha" is indistinguishable from a 404 for
+    "this backend is too old to have the route" or "the proxy rewrote the
+    path" — and under the fail-open posture the operator chose, an
+    indistinguishable error is an open gate. The two outcomes must look
+    different on the wire because the deploy says different things about them.
+
+    Readable by viewers as well as admins, on `/policy`'s reasoning and one of
+    its own: the deploy host holds a token in `backend/.env`, and making this
+    need the admin token would push the most privileged credential in the
+    system onto a machine that only needs to read one word.
+
+    Ordered before `/decisions/{repo_id}` because a literal path must not be
+    shadowed by the parameterised one.
+    """
+    record = _service(request).decision_for_commit(commit_sha)
+    if record is None:
+        return CommitDecisionOut(commit_sha=commit_sha, found=False)
+
+    override = record.get("human_override")
+    override = override if isinstance(override, dict) else None
+    recommendation = str(record["recommendation"])
+    effective = (
+        str(override.get("accepted_recommendation") or recommendation)
+        if override
+        else recommendation
+    )
+    # The lake hands this back as a datetime, but a compacted row read through
+    # a different path can be a string; serialised either way so the deploy
+    # host gets one shape.
+    raw_evaluated_at = record.get("evaluated_at")
+    if raw_evaluated_at is None:
+        evaluated_at = None
+    elif isinstance(raw_evaluated_at, datetime):
+        evaluated_at = raw_evaluated_at.isoformat()
+    else:
+        evaluated_at = str(raw_evaluated_at)
+    return CommitDecisionOut(
+        commit_sha=commit_sha,
+        found=True,
+        recommendation=recommendation,
+        effective_recommendation=effective,
+        overridden=override is not None,
+        override_reason=str(override.get("reason")) if override else None,
+        decision_id=str(record["decision_id"]),
+        decision_type=str(record["decision_type"]),
+        repo_full_name=str(record["repo_full_name"]),
+        overall_risk_score=int(record["overall_risk_score"]),
+        reasoning=str(record.get("reasoning") or ""),
+        policy_version=str(record.get("policy_version") or ""),
+        evaluated_at=evaluated_at,
+    )
+
+
 @router.get("/decisions/{repo_id}")
 async def decisions_for_repo(
     request: Request,

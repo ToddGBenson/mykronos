@@ -39,6 +39,30 @@
     manual action on this host. The promote approval was a second gate layered
     on top, and it was the one that never worked.
 
+    THE MACHINE SAYS NO AGAIN (#60487, D-126). Retiring the tag left nothing
+    mechanical between a `no_go` and production - the exact hole D-047 existed
+    to close. This script now asks the platform what the risk gate decided
+    about the sha before it pulls anything, and REFUSES a `no_go` unless
+    -Force is passed with a reason that is recorded.
+
+    IT FAILS OPEN, DELIBERATELY. If the platform cannot be reached it warns
+    and proceeds. That is never worse than the state it replaces: with no
+    check at all, an unreachable platform already meant no gate. Fail closed
+    was rejected on a measured case, not a hypothetical one - Vault was sealed
+    for four days in September 2026 and the whole Concourse estate was down
+    (#60474); a fail-closed gate would have blocked every deploy that could
+    have fixed it, including the unseal.
+
+    AND THE COST OF FAILING OPEN IS THAT A WARNING CAN GO INVISIBLE. A
+    warn-and-proceed path that prints on every routine command stops being
+    read, which is the failure mode this estate keeps meeting. So the four
+    outcomes do not look alike: a clean answer is ONE quiet line, while
+    "could not ask" and "nothing ever scored this" are banners with a pause,
+    and every run's verdict is repeated as the last line on the screen and
+    appended to `deploy-risk-log.jsonl` beside this script. "Could not ask"
+    is not "asked and it was fine", and the operator must never have to infer
+    which one happened from the absence of something.
+
     SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
     default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
     and still retags `:latest` on the LAN registry (192.168.0.14:5000). If you
@@ -52,6 +76,20 @@
     `/healthz` afterwards and says whether the running commit is the one
     requested, because "healthy" and "running what you asked for" are different
     facts and only the second one is the deploy's job.
+
+.PARAMETER PlatformUrl
+    Where to ask for the sha's risk decision. The local backend by default -
+    the same address this script already reads `/healthz` from, so it adds no
+    new host, no new port and no new credential store.
+
+.PARAMETER Force
+    Deploy a sha the risk gate refused. Requires -ForceReason, and the reason
+    is written to a ledger beside this script before anything is pulled. An
+    override nobody can find afterwards is not an override, it is an
+    unrecorded exception.
+
+.PARAMETER ForceReason
+    Why this `no_go` ships anyway. Recorded, not just printed.
 
 .PARAMETER MigrateFrom
     Copy an existing lake and operational database into the volume before
@@ -86,6 +124,14 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{7,40}$')]
     [string]$Tag,
+    # Where to ask what the risk gate decided about $Tag (#60487). The same
+    # backend this script already reads /healthz from, so the new dependency
+    # is a route, not a machine.
+    [string]$PlatformUrl = "http://127.0.0.1:8100",
+    # Ship a sha the gate refused. Needs -ForceReason; see the banner it
+    # prints and the ledger it writes.
+    [switch]$Force,
+    [string]$ForceReason,
     [string]$MigrateFrom,
     [switch]$NoStart
 )
@@ -100,6 +146,280 @@ function Read-EnvValue {
     $line = Select-String -Path $Path -Pattern "^$Key=" -ErrorAction SilentlyContinue
     if (-not $line) { return $null }
     return $line.Line.Split('=', 2)[1].Trim()
+}
+
+# ---------------------------------------------------------------------------
+# THE RISK GATE (#60487, D-126). Runs before anything is pulled, so a refusal
+# costs nothing and leaves the host exactly as it was.
+# ---------------------------------------------------------------------------
+
+$riskLedger = Join-Path $here "deploy-risk-log.jsonl"
+
+function Write-RiskBanner {
+    <#
+        Deliberately loud, and deliberately NOT what a normal run looks like.
+        The clean path prints one grey line; only the two cases that mean "no
+        gate ran" get this. If banners start appearing on every deploy,
+        something is broken - that is the point.
+    #>
+    param([string]$Heading, [string[]]$Lines, [string]$Color)
+    $rule = "=" * 74
+    Write-Host ""
+    Write-Host $rule -ForegroundColor $Color
+    Write-Host "  $Heading" -ForegroundColor $Color
+    Write-Host $rule -ForegroundColor $Color
+    foreach ($line in $Lines) { Write-Host "  $line" -ForegroundColor $Color }
+    Write-Host $rule -ForegroundColor $Color
+    Write-Host ""
+}
+
+function Write-RiskLedger {
+    <#
+        The durable half. A printed warning dies with the console buffer, and
+        the whole complaint in #60487 is that a warn-and-proceed path leaves
+        no trace anybody can go back to. Every run appends one line - not only
+        the overrides - because "could not ask" needs a record at least as
+        much as "asked and was refused" does.
+
+        Returns $true only if the line is on disk. Callers that are recording
+        an override treat $false as fatal: the record is the price of the
+        override, so an override that cannot be recorded does not happen.
+    #>
+    param([hashtable]$Entry)
+    try {
+        $Entry["at"] = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $Entry["user"] = $env:USERNAME
+        $Entry["host"] = $env:COMPUTERNAME
+        Add-Content -Path $riskLedger -Value ($Entry | ConvertTo-Json -Compress -Depth 8)
+        return $true
+    } catch {
+        Write-Host "Could not write $riskLedger : $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Get-RiskVerdict {
+    <#
+        Four outcomes, and the caller must be able to tell all four apart:
+          clean    - asked, and the answer permits a deploy
+          refused  - asked, and the answer is no_go
+          unjudged - asked, and NOTHING has ever scored this commit
+          unasked  - could not ask at all
+
+        `unjudged` and `unasked` both end in "deploy proceeds", which is
+        exactly why they are separate states rather than one "warn" branch.
+        They have different causes and different fixes: one means the gate
+        workflow did not run for this commit, the other means this host could
+        not reach the platform.
+    #>
+    param([string]$Sha, [string]$BaseUrl, [string]$Token)
+
+    if (-not $Token) {
+        return @{
+            State = "unasked"
+            Reason = "backend/.env carries neither MYKRONOS_ADMIN_TOKEN nor MYKRONOS_VIEWER_TOKEN, so there was no credential to ask with."
+        }
+    }
+
+    try {
+        $answer = Invoke-RestMethod `
+            -Uri "$BaseUrl/api/oracle/decisions/by-commit/$Sha" `
+            -Headers @{ Authorization = "Bearer $Token" } `
+            -TimeoutSec 10
+    } catch {
+        return @{
+            State = "unasked"
+            Reason = "$BaseUrl did not answer: $($_.Exception.Message)"
+        }
+    }
+
+    # A backend too old to have the route, or a proxy that rewrote the path,
+    # can answer 200 with something else entirely. Treated as "could not ask"
+    # rather than parsed optimistically, because the optimistic reading of a
+    # response with no verdict in it is a clean bill of health.
+    if ($null -eq $answer -or -not ($answer.PSObject.Properties.Name -contains "found")) {
+        return @{
+            State = "unasked"
+            Reason = "$BaseUrl answered, but not with a risk decision. Is this backend new enough to serve /api/oracle/decisions/by-commit?"
+        }
+    }
+
+    if (-not $answer.found) { return @{ State = "unjudged"; Decision = $answer } }
+    if ($answer.effective_recommendation -eq "no_go") {
+        return @{ State = "refused"; Decision = $answer }
+    }
+    # An allow-list, not "anything that is not no_go". A verdict this script
+    # does not recognise - a null, an empty string, a word a later policy
+    # introduces - must not fall through to a pass. Under a fail-open gate the
+    # default branch is the one that lets things through, so the default
+    # branch has to be the one that says it could not tell.
+    if ($answer.effective_recommendation -in @("go", "review_recommended")) {
+        return @{ State = "clean"; Decision = $answer }
+    }
+    return @{
+        State = "unasked"
+        Reason = "$BaseUrl returned a verdict this script does not recognise: '$($answer.effective_recommendation)'."
+    }
+}
+
+if ($Force -and -not $ForceReason) {
+    throw "-Force needs -ForceReason. Overriding a no_go without recording why is the thing #60487 exists to prevent."
+}
+if ($ForceReason -and $ForceReason.Trim().Length -lt 10) {
+    throw "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
+}
+if ($ForceReason -and -not $Force) {
+    Write-Host "-ForceReason was given without -Force; it will only be recorded if the gate actually refuses." -ForegroundColor DarkGray
+}
+
+$riskToken = Read-EnvValue $backendEnv "MYKRONOS_ADMIN_TOKEN"
+$riskTokenIsAdmin = [bool]$riskToken
+if (-not $riskToken) { $riskToken = Read-EnvValue $backendEnv "MYKRONOS_VIEWER_TOKEN" }
+
+$verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+$decision = $verdict.Decision
+
+# Repeated as the very last line of the run. The banner above scrolls away
+# behind a pull, a health wait and a briefing; this does not.
+$riskSummary = ""
+
+switch ($verdict.State) {
+
+    "clean" {
+        # One line. No banner, no pause. The quiet path has to be quiet, or
+        # the loud paths stop meaning anything.
+        $note = "Risk gate: $($decision.effective_recommendation) for $Tag (score $($decision.overall_risk_score), policy $($decision.policy_version), asked $PlatformUrl)."
+        if ($decision.overridden) {
+            $note += " Recorded override: $($decision.recommendation) -> $($decision.effective_recommendation)."
+        }
+        $color = if ($decision.effective_recommendation -eq "go") { "DarkGray" } else { "Yellow" }
+        Write-Host $note -ForegroundColor $color
+        $riskSummary = $note
+        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "clean";
+            recommendation = $decision.recommendation;
+            effective = $decision.effective_recommendation;
+            decision_id = $decision.decision_id; score = $decision.overall_risk_score } | Out-Null
+    }
+
+    "unjudged" {
+        Write-RiskBanner -Color Yellow `
+            -Heading "NOT JUDGED - NO RISK DECISION EXISTS FOR $Tag" `
+            -Lines @(
+                "The platform was reached and asked. It has never scored this commit.",
+                "",
+                "THAT IS NOT A PASS. It is the absence of one, and it is a different",
+                "fact from 'asked, and it was fine'. Most likely the oracle gate did",
+                "not run for this commit, or its decision never reached the lake.",
+                "",
+                "Proceeding: the decided posture is fail open (#60487, D-126). A check",
+                "that cannot answer must not be worse than the no check before it."
+            )
+        $riskSummary = "Risk gate: NOT JUDGED - nothing has ever scored $Tag. It shipped unassessed."
+        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unjudged" } | Out-Null
+        Start-Sleep -Seconds 5
+    }
+
+    "unasked" {
+        Write-RiskBanner -Color Red `
+            -Heading "COULD NOT ASK - THE RISK GATE DID NOT RUN FOR $Tag" `
+            -Lines @(
+                $verdict.Reason,
+                "",
+                "No risk decision was consulted. Whatever the platform thinks of this",
+                "commit, this deploy did not hear it - and that is NOT the same thing",
+                "as being told the commit is fine.",
+                "",
+                "Proceeding: the decided posture is fail open (#60487, D-126). Vault",
+                "was sealed four days in September 2026 and the estate was down",
+                "(#60474); a fail-closed gate would have blocked the deploy that",
+                "fixed it."
+            )
+        $riskSummary = "Risk gate: COULD NOT ASK - $($verdict.Reason) $Tag shipped unchecked."
+        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unasked"; reason = $verdict.Reason } | Out-Null
+        Start-Sleep -Seconds 5
+    }
+
+    "refused" {
+        $detail = @(
+            "Score $($decision.overall_risk_score), policy $($decision.policy_version), decided $($decision.evaluated_at).",
+            "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
+            "Reasoning: $($decision.reasoning)"
+        )
+
+        if (-not $Force) {
+            $lines = @("The risk gate scored $Tag no_go. Nothing has been pulled.") + $detail + @(
+                "",
+                "To deploy it anyway:",
+                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships despite no_go>""",
+                "",
+                "The reason is written to deploy-risk-log.jsonl and, with an admin",
+                "token, recorded against the decision itself so the override is",
+                "visible to everyone and not only to whoever was at this keyboard."
+            )
+            # A refusal is recorded too. The ledger is meant to answer "what
+            # did this host do about risk", and a run that was stopped is part
+            # of that answer -- not least because a refusal followed minutes
+            # later by a -Force is the pattern worth being able to see.
+            Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "refused";
+                recommendation = $decision.recommendation;
+                effective = $decision.effective_recommendation;
+                decision_id = $decision.decision_id; score = $decision.overall_risk_score;
+                repo = $decision.repo_full_name } | Out-Null
+            throw ($lines -join [Environment]::NewLine)
+        }
+
+        Write-RiskBanner -Color Red `
+            -Heading "OVERRIDDEN - SHIPPING A no_go SHA" `
+            -Lines (@("$Tag was refused by the risk gate and is being deployed anyway.") + $detail + @(
+                "",
+                "Reason given: $ForceReason"
+            ))
+
+        # Recorded BEFORE the pull. If this cannot be written the deploy does
+        # not happen: an override whose reason exists only in a console buffer
+        # is an unrecorded exception wearing the word "recorded".
+        $recorded = Write-RiskLedger @{ event = "override"; tag = $Tag; state = "refused";
+            recommendation = $decision.recommendation;
+            effective = $decision.effective_recommendation;
+            decision_id = $decision.decision_id; score = $decision.overall_risk_score;
+            repo = $decision.repo_full_name; reason = $ForceReason }
+        if (-not $recorded) {
+            throw "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
+        }
+        Write-Host "Override recorded in $riskLedger" -ForegroundColor Yellow
+
+        # Best effort, and said out loud either way. The platform is the right
+        # home for this record, but it is also the thing most likely to be
+        # down during the deploy that needed forcing - which is exactly why
+        # the local ledger above is the one the deploy depends on.
+        $pushed = "not attempted"
+        if ($riskTokenIsAdmin -and $decision.decision_id) {
+            try {
+                Invoke-RestMethod -Method Post `
+                    -Uri "$PlatformUrl/api/oracle/decisions/$($decision.decision_id)/override" `
+                    -Headers @{ Authorization = "Bearer $riskToken" } `
+                    -ContentType "application/json" `
+                    -Body (@{ reason = "Deployed by deploy.ps1 -Force: $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
+                    -TimeoutSec 10 | Out-Null
+                $pushed = "recorded on the platform"
+                Write-Host "Override also recorded against decision $($decision.decision_id)." -ForegroundColor Yellow
+            } catch {
+                $pushed = "local ledger only ($($_.Exception.Message))"
+                Write-Host "Could not record the override on the platform: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "The local ledger still holds it." -ForegroundColor Yellow
+            }
+        } elseif (-not $riskTokenIsAdmin) {
+            $pushed = "local ledger only (no admin token on this host)"
+            Write-Host "No MYKRONOS_ADMIN_TOKEN here, so the override is in the local ledger only." -ForegroundColor Yellow
+        }
+
+        $riskSummary = "Risk gate: OVERRIDDEN - $Tag was no_go and shipped with -Force ($pushed). Reason: $ForceReason"
+        Start-Sleep -Seconds 5
+    }
+}
+
+if ($Force -and $verdict.State -ne "refused") {
+    Write-Host "-Force was passed but the gate did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
 }
 
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
@@ -181,7 +501,29 @@ if ($MigrateFrom) {
     if ($LASTEXITCODE -ne 0) { throw "Migration failed; not starting." }
 }
 
-if ($NoStart) { return }
+function Write-RiskSummaryLine {
+    <#
+        The last thing on the screen, every run. The banner above is separated
+        from here by a pull, a three-minute health wait and a full briefing -
+        long enough for "could not ask" to have scrolled out of sight before
+        the operator looks up. So the verdict is stated again at the end,
+        where the eye lands.
+    #>
+    if (-not $riskSummary) { return }
+    $color = if ($riskSummary.StartsWith("Risk gate: go") -or $riskSummary.StartsWith("Risk gate: review")) {
+        "DarkGray"
+    } elseif ($riskSummary.StartsWith("Risk gate: OVERRIDDEN") -or $riskSummary.StartsWith("Risk gate: COULD NOT ASK")) {
+        "Red"
+    } else {
+        "Yellow"
+    }
+    Write-Host $riskSummary -ForegroundColor $color
+}
+
+if ($NoStart) {
+    Write-RiskSummaryLine
+    return
+}
 
 Push-Location $here
 try {
@@ -245,6 +587,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "The briefing did not run. The deploy itself is fine; run 'docker exec mykronos-backend mykronos briefing' to see why." -ForegroundColor Yellow
     }
+
+    Write-Host ""
+    Write-RiskSummaryLine
 } finally {
     Pop-Location
 }

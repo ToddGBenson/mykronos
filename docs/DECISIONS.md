@@ -5567,3 +5567,99 @@ is retired" should read it as "on GHCR, which is where deploys pull from".
 that is ever understood, this decision is revisitable — but a gate that has
 never run in its entire history is not a gate, and keeping it while it does
 not work is how `:latest` came to point at an eleven-day-old image.
+
+---
+
+## D-126 — The deploy asks, refuses a `no_go`, and fails open when it cannot ask
+
+**2026-09-23.** **Status:** Decided by the operator, implemented
+**Spec:** [15 §3](../specs/15-concourse-pipeline.md) · **Story:** #60487 · **Closes the gap recorded in** D-125 · **Restores** D-047
+
+D-125 retired `:latest` and said plainly what it cost: with no tag for the
+Oracle gate to hold, *nothing mechanically stopped a `no_go` commit being
+deployed*, and the gate was advisory at deploy time. That is the state D-047
+existed to end. This closes it.
+
+**`deploy.ps1 -Tag <sha>` now asks the platform what the risk gate decided
+about that sha, before it pulls anything, and REFUSES a `no_go`** unless
+`-Force` is passed with a reason — which is recorded, not merely printed.
+
+**The dependency is a route, not a machine.** The lookup goes to
+`GET /api/oracle/decisions/by-commit/{sha}` on `http://127.0.0.1:8100`, the
+same backend the script already reads `/healthz` from at the end of every
+deploy, with a token already present in `backend/.env`. No new host, no new
+credential store, and D-125's objection — "a new dependency for a script that
+today needs only a registry" — is answered by making the dependency one the
+script already had.
+
+### The sub-question, answered deliberately: IT FAILS OPEN
+
+If the platform cannot be reached, the deploy **warns and proceeds**.
+
+**Fail open is never worse than the state it replaces.** With no check at all,
+an unreachable platform already meant no gate. The check restores a machine
+saying no in the normal case and degrades to the status quo in the abnormal
+one.
+
+**Fail closed was rejected on a measured case, not a hypothetical.** Vault was
+sealed for four days in September 2026 and the whole Concourse estate was down
+(#60474). A fail-closed gate would have blocked every deploy that could have
+fixed it, including the unseal.
+
+### What fail-open costs, and what is done about it
+
+A warn-and-proceed path goes invisible if it fires on every routine command.
+That is the failure mode this estate keeps meeting, so the outcomes are
+deliberately not alike:
+
+| outcome | what the operator sees |
+| --- | --- |
+| asked, `go` | **one grey line** — the quiet path has to be quiet |
+| asked, `review_recommended` | one yellow line |
+| asked, **`no_go`** | the deploy stops, nothing is pulled |
+| asked, **no decision exists** | yellow banner `NOT JUDGED`, five-second pause |
+| **could not ask** | red banner `COULD NOT ASK`, five-second pause |
+
+"Could not ask" is not "asked and it was fine", and the operator must never
+have to infer which happened from the absence of something. They are separate
+states in the code for the same reason: one means the gate workflow did not
+run for this commit, the other means this host could not reach the platform,
+and those have different fixes.
+
+Two further defences against the warning scrolling past: the verdict is
+**repeated as the last line of the run**, after the pull, the health wait and
+the briefing that would otherwise bury it; and **every run appends a line to
+`deploy/mykronos/deploy-risk-log.jsonl`** — not only the overrides, because
+"could not ask" needs a durable record at least as much as a refusal does.
+
+### The override is recorded, or it does not happen
+
+`-Force` requires `-ForceReason`, and the reason is written to the local
+ledger **before anything is pulled**. If that write fails the deploy stops:
+an override whose reason exists only in a console buffer is an unrecorded
+exception wearing the word "recorded". With an admin token the override is
+*also* POSTed to `/api/oracle/decisions/{id}/override`, which is where it
+belongs — but that is best effort and said out loud either way, because the
+platform is the thing most likely to be down during the deploy that needed
+forcing. The local ledger is the one the guarantee rests on.
+
+### A missing decision is 200, never 404
+
+`by-commit` returns `{"found": false}` rather than a 404. To a script a 404
+for "no decision about this sha" is indistinguishable from a 404 for "this
+backend is too old to have the route" or "a proxy rewrote the path" — and
+under a fail-open posture an indistinguishable error is an open gate. The same
+reasoning makes a 200 whose body carries no verdict count as *could not ask*
+rather than as a pass.
+
+**The lookup is prefix-matched in both directions.** `-Tag` takes 7 to 40 hex
+characters and the gate workflow files the full sha; an equality test would
+find nothing for a short tag, and finding nothing reads as permission here.
+
+### What this does not claim
+
+The gate is still advisory *in the pipeline* — `delivery.yml` publishes
+`:${SHA}` before Oracle scores it, because `containers` has to scan an image
+that exists (D-045). What changed is that the artifact can no longer be
+**deployed** without the decision being consulted. Gating at publish remains
+the stronger option and remains rejected for the reason D-045 gave.
