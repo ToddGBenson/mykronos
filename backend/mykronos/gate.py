@@ -50,11 +50,29 @@ TOKEN_QUERY = "_token"
 #: Paths that authenticate themselves. Kept as a compiled pattern rather than
 #: a prefix list so the boundaries are exact: `/api/ingest` must not also
 #: exempt `/api/ingestion-admin` if somebody adds one later.
+#:
+#: [#60495] ADDING A SELF-AUTHENTICATING ROUTE MEANS ADDING IT HERE, IN THE
+#: SAME EDIT. This middleware runs BEFORE routing and reads its token from
+#: `X-Hub-Token` / the `hub_token` cookie / `?_token=` — never from
+#: `Authorization: Bearer`. So a route that gates itself on a principal or a
+#: per-repo token is still 401'd here, before its handler sees the credential
+#: the caller is carrying, and the caller cannot tell that apart from being
+#: refused on the merits.
+#:
+#: #60487 shipped `/api/oracle/decisions/by-commit/{sha}` without this line.
+#: The deploy host asked, got `Not authorised for this host.`, and printed its
+#: red COULD NOT ASK banner — correctly, and on every deploy, forever, because
+#: nothing could ever clear it. Measured against f735cc2 on 2026-09-24.
+#:
+#: The same hazard exists in TheHub as `middleware/api_gate.py`'s
+#: `EXEMPT_EXACT`, where it has now caught six endpoints across the two repos.
 EXEMPT = re.compile(
     r"""^(
         /healthz                      # liveness, must work unconfigured
       | /api/ingest(/.*)?             # per-repo ingestion token
       | /api/oracle/evaluate          # per-repo ingestion token + oracle grant
+      | /api/oracle/decisions/by-commit/[0-9a-fA-F]{7,40}
+                                      # [#60495] principal auth (PrincipalDep)
       | /api/patchwork/run            # per-repo ingestion token + patchwork grant
       | /webhooks/github              # HMAC over the body
     )$""",

@@ -204,6 +204,69 @@ class TestTheExemptions:
         assert not is_exempt("/webhooks/github/extra")
 
 
+class TestTheDeployHostCanActuallyAsk:
+    """[#60495] #60487 shipped `/api/oracle/decisions/by-commit/{sha}` without
+    an exemption, so this middleware 401'd the deploy host before the handler
+    saw the Bearer token it was carrying.
+
+    The gate reads `X-Hub-Token` / the `hub_token` cookie / `?_token=` and
+    never `Authorization`, so a route that gates itself on a principal is
+    refused here regardless. `deploy.ps1` asked, got `Not authorised for this
+    host.`, and printed its red COULD NOT ASK banner — correctly, and on every
+    deploy forever, because nothing could clear it. Measured against f735cc2
+    on 2026-09-24.
+
+    THESE ASK `is_exempt` DIRECTLY, AND THAT IS DELIBERATE. An HTTP-level
+    assertion passes whether the path is exempt or not, because the gate is
+    disabled when its token is unset — #60483 measured exactly that in
+    TheHub's mirror of this middleware and the test still went green with the
+    entry deleted.
+    """
+
+    SHA = "f735cc24d26e573c07cc58bc638cbaee4d1614bc"
+
+    def test_the_sha_deploy_ps1_sends_is_exempt(self) -> None:
+        from mykronos.gate import is_exempt
+
+        assert is_exempt(f"/api/oracle/decisions/by-commit/{self.SHA}")
+
+    def test_a_short_tag_is_exempt_too(self) -> None:
+        """`-Tag` takes 7–40 hex. A pattern that only matched 40 would refuse
+        every short tag, which is the same outage wearing a different length."""
+        from mykronos.gate import is_exempt
+
+        assert is_exempt("/api/oracle/decisions/by-commit/f735cc2")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/oracle/decisions/by-commit/",          # no sha at all
+            "/api/oracle/decisions/by-commit/zzzzzzz",   # not hex
+            "/api/oracle/decisions/by-commit/abc",       # too short to identify
+            "/api/oracle/decisions/some-uuid",           # the OTHER decisions route
+            "/api/dashboard/portfolio",                  # an ordinary route
+            "/api/oracle/decisions/by-commit/../../dashboard/portfolio",
+        ],
+    )
+    def test_the_exemption_does_not_open_anything_else(self, path) -> None:
+        """The negative half. An exemption that let a neighbour through would
+        be a worse bug than the one it fixes, and the traversal case is the
+        one `is_exempt` already refuses outright rather than relying on the
+        router to 404 it."""
+        from mykronos.gate import is_exempt
+
+        assert not is_exempt(path)
+
+    def test_the_sibling_that_justified_this_shape_still_works(self) -> None:
+        """`/api/oracle/evaluate` is exempt for the same reason — it
+        authenticates itself. Regression guard on the edit that added a line
+        beside it."""
+        from mykronos.gate import is_exempt
+
+        assert is_exempt("/api/oracle/evaluate")
+        assert is_exempt("/healthz")
+
+
 class TestItIsAPerimeterNotAnAuthorisationModel:
     def test_the_gate_does_not_make_you_an_admin(self, gated) -> None:
         """Collapsing the two layers would make everyone who can reach the
