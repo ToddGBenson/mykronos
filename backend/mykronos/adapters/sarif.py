@@ -199,9 +199,7 @@ def _severity_for(
     return Severity.MEDIUM, None
 
 
-def _title_and_description(
-    result: dict[str, Any], rule: dict[str, Any] | None
-) -> tuple[str, str]:
+def _title_and_description(result: dict[str, Any], rule: dict[str, Any] | None) -> tuple[str, str]:
     message = (result.get("message") or {}).get("text") or ""
     short = ""
     full = ""
@@ -215,6 +213,52 @@ def _title_and_description(
     # message first because it is about *this* occurrence.
     description = "\n\n".join(part for part in (message, full) if part and part != title)
     return title[:1000], description[:100_000]
+
+
+#: Where a tool declares that it had no subject. Nested under a vendor key so
+#: it cannot collide with a property a scanner already emits.
+_MYKRONOS_PROPERTY = "mykronos"
+_SCAN_STATUS_PROPERTY = "scanStatus"
+
+
+def _mykronos_properties(run: Any) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {}
+    properties = run.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    ours = properties.get(_MYKRONOS_PROPERTY)
+    return ours if isinstance(ours, dict) else {}
+
+
+def _declares_no_applicable_targets(runs: list[Any]) -> bool:
+    """True only when EVERY run says it had nothing to scan.
+
+    Every, not any. A document holding one run that scanned Terraform and one
+    that found no charts describes a repository that HAS infrastructure, and
+    calling that "not applicable" would hide the half that was scanned. The
+    all-quantifier is the safe direction: a mixed document falls through to the
+    normal path and reports what it found.
+    """
+    declared = [str(_mykronos_properties(run).get(_SCAN_STATUS_PROPERTY) or "") for run in runs]
+    return bool(declared) and all(
+        value == ScanStatus.NO_APPLICABLE_TARGETS.value for value in declared
+    )
+
+
+def _no_target_reasons(runs: list[Any]) -> list[str]:
+    """The tool's own words for why there was nothing, deduplicated in order.
+
+    A status with no reason is the shape that gets argued about six months
+    later. The tool knows which file types it looked for; the platform does
+    not, and must not guess on its behalf.
+    """
+    seen: list[str] = []
+    for run in runs:
+        reason = str(_mykronos_properties(run).get("reason") or "").strip()
+        if reason and reason not in seen:
+            seen.append(reason[:1000])
+    return seen or ["The tool reported no applicable targets and gave no reason."]
 
 
 def sarif_to_findings(
@@ -253,6 +297,22 @@ def sarif_to_findings(
     runs = document.get("runs") or []
     if not runs:
         # A genuinely empty SARIF is a real result: scanned, found nothing.
+        return outcome
+
+    # "Nothing to scan" is not "scanned and found nothing", and until now SARIF
+    # had no way to say so. A repository with no Terraform, no Dockerfile and no
+    # chart is a legitimate state, and a scanner that correctly declines to run
+    # over it produced either an empty SARIF -- indistinguishable from a clean
+    # scan -- or no SARIF at all, which `normalize_results` reports as FAILURE.
+    # Both are wrong, in opposite directions.
+    #
+    # The marker rides in the run's property bag, which SARIF 2.1.0 §3.8 defines
+    # for exactly this, so nothing here is outside the format. A tool that does
+    # not set it is unaffected.
+    if _declares_no_applicable_targets(runs):
+        outcome.scan_status = ScanStatus.NO_APPLICABLE_TARGETS
+        for reason in _no_target_reasons(runs):
+            outcome.warn(reason)
         return outcome
 
     # Only what *this* call parsed. `result=` lets a caller accumulate several
