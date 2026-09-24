@@ -776,6 +776,58 @@ jobs:
   # read the build logs; a `set_pipeline` step prints the configuration it
   # applied, and there is no reason to start that habit again here.
   - name: set-pipeline
+    # [#60478] Reports to TheHub, not only to Slack. This job arrived with
+    # #59990 carrying `notify-slack` and nothing else, and it was the only one
+    # of twenty in this pipeline that left no row behind -- named by TheHub's
+    # `test_no_job_is_silent` and acknowledged there with a ticket rather than
+    # excused. A Slack message scrolls away; `deploy_stage_events` is where a
+    # verdict becomes durable and where Mission Control reads it.
+    #
+    # It matters more here than on an ordinary lane. #59073 spent four separate
+    # incidents establishing that the pipeline APPLIER is the riskiest control
+    # in this estate -- applies from a checkout 129 commits behind, from an
+    # unmerged branch, from a worktree that would have deleted the staging DAST
+    # lane. PipelineSource.ps1 now prevents those on the hand-apply path, but
+    # with no hook here "when was this pipeline last applied, and did it
+    # succeed" was a question nothing in TheHub could answer.
+    #
+    # STAGE is `pipeline_apply`, not `set_pipeline`: the row has to say an
+    # APPLY happened, distinct from `cicd_drift` and `config_drift`, which
+    # merely look at pipeline configuration without changing anything.
+    #
+    # All four terminal states, per `test_every_job_reports_all_four_terminal_
+    # states_per_stage`. `aborted` is not decoration on this job -- an apply
+    # cancelled halfway is exactly the event that leaves the server in a state
+    # nobody chose.
+    #
+    # The job-level hooks REPLACE the two trailing ones rather than sitting
+    # beside them, so a failure sends one Slack message and one Hub row.
+    #
+    # The reported SHA will be `unknown`: `hub_report` reads its commit out of
+    # an input named `source`, and this job gets `pipelines` (mykronos) and no
+    # `source` (TheHub). The row still answers when the apply ran and whether
+    # it worked, which is the question this story is about; identifying WHICH
+    # mykronos commit was applied is a separate change to the hook and is not
+    # smuggled in here.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: success, TARGET_ENV: prod }
+    on_failure:
+      do:
+        - *slack_alert
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: failed, TARGET_ENV: prod }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: errored, TARGET_ENV: prod }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: pipelines
         trigger: true
@@ -783,10 +835,6 @@ jobs:
       - set_pipeline: self
         file: pipelines/deploy/concourse/pipelines/thehub.yml
         var_files: [pipelines/deploy/concourse/vars/thehub.yml]
-    on_failure: *slack_alert
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
 
   # [#60073] The quarterly CI/CD drift audit. `scripts/audit-cicd-drift.sh`
   # compares `deploy.sh`'s stages against the GHA workflows' jobs, and until
