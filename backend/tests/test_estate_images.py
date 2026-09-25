@@ -242,7 +242,7 @@ class TestThisEstate:
     @pytest.mark.parametrize(
         "reference",
         [
-            "hashicorp/vault:1.21.4",
+            "hashicorp/vault:2.1.1",
             "concourse/concourse:7.14",
             "minio/minio:RELEASE.2025-04-22T22-12-26Z",
             "registry:2",
