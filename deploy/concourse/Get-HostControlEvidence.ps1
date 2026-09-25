@@ -212,7 +212,11 @@ $registryAuth = Get-Section 'registry_auth' {
     $authEnv = @($inspected.Config.Env | Where-Object { $_ -like 'REGISTRY_AUTH*' })
     $configMounts = @(
         $inspected.Mounts |
-            Where-Object { [string]$_.Destination -like '/etc/docker/registry*' } |
+            Where-Object {
+                # v2 reads /etc/docker/registry, v3 /etc/distribution.
+                $d = [string]$_.Destination
+                $d -like '/etc/docker/registry*' -or $d -like '/etc/distribution*'
+            } |
             ForEach-Object { [string]$_.Destination }
     )
 

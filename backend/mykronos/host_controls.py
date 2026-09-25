@@ -2,7 +2,7 @@
 
 Every other capability here reads a repository. The control standing between
 this estate's deploy registry and an unauthenticated push does not live in one:
-`mykronos-registry` runs `registry:2` with no `auth:` block at all, and the only
+`mykronos-registry` runs `registry:3` with no `auth:` block at all, and the only
 thing stopping any LAN device from overwriting a tag this host then runs is an
 inbound Block rule in Windows Defender Firewall. It was applied once (B-054,
 D-109) and nothing has re-read it since.
