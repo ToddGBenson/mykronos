@@ -245,7 +245,7 @@ class TestThisEstate:
             "hashicorp/vault:1.21.4",
             "concourse/concourse:7.14",
             "minio/minio:RELEASE.2025-04-22T22-12-26Z",
-            "registry:2",
+            "registry:3",
             "postgres:15",
             "ghcr.io/zaproxy/zaproxy:2.17.0",
         ],

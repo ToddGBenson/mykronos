@@ -3,7 +3,7 @@
     Close the image registry to the LAN while leaving the build path open (B-054, D-109).
 
 .DESCRIPTION
-    `mykronos-registry` (registry:2) listens on 0.0.0.0:5000 over plain HTTP with
+    `mykronos-registry` (registry:3) listens on 0.0.0.0:5000 over plain HTTP with
     no `auth:` block in its configuration at all. There is no authentication to
     fail. Anonymous read is demonstrable from any host on the network, and
     anonymous *write* lands on tags this host then runs -- `thehub-demo-backend`

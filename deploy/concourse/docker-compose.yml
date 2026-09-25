@@ -161,10 +161,21 @@ services:
   # take the build down, because the kaniko task pushes to the host's LAN
   # address -- and denying "everything except the bridges" would too, because
   # Windows evaluates block rules ahead of allow rules.
+  #
+  # registry:3, not registry:2: upstream stopped rebuilding the 2 line in 2023,
+  # and Trivy finds 71 fixable CVEs in it (2 critical) against 4 in 3.1.2.
+  # The v3 image's default config differs in one way that matters here: it
+  # sets `storage.delete.enabled: true`, and with no `auth:` block that is an
+  # anonymous DELETE on every tag the demo and production stacks pull. v2 had
+  # deletes off, so the environment below keeps them off. Its default log
+  # level is `debug`; `info` matches what v2 actually logged.
   registry:
-    image: registry:2
+    image: registry:3
     container_name: mykronos-registry
     restart: unless-stopped
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+      REGISTRY_LOG_LEVEL: info
     ports:
       - "5000:5000"
     volumes:
