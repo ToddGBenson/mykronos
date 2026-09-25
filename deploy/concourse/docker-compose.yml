@@ -37,8 +37,13 @@ name: mykronos-concourse
 # slows a build down; a memory cap kills it, and an OOM in the middle of a
 # scan looks like a tool bug for as long as it takes to find the limit.
 # 6g is a runaway backstop, not a budget.
+#
+# Web and workers move together: 8.3, not 7.14, because the 7.14 line
+# carries 1,368 Trivy results (33 critical) against 288 in 8.3.0. Every
+# deployed pipeline validates under fly 8.3.0, and the 8.0 md5->sha256
+# migration was rehearsed on a restored copy of this database first.
 x-worker: &worker
-  image: concourse/concourse:7.14
+  image: concourse/concourse:8.3
   restart: unless-stopped
   command: worker
   # A worker runs the container runtime. This is the privilege that
@@ -54,6 +59,13 @@ x-worker: &worker
     CONCOURSE_TSA_PUBLIC_KEY: /keys/tsa_host_key.pub
     CONCOURSE_WORK_DIR: /worker-state
     CONCOURSE_BAGGAGECLAIM_DRIVER: overlay
+
+    # Guardian, stated rather than defaulted. 8.0 made containerd the default
+    # runtime, and containerd ignores every CONCOURSE_GARDEN_* variable - so
+    # the upgrade alone would silently drop the DNS servers below and bring
+    # back "Could not resolve host: github.com" on every resource check.
+    # Moving to containerd is its own change, with CONCOURSE_CONTAINERD_DNS_*.
+    CONCOURSE_RUNTIME: guardian
 
     # There is no CONCOURSE_GARDEN_NETWORK here, though the quickstart config
     # carried a `CONCOURSE_WORKER_GARDEN_NETWORK: host` for as long as it
@@ -280,7 +292,7 @@ services:
   # cannot start. Keeping the name means compose recreates this one in place.
   # `command: web` says what it is.
   concourse:
-    image: concourse/concourse:7.14
+    image: concourse/concourse:8.3
     container_name: mykronos-concourse
     restart: unless-stopped
     command: web

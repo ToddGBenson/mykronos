@@ -85,7 +85,7 @@ New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
 
 if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
     Write-Host "Generating the session signing key..." -ForegroundColor Cyan
-    docker run --rm -v "${keyDir}:/keys" concourse/concourse:7.14 generate-key -t rsa -f /keys/session_signing_key | Out-Null
+    docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3 generate-key -t rsa -f /keys/session_signing_key | Out-Null
 }
 
 # `-t ssh` rather than `-t rsa`: these are the SSH handshake between each
@@ -93,7 +93,7 @@ if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
 foreach ($name in @("tsa_host_key", "worker_key", "worker2_key")) {
     if (-not (Test-Path (Join-Path $keyDir $name))) {
         Write-Host "Generating $name..." -ForegroundColor Cyan
-        docker run --rm -v "${keyDir}:/keys" concourse/concourse:7.14 generate-key -t ssh -f "/keys/$name" | Out-Null
+        docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3 generate-key -t ssh -f "/keys/$name" | Out-Null
     }
 }
 
