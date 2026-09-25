@@ -21,6 +21,7 @@ base image and it is not".
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -42,6 +43,13 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     # would churn while every one of them was stored on a stable package key
     # (#325).
     outcome = sarif_to_findings(raw_output, context, warn_degraded=False)
+    image = _image_name(raw_output)
+    if outcome.findings and image is None:
+        outcome.warn(
+            "The Trivy report names no single image (runs[].properties.imageName), "
+            "so its findings keep package-only identity and will merge with the "
+            "same package in any other image."
+        )
 
     enriched = 0
     for finding in outcome.findings:
@@ -66,6 +74,13 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         if fixed and isinstance(finding.raw_finding_json, dict):
             finding.raw_finding_json["fixed_version"] = fixed.group("version")
 
+        # Part of the finding's identity (`FINGERPRINT_CONTAINER`). The SARIF
+        # location cannot supply it: for an OS package Trivy writes the image
+        # name there, but for a binary it writes a path inside the image, and
+        # `usr/local/bin/gosu` is the same path in every image that ships it.
+        if image is not None and isinstance(finding.raw_finding_json, dict):
+            finding.raw_finding_json["image"] = image
+
     if outcome.findings and not enriched:
         outcome.warn(
             "No Trivy finding carried a parseable package line. Container "
@@ -75,3 +90,26 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome
+
+
+def _image_name(raw_output: bytes) -> str | None:
+    """The image this report describes, from Trivy's run-level properties.
+
+    Trivy writes one run per image with `properties.imageName`. A report with
+    no run, or with runs naming different images, cannot attribute a result
+    to one image, so it answers `None` rather than guessing.
+    """
+    try:
+        document = json.loads(raw_output)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    runs = document.get("runs") if isinstance(document, dict) else None
+    if not isinstance(runs, list):
+        return None
+    names = {
+        str(run["properties"].get("imageName") or "").strip()
+        for run in runs
+        if isinstance(run, dict) and isinstance(run.get("properties"), dict)
+    }
+    names.discard("")
+    return names.pop() if len(names) == 1 else None

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from mykronos.adapters.base import ScanContext
+from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.adapters.registry import get_adapter
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
@@ -150,39 +150,15 @@ def reprocess(
             tool_name=str(tool),
         )
 
-        archive = _archive_for(catalog, raw_dir, str(scan_run_id))
-        if archive is None:
+        derived = derive_scan(catalog, raw_dir, row)
+        if derived.no_archive:
             result.skipped_no_archive += 1
             continue
-
-        try:
-            spec = get_adapter(str(cap), str(tool))
-        except LookupError as exc:
-            scan.error = str(exc)
+        if derived.error or derived.context is None or derived.parsed is None:
+            scan.error = derived.error
             result.scans.append(scan)
             continue
-
-        context = ScanContext(
-            repo_full_name=str(repo),
-            capability=str(cap),
-            tool_name=str(tool),
-            tool_version=str(tool_version),
-            commit_sha=str(commit_sha),
-            branch=str(branch),
-            workflow_run_id="",
-            triggered_by=TriggeredBy.PUSH,
-            # No workspace: the checkout is long gone. Snippet capture
-            # degrades to what the archived output itself carries, which is
-            # the same position a scan of a shallow clone is in.
-            workspace=None,
-        )
-
-        try:
-            parsed = spec.normalize(archive.read_bytes(), context)
-        except Exception as exc:  # noqa: BLE001 — one bad archive is not fatal
-            scan.error = f"{type(exc).__name__}: {exc}"
-            result.scans.append(scan)
-            continue
+        context, parsed = derived.context, derived.parsed
 
         fresh_ids = _ingest(
             catalog, buffer, scan_run_id=str(scan_run_id), context=context,
@@ -219,17 +195,99 @@ def reprocess(
     return result
 
 
-def _archive_for(catalog: Catalog, raw_dir: Path, scan_run_id: str) -> Path | None:
+@dataclass
+class DerivedScan:
+    """One archived scan run, re-parsed with the current adapter."""
+
+    context: ScanContext | None = None
+    parsed: AdapterResult | None = None
+    no_archive: bool = False
+    error: str = ""
+
+
+def derive_scan(
+    catalog: Catalog,
+    raw_dir: Path,
+    row: tuple[str, str, str, str, str, str, str, object],
+) -> DerivedScan:
+    """Re-run the current adapter over everything one scan run archived.
+
+    `row` is a `_archived_scans` row. Shared by `reprocess` and
+    `rekey_containers`, which differ only in what they write afterwards.
+    """
+    scan_run_id, repo, cap, tool, tool_version, commit_sha, branch, _seen_at = row
+    try:
+        spec = get_adapter(str(cap), str(tool))
+    except LookupError as exc:
+        return DerivedScan(error=str(exc))
+
+    archives = _archives_for(catalog, raw_dir, str(scan_run_id), spec.pattern)
+    if not archives:
+        return DerivedScan(no_archive=True)
+
+    context = ScanContext(
+        repo_full_name=str(repo),
+        capability=str(cap),
+        tool_name=str(tool),
+        tool_version=str(tool_version),
+        commit_sha=str(commit_sha),
+        branch=str(branch),
+        workflow_run_id="",
+        triggered_by=TriggeredBy.PUSH,
+        # No workspace: the checkout is long gone. Snippet capture
+        # degrades to what the archived output itself carries, which is
+        # the same position a scan of a shallow clone is in.
+        workspace=None,
+    )
+
+    # Every file the scan archived, merged the way `normalize_results` merges
+    # them at upload time. One scan run can hold several reports — the
+    # containers lane writes one per image — and `raw_output_ref` names only
+    # the last one uploaded. Re-deriving from that file alone would reproduce
+    # one image and retire every other image's findings as "no longer
+    # reported".
+    parsed = AdapterResult()
+    try:
+        for archive in archives:
+            part = spec.normalize(archive.read_bytes(), context)
+            parsed.findings.extend(part.findings)
+            parsed.warnings.extend(part.warnings)
+            if part.scan_status is not ScanStatus.SUCCESS:
+                parsed.scan_status = part.scan_status
+    except Exception as exc:  # noqa: BLE001 — one bad archive is not fatal
+        return DerivedScan(error=f"{type(exc).__name__}: {exc}")
+    return DerivedScan(context=context, parsed=parsed)
+
+
+def _archives_for(
+    catalog: Catalog, raw_dir: Path, scan_run_id: str, pattern: str
+) -> list[Path]:
+    """Every archived report for one scan run, in upload order by name.
+
+    The archive endpoint writes each file to `raw/<owner>/<repo>/<scan_run_id>/`
+    and the scan row keeps a pointer to one of them. When the pointer's
+    directory is that scan's own directory, its siblings matching the
+    adapter's pattern are the rest of the same scan; otherwise only the
+    pointed-at file is trusted.
+    """
     rows = catalog.query(
         "SELECT raw_output_ref FROM scan_runs WHERE scan_run_id = ? LIMIT 1",
         [scan_run_id],
     )
     if not rows or not rows[0][0]:
-        return None
+        return []
     # `raw_output_ref` is relative to the lake root, and `raw_dir` is a
     # directory inside it — resolve against the parent rather than assuming.
     candidate = raw_dir.parent / str(rows[0][0])
-    return candidate if candidate.is_file() else None
+    if not candidate.is_file():
+        return []
+    folder = candidate.parent
+    if folder.name != scan_run_id:
+        return [candidate]
+    siblings = sorted(
+        path for path in folder.glob(pattern) if path.is_file() and path.stat().st_size > 0
+    )
+    return siblings or [candidate]
 
 
 def _ingest(
@@ -241,8 +299,14 @@ def _ingest(
     parsed: object,
     dry_run: bool,
     observed_at: object = None,
+    overrides: dict[str, dict[str, object]] | None = None,
 ) -> set[str]:
     """Write the re-derived findings and return their ids.
+
+    `overrides` maps a new `finding_id` to columns that replace the defaults
+    on its row — how `rekey_containers` carries a disposition and a first
+    sighting onto the id that replaces an old one, through this one writer
+    rather than a second copy of the row shape.
 
     `observed_at` is the *scan's* time, not now. Re-derivation produces new
     ids by design, so every row here is an insert rather than an update — and
@@ -252,7 +316,7 @@ def _ingest(
     list looking new, and every age-based measure would reset. The finding
     was genuinely first observed by this scan, at this time.
     """
-    from mykronos.fingerprint import compute_finding_id
+    from mykronos.fingerprint import compute_finding_id, image_of
 
     moment = observed_at if isinstance(observed_at, datetime) else utcnow()
     rows = []
@@ -284,49 +348,51 @@ def _ingest(
             line_start=finding.line_start,
             package_name=finding.package_name,
             title=finding.title,
+            image=image_of(finding.raw_finding_json),
         )
         ids.add(finding_id)
         if finding_id in settled:
             # Counted as still produced, so it is not retired as stale, but
             # its recorded disposition stands.
             continue
-        rows.append(
-            {
-                "finding_id": finding_id,
-                "scan_run_id": scan_run_id,
-                # The second writer of findings rows, and the one that made
-                # the asset migration bite: `_settled_statuses` reads
-                # `asset_id`, so a re-derived row without one is invisible to
-                # the guard that stops a fixed finding being reopened. That is
-                # D-034 exactly, reintroduced by migrating a reader without
-                # its writer.
-                "asset_type": "repo",
-                "asset_id": context.repo_full_name,
-                "repo_full_name": context.repo_full_name,
-                "capability": context.capability,
-                "rule_id": finding.rule_id,
-                "title": finding.title,
-                "description": finding.description,
-                "severity": finding.severity.value,
-                "cvss_score": finding.cvss_score,
-                "file_path": finding.file_path,
-                "line_start": finding.line_start,
-                "line_end": finding.line_end,
-                "symbol": finding.symbol,
-                "code_snippet": finding.code_snippet,
-                "fingerprint_version": fingerprint_version,
-                "package_name": finding.package_name,
-                "package_version": finding.package_version,
-                "status": FindingStatus.OPEN.value,
-                "superseded_by": None,
-                "first_seen_scan_run_id": scan_run_id,
-                "last_seen_scan_run_id": scan_run_id,
-                "first_seen_at": moment,
-                "last_seen_at": moment,
-                "resolved_at": None,
-                "raw_finding_json": json.dumps(finding.raw_finding_json or {}),
-            }
-        )
+        row: dict[str, object] = {
+            "finding_id": finding_id,
+            "scan_run_id": scan_run_id,
+            # The second writer of findings rows, and the one that made
+            # the asset migration bite: `_settled_statuses` reads
+            # `asset_id`, so a re-derived row without one is invisible to
+            # the guard that stops a fixed finding being reopened. That is
+            # D-034 exactly, reintroduced by migrating a reader without
+            # its writer.
+            "asset_type": "repo",
+            "asset_id": context.repo_full_name,
+            "repo_full_name": context.repo_full_name,
+            "capability": context.capability,
+            "rule_id": finding.rule_id,
+            "title": finding.title,
+            "description": finding.description,
+            "severity": finding.severity.value,
+            "cvss_score": finding.cvss_score,
+            "file_path": finding.file_path,
+            "line_start": finding.line_start,
+            "line_end": finding.line_end,
+            "symbol": finding.symbol,
+            "code_snippet": finding.code_snippet,
+            "fingerprint_version": fingerprint_version,
+            "package_name": finding.package_name,
+            "package_version": finding.package_version,
+            "status": FindingStatus.OPEN.value,
+            "superseded_by": None,
+            "first_seen_scan_run_id": scan_run_id,
+            "last_seen_scan_run_id": scan_run_id,
+            "first_seen_at": moment,
+            "last_seen_at": moment,
+            "resolved_at": None,
+            "raw_finding_json": json.dumps(finding.raw_finding_json or {}),
+        }
+        if overrides and finding_id in overrides:
+            row.update(overrides[finding_id])
+        rows.append(row)
 
     if rows and not dry_run:
         buffer.append("findings", rows)

@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mykronos.fingerprint import FINGERPRINT_V1_LINE, compute_finding_id
+from mykronos.fingerprint import FINGERPRINT_V1_LINE, compute_finding_id, image_of
 from mykronos.schemas import FindingSubmission, ScanStatus, TriggeredBy
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,7 @@ def identity_version(finding: FindingSubmission, context: ScanContext) -> str:
         address=finding.address,
         port=finding.port,
         title=finding.title,
+        image=image_of(finding.raw_finding_json),
     )
     return version
 

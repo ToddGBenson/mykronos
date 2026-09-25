@@ -84,6 +84,7 @@ from mykronos.migrate_assets import migrate_assets
 from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
+from mykronos.rekey_containers import rekey_containers
 from mykronos.reprocess import reprocess
 from mykronos.rescore_sscs import rescore_sscs
 from mykronos.schemas import Capability
@@ -292,6 +293,20 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=CAPABILITIES,
         help="Limit to one capability — usually the one whose adapter changed.",
     )
+
+    rekey = sub.add_parser(
+        "rekey-containers",
+        help="Key container findings on their image, carrying decisions (spec 05 §5a)",
+    )
+    rekey.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Report what would be carried, stranded and superseded, and write "
+            "nothing. Do this first."
+        ),
+    )
+    rekey.add_argument("--repo", default=None, help="Limit to one repository.")
 
     assets = sub.add_parser(
         "migrate-assets",
@@ -1139,6 +1154,45 @@ def main(argv: list[str] | None = None) -> int:
                 print("Dry run - nothing was written.")
             else:
                 print("Run `compact` to make the re-derived findings queryable.")
+            return 0
+
+        if args.command == "rekey-containers":
+            rekeyed = rekey_containers(
+                catalog,
+                buffer,
+                settings.raw_dir,
+                repo_full_name=args.repo,
+                dry_run=args.dry_run,
+            )
+            _print_table(
+                ["repo", "scan", "produced", "superseded", "carried", "fix exists",
+                 "stranded", "dated", "error"],
+                [
+                    (
+                        rk.repo_full_name,
+                        rk.scan_run_id[:12],
+                        rk.produced,
+                        rk.superseded,
+                        rk.carried,
+                        len(rk.premise_false),
+                        len(rk.stranded),
+                        rk.dated,
+                        rk.error[:40],
+                    )
+                    for rk in rekeyed.repos
+                ],
+            )
+            print()
+            print(rekeyed.summary())
+            for rk in rekeyed.repos:
+                for old_id in rk.stranded:
+                    print(f"stranded  {rk.repo_full_name}  {old_id}")
+                for old_id in rk.premise_false:
+                    print(f"fix now   {rk.repo_full_name}  {old_id}")
+            if args.dry_run:
+                print("Dry run - nothing was written.")
+            else:
+                print("Run `compact` to make the re-keyed findings queryable.")
             return 0
 
         if args.command == "migrate-assets":

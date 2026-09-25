@@ -54,7 +54,7 @@ from mykronos.db.models import (
     RiskProfile,
     capability_config_for,
 )
-from mykronos.fingerprint import compute_finding_id
+from mykronos.fingerprint import compute_finding_id, image_of
 from mykronos.github.client import GitHubError
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
@@ -493,6 +493,7 @@ async def ingest_findings(
             address=finding.address,
             port=finding.port,
             title=finding.title,
+            image=image_of(finding.raw_finding_json),
         )
         owner, owner_source = owner_for_finding(
             file_path=finding.file_path,
