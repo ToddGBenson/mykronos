@@ -5663,3 +5663,45 @@ The gate is still advisory *in the pipeline* — `delivery.yml` publishes
 that exists (D-045). What changed is that the artifact can no longer be
 **deployed** without the decision being consulted. Gating at publish remains
 the stronger option and remains rejected for the reason D-045 gave.
+
+## D-127 — A container finding is about an image, so the image is in its key
+
+**2026-09-25.** **Status:** Decided by the operator, implemented
+**Spec:** [05 §5, §5a](../specs/05-datalake.md) · **Supersedes the container half of** `v2-package`
+
+`v2-package` keyed a container finding on `(repo, capability, CVE, package)`.
+The image was not in the key, so one Go `stdlib` CVE in twenty images was one
+row, labelled with whichever image the lake wrote last. Measured on the
+2026-09-24 mykronos scan: **6,673 Trivy results became 4,875 findings**, exactly
+the number of distinct `(CVE, package)` pairs, and Concourse's 1,368 results
+were about 40 rows. Worse than the count: **a disposition covered every image
+carrying the package.** 176 of mykronos's 256 container acceptances also
+silenced an image nobody had looked at, and the `no_vendor_fix` sweep read the
+fixed version of whichever image happened to be stored.
+
+**The fix.** Trivy's adapter stamps each finding with its report's
+`runs[].properties.imageName`, and `compute_finding_id` adds the image
+*repository* to a package finding's key (`v3-package-image`). Tag, digest and
+registry host are dropped: the application images are tagged with a commit SHA,
+and keeping the tag would re-key every container finding on every commit.
+
+**The migration** (`mykronos rekey-containers`, dry run first) re-derives each
+repo's latest containers scan and moves decisions narrowly. A disposition goes
+only to the image its old row was labelled with. Every other image's copy is a
+new open finding, because nobody decided anything about it. An acceptance whose
+`no_vendor_fix` premise is false for its image, or whose label is a path two
+images share, is reported rather than carried. Old rows become `superseded` by
+`rekey`, never `fixed`. The dry run against the live lake: mykronos 4,875 → 5,422
+findings, 255 decisions carried, none stranded; TheHub 262, 260 carried.
+
+**It also fixed `reprocess`.** A scan run can archive several reports, and
+`raw_output_ref` names one. Reprocessing the containers lane read one image and
+would have retired every other image's findings as no longer reported.
+
+**The runner has to move for any of it to take effect**, because the adapter
+runs in CI from `mykronos-ref`. The pin was `v7`, 291 commits behind, and
+`pin-check` had been red over three missing modules. It is now `v9`, cut at
+this change's merge commit. Old runners keep producing `v2-package` ids
+(there is no image to stamp), so the server and runners can move in either
+order. The containers jobs are paused across the migration so that no scan
+lands between the re-key and the pin moving.

@@ -28,6 +28,17 @@ as a data-quality metric rather than being silently accepted as equivalent.
 FINGERPRINT_DEPENDENCY = "v2-package"
 """Dependency findings key on the package, not a source location."""
 
+FINGERPRINT_CONTAINER = "v3-package-image"
+"""A package inside a named container image.
+
+`v2-package` alone keyed a container finding on (CVE, package) and nothing
+else, so one Go `stdlib` CVE present in twenty images was one row labelled
+with whichever image was written last. Measured on 2026-09-24: 6,673 Trivy
+results became 4,875 findings, and an acceptance recorded against one image
+silently covered the same package in every other image. The image is the
+asset a container finding is about, so it is part of the key.
+"""
+
 FINGERPRINT_REPO_LEVEL = "v2-repo"
 
 #: Spec 14 §5. Keyed on address and port rather than hostname, which is often
@@ -64,6 +75,52 @@ def normalize_snippet(snippet: str) -> str:
     """
     lines = (_WHITESPACE_RUN.sub(" ", line).strip() for line in snippet.splitlines())
     return "\n".join(line for line in lines if line)
+
+
+def image_repository(reference: str) -> str:
+    """The part of an image reference that names the same image across builds.
+
+    Tag and digest are dropped: the application images are tagged with a
+    commit SHA, so keeping the tag would re-key every container finding on
+    every commit, and an upgrade either removes a CVE (the finding resolves by
+    absence) or does not (it is the same finding) — the rule `v2-package`
+    already applies by excluding the package version.
+
+    A registry host is dropped as well, for the same reason: the build pushes
+    to this host's LAN address, which is not a property of the image. A
+    single-component Docker Hub name gains `library/`, so `postgres:15` and
+    Trivy's own `library/postgres` agree.
+    """
+    ref = reference.strip().split("@", 1)[0]
+    if ref.rfind(":") > ref.rfind("/"):
+        ref = ref[: ref.rfind(":")]
+    parts = [part for part in ref.split("/") if part]
+    had_host = len(parts) > 1 and (
+        "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
+    )
+    if had_host:
+        parts = parts[1:]
+    if len(parts) == 1 and not had_host:
+        parts = ["library", *parts]
+    return "/".join(parts).lower()
+
+
+def image_of(raw_finding_json: object) -> str | None:
+    """The image a finding was reported in, as the adapter stamped it.
+
+    Read from the raw record because that is the one field that travels
+    unchanged from the uploader to every place a `finding_id` is computed —
+    ingestion, reprocessing and the adapters' own identity check — so all
+    three read it the same way. `None` for anything that is not a container
+    finding, and for one uploaded by a runner that predates the stamp, which
+    then keeps its `v2-package` identity rather than failing.
+    """
+    if not isinstance(raw_finding_json, dict):
+        return None
+    image = raw_finding_json.get("image")
+    if not isinstance(image, str):
+        return None
+    return image.strip() or None
 
 
 def snippet_similarity(left: str | None, right: str | None) -> float:
@@ -114,6 +171,7 @@ def compute_finding_id(
     line_start: int | None = None,
     package_name: str | None = None,
     title: str | None = None,
+    image: str | None = None,
 ) -> tuple[str, str]:
     """Return ``(finding_id, fingerprint_version)``.
 
@@ -122,7 +180,9 @@ def compute_finding_id(
     - ``package_name`` set  -> dependency finding, keyed on the package.
       Excludes ``package_version``: a CVE that still applies after a bump is
       the same finding; one that no longer applies is retired by the normal
-      absence-reconciliation path.
+      absence-reconciliation path. With ``image`` as well (a container
+      finding, see `FINGERPRINT_CONTAINER`) the image repository joins the
+      key, so the same package in two images is two findings.
     - ``file_path`` set     -> code finding, keyed on the normalized snippet
       and enclosing symbol. Falls back to ``line_start`` only when the adapter
       gave us neither, and says so via the returned version.
@@ -146,6 +206,15 @@ def compute_finding_id(
                 None if port is None else str(port),
             ),
             FINGERPRINT_NETWORK,
+        )
+
+    if package_name and image:
+        return (
+            _digest(
+                "dep-image", repo_full_name, capability, rule_id, package_name,
+                image_repository(image),
+            ),
+            FINGERPRINT_CONTAINER,
         )
 
     if package_name:

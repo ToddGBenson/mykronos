@@ -253,7 +253,7 @@ try {
         # whole batch; the backend now accepts it and v7 omits it when empty.
         # See the longer note in set-pipeline.ps1 for the ordering rule:
         # deploy the backend first, then move the pin.
-        "mykronos-ref: v7"
+        "mykronos-ref: v9"
 
         # slack-bot-token and slack-alert-channel are deliberately NOT here.
         # They resolve through the Vault credential manager at team scope

@@ -27,4 +27,4 @@ skills-release-bucket: personal-soc-releases
 skills-install-timeout-minutes: 8
 
 mykronos-url: http://192.168.0.14:8100
-mykronos-ref: v7
+mykronos-ref: v9
