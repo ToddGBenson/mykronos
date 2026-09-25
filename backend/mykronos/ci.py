@@ -1565,7 +1565,11 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # the lane in the coverage cross-check while saying nothing new about it.
     # What this job adds is the third verdict and the confirm-on-red retry,
     # neither of which is a capability.
-    ((THEHUB,), "post-merge", "grades the develop tip as it landed, reports a verdict rather than findings"),
+    (
+        (THEHUB,),
+        "post-merge",
+        "grades the develop tip as it landed, reports a verdict rather than findings",
+    ),
     # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
     # premise that removed it expired before the change landed.
     #
