@@ -471,6 +471,13 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
 
     outcome = UploadOutcome(scan_run_id=scan_run_id)
     result = AdapterResult()
+    # Whether every finding reached the platform. `outcome.scan_status` is the
+    # adapter's verdict on the *tool's* output, taken before anything is sent,
+    # so on its own it finalised a run whose findings never arrived as a clean
+    # `success` with `finding_count=0` - a scan the absence reconciler counts
+    # toward closing every finding it "did not see" (2026-09-25: TheHub's 17
+    # live-credential findings were one such run from being closed as fixed).
+    delivered = False
 
     try:
         result = run_adapter(args.capability, args.tool, results_path, context)
@@ -492,6 +499,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
                 },
             )
             outcome.findings_accepted += int(response.get("accepted", 0))
+        delivered = True
 
         outcome.raw_output_ref = archive_raw(
             client, results_path, scan_run_id, args.capability, args.tool
@@ -501,7 +509,10 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         )
     finally:
         # Always finalise. A run that failed must still be visible in the lake
-        # as a run that failed, not as a gap (spec 04 §7).
+        # as a run that failed, not as a gap (spec 04 §7) - and not as a
+        # success either, which is what an undelivered upload used to become.
+        if not delivered:
+            outcome.scan_status = ScanStatus.FAILURE
         final = scan_run_payload(
             completed_at=utcnow().isoformat(),
             scan_status=outcome.scan_status.value,

@@ -738,3 +738,36 @@ class TestWhatStartedTheScan:
 
         assert parser.parse_args(base).triggered_by is None
         assert parser.parse_args([*base, "--triggered-by", "push"]).triggered_by == "push"
+
+
+class TestAFailedFindingsUploadIsNotACleanScan:
+    """Findings that never arrived must not finalise the run as a success.
+
+    On 2026-09-25 TheHub's gitleaks found 41 leaks, the findings post timed
+    out six times, and the uploader failed the build - but the finalising
+    post still said `success` with `finding_count=0`, because `scan_status`
+    was the adapter's verdict, taken before anything was sent. The lake then
+    held a clean scan of a repository with 17 live-credential findings, and
+    absence reconciliation counts a clean scan as one of the two it needs to
+    close every finding the scan "did not see".
+    """
+
+    def test_the_run_is_finalised_as_a_failure(self, results: Path, workspace: Path) -> None:
+        client = RecordingClient()
+        client.fail_on = {"/api/ingest/findings"}
+
+        with pytest.raises(UploadError):
+            upload(make_args(results, workspace), client=client)
+
+        finalised = client.bodies_for("/api/ingest/scan-run")[-1]
+        assert finalised["scan_status"] == ScanStatus.FAILURE.value
+
+    def test_a_delivered_upload_still_finalises_as_the_adapter_said(
+        self, results: Path, workspace: Path
+    ) -> None:
+        client = RecordingClient()
+
+        upload(make_args(results, workspace), client=client)
+
+        finalised = client.bodies_for("/api/ingest/scan-run")[-1]
+        assert finalised["scan_status"] == ScanStatus.SUCCESS.value
