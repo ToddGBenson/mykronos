@@ -247,7 +247,7 @@ class TestThisEstate:
             "minio/minio:RELEASE.2025-04-22T22-12-26Z",
             "registry:3",
             "postgres:15",
-            "ghcr.io/zaproxy/zaproxy:2.17.0",
+            "ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5",
         ],
     )
     def test_the_images_427_names_are_now_in_scope(self, reference: str) -> None:

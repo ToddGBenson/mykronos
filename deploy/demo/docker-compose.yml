@@ -136,8 +136,13 @@ services:
   # before the tests run and share their network. A ZAP started afterwards
   # sees no traffic and spiders from the login page, which is the scan this
   # whole arrangement exists to replace.
+  #
+  # `weekly` held at one digest (D-128), and TheHub's `zap` resource pins the
+  # same one: the 2.17.0 release image is Debian 12 with 822 fixable CVEs its
+  # maintainers never rebuilt, this weekly build is Debian 13 with 18. The
+  # digest is what keeps it exact (D-114) - move both pins together.
   zap:
-    image: ghcr.io/zaproxy/zaproxy:2.17.0
+    image: ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5
     ports:
       - "8290:8090"
     command: >
