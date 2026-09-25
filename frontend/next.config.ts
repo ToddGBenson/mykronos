@@ -45,6 +45,31 @@ const securityHeaders = [
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=(), payment=()",
   },
+  // Cross-origin isolation, the three ZAP 90004 reports on every page (first
+  // raised by the weekly scanner, D-128). Together they keep this dashboard
+  // out of any other origin's process: nothing else may embed our responses
+  // (CORP), a page that opens us gets no handle on our window (COOP), and we
+  // load nothing that has not opted in (COEP).
+  //
+  // `require-corp` is safe here only because of what `proxy.ts`'s CSP already
+  // allows: images and fonts from `'self'`, `data:` and `blob:`, and
+  // `connect-src 'self'` - no cross-origin subresource exists to be blocked.
+  // Add a remote image or font to the CSP and this header must be revisited
+  // with it, or that resource will silently fail to load.
+  {
+    key: "Cross-Origin-Resource-Policy",
+    value: "same-origin",
+  },
+  {
+    // No flow here opens or is opened by another window (no OAuth popup,
+    // no `window.open`), so severing the opener costs nothing.
+    key: "Cross-Origin-Opener-Policy",
+    value: "same-origin",
+  },
+  {
+    key: "Cross-Origin-Embedder-Policy",
+    value: "require-corp",
+  },
   // Content-Security-Policy is NOT here. It lives in `proxy.ts`, because it
   // needs a per-request nonce and this file is static.
   //
