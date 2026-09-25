@@ -14,6 +14,13 @@ from mykronos.headers import DOC_PATHS, SECURITY_HEADERS
 
 
 class TestEveryResponseCarriesThem:
+    def test_no_other_origin_may_embed_a_response(self, client) -> None:
+        """ZAP 90004 (D-128). The loop below proves the dict is applied; this
+        proves the dict holds the one ZAP asked for, which the loop cannot."""
+        response = client.get("/healthz")
+
+        assert response.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+
     def test_a_plain_200(self, client) -> None:
         response = client.get("/healthz")
 

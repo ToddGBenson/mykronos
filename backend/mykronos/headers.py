@@ -40,6 +40,14 @@ SECURITY_HEADERS: dict[str, str] = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     # A finding id in a path is not something to hand to another origin.
     "Referrer-Policy": "no-referrer",
+    # Another origin may not load these responses as a subresource - an
+    # <img> or <script> pointed at an API URL is the no-cors read that
+    # Spectre-class attacks use to pull a cross-origin body into their own
+    # process (ZAP 90004, first reported by the weekly scanner, D-128). The
+    # dashboard reads the API from its own origin (`connect-src 'self'`), and
+    # the header is inert for the non-browser clients - CI uploaders, the CLI
+    # - that make up the rest of the traffic.
+    "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
     # ZAP reports the presence of a version-bearing `Server` header, and
     # Uvicorn sends `uvicorn`. This value is only half the fix and cannot be
