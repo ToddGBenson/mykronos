@@ -5705,3 +5705,32 @@ this change's merge commit. Old runners keep producing `v2-package` ids
 (there is no image to stamp), so the server and runners can move in either
 order. The containers jobs are paused across the migration so that no scan
 lands between the re-key and the pin moving.
+
+## D-128 — ZAP runs the weekly build, held at one digest
+
+**2026-09-25.** **Status:** Decided by the operator, implemented
+**Amends** D-114 · **Related** D-127
+
+After D-127 split container findings per image, ZAP was **about 4,700 open
+findings** in `ghcr.io/zaproxy/zaproxy:2.17.0`, 26 critical. It is ZAP's latest
+release, and its `stable` tag is the same image, so there was nothing to
+upgrade to. The image is Debian 12, and 822 of those CVEs have a Debian fix its
+maintainers have not rebuilt onto. ZAP's `weekly` build (2026-09-23) is Debian
+13: **3,358 findings, 18 fixable, 3 critical**, measured with the same Trivy
+the containers lane runs.
+
+**Both pins move to `weekly@sha256:0c31b039…`**: the demo compose image the
+mykronos DAST lane proxies through, and TheHub's `zap` resource, which now
+carries `version: {digest}`.
+
+**What D-114 ruled out still holds.** It rejected `stable` and weekly *tags*
+because a scanner that changes underneath a lane cannot be compared with its
+own previous run. A digest cannot change. The exactness test now accepts a
+release number or a tag held at one digest, and the parity test compares the
+two halves as `tag@digest`, so they agree only when they name the same image.
+
+**The cost, accepted by the operator:** this is a pre-release ZAP, so its
+passive rules can differ from 2.17.0's and DAST findings may re-key once. The
+resource measurement D-114 asks for comes from `demo-and-dast`'s own peak
+sampling on the first run. Moving the pin is a deliberate edit to both lines,
+and nothing moves it automatically.

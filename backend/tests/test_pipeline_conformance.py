@@ -735,7 +735,9 @@ def test_every_timer_names_the_timezone_it_reads_its_window_in() -> None:
 
 DEMO_COMPOSE = REPO_ROOT / "deploy" / "demo" / "docker-compose.yml"
 ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy"
-EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+#: A release number, or any tag held at one digest (D-128). Both name exactly
+#: one image; what D-114 rules out is a tag with nothing holding it still.
+EXACT_VERSION = re.compile(r"^(\d+\.\d+\.\d+|[\w.-]+@sha256:[0-9a-f]{64})$")
 
 
 def _zap_pins() -> dict[str, str]:
@@ -766,7 +768,12 @@ def _zap_pins() -> dict[str, str]:
                 and isinstance(source, dict)
                 and source.get("repository") == ZAP_IMAGE
             ):
-                pins[f"{where}:zap resource tag"] = str(source.get("tag"))
+                # A resource pinned by `version: {digest}` is compared in the
+                # compose file's own `tag@digest` form, so the two halves agree
+                # only when they name the same image, not merely the same tag.
+                tag = str(source.get("tag"))
+                digest = (node.get("version") or {}).get("digest")
+                pins[f"{where}:zap resource tag"] = f"{tag}@{digest}" if digest else tag
             for key, value in node.items():
                 if key == "ZAP_VERSION":
                     pins[f"{where}:ZAP_VERSION"] = str(value)

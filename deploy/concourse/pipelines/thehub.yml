@@ -179,14 +179,18 @@ resources:
   - name: zap
     type: registry-image
     icon: spider
-    # 2.17.0, the same exact tag `deploy/demo/docker-compose.yml` pins for the
-    # mykronos DAST lane (D-114/B-053). Two pins of one tool at two versions
-    # means a passive rule that exists in one release and not the other is a
-    # class of finding one half of the estate cannot produce, and nothing says
-    # so -- the gap surfaced only because ZAP filed `ZAP-10116` about itself
-    # (#272). Exact, never `stable` or a weekly tag: D-114 ruled floating
-    # versions out, and a scanner that changes under you cannot be compared
-    # against its own previous run.
+    # The same image `deploy/demo/docker-compose.yml` pins for the mykronos
+    # DAST lane (D-114/B-053). Two pins of one tool at two versions means a
+    # passive rule that exists in one release and not the other is a class of
+    # finding one half of the estate cannot produce, and nothing says so --
+    # the gap surfaced only because ZAP filed `ZAP-10116` about itself (#272).
+    #
+    # `weekly` held at one digest (D-128), not `2.17.0`: the release image is
+    # Debian 12 with 822 fixable CVEs upstream never rebuilt, 26 critical; this
+    # weekly build is Debian 13 with 18 fixable, 3 critical. Still exact, which
+    # is the part of D-114 that matters: `version:` pins the resource to one
+    # digest, so the tag moving upstream changes nothing here until somebody
+    # moves this line, and a scan can be compared against its previous run.
     #
     # This used to name `ZAP_VERSION` in `functional-dast` as the other half of
     # the pin. That lane installed ZAP from the release tarball and drove the
@@ -194,7 +198,8 @@ resources:
     # only ZAP pin in this file. The estate's other half is the demo compose
     # image in the mykronos repository, and the same test still asserts the two
     # agree.
-    source: { repository: ghcr.io/zaproxy/zaproxy, tag: "2.17.0" }
+    source: { repository: ghcr.io/zaproxy/zaproxy, tag: weekly }
+    version: { digest: "sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5" }
 
   # The `playwright` image resource went with `functional-dast` (#59100): its
   # only consumer was the proxied functional suite, which drove the demo
