@@ -201,8 +201,14 @@ services:
   # runs that script on a five-minute cycle, so the estate reopens itself
   # instead of waiting for somebody to notice - which took four days once
   # (#60474). See the healthcheck below for the half that does the noticing.
+  #
+  # 2.1.1, not 1.21.4: 1.21.4 is the last 1.21 release and Trivy finds 161
+  # CVEs in it (151 with a published fix, 5 critical) against 21 in 2.1.1.
+  # 2.0's breaking changes are an SDK docker-helper move and enterprise
+  # features; none touches file storage, KV or unseal. Verified on a copy of
+  # this volume: 2.1.1 unsealed with the existing keys and read every path.
   vault:
-    image: hashicorp/vault:1.21.4
+    image: hashicorp/vault:2.1.1
     container_name: mykronos-vault
     restart: unless-stopped
     command: server
