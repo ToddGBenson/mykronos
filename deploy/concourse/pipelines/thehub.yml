@@ -635,7 +635,16 @@ anchors:
               DEPLOY_ID="$SHA"
               MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo unknown)
             else
-              DEPLOY_ID="$BUILD_PIPELINE_NAME/$BUILD_JOB_NAME/$BUILD_NAME"
+              # Every one DEFAULTED. This script runs under `set -euo
+              # pipefail`, and Concourse does not populate BUILD_* in every
+              # step context -- a `set_pipeline` step is a first-class step,
+              # not a task. Unguarded, `set -u` aborted the reporter with
+              #     bash: BUILD_PIPELINE_NAME: unbound variable
+              # and took the whole job down with it. thehub/set-pipeline
+              # failed on builds 18, 19 and 20 (2026-09-25, from 09:43),
+              # so no pipeline change was being applied at all -- a
+              # reporting line broke the thing it was reporting on.
+              DEPLOY_ID="${BUILD_PIPELINE_NAME:-thehub}/${BUILD_JOB_NAME:-unknown}/${BUILD_NAME:-unknown}"
               # `pipelines` is what set-pipeline actually applied. Reporting it
               # as git_sha is the honest answer to "what was applied", and it
               # is read from an input the job already has rather than one it
