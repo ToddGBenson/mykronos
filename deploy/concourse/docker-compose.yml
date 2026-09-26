@@ -124,8 +124,18 @@ services:
   # share: Concourse's `s3` resource handles versioning and retention, and the
   # same pipeline runs unchanged against real S3 later. Point the volume at the
   # NAS by setting MINIO_DATA_DIR.
+  #
+  # SILO, not MinIO (D-129). MinIO withdrew its public images and archived
+  # minio/minio in April 2026, so the April-2025 image this ran - 309 CVEs, 9
+  # critical, 2 in MinIO itself - could neither be updated nor pulled by the
+  # estate scan. SILO is the maintained community fork (pgsty/silo): it read a
+  # copy of this volume with every one of 425 objects byte-identical and no
+  # migration, and its distroless image scans at 3. Distroless has no shell and
+  # no `mc`, so the image's own `silo healthcheck ready` is the probe below.
+  # The service keeps the name `minio` and the container `mykronos-minio`:
+  # the pipelines address it as S3, and renaming would orphan the container.
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless
     container_name: mykronos-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -144,7 +154,7 @@ services:
       - "127.0.0.1:9001:9001"
     networks: [concourse]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "/usr/bin/silo", "healthcheck", "ready"]
       interval: 15s
       timeout: 5s
       retries: 10

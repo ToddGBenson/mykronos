@@ -5734,3 +5734,29 @@ passive rules can differ from 2.17.0's and DAST findings may re-key once. The
 resource measurement D-114 asks for comes from `demo-and-dast`'s own peak
 sampling on the first run. Moving the pin is a deliberate edit to both lines,
 and nothing moves it automatically.
+
+## D-129 — Artifact storage moves from MinIO to SILO, its maintained fork
+
+**2026-09-25.** **Status:** Decided by the operator, implemented
+
+MinIO withdrew its public images from Docker Hub and Quay, and archived
+`minio/minio` in April 2026 (last release `RELEASE.2025-10-15`).
+`mykronos-minio` ran a local copy of `RELEASE.2025-04-22`. That image has 309
+Trivy findings, 9 critical, 2 of them in MinIO itself. Nothing can pull it, so
+the estate scan could not see it either. It serves S3 on `0.0.0.0:9000` for
+all three pipelines' artifacts and SBOMs.
+
+**Building from source was rejected:** an archived upstream will never fix
+the MinIO-core CVEs. **SILO** (`pgsty/silo`, AGPL, security releases through
+2026-09-16, amd64 and arm64 images) is the maintained fork. The
+`RELEASE.2026-09-16T00-00-00Z-distroless` image scans at 3 findings (1 high).
+
+**Verified on a copy of the live volume:** SILO started healthy with no
+migration, and all 6 buckets and 425 objects hashed byte-identical against
+MinIO. The only difference is that SILO ships extra built-in canned
+policies. Neither server had custom users or policies. Distroless has no
+shell and no `mc`. Nothing execs into this container, and the healthcheck
+is the image's own `silo healthcheck ready`.
+
+The service keeps its name and container name, because pipelines address it
+as S3 and renaming it would orphan the container.
