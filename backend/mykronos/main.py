@@ -528,7 +528,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
-            ("installations", settings.installation_sync_interval_seconds, _installations),
+            # Only against a real GitHub. With no App configured the factory
+            # is the in-memory fake, which answers 404 for every installation
+            # it was not seeded with - so the reconciler read every onboarded
+            # repository as uninstalled and marked it `removed`. The demo seeds
+            # four repositories with placeholder installation ids, and this
+            # job removed all four seventeen seconds later, on every rebuild:
+            # the portfolio came back empty and `demo-and-dast` refused to scan
+            # an "unseeded" environment. It has passed once, ever.
+            *(
+                []
+                if isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else [
+                    (
+                        "installations",
+                        settings.installation_sync_interval_seconds,
+                        _installations,
+                    )
+                ]
+            ),
             ("carry-forward", settings.carry_forward_interval_seconds, _carry_forward),
             ("absences", settings.absence_reconcile_interval_seconds, _absences),
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
