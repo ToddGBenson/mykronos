@@ -53,6 +53,11 @@ $ErrorActionPreference = "Stop"
 
 $stackEnv = Join-Path $PSScriptRoot ".env"
 $backendEnv = Join-Path $PSScriptRoot "..\..\backend\.env"
+# TheHub is a SEPARATE repository on this host, so its .env is reached by an
+# absolute path rather than a relative one. Stated here so the assumption is
+# visible: if that checkout moves this entry stops resolving, and the script
+# reports a missing key rather than skipping the secret silently.
+$hubEnv = "C:\Users\tgb_\Documents\Projects\TheHub-main\.env"
 foreach ($file in @($stackEnv, $backendEnv)) {
     if (-not (Test-Path $file)) { throw "Missing $file" }
 }
@@ -74,6 +79,18 @@ $catalogue = @{
     )
     "thehub" = @(
         @{ Name = "thehub-ingestion-token"; File = $backendEnv; Key = "MYKRONOS_THEHUB_CONCOURSE_TOKEN" }
+        # [#60504] thehub/ai-models errors on ((anthropic-api-key)) with a 401:
+        # the value Vault holds is REJECTED by api.anthropic.com, while the same
+        # account's key in TheHub's .env returns 200. They are the same
+        # credential, so this copies the working one rather than minting a
+        # second to rotate. Measured: 108 bytes, no trailing newline -- a 110
+        # would have been the CRLF corruption this script exists to avoid.
+        #
+        # HYPHENATED because that is what the pipeline asks for. keel uses
+        # github_token with an UNDERSCORE, and the two spellings are not
+        # interchangeable -- asking for the wrong one reports the var as
+        # undefined, which reads like a missing secret rather than a typo.
+        @{ Name = "anthropic-api-key"; File = $hubEnv; Key = "CLAUDE_API_KEY"; Scope = "team" }
         @{ Name = "mykronos-gate-token";    File = $backendEnv; Key = "MYKRONOS_GATE_TOKEN"; Scope = "team" }
         @{ Name = "minio-access-key";       File = $stackEnv;   Key = "MINIO_ROOT_USER"; Scope = "team" }
         @{ Name = "minio-secret-key";       File = $stackEnv;   Key = "MINIO_ROOT_PASSWORD"; Scope = "team" }
