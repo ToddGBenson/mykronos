@@ -5,6 +5,7 @@
 [17 — Harness, Threat Intel, i2i](17-harness-threat-intel-and-i2i.md),
 [24 — Ownership, Deadlines, and the Acceptance Review Cycle](24-ownership-deadlines-and-acceptance-review.md),
 [27 — The Worklist](27-the-worklist.md)
+**Uses:** [34 — Duties, Delegation, and Independent Approval](34-duties-delegation-and-independent-approval.md) for every approval
 **Decisions:** D-127 (per-image container identity) is a prerequisite
 
 ---
@@ -152,19 +153,19 @@ draft ─► pending_approval ─► active ─► review_due ─► renewed ─
 
 ### 2.1 What ships
 
-- **Two new roles** beside `admin` / `viewer` / `repo_scoped`: `risk_owner` (may request and
-  re-attest) and `authorizing_official` (may approve). A person may hold both; §2.3 governs when they
-  may use both on one decision.
-- **An authority matrix in policy** — the organisation-defined parameter PM-9 asks for, reviewed in
-  a pull request like every other policy value:
+- **Approval is a spec 34 duty.** Who may approve an acceptance, how many approvals it needs, and
+  whether an agent other than the requester may be the independent approver are the
+  `risk_acceptance` duty's tiers in `approval-policy-v1.yaml` (spec 34 §3), tiered by residual
+  severity. This spec does not define its own roles or approval rules; it is the first consumer of
+  that engine. The default tiers: critical is human-only with a cooling-off; high, medium and low
+  accept a human or, **only under a delegation the operator has granted**, an independent agent
+  (spec 34 §2, §5).
+- `risk_owner` is a field on the record — the person who answers for the risk — not an approval role.
+- **The acceptance limits stay here**, as the organisation-defined parameters PM-9 asks for,
+  reviewed in a pull request like every other policy value:
 
 ```yaml
 risk_acceptance:
-  authority:                 # who may approve, by residual severity
-    critical: authorizing_official
-    high:     authorizing_official
-    medium:   risk_owner
-    low:      risk_owner
   max_duration_days:         # unchanged from spec 24 / the checklist
     critical: 30
     high: 90
@@ -199,13 +200,18 @@ risk_acceptance:
 
 ### 2.3 Separation of duties, including on a single-operator estate
 
-AC-5 wants the requester and the approver to be different people. For `critical` and `high`
-residual, `approved_by ≠ requested_by` is enforced.
+AC-5 wants the requester and the approver to be different parties. Spec 34 enforces that for every
+tier — the requester is never an approver — and widens what "different party" can mean: an agent
+the operator has chosen to trust, running independently of the requester, can be the second party
+for the tiers where a delegation allows it (spec 34 §5). Most acceptances an agent proposes can
+therefore get a genuine independent check without waiting on the one human.
 
-**This estate has one human.** Enforcing two-person approval would make every high acceptance
-impossible, which in practice means they would be written as `false_positive` instead — the worst
-outcome. So AC-5 is met the way small systems legitimately meet it, and the platform records that
-it is being met this way rather than pretending:
+**What remains is the case where the human is both sides:** the operator requests, and a
+human-only tier (critical, by default) needs a human approver. This estate has one human. Enforcing
+two-person approval there would make every critical acceptance impossible, which in practice means
+they would be written as `false_positive` instead — the worst outcome. So for that case AC-5 is met
+the way small systems legitimately meet it, and the platform records that it is being met this way
+rather than pretending:
 
 - `separation_of_duties: single_operator` in policy, which the SSP export (§9) states verbatim
   as a documented deviation from AC-5 with its compensating measures;
@@ -382,7 +388,7 @@ objection spec 24 §3.3 made to synthetic dates.
 | **CA-2** | Control Assessments | compensating-control re-assessment milestones (§3.1, §4) | assessment frequency |
 | **CA-5** | Plan of Action and Milestones | POA&M items (§3) | update frequency |
 | **CA-5(1)** | Automation Support for Accuracy and Currency | evidence-driven milestone closure (§3.1) | — |
-| **CA-6** | Authorization | `authorizing_official` approval (§2) | who the AO is |
+| **CA-6** | Authorization | the `risk_acceptance` duty's human tiers; delegated agent approval under spec 34 §5 (§2) | who the AO is; which tiers are delegable |
 | **CA-7**, **CA-7(4)** | Continuous Monitoring; Risk Monitoring | premise monitors (§4), notifications (§6) | monitoring frequency |
 | **PM-4** | Plan of Action and Milestones Process | tracking items and escalation (§5, §6) | — |
 | **PM-9**, **PM-28** | Risk Management Strategy; Risk Framing | authority matrix, risk tolerance (§2.1) | tolerance, authority |
@@ -397,8 +403,9 @@ objection spec 24 §3.3 made to synthetic dates.
 
 ## 12. Phasing
 
-1. **Record and authority.** `RiskAcceptance`, scopes, roles, the authority matrix, SoD with the
-   single-operator deviation, audited transitions including the sweep. Migration §10 steps 1–2.
+1. **Record and authority.** `RiskAcceptance`, scopes, approval through spec 34's engine (its
+   phases 1–2 are a prerequisite), the single-operator deviation, audited transitions including the
+   sweep. Migration §10 steps 1–2.
 2. **POA&M and follow-up.** Milestones, overdue state, private tracking issues, OSCAL/CSV export.
 3. **Premise monitoring.** The premise types in §4.1, starting with the four whose evidence already
    exists (`no_fixed_version`, `port_not_published`, `image_role`, `not_kev_listed`); failure and
@@ -412,9 +419,10 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
 - An acceptance cannot be created without a named risk owner, a deviation type, a residual
   severity, at least one milestone that ends the weakness, and — for `risk_adjustment` — at least one
   monitorable premise.
-- A critical or high acceptance cannot be approved by its requester, except under
-  `single_operator` policy, where approval is refused before the cooling-off interval elapses and is
-  flagged in the audit trail.
+- No acceptance can be approved by its requester (spec 34). A tier that allows delegated agent
+  approval accepts it only from an agent independent of the requester under an active delegation;
+  a human-only tier approved by the same human who requested it is refused before the cooling-off
+  interval elapses and is flagged in the audit trail.
 - A CVE listed in KEV cannot be accepted; an accepted CVE that joins KEV moves its acceptance to
   `premise_failed` and reopens its findings within one threat-intel refresh.
 - Publishing a host port on a container whose acceptance rests on `port_not_published` reopens that
