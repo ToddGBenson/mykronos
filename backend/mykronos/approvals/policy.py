@@ -59,6 +59,10 @@ class Duty:
     requesters: frozenset[str] = frozenset({"human", "agent"})
     #: What a platform-started reviewer is told to check (spec 34 §4.3).
     reviewer_instructions: str = ""
+    #: `tier_by: change_class` only: class -> path globs, first match wins,
+    #: and a path nothing matches falls in `default_class` (spec 34 §6.1).
+    change_classes: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    default_class: str = ""
 
 
 @dataclass(frozen=True)
@@ -152,12 +156,27 @@ def parse_policy(document: Any) -> ApprovalPolicy:
         tiers = {t: _tier(t, traw or {}, name) for t, traw in (raw.get("tiers") or {}).items()}
         if not tiers:
             raise PolicyError(f"Duty '{name}' has no tiers.")
+        classes = tuple(
+            (str(c), tuple(str(g) for g in globs or ()))
+            for c, globs in (raw.get("change_classes") or {}).items()
+        )
+        default_class = str(raw.get("default_class") or "")
+        for c in [c for c, _ in classes] + ([default_class] if default_class else []):
+            if c not in tiers:
+                raise PolicyError(f"Duty '{name}': change class '{c}' is not one of its tiers.")
+        if raw.get("tier_by") == "change_class" and not default_class:
+            raise PolicyError(
+                f"Duty '{name}': tier_by change_class needs a default_class, or a file no "
+                "pattern names would have no class at all."
+            )
         duties[name] = Duty(
             name=name,
             tier_by=str(raw.get("tier_by", "fixed")),
             tiers=tiers,
             requesters=frozenset(raw.get("requesters") or ("human", "agent")),
             reviewer_instructions=str(raw.get("reviewer_instructions") or ""),
+            change_classes=classes,
+            default_class=default_class,
         )
     ra = document.get("risk_acceptance") or {}
     refuse = ra.get("refuse") or {}

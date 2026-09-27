@@ -90,6 +90,31 @@ duties:
       deserialisation), and anything that widens an agent's own authority. A change
       that edits approval, governance or pipeline policy is not routine whatever its
       label says; reject it here so a person decides.
+      The evidence lists every file with its computed change class. A patch marked
+      truncated was cut to fit; if the part you cannot see could change your answer,
+      answer needs_info rather than guessing.
+    # Tier = the most restrictive class among the files the PR touches, in the
+    # order the tiers are listed below. First pattern match wins per file; a
+    # file nothing matches is `production`, so a new directory is never routine
+    # by accident. `**` crosses directories, `*` does not.
+    change_classes:
+      governance:
+        - "*-policy-v1.yaml"          # approval, oracle and governance policy
+        - ".gitleaksignore"
+        - ".github/**"                # CI definitions and CODEOWNERS
+        - "deploy/concourse/**"       # the pipelines themselves
+        - "backend/mykronos/approvals/**"   # the engine that enforces all of this
+        - "backend/mykronos/adminauth.py"
+        - "backend/mykronos/agents.py"
+      routine:
+        - "docs/**"
+        - "specs/**"
+        - "**.md"
+        - "backend/tests/**"
+        - "functional/**"
+        - "frontend/**/*.test.ts"
+        - "frontend/**/*.test.tsx"
+    default_class: production
     tiers:
       governance:
         approvers: [{kind: human}]

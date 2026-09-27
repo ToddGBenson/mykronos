@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import HumanDep, PrincipalDep
-from mykronos.approvals import reviewer, sampling
+from mykronos.approvals import pull_requests, reviewer, sampling
 from mykronos.approvals.engine import (
     ApprovalError,
     create_request,
@@ -30,6 +30,7 @@ from mykronos.approvals.engine import (
 )
 from mykronos.approvals.policy import ApprovalPolicy, cached_policy
 from mykronos.db.models import ApprovalDecision, ApprovalEvent, ApprovalRequest, Delegation
+from mykronos.github.client import GitHubError
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
@@ -287,6 +288,57 @@ async def revoke(request: Request, delegation_id: str, principal: HumanDep) -> d
     return {"revoked": delegation_id}
 
 
+class PullRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(max_length=255)
+    number: int = Field(ge=1)
+    statement: str = Field(
+        default="",
+        max_length=4000,
+        description="The requester's own account of the change, labelled as a claim.",
+    )
+
+
+async def _stamp(request: Request, request_id: str) -> None:
+    """Post the `independent-review` check for a pull request request's new
+    state. Never fails the decision: a failed post is recorded and retried."""
+    await pull_requests.publish(
+        request.app.state.db, _policy(request), request.app.state.github_factory, request_id
+    )
+
+
+@router.post("/pull-requests", response_model=RequestOut, status_code=status.HTTP_201_CREATED)
+async def request_pull_request(
+    request: Request, body: PullRequestIn, principal: PrincipalDep
+) -> RequestOut:
+    """Ask for an independent approval of one pull request at its current head
+    (spec 34 §6.1). The platform reads the diff; the tier is its change class."""
+    _require_writer(principal)
+    github = pull_requests.client_for(
+        request.app.state.db, request.app.state.github_factory, body.repo
+    )
+    if github is None:
+        raise HTTPException(status_code=409, detail=f"{body.repo} is not onboarded.")
+    try:
+        row = await pull_requests.propose(
+            request.app.state.db,
+            _policy(request),
+            github,
+            requested_by=principal,
+            repo=body.repo,
+            number=body.number,
+            statement=body.statement,
+        )
+    except ApprovalError as exc:
+        raise _refused(exc) from exc
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub: {exc}") from exc
+    await _stamp(request, row.id)
+    with request.app.state.db.session() as session:
+        return _request_out(session, session.get(ApprovalRequest, row.id))
+
+
 class SampleVerdictIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -354,6 +406,7 @@ async def independent_review(
         ) from exc
     except ApprovalError as exc:
         raise _refused(exc) from exc
+    await _stamp(request, request_id)
     return dataclasses.asdict(outcome)
 
 
@@ -399,6 +452,7 @@ async def decide_request(
         )
     except ApprovalError as exc:
         raise _refused(exc) from exc
+    await _stamp(request, request_id)
     with request.app.state.db.session() as session:
         return _request_out(session, session.get(ApprovalRequest, request_id))
 

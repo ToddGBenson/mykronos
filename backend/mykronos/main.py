@@ -36,6 +36,7 @@ from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
+from mykronos.approvals import pull_requests as approval_pull_requests
 from mykronos.approvals import sampling as approval_sampling
 from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
@@ -512,6 +513,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if lapsed.suspended:
                 logger.warning("Delegations suspended, samples unreviewed: %s", lapsed.suspended)
 
+        async def _pull_request_stamps() -> None:
+            # Retries any `independent-review` check GitHub has not heard
+            # about yet, and expires requests past their TTL (spec 34 §6.1).
+            try:
+                policy = cached_approval_policy(settings.approval_policy_path)
+            except ApprovalPolicyError:
+                return
+            await approval_pull_requests.publish_due(
+                app.state.db, policy, app.state.github_factory
+            )
+
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and
             # awaiting it lets the rest of the app serve while GitHub answers.
@@ -598,6 +610,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
+            ("pull-request-stamps", 120, _pull_request_stamps),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (
                 "deployment-probe",

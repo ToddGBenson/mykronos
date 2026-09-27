@@ -2696,6 +2696,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/approvals/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Pull Request
+         * @description Ask for an independent approval of one pull request at its current head
+         *     (spec 34 §6.1). The platform reads the diff; the tier is its change class.
+         */
+        post: operations["request_pull_request_api_approvals_pull_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals/samples": {
         parameters: {
             query?: never;
@@ -5496,6 +5517,19 @@ export interface components {
              * @description Whether the deployed image is pinned by digest rather than by a tag somebody can move underneath it.
              */
             digest_pinned_deployment?: boolean | null;
+        };
+        /** PullRequestIn */
+        PullRequestIn: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /**
+             * Statement
+             * @description The requester's own account of the change, labelled as a claim.
+             * @default
+             */
+            statement: string;
         };
         /** PullRequestOut */
         PullRequestOut: {
@@ -10380,6 +10414,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_pull_request_api_approvals_pull_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PullRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"];
                 };
             };
             /** @description Validation Error */
