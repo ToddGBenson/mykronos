@@ -118,3 +118,22 @@ delegations:
   agreement_window: 20
   unreviewed_sample_deadline_days: 14  # samples left unreviewed this long suspend the delegation
   max_days: 90
+
+# The limits on a risk acceptance itself (spec 33 §2.1): organisation-defined
+# parameters PM-9 asks for. Who may *approve* one is the `risk_acceptance` duty
+# above; these say what may be approved at all.
+risk_acceptance:
+  max_duration_days:         # unchanged from spec 24 and the acceptance checklist
+    critical: 30
+    high: 90
+    medium: 180
+    low: 365
+  max_renewals:              # beyond this the answer is remediation, avoidance or re-architecture
+    critical: 1
+    high: 2
+    medium: 4
+    low: 99
+  review_lead_days: 14
+  refuse:
+    kev_listed: true         # an actively exploited CVE is mitigated, never accepted
+    critical_operational_requirement: true

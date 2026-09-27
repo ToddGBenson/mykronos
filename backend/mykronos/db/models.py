@@ -457,6 +457,59 @@ class ApprovalEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class RiskAcceptance(Base):
+    """A risk acceptance as a decision, not a status on a row (spec 33 §1).
+
+    One record covers the findings its scope matched when it was requested -
+    3,647 ZAP findings are one decision - and it is reviewed, renewed, revoked
+    and expired as that one thing. Findings still carry `accepted_risk`,
+    `accepted_until` and `accepted_reason_code` in the lake, stamped from this
+    record on approval, so the Oracle and the existing sweep keep working.
+    """
+
+    __tablename__ = "risk_acceptances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The predicate that chose the findings (spec 33 §1.2).
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The findings it covers, fixed at request time and bound into the
+    #: approval's evidence digest. A later match is drift, not coverage.
+    covered_finding_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    drift_finding_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    response: Mapped[str] = mapped_column(String(16), default="accept")
+    #: vendor_dependency | risk_adjustment | operational_requirement
+    deviation_type: Mapped[str] = mapped_column(String(32), default="")
+    justification: Mapped[str] = mapped_column(Text, default="")
+    residual_likelihood: Mapped[str] = mapped_column(String(16), default="")
+    residual_impact: Mapped[str] = mapped_column(String(16), default="")
+    residual_severity: Mapped[str] = mapped_column(String(16), index=True, default="")
+    premises: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    compensating_controls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    milestones: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    risk_owner: Mapped[str] = mapped_column(String(255), default="")
+    requested_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    approval_request_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    #: pending_approval | active | review_due | expired | rejected | revoked |
+    #: premise_failed | closed
+    status: Mapped[str] = mapped_column(String(24), index=True, default="pending_approval")
+    #: Migrated from row-level acceptances (spec 33 §10): the findings already
+    #: carry the old acceptance, and approval confirms rather than creates it.
+    legacy: Mapped[bool] = mapped_column(Boolean, default=False)
+    renews_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    renewal_count: Mapped[int] = mapped_column(Integer, default=0)
+    requested_until: Mapped[date | None] = mapped_column(Date, default=None)
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    first_effective_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    review_by: Mapped[date | None] = mapped_column(Date, default=None)
+    expires_at: Mapped[date | None] = mapped_column(Date, default=None)
+    tracking_ref: Mapped[str | None] = mapped_column(String(255), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    closed_reason: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
 class Delegation(Base):
     """The operator's trust in an agent approver, made explicit (spec 34 §5).
 

@@ -69,12 +69,28 @@ class DelegationDefaults:
 
 
 @dataclass(frozen=True)
+class RiskAcceptanceLimits:
+    """What may be accepted at all (spec 33 §2.1), apart from who approves it."""
+
+    max_duration_days: dict[str, int] = field(
+        default_factory=lambda: {"critical": 30, "high": 90, "medium": 180, "low": 365}
+    )
+    max_renewals: dict[str, int] = field(
+        default_factory=lambda: {"critical": 1, "high": 2, "medium": 4, "low": 99}
+    )
+    review_lead_days: int = 14
+    refuse_kev_listed: bool = True
+    refuse_critical_operational_requirement: bool = True
+
+
+@dataclass(frozen=True)
 class ApprovalPolicy:
     version: str
     single_operator: bool
     request_ttl_hours: float
     duties: dict[str, Duty]
     delegations: DelegationDefaults = field(default_factory=DelegationDefaults)
+    risk_acceptance: RiskAcceptanceLimits = field(default_factory=RiskAcceptanceLimits)
 
     def duty(self, name: str) -> Duty:
         try:
@@ -140,6 +156,23 @@ def parse_policy(document: Any) -> ApprovalPolicy:
             tiers=tiers,
             requesters=frozenset(raw.get("requesters") or ("human", "agent")),
         )
+    ra = document.get("risk_acceptance") or {}
+    refuse = ra.get("refuse") or {}
+    limits = RiskAcceptanceLimits()
+    ra_limits = RiskAcceptanceLimits(
+        max_duration_days={
+            str(k): int(v)
+            for k, v in (ra.get("max_duration_days") or limits.max_duration_days).items()
+        },
+        max_renewals={
+            str(k): int(v) for k, v in (ra.get("max_renewals") or limits.max_renewals).items()
+        },
+        review_lead_days=int(ra.get("review_lead_days", limits.review_lead_days)),
+        refuse_kev_listed=bool(refuse.get("kev_listed", True)),
+        refuse_critical_operational_requirement=bool(
+            refuse.get("critical_operational_requirement", True)
+        ),
+    )
     d = document.get("delegations") or {}
     return ApprovalPolicy(
         version=version,
@@ -153,6 +186,7 @@ def parse_policy(document: Any) -> ApprovalPolicy:
             unreviewed_sample_deadline_days=int(d.get("unreviewed_sample_deadline_days", 14)),
             max_days=int(d.get("max_days", 90)),
         ),
+        risk_acceptance=ra_limits,
     )
 
 

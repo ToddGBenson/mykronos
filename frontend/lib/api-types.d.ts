@@ -2764,6 +2764,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/risk-acceptances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Acceptances */
+        get: operations["list_acceptances_api_risk_acceptances_get"];
+        put?: never;
+        /** Propose */
+        post: operations["propose_api_risk_acceptances_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/risk-acceptances/migrate-legacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Migrate
+         * @description Group row-level acceptances into proposed legacy records (spec 33 §10).
+         *     Dry run by default. Nothing about the findings changes either way.
+         */
+        post: operations["migrate_api_risk_acceptances_migrate_legacy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/risk-acceptances/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Acceptance */
+        get: operations["get_acceptance_api_risk_acceptances__record_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/risk-acceptances/{record_id}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew */
+        post: operations["renew_api_risk_acceptances__record_id__renew_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/risk-acceptances/{record_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke */
+        post: operations["revoke_api_risk_acceptances__record_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -4744,6 +4834,18 @@ export interface components {
             /** Direct Anywhere */
             direct_anywhere: boolean;
         };
+        /** MigrateIn */
+        MigrateIn: {
+            /** Risk Owner */
+            risk_owner: string;
+            /** Repo */
+            repo?: string | null;
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
+        };
         /** MintRequest */
         MintRequest: {
             /**
@@ -5230,6 +5332,47 @@ export interface components {
             /** What Would Settle It */
             what_would_settle_it?: string | null;
         };
+        /** ProposeIn */
+        ProposeIn: {
+            /** Repo */
+            repo: string;
+            /** Scope */
+            scope: {
+                [key: string]: unknown;
+            };
+            /** Deviation Type */
+            deviation_type: string;
+            /** Justification */
+            justification: string;
+            /** Residual Likelihood */
+            residual_likelihood: string;
+            /** Residual Impact */
+            residual_impact: string;
+            /** Risk Owner */
+            risk_owner: string;
+            /**
+             * Requested Until
+             * Format: date
+             */
+            requested_until: string;
+            /** Premises */
+            premises?: {
+                [key: string]: unknown;
+            }[];
+            /** Compensating Controls */
+            compensating_controls?: {
+                [key: string]: unknown;
+            }[];
+            /** Milestones */
+            milestones?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Response
+             * @default accept
+             */
+            response: string;
+        };
         /**
          * ProvenanceSignals
          * @description How this repository builds, as the runner observed it (spec 29 §3).
@@ -5608,6 +5751,24 @@ export interface components {
                 [key: string]: string;
             } | null;
         };
+        /** RenewIn */
+        RenewIn: {
+            /**
+             * Requested Until
+             * Format: date
+             */
+            requested_until: string;
+            /** Justification */
+            justification: string;
+            /** Premises */
+            premises?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Milestones */
+            milestones?: {
+                [key: string]: unknown;
+            }[] | null;
+        };
         /**
          * ReownOut
          * @description What a re-derive changed, or would change.
@@ -5769,6 +5930,11 @@ export interface components {
             text: string;
             /** Repo Full Name */
             repo_full_name?: string | null;
+        };
+        /** RevokeIn */
+        RevokeIn: {
+            /** Reason */
+            reason: string;
         };
         /**
          * RiskProfileOut
@@ -10251,6 +10417,217 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChainOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_acceptances_api_risk_acceptances_get: {
+        parameters: {
+            query?: {
+                status_filter?: string | null;
+                repo?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_api_risk_acceptances_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    migrate_api_risk_acceptances_migrate_legacy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_acceptance_api_risk_acceptances__record_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    renew_api_risk_acceptances__record_id__renew_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenewIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_risk_acceptances__record_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

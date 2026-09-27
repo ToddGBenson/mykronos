@@ -61,6 +61,9 @@ def tiered(monkeypatch):
         return Subject(tier=context["tier"], evidence={"subject": subject_ref, **context})
 
     monkeypatch.setitem(engine._ADAPTERS, "risk_acceptance", adapter)
+    # And no spec 33 side effects: these tests are about the engine, and the
+    # real handler would look for an acceptance record that does not exist.
+    monkeypatch.setitem(engine._ON_APPROVED, "risk_acceptance", lambda session, request: None)
 
 
 def _request(client, auth, tier: str = "medium", subject: str = "acc-1") -> dict[str, Any]:
