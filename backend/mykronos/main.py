@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from mykronos import __version__, logsafe
+from mykronos import __version__, logsafe, risk_acceptance
 from mykronos.adminauth import (
     ActorKind,
     Principal,
@@ -33,8 +33,11 @@ from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.repos import router as repos_router
+from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
+from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
+from mykronos.approvals.policy import cached_policy as cached_approval_policy
 from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
@@ -309,6 +312,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.catalog.initialise()
     app.state.buffer = WriteAheadBuffer(settings.buffer_dir)
     app.state.db = Database(settings.database_url)
+    # Spec 33: the risk-acceptance duty stamps findings in the lake when an
+    # approval lands, and reads its limits from the approval policy.
+    risk_acceptance.bind(app.state.catalog)
+    try:
+        risk_acceptance.bind_policy(cached_approval_policy(settings.approval_policy_path))
+    except ApprovalPolicyError as exc:
+        # Fail closed for approvals, not for the platform: every approval route
+        # loads the same policy and refuses without it.
+        logger.error("Approval policy unavailable; approvals will refuse: %s", exc)
     app.state.db.create_all()
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
@@ -482,6 +494,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     logger.warning("Acceptance sweep: %s", summary)
                 else:
                     logger.info("Acceptance sweep: %s", summary)
+            # The decisions, not just the rows (spec 33 §1.4): review due,
+            # expired, closed and scope drift, each audited.
+            records = await asyncio.to_thread(
+                risk_acceptance.sweep, app.state.db, app.state.catalog
+            )
+            if records.expired or records.review_due or records.drift:
+                logger.warning("Risk acceptance sweep: %s", records)
 
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and
@@ -650,6 +669,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(agents_router)
     app.include_router(approvals_router)
+    app.include_router(risk_acceptances_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
 
