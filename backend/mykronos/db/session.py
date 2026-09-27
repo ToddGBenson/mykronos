@@ -272,16 +272,47 @@ class Database:
         Takes the caller's session so the log entry commits in the same
         transaction as the change it describes — an audit log that can be
         missing entries for changes that succeeded is worse than none.
+
+        **Who acted, not only their name (spec 34 §1).** The request's
+        authenticated principal - or a job's automation principal - is read
+        from `current_principal` and its kind and provenance recorded. When
+        nothing established who acted (a CLI command, a script) the entry says
+        `unattributed` rather than guessing, and when the entry names an actor
+        other than the one authenticated, the authenticated one is recorded
+        beside it.
         """
+        from mykronos.adminauth import ActorKind, current_principal
+
+        principal = current_principal.get()
+        if principal is None:
+            kind, provenance = ActorKind.UNATTRIBUTED.value, {}
+        elif principal.actor == actor or principal.kind is ActorKind.AUTOMATION:
+            kind, provenance = principal.kind.value, _jsonable(principal.provenance)
+        else:
+            kind = ActorKind.UNATTRIBUTED.value
+            provenance = {"authenticated_as": principal.actor, "kind": principal.kind.value}
         entry = AuditLogEntry(
             actor=actor,
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,
             detail=detail,
+            actor_kind=kind,
+            actor_provenance=provenance,
         )
         session.add(entry)
         return entry
+
+
+def _jsonable(value: Any) -> Any:
+    """Provenance as the JSON column can hold it: datetimes as ISO strings."""
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def _quote(value: str) -> str:

@@ -40,6 +40,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
 from mykronos import inventory, netassess
+from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
 from mykronos.api.refusals import CapabilityRefusedError
@@ -176,6 +177,15 @@ async def require_token(
             else "true"
         )
 
+    # A repository's ingestion token is CI acting, not a person or an agent
+    # (spec 34 §1): anything this request writes to the audit log says so.
+    current_principal.set(
+        Principal(
+            actor=f"ingest:{resolution.repo_full_name}",
+            role=Role.VIEWER,
+            kind=ActorKind.AUTOMATION,
+        )
+    )
     return resolution
 
 

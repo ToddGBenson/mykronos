@@ -2587,6 +2587,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Credentials */
+        get: operations["credentials_api_agents_credentials_get"];
+        put?: never;
+        /** Mint */
+        post: operations["mint_api_agents_credentials_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whoami */
+        get: operations["whoami_api_agents_whoami_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/credentials/{instance}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke */
+        post: operations["revoke_api_agents_credentials__instance__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -2713,6 +2765,37 @@ export interface components {
             recommendation: string;
             /** Risk Score */
             risk_score?: number | null;
+        };
+        /** AgentOut */
+        AgentOut: {
+            /** Actor */
+            actor: string;
+            /** Family */
+            family: string;
+            /** Instance */
+            instance: string;
+            /** Lineage */
+            lineage: string[];
+            /** On Behalf Of */
+            on_behalf_of: string;
+            /** Purpose */
+            purpose: string;
+            /** Minted By */
+            minted_by: string;
+            /**
+             * Minted At
+             * Format: date-time
+             */
+            minted_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Active */
+            active: boolean;
         };
         /** AtlasAccepted */
         AtlasAccepted: {
@@ -4389,6 +4472,49 @@ export interface components {
             divergent: boolean;
             /** Direct Anywhere */
             direct_anywhere: boolean;
+        };
+        /** MintRequest */
+        MintRequest: {
+            /**
+             * Family
+             * @description The model family the agent runs as, e.g. `claude-opus-5.5`.
+             */
+            family: string;
+            /**
+             * Purpose
+             * @description `author`, `independent-reviewer`, …
+             * @default
+             */
+            purpose: string;
+            /**
+             * On Behalf Of
+             * @description The human the agent acts for. A person may name another person; an agent may not change it.
+             */
+            on_behalf_of?: string | null;
+            /**
+             * Ttl Hours
+             * @default 12
+             */
+            ttl_hours: number;
+        };
+        /** MintedOut */
+        MintedOut: {
+            /**
+             * Token
+             * @description Shown once. Only its hash is stored.
+             */
+            token: string;
+            /** Actor */
+            actor: string;
+            /** Instance */
+            instance: string;
+            /** Lineage */
+            lineage: string[];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -6258,6 +6384,19 @@ export interface components {
             kev_count: number;
             /** Cves */
             cves: string[];
+        };
+        /** WhoAmI */
+        WhoAmI: {
+            /** Actor */
+            actor: string;
+            /** Kind */
+            kind: string;
+            /** Role */
+            role: string;
+            /** Provenance */
+            provenance: {
+                [key: string]: unknown;
+            };
         };
         /**
          * WorkflowState
@@ -9407,6 +9546,123 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    credentials_api_agents_credentials_get: {
+        parameters: {
+            query?: {
+                include_inactive?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mint_api_agents_credentials_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MintRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MintedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    whoami_api_agents_whoami_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhoAmI"];
+                };
+            };
+        };
+    };
+    revoke_api_agents_credentials__instance__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                instance: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
                     };
                 };
             };
