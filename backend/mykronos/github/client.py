@@ -173,6 +173,22 @@ class PullRequest:
     head_sha: str = ""
 
 
+@dataclass
+class PullRequestFile:
+    """One file a pull request changes, as GitHub's `/pulls/{n}/files` lists it.
+
+    `patch` is `None` for binary files and for diffs GitHub declines to
+    render inline because they are too large.
+    """
+
+    filename: str
+    status: str
+    additions: int = 0
+    deletions: int = 0
+    patch: str | None = None
+    previous_filename: str | None = None
+
+
 def _parse_time(value: object) -> datetime | None:
     """GitHub's ISO-8601 with a `Z`, which `fromisoformat` rejects before 3.11
     and which is worth not crashing a whole page over regardless."""
@@ -303,17 +319,26 @@ class GitHubClient(Protocol):
 
     async def delete_actions_secret(self, repo_full_name: str, name: str) -> None: ...
 
+    async def pull_request_files(
+        self, repo_full_name: str, number: int
+    ) -> list[PullRequestFile]:
+        """Every file the pull request changes, with its patch where GitHub
+        renders one. GitHub stops listing at 3,000 files."""
+
     async def create_check_run(
         self,
         repo_full_name: str,
         *,
         name: str,
         head_sha: str,
-        conclusion: str,
+        conclusion: str | None,
         title: str,
         summary: str,
     ) -> str:
         """Publish a Check Run. Returns its id.
+
+        `conclusion=None` posts it `in_progress`: a check that has not
+        decided yet, which a required status check treats as not passing.
 
         This is the only Mykronos surface most developers ever see, so the
         summary is the product, not a log line.
@@ -473,6 +498,8 @@ class FakeRepo:
     branches: dict[str, dict[str, str]] = field(default_factory=dict)
     secrets: dict[str, str] = field(default_factory=dict)
     pull_requests: list[PullRequest] = field(default_factory=list)
+    #: PR number -> the files it changes.
+    pull_request_files: dict[int, list[PullRequestFile]] = field(default_factory=dict)
     check_runs: list[dict[str, Any]] = field(default_factory=list)
     #: Bytes per language, as GitHub reports them (B-051). Empty by default,
     #: which reads as "nothing measured" rather than as "nothing analysable".
@@ -678,6 +705,12 @@ class FakeGitHubClient:
                 return pr
         return None
 
+    async def pull_request_files(
+        self, repo_full_name: str, number: int
+    ) -> list[PullRequestFile]:
+        self.calls.append(("pull_request_files", f"{repo_full_name}#{number}"))
+        return list(self._repo(repo_full_name).pull_request_files.get(number, []))
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary:
@@ -737,7 +770,7 @@ class FakeGitHubClient:
         *,
         name: str,
         head_sha: str,
-        conclusion: str,
+        conclusion: str | None,
         title: str,
         summary: str,
     ) -> str:
@@ -1353,6 +1386,32 @@ class RestGitHubClient:
             for item in items[:limit]
         ]
 
+    async def pull_request_files(
+        self, repo_full_name: str, number: int
+    ) -> list[PullRequestFile]:
+        files: list[PullRequestFile] = []
+        # 100 per page, and GitHub lists at most 3,000 files: 30 pages.
+        for page in range(1, 31):
+            items = await self._json(
+                "GET",
+                f"/repos/{repo_full_name}/pulls/{number}/files",
+                params={"per_page": 100, "page": page},
+            )
+            for item in items:
+                files.append(
+                    PullRequestFile(
+                        filename=str(item["filename"]),
+                        status=str(item.get("status", "")),
+                        additions=int(item.get("additions") or 0),
+                        deletions=int(item.get("deletions") or 0),
+                        patch=item.get("patch"),
+                        previous_filename=item.get("previous_filename"),
+                    )
+                )
+            if len(items) < 100:
+                break
+        return files
+
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
     ) -> ChecksSummary:
@@ -1419,18 +1478,22 @@ class RestGitHubClient:
         *,
         name: str,
         head_sha: str,
-        conclusion: str,
+        conclusion: str | None,
         title: str,
         summary: str,
     ) -> str:
+        state: dict[str, Any] = (
+            {"status": "in_progress"}
+            if conclusion is None
+            else {"status": "completed", "conclusion": conclusion}
+        )
         item = await self._json(
             "POST",
             f"/repos/{repo_full_name}/check-runs",
             json={
                 "name": name,
                 "head_sha": head_sha,
-                "status": "completed",
-                "conclusion": conclusion,
+                **state,
                 "output": {
                     "title": title,
                     # GitHub truncates past 65535; do it ourselves so the cut

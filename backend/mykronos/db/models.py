@@ -510,6 +510,30 @@ class RiskAcceptance(Base):
     closed_reason: Mapped[str | None] = mapped_column(String(255), default=None)
 
 
+class ApprovalStamp(Base):
+    """One thing the platform posted outside itself about a request (spec 34 §1.2).
+
+    GitHub actions all read as one shared account, so the stamp - here, the
+    `independent-review` check run - is where the duty-holders are named.
+    One row per post: the check's history is every state it was put in.
+    """
+
+    __tablename__ = "approval_stamps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    request_id: Mapped[str] = mapped_column(String(36), index=True, default="")
+    #: e.g. `github_check:owner/repo@sha`
+    target: Mapped[str] = mapped_column(String(255), default="")
+    #: The request state this post reflected.
+    state: Mapped[str] = mapped_column(String(16), default="")
+    #: What was posted: in_progress | success | failure
+    conclusion: Mapped[str] = mapped_column(String(16), default="")
+    external_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    #: Set when the post failed; the job retries until one succeeds.
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Delegation(Base):
     """The operator's trust in an agent approver, made explicit (spec 34 §5).
 
