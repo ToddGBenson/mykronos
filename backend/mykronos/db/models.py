@@ -337,6 +337,44 @@ class IngestionToken(Base):
     label: Mapped[str] = mapped_column(String(255), default="")
 
 
+class AgentCredential(Base):
+    """One per agent instance: how an agent is told apart from the operator (spec 34 §1).
+
+    Before this, every agent used the operator's admin token and the audit log
+    recorded both under one name, so "who decided this?" had no answer. Only
+    the SHA-256 is stored, as for ingestion tokens; the plaintext exists once,
+    at minting.
+
+    `lineage` is the chain of instances that minted this one, root first. An
+    agent may mint a credential for a sub-agent, and the child inherits the
+    parent's lineage plus the parent - which is what lets spec 34's
+    `outside_lineage` rule refuse a sub-agent approving its parent's work.
+    """
+
+    __tablename__ = "agent_credentials"
+
+    token_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Stable, human-readable principal name, e.g. `agent:claude-opus-5.5:3f9a1c`.
+    actor: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The model family the credential was issued for (spec 34 §1.3: recorded,
+    #: not attested).
+    family: Mapped[str] = mapped_column(String(128), default="")
+    #: One instance per credential; two runs of one model are two instances.
+    instance: Mapped[str] = mapped_column(String(36), index=True, default=new_id)
+    lineage: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: The human this agent acts for. An agent never acts on its own authority.
+    on_behalf_of: Mapped[str] = mapped_column(String(255), default="")
+    #: Free text naming why the agent exists (`author`, `independent-reviewer`).
+    purpose: Mapped[str] = mapped_column(String(128), default="")
+    minted_by: Mapped[str] = mapped_column(String(255), default="")
+    minted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: Defaults to the moment of creation, so a row written without an
+    #: expiry is already expired: it fails closed rather than living forever.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
 class CapabilityGrant(Base):
     """What a repo's token is currently allowed to write (spec 05 §4).
 
@@ -464,6 +502,14 @@ class AuditLogEntry(Base):
     entity_id: Mapped[str] = mapped_column(String(255), index=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    #: human | agent | automation | unattributed (spec 34 §1). Empty on entries
+    #: written before the column existed: those were never attributed, and
+    #: backfilling a guess would be the audit log inventing history.
+    actor_kind: Mapped[str] = mapped_column(String(16), default="")
+    #: For an agent: family, instance, lineage and on_behalf_of at the moment
+    #: of the action, copied rather than joined so a revoked or expired
+    #: credential cannot change what the log says happened.
+    actor_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     def __repr__(self) -> str:
         return (

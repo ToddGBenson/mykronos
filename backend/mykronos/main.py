@@ -17,7 +17,15 @@ from typing import Any
 from fastapi import FastAPI
 
 from mykronos import __version__, logsafe
+from mykronos.adminauth import (
+    ActorKind,
+    Principal,
+    PrincipalContextReset,
+    Role,
+    current_principal,
+)
 from mykronos.api import refusals
+from mykronos.api.agents import router as agents_router
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
@@ -145,6 +153,12 @@ async def _every(
     # several of them rewrite the same `findings` partitions, which is the
     # collision that took the acceptance sweep down for three days.
     await asyncio.sleep(_STARTUP_SPREAD_SECONDS * random.random())
+    # Everything this job writes to the audit log is automation acting, and
+    # says so (spec 34 §1). Set once: each job runs in its own task, so its
+    # context is its own.
+    current_principal.set(
+        Principal(actor=f"job:{name}", role=Role.VIEWER, kind=ActorKind.AUTOMATION)
+    )
     while True:
         try:
             await run()
@@ -633,6 +647,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(webhooks_router)
+    app.include_router(agents_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
 
@@ -654,6 +669,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # renders, and the scan that found this counted 404s and 405s among the
     # offending paths (B-025).
     app.add_middleware(SecurityHeaders)
+
+    # Clears the authenticated principal at the start of every request. A
+    # keep-alive connection is served by one task, so without this a principal
+    # set by one request would still be visible to the next one on the same
+    # connection - and an unauthenticated write would be attributed to
+    # whoever came before it (spec 34 §1).
+    app.add_middleware(PrincipalContextReset)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
     async def healthz() -> dict[str, Any]:
