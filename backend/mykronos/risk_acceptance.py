@@ -34,6 +34,7 @@ from mykronos.adminauth import Principal
 from mykronos.approvals.engine import (
     ApprovalError,
     Subject,
+    _append_event,
     create_request,
     register_adapter,
     register_dedicated_route,
@@ -596,6 +597,7 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
 
 @dataclass
 class SweepResult:
+    not_approved: int = 0
     review_due: int = 0
     expired: int = 0
     closed: int = 0
@@ -612,6 +614,7 @@ def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResul
     today = today or utcnow().date()
     result = SweepResult()
     with db.session() as session:
+        result.not_approved = _close_unapproved(db, session)
         records = list(
             session.execute(select(RiskAcceptance).where(RiskAcceptance.status.in_(LIVE))).scalars()
         )
@@ -655,6 +658,39 @@ def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResul
                         db, session, record, "risk_acceptance.scope_drift", count=len(drift)
                     )
     return result
+
+
+def _close_unapproved(db: Any, session: Session) -> int:
+    """Pending records whose approval request was rejected or ran out of time.
+
+    Without this they stay `pending_approval` for good, and a pending record
+    claims its findings: the legacy migration skips them and nothing can
+    propose them again. A rejection is an answer, and an expiry is the
+    absence of one; either way the record is not going to take effect.
+    """
+    now = utcnow()
+    closed = 0
+    pending = session.execute(
+        select(RiskAcceptance, ApprovalRequest)
+        .join(ApprovalRequest, ApprovalRequest.id == RiskAcceptance.approval_request_id)
+        .where(RiskAcceptance.status == "pending_approval")
+    ).all()
+    for record, request in pending:
+        if request.state == "pending" and request.expires_at <= now:
+            # Recorded on the request's own chain, as `decide` would on a late
+            # decision, so the chain says why it ended.
+            request.state = "expired"
+            _append_event(session, request.id, "expired", "job:risk-acceptances", {})
+        if request.state not in ("rejected", "expired"):
+            continue
+        record.status = "not_approved"
+        record.closed_at = now
+        record.closed_reason = f"approval request {request.id} {request.state}"
+        closed += 1
+        _audit_sweep(
+            db, session, record, "risk_acceptance.not_approved", request_state=request.state
+        )
+    return closed
 
 
 def _audit_sweep(
@@ -793,13 +829,17 @@ def migrate_legacy(
     requested_by: Principal,
     risk_owner: str,
     repo: str | None = None,
+    severities: list[str] | None = None,
     dry_run: bool = True,
 ) -> list[dict[str, Any]]:
     """Propose one `pending_approval` legacy record per group. Findings are not
     touched: they keep their current acceptance until it expires or a person
     approves the record (spec 33 §10)."""
     out: list[dict[str, Any]] = []
+    wanted = {s.lower() for s in severities} if severities else None
     for g in legacy_groups(db, catalog, repo):
+        if wanted is not None and g.severity not in wanted:
+            continue
         deviation = _DEVIATION_FOR_CODE.get(g.reason_code, "risk_adjustment")
         scope: dict[str, Any] = {
             "capability": g.capability,

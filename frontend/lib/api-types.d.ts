@@ -4919,6 +4919,8 @@ export interface components {
             risk_owner: string;
             /** Repo */
             repo?: string | null;
+            /** Severities */
+            severities?: string[] | null;
             /**
              * Dry Run
              * @default true
