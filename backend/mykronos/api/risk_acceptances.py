@@ -71,6 +71,8 @@ class MigrateIn(BaseModel):
 
     risk_owner: str
     repo: str | None = None
+    #: Migrate in stages: a queue a person can decide inside the request TTL.
+    severities: list[str] | None = None
     dry_run: bool = True
 
 
@@ -140,6 +142,7 @@ async def migrate(request: Request, body: MigrateIn, principal: PrincipalDep) ->
             requested_by=principal,
             risk_owner=body.risk_owner,
             repo=body.repo,
+            severities=body.severities,
             dry_run=body.dry_run,
         )
     except (ra.RiskAcceptanceError, ApprovalError) as exc:

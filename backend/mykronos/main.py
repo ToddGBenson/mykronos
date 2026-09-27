@@ -500,7 +500,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             records = await asyncio.to_thread(
                 risk_acceptance.sweep, app.state.db, app.state.catalog
             )
-            if records.expired or records.review_due or records.drift:
+            if records.expired or records.review_due or records.drift or records.not_approved:
                 logger.warning("Risk acceptance sweep: %s", records)
             # Delegations whose sampled decisions nobody has reviewed lapse
             # (spec 34 §5.2): trust that is not being checked is not kept.

@@ -369,6 +369,74 @@ class TestLegacyMigration:
         ).json()
         assert again["groups"] == 0
 
+    def _migrate(self, client, auth, **body: Any) -> dict[str, Any]:
+        response = client.post(
+            "/api/risk-acceptances/migrate-legacy",
+            json={"risk_owner": "tgb", **body},
+            headers=auth,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def test_it_can_run_in_stages_by_severity(self, client, admin_auth, lake) -> None:
+        self._accept_rowwise(client, admin_auth)
+        agent = _agent(client, admin_auth)
+
+        first = self._migrate(client, agent, severities=["critical", "high"], dry_run=False)
+        second = self._migrate(client, agent)
+
+        assert [i["residual_severity"] for i in first["items"]] == ["high"]
+        assert [i["residual_severity"] for i in second["items"]] == ["medium"]
+
+    @pytest.mark.parametrize("ending", ["rejected", "expired"])
+    def test_an_unapproved_proposal_releases_its_findings(
+        self, client, admin_auth, lake, ending
+    ) -> None:
+        self._accept_rowwise(client, admin_auth)
+        agent = _agent(client, admin_auth)
+        real = self._migrate(client, agent, dry_run=False)
+        item = next(i for i in real["items"] if i["residual_severity"] == "high")
+        if ending == "rejected":
+            response = client.post(
+                f"/api/approvals/{item['approval_request_id']}/decisions",
+                json={
+                    "verdict": "reject",
+                    "rationale": "No evidence the vendor has been checked.",
+                    "evidence_digest": client.get(
+                        f"/api/approvals/{item['approval_request_id']}", headers=admin_auth
+                    ).json()["evidence_digest"],
+                },
+                headers=admin_auth,
+            )
+            assert response.json()["state"] == "rejected", response.text
+        else:
+            from mykronos.db.models import ApprovalRequest
+
+            with client.app.state.db.session() as session:
+                request = session.get(ApprovalRequest, item["approval_request_id"])
+                request.expires_at = request.created_at - timedelta(seconds=1)
+        # Still claimed until the sweep sees the request has ended.
+        assert self._migrate(client, agent)["groups"] == 0
+
+        swept = ra.sweep(client.app.state.db, client.app.state.catalog)
+
+        released = self._migrate(client, agent)["items"]
+        assert [i["residual_severity"] for i in released] == ["high"]
+        assert swept.not_approved == 1
+        record = client.get(
+            f"/api/risk-acceptances/{item['risk_acceptance_id']}", headers=admin_auth
+        ).json()
+        assert record["status"] == "not_approved"
+        chain = client.get(
+            f"/api/approvals/{item['approval_request_id']}/chain", headers=admin_auth
+        ).json()
+        assert chain["ok"]
+        last = "decision.reject" if ending == "rejected" else "expired"
+        assert chain["events"][-1]["event"] == last
+        with client.app.state.db.session() as session:
+            actions = [a.action for a in session.execute(select(AuditLogEntry)).scalars()]
+        assert "risk_acceptance.not_approved" in actions
+
     def test_approving_a_legacy_record_keeps_its_original_date(
         self, client, admin_auth, lake
     ) -> None:
