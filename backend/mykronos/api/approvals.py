@@ -20,6 +20,7 @@ from mykronos.approvals.engine import (
     ApprovalError,
     create_request,
     decide,
+    dedicated_route,
     propose_delegation,
     revoke_delegation,
     verify_chain,
@@ -188,6 +189,13 @@ def _require_writer(principal: Any) -> None:
 @router.post("", response_model=RequestOut, status_code=status.HTTP_201_CREATED)
 async def create(request: Request, body: CreateRequest, principal: PrincipalDep) -> RequestOut:
     _require_writer(principal)
+    route = dedicated_route(body.duty)
+    if route is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"'{body.duty}' requests are created through {route}, which builds "
+            "the evidence and the tier from the platform's own records.",
+        )
     try:
         row = create_request(
             request.app.state.db,

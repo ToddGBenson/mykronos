@@ -397,3 +397,74 @@ class TestLegacyMigration:
         record = client.get(f"/api/risk-acceptances/{medium['id']}", headers=admin_auth).json()
         assert record["status"] == "active"
         assert record["expires_at"] == medium["requested_until"]
+
+
+class TestTheTierCannotBeForged:
+    """A record is activated only by the approval request it was proposed with.
+
+    The risk_acceptance adapter trusts the snapshot in its context, and that
+    snapshot is what sets the tier. Anyone who could create a second request
+    for the same record with their own snapshot could pick a weaker tier -
+    and its longer duration cap - and have that approved instead.
+    """
+
+    def _forged_context(self, record_id: str) -> dict[str, Any]:
+        return {"snapshot": {"risk_acceptance_id": record_id, "residual": {"severity": "low"}}}
+
+    def test_the_generic_route_refuses_a_hand_built_request(
+        self, client, admin_auth, lake
+    ) -> None:
+        agent = _agent(client, admin_auth)
+        proposed = _propose(client, agent).json()
+        record_id = proposed["risk_acceptance"]["id"]
+
+        forged = client.post(
+            "/api/approvals",
+            json={
+                "duty": "risk_acceptance",
+                "subject_ref": record_id,
+                "context": self._forged_context(record_id),
+            },
+            headers=agent,
+        )
+
+        assert forged.status_code == 409, forged.text
+        assert "/api/risk-acceptances" in forged.json()["detail"]
+
+    def test_approving_any_other_request_does_not_activate_the_record(
+        self, client, admin_auth, lake
+    ) -> None:
+        from mykronos.adminauth import ActorKind, Principal, Role
+        from mykronos.approvals.engine import create_request
+        from mykronos.approvals.policy import cached_policy
+
+        proposed = _propose(client, _agent(client, admin_auth)).json()
+        record_id = proposed["risk_acceptance"]["id"]
+        assert proposed["tier"] == "high"
+        # Straight to the engine, past any route: the record itself must refuse.
+        forged = create_request(
+            client.app.state.db,
+            cached_policy(client.app.state.settings.approval_policy_path),
+            duty="risk_acceptance",
+            subject_ref=record_id,
+            requested_by=Principal(
+                actor="agent:claude-opus-5.5:forger",
+                role=Role.AGENT,
+                kind=ActorKind.AGENT,
+                provenance={"family": "claude-opus-5.5", "instance": "forger"},
+            ),
+            context=self._forged_context(record_id),
+        )
+        assert forged.tier == "low"
+
+        response = _approve(
+            client,
+            admin_auth,
+            {"approval_request_id": forged.id, "evidence_digest": forged.evidence_digest},
+        )
+
+        assert response.status_code == 409, response.text
+        assert "was proposed with approval request" in response.json()["detail"]
+        record = client.get(f"/api/risk-acceptances/{record_id}", headers=admin_auth).json()
+        assert record["status"] == "pending_approval"
+        assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
