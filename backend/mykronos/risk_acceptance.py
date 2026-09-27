@@ -36,6 +36,7 @@ from mykronos.approvals.engine import (
     Subject,
     create_request,
     register_adapter,
+    register_dedicated_route,
     register_on_approved,
 )
 from mykronos.approvals.policy import ApprovalPolicy
@@ -497,6 +498,15 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
     record = session.get(RiskAcceptance, request.subject_ref)
     if record is None:
         raise ApprovalError(f"No risk acceptance {request.subject_ref}.")
+    # Only the request the record was proposed with can activate it. Any
+    # other request for the same record carries evidence - and a tier, and a
+    # duration cap - that the platform did not compute from the record.
+    if record.approval_request_id != request.id or record.status != "pending_approval":
+        raise ApprovalError(
+            f"Risk acceptance {record.id} was proposed with approval request "
+            f"{record.approval_request_id} and is {record.status}; approving request "
+            f"{request.id} cannot activate it."
+        )
     policy_limits_days = _limits_days(request)
     now = utcnow()
     approver = session.execute(
@@ -544,6 +554,7 @@ def _review_lead(request: ApprovalRequest) -> int:
 
 register_adapter("risk_acceptance", _adapter)
 register_on_approved("risk_acceptance", on_approved)
+register_dedicated_route("risk_acceptance", "/api/risk-acceptances")
 
 
 # -- Revocation, renewal, the sweep ---------------------------------------------

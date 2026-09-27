@@ -64,6 +64,9 @@ def tiered(monkeypatch):
     # And no spec 33 side effects: these tests are about the engine, and the
     # real handler would look for an acceptance record that does not exist.
     monkeypatch.setitem(engine._ON_APPROVED, "risk_acceptance", lambda session, request: None)
+    # The stand-in adapter reads the tier from the context, so these tests
+    # create requests through the generic route the real duty refuses.
+    monkeypatch.delitem(engine._DEDICATED_ROUTES, "risk_acceptance", raising=False)
 
 
 def _request(client, auth, tier: str = "medium", subject: str = "acc-1") -> dict[str, Any]:
@@ -393,3 +396,26 @@ class TestAnUnsatisfiableTierIsRefusedAtCreation:
                 subject_ref="s",
                 requested_by=Principal(actor="operator", role=Role.ADMIN),
             )
+
+
+def test_a_delegation_grant_cannot_skip_its_own_route(client, admin_auth) -> None:
+    """The generic route would skip propose_delegation's checks: which tiers a
+    delegation may cover at all, and how long it may run."""
+    response = client.post(
+        "/api/approvals",
+        json={
+            "duty": "delegation_grant",
+            "subject_ref": "delegation:risk_acceptance:critical",
+            "context": {
+                "proposal": {
+                    "duty": "risk_acceptance",
+                    "tiers": ["critical"],
+                    "approver_families": ["claude-opus-5.5"],
+                    "expires_at": "2099-01-01T00:00:00",
+                }
+            },
+        },
+        headers=admin_auth,
+    )
+    assert response.status_code == 409
+    assert "/api/approvals/delegations" in response.json()["detail"]

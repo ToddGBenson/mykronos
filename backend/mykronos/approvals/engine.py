@@ -71,6 +71,21 @@ def register_on_approved(duty: str, handler: OnApproved) -> None:
     _ON_APPROVED[duty] = handler
 
 
+#: duty -> the route that builds its evidence. The adapter for such a duty
+#: trusts the context it is handed, because the platform built that context;
+#: the generic `POST /api/approvals` must therefore refuse it, or a requester
+#: could hand-build the evidence and with it the tier.
+_DEDICATED_ROUTES: dict[str, str] = {}
+
+
+def register_dedicated_route(duty: str, route: str) -> None:
+    _DEDICATED_ROUTES[duty] = route
+
+
+def dedicated_route(duty: str) -> str | None:
+    return _DEDICATED_ROUTES.get(duty)
+
+
 def canonical_digest(evidence: dict[str, Any]) -> str:
     """SHA-256 of the bundle in canonical form: sorted keys, no whitespace."""
     blob = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
@@ -608,4 +623,5 @@ def revoke_delegation(db: Any, *, delegation_id: str, revoked_by: Principal) -> 
 
 
 register_adapter("delegation_grant", delegation_grant_adapter)
+register_dedicated_route("delegation_grant", "/api/approvals/delegations")
 register_on_approved("delegation_grant", activate_delegation)
