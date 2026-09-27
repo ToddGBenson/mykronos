@@ -91,7 +91,7 @@ COPY --chown=mykronos:mykronos workflow-templates /app/workflow-templates
 # a checkout, the site-packages parent from a wheel. Production logged
 # 'no score computed' and carried on with an empty weight table.
 COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml \
-     governance-policy-v1.yaml stride-map-v1.yaml /app/
+     governance-policy-v1.yaml stride-map-v1.yaml approval-policy-v1.yaml /app/
 
 USER mykronos
 WORKDIR /app
@@ -120,6 +120,7 @@ ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA} \
     MYKRONOS_MATURITY_MODEL_PATH=/app/maturity-model-v1.yaml \
     MYKRONOS_GOVERNANCE_POLICY_PATH=/app/governance-policy-v1.yaml \
     MYKRONOS_STRIDE_MAP_PATH=/app/stride-map-v1.yaml \
+    MYKRONOS_APPROVAL_POLICY_PATH=/app/approval-policy-v1.yaml \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8100

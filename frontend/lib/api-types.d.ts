@@ -2639,6 +2639,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Requests */
+        get: operations["list_requests_api_approvals_get"];
+        put?: never;
+        /** Create */
+        post: operations["create_api_approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/delegations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Delegations */
+        get: operations["delegations_api_approvals_delegations_get"];
+        put?: never;
+        /**
+         * Propose
+         * @description Proposing a delegation is itself a `delegation_grant` request: a person asks,
+         *     a person approves, and only then does the delegation exist.
+         */
+        post: operations["propose_api_approvals_delegations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/delegations/{delegation_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke */
+        post: operations["revoke_api_approvals_delegations__delegation_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Request */
+        get: operations["get_request_api_approvals__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/{request_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Evidence */
+        get: operations["evidence_api_approvals__request_id__evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/{request_id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Request */
+        post: operations["decide_request_api_approvals__request_id__decisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/approvals/{request_id}/chain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Chain */
+        get: operations["chain_api_approvals__request_id__chain_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -3033,6 +3158,17 @@ export interface components {
             /** Detail */
             detail: string;
         };
+        /** ChainOut */
+        ChainOut: {
+            /** Ok */
+            ok: boolean;
+            /** Detail */
+            detail: string;
+            /** Events */
+            events: {
+                [key: string]: unknown;
+            }[];
+        };
         /** ChecksOut */
         ChecksOut: {
             /** Total */
@@ -3382,6 +3518,118 @@ export interface components {
              * @description CIS Software Supply Chain Security Benchmark v1.0 §1.1 recommendations this control speaks to. A cross-reference on the same footing as an SSDF practice's `nist_800_53` families, and not a claim: whether a setting as configured satisfies a recommendation is an assessor's judgement. Deliberately not totalled into a benchmark score — fourteen settings reach fourteen of nineteen recommendations, and a percentage built from that would be a number nobody can check.
              */
             cis_supply_chain?: string[];
+        };
+        /** CreateRequest */
+        CreateRequest: {
+            /** Duty */
+            duty: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /**
+             * Statement
+             * @description The requester's own claim, carried beside the evidence and labelled as the requester's - never as evidence.
+             * @default
+             */
+            statement: string;
+            /** Context */
+            context?: {
+                [key: string]: unknown;
+            };
+        };
+        /** DecisionIn */
+        DecisionIn: {
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+        };
+        /** DecisionOut */
+        DecisionOut: {
+            /** Id */
+            id: string;
+            /** Approver */
+            approver: string;
+            /** Approver Kind */
+            approver_kind: string;
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Delegation Id */
+            delegation_id: string | null;
+            /** Same Person */
+            same_person: boolean;
+            /** Sampled */
+            sampled: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** DelegationIn */
+        DelegationIn: {
+            /** Duty */
+            duty: string;
+            /** Tiers */
+            tiers: string[];
+            /** Approver Families */
+            approver_families: string[];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Sampling */
+            sampling?: number | null;
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Statement
+             * @default
+             */
+            statement: string;
+        };
+        /** DelegationOut */
+        DelegationOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tiers */
+            tiers: string[];
+            /** Approver Families */
+            approver_families: string[];
+            /** Sampling */
+            sampling: number;
+            /** Granted By */
+            granted_by: string;
+            /** Grant Request Id */
+            grant_request_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Suspended At */
+            suspended_at: string | null;
+            /** Suspended Reason */
+            suspended_reason: string | null;
+            /** Active */
+            active: boolean;
         };
         /** DependencyHealthOut */
         DependencyHealthOut: {
@@ -3759,6 +4007,29 @@ export interface components {
              * @default false
              */
             introduced_blocking: boolean;
+        };
+        /**
+         * EvidenceOut
+         * @description What an approver sees, and all an independent reviewer should see.
+         */
+        EvidenceOut: {
+            /** Request Id */
+            request_id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Evidence Digest */
+            evidence_digest: string;
+            /**
+             * Requester Statement
+             * @description The requester's claim - not evidence.
+             */
+            requester_statement: string;
         };
         /**
          * FindingBatch
@@ -5449,6 +5720,43 @@ export interface components {
             onboarded_at: string;
             /** Last Synced At */
             last_synced_at: string | null;
+        };
+        /** RequestOut */
+        RequestOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** State */
+            state: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Kind */
+            requester_kind: string;
+            /** Requester Statement */
+            requester_statement: string;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Decided At */
+            decided_at: string | null;
+            /** Decisions */
+            decisions?: components["schemas"]["DecisionOut"][];
         };
         /** RetroNote */
         RetroNote: {
@@ -9664,6 +9972,285 @@ export interface operations {
                     "application/json": {
                         [key: string]: number;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests_api_approvals_get: {
+        parameters: {
+            query?: {
+                state?: string | null;
+                duty?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_approvals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delegations_api_approvals_delegations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DelegationOut"][];
+                };
+            };
+        };
+    };
+    propose_api_approvals_delegations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DelegationIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_approvals_delegations__delegation_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_request_api_approvals__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_api_approvals__request_id__evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_request_api_approvals__request_id__decisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chain_api_approvals__request_id__chain_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChainOut"];
                 };
             };
             /** @description Validation Error */
