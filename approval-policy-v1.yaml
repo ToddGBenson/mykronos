@@ -1,0 +1,120 @@
+# Approval policy - who may approve which governed actions (spec 34 §3).
+#
+# Reviewed in a pull request like oracle-policy-v1.yaml. This file is itself a
+# `governance`-class change under `pull_request_merge` (spec 34 §6.1): a person
+# approves an edit to it, never an agent - which is what stops an agent widening
+# its own authority.
+#
+# Vocabulary
+#   approvers    who may be the second party on a tier:
+#                  {kind: human}
+#                  {kind: agent, delegation: required}  - an agent, only under an
+#                                                         active delegation (§5)
+#   independence rules every approver must pass (spec 34 §2). The requester is
+#                never an approver: `distinct_principal` is implied everywhere.
+#                  distinct_principal  approver is not the requester
+#                  distinct_instance   not the same agent run
+#                  outside_lineage     not a sub-agent of, parent of, or sibling
+#                                      under the requester
+#                  fresh_context       saw only the evidence bundle - only a
+#                                      platform-started reviewer can attest this
+#                  different_family    not the requester's model family
+#                  human               a person
+#   quorum       approvals needed; any rejection ends the request
+#   cooling_off  minimum time from request to approval when one person is both
+#                sides under `separation_of_duties: single_operator`
+
+version: "approval-v1.0"
+
+# One human operates this estate. Under `single_operator`, the one person may
+# approve their own request on a human tier after that tier's cooling-off, with
+# the premise re-stated - a documented AC-5 deviation (spec 33 §2.3), flagged on
+# every decision it allows. It never lets an agent approve its own work.
+separation_of_duties: single_operator
+
+request_ttl_hours: 168
+
+duties:
+  risk_acceptance:                     # spec 33
+    tier_by: residual_severity
+    tiers:
+      critical:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 24
+      high:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context, different_family]
+        cooling_off_hours: 4
+      medium:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        cooling_off_hours: 1
+      low:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        cooling_off_hours: 1
+
+  pull_request_merge:                  # spec 34 §6.1
+    tier_by: change_class
+    tiers:
+      governance:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 1
+      production:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        cooling_off_hours: 0
+      routine:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        cooling_off_hours: 0
+
+  incident_action:                     # spec 34 §6.2
+    tier_by: reversibility
+    tiers:
+      irreversible:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 0
+      reversible:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        cooling_off_hours: 0
+        break_glass: true
+
+  deploy_override:                     # spec 34 §6.3 - deploying past a no_go
+    tier_by: fixed
+    tiers:
+      any:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 0
+
+  delegation_grant:                    # spec 34 §5 - trusting an agent approver
+    tier_by: fixed
+    requesters: [human]                # an agent cannot ask for authority either
+    tiers:
+      any:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 1
+
+delegations:
+  default_sampling: 0.2                # share of delegated approvals a person reviews afterwards
+  suspend_below_agreement: 0.9         # over the last N sampled decisions…
+  agreement_window: 20
+  unreviewed_sample_deadline_days: 14  # samples left unreviewed this long suspend the delegation
+  max_days: 90

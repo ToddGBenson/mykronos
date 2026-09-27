@@ -66,6 +66,7 @@ def provenance_of(row: AgentCredential) -> dict[str, Any]:
         "lineage": list(row.lineage or []),
         "on_behalf_of": row.on_behalf_of,
         "purpose": row.purpose,
+        "platform_started": bool(row.platform_started),
     }
 
 

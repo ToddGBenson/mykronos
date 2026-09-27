@@ -373,6 +373,115 @@ class AgentCredential(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     revoked_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    #: Minted by the platform itself for a reviewer run it started (spec 34
+    #: §4.3). The only credentials that can attest `fresh_context`: the
+    #: platform built the run's input, so it knows the run saw nothing else.
+    #: No API path sets it.
+    platform_started: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ApprovalRequest(Base):
+    """One governed action awaiting a second party (spec 34 §4).
+
+    An approval is of `evidence_digest`, not of `subject_ref`: the bundle the
+    approver saw is frozen and hashed, and a changed subject is a new request.
+    The requester is snapshotted rather than joined, so a later revocation of
+    their credential cannot rewrite who asked.
+    """
+
+    __tablename__ = "approval_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    duty: Mapped[str] = mapped_column(String(64), index=True, default="")
+    tier: Mapped[str] = mapped_column(String(64), default="")
+    subject_ref: Mapped[str] = mapped_column(String(255), index=True, default="")
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_digest: Mapped[str] = mapped_column(String(64), default="")
+    requester_statement: Mapped[str] = mapped_column(Text, default="")
+    requested_by: Mapped[str] = mapped_column(String(255), index=True, default="")
+    requester_kind: Mapped[str] = mapped_column(String(16), default="")
+    requester_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: pending | approved | rejected | expired | withdrawn
+    state: Mapped[str] = mapped_column(String(16), index=True, default="pending")
+    policy_version: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+class ApprovalDecision(Base):
+    """One approver's verdict on one request, bound to the digest they saw."""
+
+    __tablename__ = "approval_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    request_id: Mapped[str] = mapped_column(String(36), index=True, default="")
+    approver: Mapped[str] = mapped_column(String(255), default="")
+    approver_kind: Mapped[str] = mapped_column(String(16), default="")
+    approver_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: approve | reject | needs_info
+    verdict: Mapped[str] = mapped_column(String(16), default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    evidence_digest: Mapped[str] = mapped_column(String(64), default="")
+    #: The delegation that made an agent eligible, if one did.
+    delegation_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    #: One person on both sides, allowed only under `single_operator` after
+    #: the tier's cooling-off - the documented AC-5 deviation (spec 33 §2.3).
+    same_person: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Chosen for after-the-fact human review (spec 34 §5.2).
+    sampled: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: The human's verdict on a sampled agent decision: agree | disagree.
+    sample_verdict: Mapped[str | None] = mapped_column(String(16), default=None)
+    sample_reviewed_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    sample_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ApprovalEvent(Base):
+    """Hash-chained history of one request (spec 33 §7, spec 34 §4.1).
+
+    Each event carries the hash of the previous event for the same request, so
+    an edited or deleted event breaks verification of every event after it.
+    """
+
+    __tablename__ = "approval_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    request_id: Mapped[str] = mapped_column(String(36), index=True, default="")
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    event: Mapped[str] = mapped_column(String(64), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="")
+    hash: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Delegation(Base):
+    """The operator's trust in an agent approver, made explicit (spec 34 §5).
+
+    Lets agents satisfy the tiers that list `{kind: agent, delegation:
+    required}`. Created only by an approved `delegation_grant` request, so a
+    person asked for it and a person approved it.
+    """
+
+    __tablename__ = "delegations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    granted_by: Mapped[str] = mapped_column(String(255), default="")
+    grant_request_id: Mapped[str] = mapped_column(String(36), default="")
+    duty: Mapped[str] = mapped_column(String(64), index=True, default="")
+    tiers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Model families whose agents may use it; empty means none.
+    approver_families: Mapped[list[str]] = mapped_column(JSON, default=list)
+    constraints: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    sampling: Mapped[float] = mapped_column(Float, default=0.2)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    suspended_reason: Mapped[str | None] = mapped_column(String(255), default=None)
 
 
 class CapabilityGrant(Base):

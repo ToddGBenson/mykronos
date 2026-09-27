@@ -380,6 +380,14 @@ class Settings(BaseSettings):
         ),
     )
 
+    approval_policy_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "approval-policy-v1.yaml",
+        description=(
+            "Who may approve which governed actions (spec 34 §3). At the repo root "
+            "and reviewed in a pull request, like the Oracle policy."
+        ),
+    )
+
     oracle_policy_path: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2] / "oracle-policy-v1.yaml",
         description=(
