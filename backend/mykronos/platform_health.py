@@ -37,7 +37,7 @@ from typing import Any, Literal
 #: that cries wolf on ordinary jitter is a health page people stop reading.
 LATENESS_FACTOR = 2
 
-Status = Literal["ok", "failing", "late", "never_ran", "unknown"]
+Status = Literal["ok", "failing", "late", "never_ran", "unknown", "disabled"]
 
 
 @dataclass
@@ -87,6 +87,16 @@ def assess_job(row: Any, *, now: datetime, started_at: datetime | None = None) -
     interval = int(row.interval_seconds or 0)
     last_success = row.last_succeeded_at
 
+    if getattr(row, "scheduled", True) is False:
+        # Switched off in this deployment. Its history stays readable, but a
+        # job nobody runs is not late: it is a decision, not a fault.
+        return JobHealth(
+            name=row.name,
+            status="disabled",
+            detail="not scheduled in this deployment",
+            last_succeeded_at=last_success,
+        )
+
     if failures:
         return JobHealth(
             name=row.name,
@@ -135,6 +145,22 @@ def assess_job(row: Any, *, now: datetime, started_at: datetime | None = None) -
         detail=f"last succeeded {_ago(now - last_success)} ago",
         last_succeeded_at=last_success,
     )
+
+
+def mark_scheduled(db: Any, names: list[str]) -> None:
+    """Record which jobs this deployment runs; every other row is disabled.
+
+    Rows are updated, never created: a job that has not run yet has no row,
+    and gets one - scheduled - on its first tick.
+    """
+    from sqlalchemy import select
+
+    from mykronos.db.models import JobRun
+
+    wanted = set(names)
+    with db.session() as session:
+        for row in session.execute(select(JobRun)).scalars():
+            row.scheduled = row.name in wanted
 
 
 def _duration(seconds: int) -> str:

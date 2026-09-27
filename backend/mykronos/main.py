@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from mykronos import __version__, logsafe, risk_acceptance
+from mykronos import __version__, logsafe, platform_health, risk_acceptance
 from mykronos.adminauth import (
     ActorKind,
     Principal,
@@ -584,6 +584,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.weekly_digest_interval_seconds,
             )
 
+        scheduled: list[str] = []
         for name, interval, run in (
             ("rotation", settings.token_rotation_interval_seconds, _rotate),
             ("stale-drafts", settings.stale_draft_sweep_interval_seconds, _stale_drafts),
@@ -645,12 +646,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 else []
             ),
         ):
+            scheduled.append(name)
             tasks.append(
                 asyncio.create_task(
                     _every(name, interval, run, app.state.db),
                     name=f"mykronos-{name}",
                 )
             )
+        # Every job this deployment does not run - switched off by a setting,
+        # or removed - reads as disabled rather than late.
+        platform_health.mark_scheduled(app.state.db, scheduled)
 
     logger.info(
         "Mykronos %s ready — data lake at %s, %s background job(s)",
