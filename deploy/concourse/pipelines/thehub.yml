@@ -579,7 +579,18 @@ anchors:
       image_resource:
         type: registry-image
         source: { repository: python, tag: "3.14-slim" }
-      inputs: [{ name: source, optional: true }]
+      # [#60492] BOTH OPTIONAL. `source` is TheHub, which 87 of this anchor's 88
+      # call sites get. `pipelines` is mykronos, which `set-pipeline` gets and
+      # which was NOT DECLARED HERE -- so the container never mounted it and
+      # `git -C pipelines rev-parse` failed exactly as `git -C source` did.
+      # Build 22's log is unambiguous: `Reported pipeline_apply=success for
+      # unknown`. The previous fix read an input the task was never given.
+      #
+      # Optional, not required: a job that dies before its checkout lands must
+      # still be able to report, which is the whole reason this runs as a hook.
+      inputs:
+        - { name: source, optional: true }
+        - { name: pipelines, optional: true }
       run:
         path: bash
         args:
@@ -644,13 +655,40 @@ anchors:
               # failed on builds 18, 19 and 20 (2026-09-25, from 09:43),
               # so no pipeline change was being applied at all -- a
               # reporting line broke the thing it was reporting on.
-              DEPLOY_ID="${BUILD_PIPELINE_NAME:-thehub}/${BUILD_JOB_NAME:-unknown}/${BUILD_NAME:-unknown}"
-              # `pipelines` is what set-pipeline actually applied. Reporting it
-              # as git_sha is the honest answer to "what was applied", and it
-              # is read from an input the job already has rather than one it
-              # would have to be given.
+              # MEASURED, NOT ASSUMED. The BUILD_* attempt produced
+              # `thehub/unknown/unknown` on build 22 -- and `thehub` is also
+              # this line's own DEFAULT, so that row cannot tell you whether
+              # BUILD_PIPELINE_NAME was set correctly or never set at all. That
+              # ambiguity is why the id below no longer depends on them. This
+              # echo settles the question on the next apply rather than leaving
+              # the next reader to re-derive it from an indistinguishable
+              # default, which is what cost this story a second round.
+              echo "[hub_report] build metadata seen:"                    "pipeline='${BUILD_PIPELINE_NAME:-<unset>}'"                    "job='${BUILD_JOB_NAME:-<unset>}'"                    "build='${BUILD_NAME:-<unset>}'"
+
+              # `pipelines` is what set-pipeline actually applied, and it is now
+              # a DECLARED input, so this rev-parse can finally succeed.
               SHA=$(git -C pipelines rev-parse HEAD 2>/dev/null || echo unknown)
               MSG=$(git -C pipelines log -1 --pretty=%s 2>/dev/null || echo unknown)
+
+              # THE APPLIED SHA IS NOT ENOUGH ON ITS OWN, and the timestamp is
+              # not decoration. `set-pipeline` is re-applied on UNCHANGED
+              # commits routinely -- a retry after an errored build, a re-apply
+              # after a server-side change -- so keying on the commit alone
+              # would put two distinct applies back into one
+              # `_newest_run_in_family` family and lose exactly the distinction
+              # this story exists to restore.
+              #
+              # NO `#` IN THIS STRING, EVER. `_newest_run_in_family` matches
+              # `deploy_id = :d OR deploy_id LIKE :d || '#%'`, so a `#` here
+              # would make this id a member of a family named by its own
+              # prefix. 44 characters against the column's 64.
+              DEPLOY_ID="pipeline-apply-$(printf '%.12s' "$SHA")-$(date -u +%Y%m%dT%H%M%SZ)"
+              # This branch owns its ENTIRE run: the id is unique to this one
+              # hook invocation, so nothing else will ever post a stage to it.
+              # That is what makes the `finish` below safe, and it is why the
+              # flag must NOT be set on the `source` path, where the sha keys a
+              # run that many stages still report into.
+              SELF_CONTAINED=1
             fi
 
             BODY=$(jq -nc \
@@ -662,12 +700,41 @@ anchors:
                 target_env: $env,
                 meta: {source: "concourse", pipeline: "thehub"}}')
 
-            curl -sS --fail --max-time 20 -X POST \
-              -H "Content-Type: application/json" \
-              -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
-              -d "$BODY" "$HUB_URL/api/ops/deploys" >/dev/null \
-              && echo "Reported $STAGE=$STATUS for $SHA to TheHub." \
-              || echo "Could not report $STAGE to TheHub; the build result stands."
+            post_stage() {
+              curl -sS --fail --max-time 20 -X POST \
+                -H "Content-Type: application/json" \
+                -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
+                -d "$1" "$HUB_URL/api/ops/deploys" >/dev/null \
+                && echo "Reported $2=$STATUS for $SHA to TheHub." \
+                || echo "Could not report $2 to TheHub; the build result stands."
+            }
+
+            post_stage "$BODY" "$STAGE"
+
+            # [#60492] AND THEN CLOSE THE RUN. Only the `finish` stage sets
+            # `deploy_runs.final_status` (api/ops.py), so a run that reports
+            # one stage and stops sits at `running` until the zombie sweep
+            # reconciles it as `abandoned` -- a sweep filing about a run that
+            # was never a deploy. Both existing apply rows, 6341 and 6393, are
+            # `abandoned` today for exactly this reason.
+            #
+            # GATED ON $SELF_CONTAINED, and the gate is the load-bearing part.
+            # 87 of this anchor's 88 call sites are ONE STAGE OF A LARGER RUN
+            # keyed on the commit sha; posting `finish` from any of them would
+            # close a run that is still going and strand every stage after it.
+            # Only the branch that mints its own single-use id may do this.
+            if [ "${SELF_CONTAINED:-0}" = "1" ]; then
+              FINISH=$(jq -nc \
+                --arg d "$DEPLOY_ID" --arg st "$STATUS" \
+                --arg sha "$SHA" --arg br "$SCANNED_BRANCH" --arg msg "$MSG" \
+                --arg env "${TARGET_ENV:-prod}" \
+                '{deploy_id: $d, stage: "finish", status: $st, git_sha: $sha,
+                  git_branch: $br, commit_message: $msg, actor: "concourse",
+                  target_env: $env,
+                  meta: {source: "concourse", pipeline: "thehub",
+                         self_contained: true}}')
+              post_stage "$FINISH" "finish"
+            fi
             exit 0
 
   # Failure notification. curl rather than a slack-notification resource type:
@@ -884,12 +951,20 @@ jobs:
     # The job-level hooks REPLACE the two trailing ones rather than sitting
     # beside them, so a failure sends one Slack message and one Hub row.
     #
-    # The reported SHA will be `unknown`: `hub_report` reads its commit out of
-    # an input named `source`, and this job gets `pipelines` (mykronos) and no
-    # `source` (TheHub). The row still answers when the apply ran and whether
-    # it worked, which is the question this story is about; identifying WHICH
-    # mykronos commit was applied is a separate change to the hook and is not
-    # smuggled in here.
+    # [#60492] THE SEPARATE CHANGE THIS COMMENT DEFERRED HAS NOW BEEN MADE.
+    # `hub_report` declares `pipelines` as an optional input, so the reported
+    # git_sha is the mykronos commit that was actually applied, and the
+    # deploy_id is `pipeline-apply-<sha12>-<utc>` -- unique per apply, so two
+    # applies no longer collapse into one `_newest_run_in_family` family. The
+    # hook also posts a `finish` stage for this job only, so the run reaches a
+    # terminal status instead of being reconciled as an abandoned deploy.
+    #
+    # WHY NOT `input_mapping: {source: pipelines}`, which #60478 named as the
+    # obvious fix: it would make this job report the mykronos commit under a
+    # name every other call site uses for TheHub's, and the sha would then key
+    # the run -- putting a re-apply of an unchanged commit back into the same
+    # family. Declaring the input it really has costs one line and keeps both
+    # questions answerable.
     on_success:
       do:
         - <<: *hub_report
