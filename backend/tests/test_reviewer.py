@@ -60,6 +60,9 @@ def tiered(monkeypatch):
 
     monkeypatch.setitem(engine._ADAPTERS, "risk_acceptance", adapter)
     monkeypatch.setitem(engine._ON_APPROVED, "risk_acceptance", lambda session, request: None)
+    # The stand-in adapter reads the tier from the context, so these tests use
+    # the generic route the real duty refuses (#706).
+    monkeypatch.delitem(getattr(engine, "_DEDICATED_ROUTES", {}), "risk_acceptance", raising=False)
 
 
 @pytest.fixture
