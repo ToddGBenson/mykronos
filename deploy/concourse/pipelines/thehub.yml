@@ -1106,7 +1106,12 @@ jobs:
           inputs: [memo]
           params:
             file: memo/cicd-drift-audit-*.md
-          get_params: { skip_download: true }
+          # A STRING. The s3 resource decodes params into Go strings, and a YAML
+          # `true` failed every run's implicit get with "cannot unmarshal bool
+          # into ... skip_download of type string" - after the memo uploaded -
+          # so the job failed even when the audit passed. Found by the
+          # Mykronos briefing, 2026-09-27: the lane had never succeeded.
+          get_params: { skip_download: "true" }
 
   # [#59326] The post-merge check, on a clock.
   #
