@@ -388,6 +388,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    reviewer_model: str = Field(
+        default="claude-opus-5",
+        description=(
+            "The model the platform-started independent reviewer runs (spec 34 §4.3). "
+            "Recorded as the reviewer's family, so a delegation must name it."
+        ),
+    )
+    reviewer_api_key: str = Field(
+        default="",
+        repr=False,
+        description=(
+            "Anthropic API key for the independent reviewer. Empty falls back to "
+            "ANTHROPIC_API_KEY; with neither, reviews are refused and requests wait "
+            "for a person."
+        ),
+    )
+
     oracle_policy_path: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2] / "oracle-policy-v1.yaml",
         description=(

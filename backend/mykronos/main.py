@@ -36,6 +36,7 @@ from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
+from mykronos.approvals import sampling as approval_sampling
 from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
 from mykronos.ci import ConcourseClient, StatusCache
@@ -501,6 +502,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             if records.expired or records.review_due or records.drift:
                 logger.warning("Risk acceptance sweep: %s", records)
+            # Delegations whose sampled decisions nobody has reviewed lapse
+            # (spec 34 §5.2): trust that is not being checked is not kept.
+            try:
+                policy = cached_approval_policy(settings.approval_policy_path)
+            except ApprovalPolicyError:
+                return
+            lapsed = await asyncio.to_thread(approval_sampling.sweep, app.state.db, policy)
+            if lapsed.suspended:
+                logger.warning("Delegations suspended, samples unreviewed: %s", lapsed.suspended)
 
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and

@@ -23,6 +23,10 @@
 #   quorum       approvals needed; any rejection ends the request
 #   cooling_off  minimum time from request to approval when one person is both
 #                sides under `separation_of_duties: single_operator`
+#   reviewer_instructions
+#                what the platform-started reviewer is told to check for this
+#                duty (spec 34 §4.3). It sees these, the evidence bundle and the
+#                requester's labelled statement - nothing else.
 
 version: "approval-v1.0"
 
@@ -37,6 +41,24 @@ request_ttl_hours: 168
 duties:
   risk_acceptance:                     # spec 33
     tier_by: residual_severity
+    reviewer_instructions: |
+      This is a request to accept a security risk instead of fixing it. The evidence
+      holds the proposed record: the findings in scope, the deviation type, the
+      residual likelihood and impact, premises, compensating controls, milestones,
+      the risk owner and the requested end date.
+      Check each of these, and name any that fail:
+      - The scope matches the findings it covers, and no finding in it is one the
+        record's own reasoning does not address.
+      - The deviation type fits the facts. vendor_dependency needs findings with no
+        fixed version available; risk_adjustment needs a premise that actually lowers
+        likelihood or impact here; operational_requirement needs a stated reason the
+        fix cannot be taken now.
+      - The residual rating follows from the premises and controls, not from hope.
+      - A milestone exists that ends the weakness, with a date inside the acceptance.
+      - The requested end date is no longer than the evidence justifies.
+      Reject a record whose justification is generic, or that could be pasted onto
+      any finding. Answer needs_info when a premise is asserted but nothing in the
+      evidence lets you check it.
     tiers:
       critical:
         approvers: [{kind: human}]
@@ -61,6 +83,13 @@ duties:
 
   pull_request_merge:                  # spec 34 §6.1
     tier_by: change_class
+    reviewer_instructions: |
+      This is a request to merge a pull request at one commit. Judge the diff in the
+      evidence against its stated purpose: correctness, tests that would fail without
+      the change, security regressions (auth, secrets, injection, unsafe
+      deserialisation), and anything that widens an agent's own authority. A change
+      that edits approval, governance or pipeline policy is not routine whatever its
+      label says; reject it here so a person decides.
     tiers:
       governance:
         approvers: [{kind: human}]
@@ -80,6 +109,10 @@ duties:
 
   incident_action:                     # spec 34 §6.2
     tier_by: reversibility
+    reviewer_instructions: |
+      This is a request to take an action during an incident. Check that the action
+      matches the incident evidence, that it is reversible as claimed, and that the
+      rollback is stated. Reject anything that destroys data or evidence.
     tiers:
       irreversible:
         approvers: [{kind: human}]
