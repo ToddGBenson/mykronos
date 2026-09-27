@@ -329,3 +329,96 @@ class TestTheIndependentReviewer:
         assert latest["conclusion"] == "success"
         assert "platform-started" in latest["summary"]
         assert "model `claude-opus-5`" in latest["summary"]
+
+
+class TestRequestsNobodyMade:
+    """The job opens a request for a head nobody asked about, after a grace
+    period in which an agent author can ask under its own name."""
+
+    @pytest.fixture
+    def required(self, github):
+        github.repos[REPO].branch_protection["main"] = {
+            "required_status_checks": {"checks": [{"context": pull_requests.CHECK_NAME}]}
+        }
+        pull_requests._first_seen.clear()
+
+    def _run(self, client, now):
+        policy = cached_policy(client.app.state.settings.approval_policy_path)
+        return asyncio.run(
+            pull_requests.request_missing(
+                client.app.state.db, policy, client.app.state.github_factory, now=now
+            )
+        )
+
+    def test_it_waits_out_the_grace_period_then_asks(
+        self, client, admin_auth, github, onboarded, required
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        start = utcnow()
+
+        assert self._run(client, start) == []
+        assert self._run(client, start + timedelta(minutes=9)) == []
+        [opened] = self._run(client, start + timedelta(minutes=11))
+
+        with client.app.state.db.session() as session:
+            row = session.get(ApprovalRequest, opened)
+            assert row.requester_kind == "automation"
+            assert row.requested_by == "job:pull-request-requests"
+            assert row.tier == "routine"
+        assert _checks(github)[-1]["conclusion"] is None
+
+    def test_an_agent_that_asked_first_is_the_requester(
+        self, client, admin_auth, github, onboarded, required
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        start = utcnow()
+        self._run(client, start)
+        _request(client, _agent(client, admin_auth))
+
+        assert self._run(client, start + timedelta(minutes=11)) == []
+
+    def test_only_where_the_check_is_required(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        pull_requests._first_seen.clear()
+        _open_pr(github, ["docs/a.md"])
+        start = utcnow()
+        self._run(client, start)
+
+        assert self._run(client, start + timedelta(minutes=11)) == []
+
+    def test_drafts_are_left_alone(self, client, admin_auth, github, onboarded, required):
+        _open_pr(github, ["docs/a.md"])
+        github.repos[REPO].pull_requests[-1].draft = True
+        start = utcnow()
+        self._run(client, start)
+
+        assert self._run(client, start + timedelta(minutes=11)) == []
+
+    def test_an_agent_author_cannot_approve_what_the_platform_asked(
+        self, client, admin_auth, github, onboarded, required
+    ) -> None:
+        """The reason an automation requester is safe: agent tiers need
+        fresh_context, which only a platform-started reviewer has."""
+        with client.app.state.db.session() as session:
+            session.add(
+                Delegation(
+                    granted_by="operator",
+                    grant_request_id="test",
+                    duty=pull_requests.DUTY,
+                    tiers=["routine"],
+                    approver_families=["claude-opus-5.5"],
+                    sampling=0.0,
+                    expires_at=utcnow() + timedelta(days=1),
+                )
+            )
+        _open_pr(github, ["docs/a.md"])
+        start = utcnow()
+        self._run(client, start)
+        [opened] = self._run(client, start + timedelta(minutes=11))
+        body = client.get(f"/api/approvals/{opened}", headers=admin_auth).json()
+
+        response = _decide(client, _agent(client, admin_auth), body)
+
+        assert response.status_code == 409
+        assert "fresh_context" in response.json()["detail"]

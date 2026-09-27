@@ -27,13 +27,13 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import select
 
-from mykronos.adminauth import Principal
+from mykronos.adminauth import ActorKind, Principal, Role
 from mykronos.approvals.engine import (
     ApprovalError,
     Subject,
@@ -412,3 +412,107 @@ async def publish_due(
         if stamp is not None and stamp.error is None:
             posted += 1
     return posted
+
+
+# -- Requests nobody made -------------------------------------------------------
+
+#: How long a new head commit waits for someone to ask before the platform
+#: does. An agent that opened the PR asks under its own name within this
+#: window, and the record then says who; after it, the platform asks, so a
+#: required check never leaves a PR waiting on a request nobody remembered.
+REQUEST_GRACE = timedelta(minutes=10)
+
+AUTO_REQUESTER = Principal(
+    actor="job:pull-request-requests", role=Role.VIEWER, kind=ActorKind.AUTOMATION
+)
+
+#: subject_ref -> when the job first saw that head. In memory on purpose: a
+#: restart only restarts the grace period, which errs towards waiting.
+_first_seen: dict[str, datetime] = {}
+
+
+def _requires_check(protection: dict[str, Any] | None) -> bool:
+    checks = ((protection or {}).get("required_status_checks") or {})
+    names = {c.get("context") for c in checks.get("checks") or []}
+    names |= set(checks.get("contexts") or [])
+    return CHECK_NAME in names
+
+
+async def request_missing(
+    db: Any,
+    policy: ApprovalPolicy,
+    github_factory: GitHubClientFactory,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Open an approval request for every open PR head nobody asked about.
+
+    Only on repositories whose default branch requires `independent-review`:
+    elsewhere a request would be paperwork nothing reads. The requester is an
+    automation principal, which is safe because every tier an agent may
+    approve demands `fresh_context` - so a request the platform opened can be
+    approved by a person or a platform-started reviewer, never by the agent
+    that wrote the change.
+    """
+    now = now or utcnow()
+    with db.session() as session:
+        repos = [
+            (r.github_repo_full_name, r.github_installation_id)
+            for r in session.execute(
+                # Whether the branch requires the check is the real test,
+                # asked of GitHub below; this only skips what was removed.
+                select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+            ).scalars()
+        ]
+        asked = {
+            ref
+            for ref in session.execute(
+                select(ApprovalRequest.subject_ref).where(
+                    ApprovalRequest.duty == DUTY,
+                    ApprovalRequest.state.in_(("pending", "approved")),
+                )
+            ).scalars()
+        }
+    opened: list[str] = []
+    for repo, installation in repos:
+        if installation is None:
+            continue
+        github = github_factory.for_installation(installation)
+        try:
+            branch = str((await github.get_repo(repo)).get("default_branch") or "main")
+            if not _requires_check(await github.get_branch_protection(repo, branch)):
+                continue
+            pulls = await github.list_open_pull_requests(repo)
+        except Exception as exc:  # noqa: BLE001 - one repository never stops the rest
+            logger.warning("Could not list pull requests for %s: %s", repo, exc)
+            continue
+        for pr in pulls:
+            if not pr.head_sha or pr.draft:
+                continue
+            ref = subject_ref(repo, pr.number, pr.head_sha)
+            if ref in asked:
+                continue
+            first = _first_seen.setdefault(ref, now)
+            if now - first < REQUEST_GRACE:
+                continue
+            try:
+                request = await propose(
+                    db,
+                    policy,
+                    github,
+                    requested_by=AUTO_REQUESTER,
+                    repo=repo,
+                    number=pr.number,
+                    statement=(
+                        "Opened by the platform: nobody asked for an approval of this "
+                        f"commit within {int(REQUEST_GRACE.total_seconds() // 60)} minutes "
+                        "of it being seen. The author is not known to the platform."
+                    ),
+                )
+            except ApprovalError as exc:
+                logger.info("Not requesting %s: %s", ref, exc)
+                continue
+            _first_seen.pop(ref, None)
+            await publish(db, policy, github_factory, request.id)
+            opened.append(request.id)
+    return opened
