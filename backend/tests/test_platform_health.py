@@ -21,6 +21,7 @@ class Row:
     consecutive_failures: int = 0
     last_error: str = ""
     interval_seconds: int = HOURLY
+    scheduled: bool = True
 
 
 class TestTheQuietFailure:
@@ -109,6 +110,45 @@ class TestNotCryingWolf:
         )
 
         assert health.status == "never_ran"
+
+
+class TestASwitchedOffJobIsNotLate:
+    """`routing` was switched off on purpose on 2026-09-18, and its row kept
+    reading "late, last succeeded 9 days ago" in every briefing after."""
+
+    def test_an_unscheduled_job_is_disabled_not_late(self) -> None:
+        health = platform_health.assess_job(
+            Row(name="routing", last_succeeded_at=NOW - timedelta(days=9), scheduled=False),
+            now=NOW,
+        )
+
+        assert health.status == "disabled"
+        assert not platform_health.PlatformHealth(jobs=[health]).degraded
+
+    def test_a_scheduled_job_that_old_is_still_late(self) -> None:
+        health = platform_health.assess_job(
+            Row(name="routing", last_succeeded_at=NOW - timedelta(days=9)), now=NOW
+        )
+
+        assert health.status == "late"
+
+    def test_start_up_marks_what_this_deployment_runs(self, tmp_path) -> None:
+        from sqlalchemy import select
+
+        from mykronos.db import Database
+        from mykronos.db.models import JobRun
+
+        db = Database(f"sqlite:///{(tmp_path / 'm.db').as_posix()}")
+        db.create_all()
+        with db.session() as session:
+            session.add_all([JobRun(name="routing"), JobRun(name="absences")])
+
+        platform_health.mark_scheduled(db, ["absences", "not-run-yet"])
+
+        with db.session() as session:
+            rows = {r.name: r.scheduled for r in session.execute(select(JobRun)).scalars()}
+        db.engine.dispose()
+        assert rows == {"routing": False, "absences": True}
 
 
 class TestDegraded:

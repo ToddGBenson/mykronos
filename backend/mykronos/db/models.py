@@ -1031,6 +1031,11 @@ class JobRun(Base):
     #: How often it is meant to run, so a reader can tell a job that is late
     #: from one that simply has a long interval.
     interval_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    #: Whether this deployment schedules the job at all. Written at start-up.
+    #: A row outlives its job: `routing` was switched off on purpose and its
+    #: last success, nine days old, read as "late" on every briefing - an
+    #: alarm about a decision, which is how alarms stop being read.
+    scheduled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<JobRun {self.name} failures={self.consecutive_failures}>"

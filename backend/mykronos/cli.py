@@ -1519,7 +1519,9 @@ def main(argv: list[str] | None = None) -> int:
                         session.execute(select(JobRun).order_by(JobRun.name)).scalars()
                     )
                 assessed = [platform_health.assess_job(r, now=now) for r in job_rows]
-                unhealthy_jobs = [j for j in assessed if j.status != "ok"]
+                unhealthy_jobs = [
+                    j for j in assessed if j.status not in ("ok", "disabled")
+                ]
             except Exception:  # noqa: BLE001 - a briefing must not die on this
                 logging.getLogger(__name__).debug("Could not read job health")
 
