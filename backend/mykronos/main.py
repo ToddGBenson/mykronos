@@ -520,6 +520,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 policy = cached_approval_policy(settings.approval_policy_path)
             except ApprovalPolicyError:
                 return
+            await approval_pull_requests.request_missing(
+                app.state.db, policy, app.state.github_factory
+            )
             await approval_pull_requests.publish_due(
                 app.state.db, policy, app.state.github_factory
             )

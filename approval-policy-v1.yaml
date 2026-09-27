@@ -83,6 +83,10 @@ duties:
 
   pull_request_merge:                  # spec 34 §6.1
     tier_by: change_class
+    # automation: the platform opens a request for a PR head nobody asked
+    # about, after a grace period in which an agent author asks under its own
+    # name. Safe because every agent-approvable tier below needs fresh_context.
+    requesters: [human, agent, automation]
     reviewer_instructions: |
       This is a request to merge a pull request at one commit. Judge the diff in the
       evidence against its stated purpose: correctness, tests that would fail without
