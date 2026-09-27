@@ -8,6 +8,8 @@ the digest they were shown; the history is hash-chained and verifiable.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos.adminauth import HumanDep, PrincipalDep
+from mykronos.approvals import reviewer, sampling
 from mykronos.approvals.engine import (
     ApprovalError,
     create_request,
@@ -282,6 +285,76 @@ async def revoke(request: Request, delegation_id: str, principal: HumanDep) -> d
     except ApprovalError as exc:
         raise _refused(exc) from exc
     return {"revoked": delegation_id}
+
+
+class SampleVerdictIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: str = Field(pattern="^(agree|disagree)$")
+    note: str = Field(default="", max_length=4000)
+
+
+@router.get("/samples")
+async def samples(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
+    """Sampled agent decisions waiting for a person's after-the-fact review."""
+    return sampling.sample_queue(request.app.state.db)
+
+
+@router.post("/samples/{decision_id}")
+async def sample_verdict(
+    request: Request, decision_id: str, body: SampleVerdictIn, principal: HumanDep
+) -> dict[str, Any]:
+    try:
+        return sampling.record_sample_verdict(
+            request.app.state.db,
+            _policy(request),
+            decision_id=decision_id,
+            reviewer=principal,
+            verdict=body.verdict,
+            note=body.note,
+        )
+    except ApprovalError as exc:
+        raise _refused(exc) from exc
+
+
+@router.get("/delegations/{delegation_id}/stats")
+async def delegation_stats(
+    request: Request, delegation_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    try:
+        return sampling.delegation_stats(request.app.state.db, _policy(request), delegation_id)
+    except ApprovalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{request_id}/independent-review")
+async def independent_review(
+    request: Request, request_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    """Start a platform-started reviewer on one pending request (spec 34 §4.3).
+
+    Anyone who may write can start one, the requester included: starting a
+    review is not choosing the reviewer. The platform picks the model, the
+    instructions and the evidence, and the reviewer's decision goes through the
+    same rules as anyone's.
+    """
+    _require_writer(principal)
+    try:
+        outcome = await asyncio.to_thread(
+            reviewer.run_review,
+            request.app.state.db,
+            _policy(request),
+            request.app.state.settings,
+            request_id=request_id,
+            started_by=principal,
+        )
+    except reviewer.ReviewerUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except ApprovalError as exc:
+        raise _refused(exc) from exc
+    return dataclasses.asdict(outcome)
 
 
 @router.get("/{request_id}", response_model=RequestOut)

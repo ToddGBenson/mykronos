@@ -57,6 +57,8 @@ class Duty:
     tier_by: str
     tiers: dict[str, Tier]
     requesters: frozenset[str] = frozenset({"human", "agent"})
+    #: What a platform-started reviewer is told to check (spec 34 §4.3).
+    reviewer_instructions: str = ""
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,7 @@ def parse_policy(document: Any) -> ApprovalPolicy:
             tier_by=str(raw.get("tier_by", "fixed")),
             tiers=tiers,
             requesters=frozenset(raw.get("requesters") or ("human", "agent")),
+            reviewer_instructions=str(raw.get("reviewer_instructions") or ""),
         )
     ra = document.get("risk_acceptance") or {}
     refuse = ra.get("refuse") or {}
