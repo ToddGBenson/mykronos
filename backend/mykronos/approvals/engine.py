@@ -100,20 +100,36 @@ _PLACEHOLDERS = frozenset(
 
 
 def rationale_problem(rationale: str) -> str | None:
-    """Why a rationale can't stand as the record of a decision, or `None`."""
+    """Why a rationale can't stand as the record of a decision, or `None`.
+
+    NEITHER MESSAGE CITES A SPEC, and that is deliberate. Both used to end
+    "(spec 34 §4.3)". That section is titled "How an agent approver runs"; it
+    says only that a rationale "is required and stored" and that "'Approve'
+    without a rationale is refused". It sets NO minimum length, lists NO
+    placeholders, and is scoped to AGENT approvers — while these messages are
+    served to people too. `grep -i "min.*char\\|20 char\\|placeholder"` over
+    `specs/34*.md` and `docs/DECISIONS.md` returns nothing.
+
+    A governance threshold invented in code and attributed to a spec that does
+    not contain it is worse than an uncited one: a reader who checks finds the
+    section says something else, and a reader who does not check believes a rule
+    was agreed that never was. In a repository that keeps decision records to
+    D-129, the honest options were to amend the spec or drop the citation. This
+    drops it; the threshold still wants a D- record of its own.
+    """
     text = " ".join(rationale.split())
     normalised = " ".join("".join(c if c.isalnum() else " " for c in text.lower()).split())
     if normalised in _PLACEHOLDERS:
         return (
             f"The rationale {text!r} is a placeholder, not a reason. Say what you checked "
             "and why it holds: an approver that can say yes without saying why is not a "
-            "check (spec 34 §4.3)."
+            "check."
         )
     if len(text) < MIN_RATIONALE_CHARS:
         return (
             f"The rationale is {len(text)} characters; a decision's rationale needs at "
             f"least {MIN_RATIONALE_CHARS}. Name what you checked - the audit reads this as "
-            "the reason the action was allowed (spec 34 §4.3)."
+            "the reason the action was allowed."
         )
     return None
 
