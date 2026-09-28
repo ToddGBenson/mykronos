@@ -243,7 +243,7 @@ class TestThisEstate:
         "reference",
         [
             "hashicorp/vault:2.1.1",
-            "concourse/concourse:8.3",
+            "concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48",
             "pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless",
             "registry:3",
             "postgres:15",

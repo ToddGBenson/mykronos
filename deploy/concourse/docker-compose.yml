@@ -42,8 +42,13 @@ name: mykronos-concourse
 # carries 1,368 Trivy results (33 critical) against 288 in 8.3.0. Every
 # deployed pipeline validates under fly 8.3.0, and the 8.0 md5->sha256
 # migration was rehearsed on a restored copy of this database first.
+#
+# 8.3.1, pinned by digest (2026-09-28): released that day; the running 8.3.0
+# carried 11 Go-module findings with fixes (x/crypto, x/net, grpc) that the
+# operator declined to accept (2a95c972). A digest, so the version on disk is
+# the version running and a new patch release arrives by review.
 x-worker: &worker
-  image: concourse/concourse:8.3
+  image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
   restart: unless-stopped
   command: worker
   # A worker runs the container runtime. This is the privilege that
@@ -302,7 +307,7 @@ services:
   # cannot start. Keeping the name means compose recreates this one in place.
   # `command: web` says what it is.
   concourse:
-    image: concourse/concourse:8.3
+    image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
     container_name: mykronos-concourse
     restart: unless-stopped
     command: web
