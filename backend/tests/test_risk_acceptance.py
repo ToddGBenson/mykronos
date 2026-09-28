@@ -301,7 +301,7 @@ class TestRenewal:
             f"/api/approvals/{body['approval_request_id']}/decisions",
             json={
                 "verdict": "approve",
-                "rationale": "Renewal justified.",
+                "rationale": "Vendor still has no fix; renewal is inside the cap.",
                 "evidence_digest": evidence["evidence_digest"],
             },
             headers=admin_auth,
