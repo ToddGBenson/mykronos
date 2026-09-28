@@ -86,6 +86,38 @@ def dedicated_route(duty: str) -> str | None:
     return _DEDICATED_ROUTES.get(duty)
 
 
+#: A rationale is what an audit reads to learn why something was allowed.
+#: `...` was recorded as the reason for a governance approval on 2026-09-27.
+MIN_RATIONALE_CHARS = 20
+_PLACEHOLDERS = frozenset(
+    {
+        "", "ok", "okay", "k", "yes", "y", "no", "n", "na", "n a", "none", "nil",
+        "lgtm", "looks good", "looks good to me", "fine", "good", "approve",
+        "approved", "reject", "rejected", "done", "ack", "tbd", "todo", "see above",
+        "see pr", "as discussed", "reviewed", "checked", "same", "x", "test",
+    }
+)
+
+
+def rationale_problem(rationale: str) -> str | None:
+    """Why a rationale can't stand as the record of a decision, or `None`."""
+    text = " ".join(rationale.split())
+    normalised = " ".join("".join(c if c.isalnum() else " " for c in text.lower()).split())
+    if normalised in _PLACEHOLDERS:
+        return (
+            f"The rationale {text!r} is a placeholder, not a reason. Say what you checked "
+            "and why it holds: an approver that can say yes without saying why is not a "
+            "check (spec 34 §4.3)."
+        )
+    if len(text) < MIN_RATIONALE_CHARS:
+        return (
+            f"The rationale is {len(text)} characters; a decision's rationale needs at "
+            f"least {MIN_RATIONALE_CHARS}. Name what you checked - the audit reads this as "
+            "the reason the action was allowed (spec 34 §4.3)."
+        )
+    return None
+
+
 def canonical_digest(evidence: dict[str, Any]) -> str:
     """SHA-256 of the bundle in canonical form: sorted keys, no whitespace."""
     blob = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
@@ -371,11 +403,9 @@ def decide(
 ) -> DecisionOutcome:
     if verdict not in ("approve", "reject", "needs_info"):
         raise ApprovalError("verdict must be approve, reject or needs_info.")
-    if not rationale.strip():
-        raise ApprovalError(
-            "A decision needs a rationale. An approver that can say yes without saying "
-            "why is not a check (spec 34 §4.3)."
-        )
+    problem = rationale_problem(rationale)
+    if problem:
+        raise ApprovalError(problem)
     now = utcnow()
     with db.session() as session:
         request = session.get(ApprovalRequest, request_id)

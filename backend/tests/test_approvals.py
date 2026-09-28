@@ -419,3 +419,36 @@ def test_a_delegation_grant_cannot_skip_its_own_route(client, admin_auth) -> Non
     )
     assert response.status_code == 409
     assert "/api/approvals/delegations" in response.json()["detail"]
+
+
+class TestARationaleSaysWhy:
+    """`...` went into the record as the reason a governance change was
+    allowed (2026-09-27). A rationale is what an audit reads; a placeholder
+    is a decision with no reason."""
+
+    @pytest.mark.parametrize(
+        "rationale",
+        ["...", "ok", "LGTM", "n/a", "approved", "  looks good  ", "fine.", "Approve!"],
+    )
+    def test_a_placeholder_is_refused(self, client, admin_auth, tiered, rationale) -> None:
+        request = _request(client, admin_auth)
+        response = client.post(
+            f"/api/approvals/{request['id']}/decisions",
+            json={
+                "verdict": "approve",
+                "rationale": rationale,
+                "evidence_digest": request["evidence_digest"],
+            },
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 409, response.text
+        assert "rationale" in response.json()["detail"]
+
+    def test_a_real_reason_is_accepted(self, client, admin_auth, tiered) -> None:
+        agent = _mint(client, admin_auth)
+        request = _request(client, _bearer(agent["token"]))
+
+        response = _decide(client, admin_auth, request)
+
+        assert response.status_code == 200, response.text
