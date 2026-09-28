@@ -5398,25 +5398,65 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
 
+                # [#60516] AN ABSENT KEY USED TO PRODUCE A GREEN TICK, and the
+                # banner below said so out loud while the task went on to
+                # `exit 0`. Nothing downstream could tell the difference.
+                #
+                # MEASURED over 32 days of build logs:
+                #
+                #     08-27 08:05          1 build   "VALIDATED - models
+                #                                     currently served: N"
+                #     09-05 -> 09-08      10 builds  401
+                #     09-08 22:07 -> 09-17 51 BUILDS, ALL GREEN,
+                #                                    "NO ANTHROPIC KEY -
+                #                                     NO MODEL VALIDATION"
+                #     09-17 20:45 -> now  37 builds  401
+                #
+                # So the last time a Claude model id in TheHub was actually
+                # checked against the API was 2026-08-27, and the Hub recorded
+                # 51 successful `model_inventory` stage events for a check that
+                # never ran. A green tick meant either "validated" or "could not
+                # validate", and the incident filer treated both as evidence.
+                #
+                # SAME FAMILY AS THE INJECTION-CANARY FALSE GREEN (#60511), found
+                # the same day: a control that reports clean when it could not
+                # run. An unvalidated check is not a passed check.
                 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-                  echo "=================================================="
-                  echo "NO ANTHROPIC KEY - NO MODEL VALIDATION."
-                  echo "The inventory below is still produced, but nothing"
-                  echo "was checked against the API. This green tick does"
-                  echo "NOT say the models this code calls still exist."
-                  echo "=================================================="
-                  SERVED=""
-                else
-                  # --fail so an auth or network failure is a failed check
-                  # rather than an empty served-set, which would otherwise
-                  # mark every model retired and produce a very confident
-                  # wrong answer.
-                  curl --fail --silent --show-error --max-time 30 \
-                    -H "x-api-key: $ANTHROPIC_API_KEY" \
-                    -H "anthropic-version: 2023-06-01" \
-                    'https://api.anthropic.com/v1/models?limit=100' > models.json
-                  SERVED=models.json
+                  echo "::error::NO ANTHROPIC KEY - NO MODEL VALIDATION POSSIBLE."
+                  echo "Set ((anthropic-api-key)) in Vault at concourse/main/."
+                  echo "This stage FAILS rather than passing, because a green"
+                  echo "model_inventory has to mean the models were compared"
+                  echo "against the live API. It said the opposite for 51"
+                  echo "consecutive builds and nobody could see it (#60516)."
+                  exit 1
                 fi
+
+                # THE BODY IS THE DIAGNOSIS, and `--fail` threw it away. All 47
+                # failing logs over 32 days say only
+                #     curl: (22) The requested URL returned error: 401
+                # which cannot distinguish an authentication_error from an
+                # invalid_x_api_key from credit exhaustion -- three different
+                # operator actions. Capturing the status and the body names
+                # which 401 this is.
+                #
+                # Anthropic's error bodies carry a type and a message and never
+                # echo the key, so printing a bounded prefix is safe; the bound
+                # is belt-and-braces rather than a known risk.
+                HTTP=$(curl --silent --show-error --max-time 30 \
+                  -H "x-api-key: $ANTHROPIC_API_KEY" \
+                  -H "anthropic-version: 2023-06-01" \
+                  -o models.json -w '%{http_code}' \
+                  'https://api.anthropic.com/v1/models?limit=100') || HTTP=000
+
+                if [ "$HTTP" != "200" ]; then
+                  echo "::error::Anthropic /v1/models returned HTTP ${HTTP}."
+                  echo "Response body (which --fail used to discard):"
+                  head -c 400 models.json || true
+                  echo
+                  echo "000 means curl could not complete the request at all."
+                  exit 1
+                fi
+                SERVED=models.json
 
                 cat > check.py <<'PY'
                 import json, os, re, sys, pathlib
