@@ -1075,15 +1075,54 @@ jobs:
               - |
                 set -uo pipefail
 
-                # The audit's own exit code is the verdict and must survive to
-                # the end of this task, so it is captured rather than allowed
-                # to kill the shell -- the memo has to be written and shipped
-                # even when the audit failed, because a BROKEN memo is the most
-                # useful one there is. `set -e` is off for exactly this line.
+                # [#60524] THE COMMENT BELOW USED TO BE FALSE, and it cost this
+                # job its entire log.
+                #
+                # It said "`set -e` is off for exactly this line". It was not:
+                # `args` begins `-ec`, and `set -uo pipefail` does not clear
+                # `-e`. So the audit's non-zero exit killed the shell AT the
+                # redirect, and `RC=$?`, the echo, the `cat memo/stderr.txt` and
+                # the `notify/message.txt` Slack line all never ran. Measured on
+                # build 1.1 (2026-09-24 02:32): 0 of 30 log events on that build
+                # came from this task, which is why incident #35609 reads "No
+                # output captured" -- the task had genuinely said nothing.
+                #
+                # `if` makes the intent real rather than asserted: a command in
+                # an `if` condition is exempt from `-e` by POSIX, so the exit
+                # code survives without turning `-e` off for the whole body.
+                #
+                # The audit's own exit code IS the verdict and must reach the end
+                # of this task: the memo has to be written and shipped even when
+                # the audit failed, because a BROKEN memo is the most useful one
+                # there is.
                 STAMP="$(date +%Y%m%d)"
                 OUT="memo/cicd-drift-audit-${STAMP}.md"
-                bash source/scripts/audit-cicd-drift.sh > "$OUT" 2> memo/stderr.txt
-                RC=$?
+
+                # [#60524] PyYAML, without which the audit's GHA half reports
+                # "BROKEN: this workflow yielded no jobs" for every file and the
+                # script exits 1 by design (#60006). `scripts/lib/gha_jobs.py`
+                # requires it and REFUSES to fall back to a text match -- a
+                # deliberate choice, because a regex that half-reads a workflow
+                # produces a drift report that is worse than none.
+                #
+                # The failure is recorded rather than swallowed: if the install
+                # cannot run, the audit still runs and still reports BROKEN, and
+                # this line says which of the two happened.
+                # `--root-user-action=ignore` because this task IS root in a
+                # throwaway container and pip's four-line venv warning would land
+                # in the one log this whole fix exists to make readable.
+                if ! pip install --quiet --no-input --root-user-action=ignore pyyaml; then
+                  echo "WARNING: pip install pyyaml failed; the GHA half of the" \
+                       "audit will report BROKEN for every workflow and this" \
+                       "task will exit non-zero for that reason rather than" \
+                       "because the estate has drifted."
+                fi
+
+                if bash source/scripts/audit-cicd-drift.sh > "$OUT" 2> memo/stderr.txt; then
+                  RC=0
+                else
+                  RC=$?
+                fi
 
                 echo "audit exit code: ${RC}"
                 cat memo/stderr.txt || true
