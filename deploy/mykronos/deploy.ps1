@@ -63,6 +63,22 @@
     is not "asked and it was fine", and the operator must never have to infer
     which one happened from the absence of something.
 
+    AND IT WAITS FOR THE ANSWER (#735). The gate is not part of Delivery: it
+    runs in Concourse after every scan lane for the commit has finished,
+    which on 2026-09-29 was 29 and 32 minutes after Delivery went green. The
+    documented procedure - wait for Delivery, then deploy - therefore asked
+    before the gate had answered, and every deploy that day printed NOT
+    JUDGED. So when there is no decision yet this script polls for one, for
+    -GateWaitMinutes (45 by default), and only then falls back to NOT JUDGED.
+
+    AND IT HEARS THE FLOOR (#735). The gate job does not refuse on the
+    recommendation - that describes the whole backlog and is almost never
+    no_go (D-048). It refuses when the commit INTRODUCED an open critical or
+    high. This script used to read only the recommendation, so a commit the
+    gate had refused would have shipped with a yellow note. `introduced_blocking`
+    is now a refusal here too, with the same -Force -ForceReason override,
+    and a recorded override on the decision clears it.
+
     SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
     default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
     and still retags `:latest` on the LAN registry (192.168.0.14:5000). If you
@@ -81,6 +97,12 @@
     Where to ask for the sha's risk decision. The local backend by default -
     the same address this script already reads `/healthz` from, so it adds no
     new host, no new port and no new credential store.
+
+.PARAMETER GateWaitMinutes
+    How long to wait for the risk gate to score the sha when it has not yet
+    (#735). Default 45: the gate has answered about 30 minutes after Delivery.
+    0 asks once and does not wait - the old behaviour, for an emergency
+    deploy where the ledger's NOT JUDGED line is the accepted cost.
 
 .PARAMETER Force
     Deploy a sha the risk gate refused. Requires -ForceReason, and the reason
@@ -128,6 +150,9 @@ param(
     # backend this script already reads /healthz from, so the new dependency
     # is a route, not a machine.
     [string]$PlatformUrl = "http://127.0.0.1:8100",
+    # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
+    [ValidateRange(0, 180)]
+    [int]$GateWaitMinutes = 45,
     # Ship a sha the gate refused. Needs -ForceReason; see the banner it
     # prints and the ledger it writes.
     [switch]$Force,
@@ -248,6 +273,14 @@ function Get-RiskVerdict {
     if ($answer.effective_recommendation -eq "no_go") {
         return @{ State = "refused"; Decision = $answer }
     }
+    # The floor the gate job actually refuses on (#735, D-048). Only an
+    # explicit true counts: a backend older than the field answers nothing,
+    # and that falls through to the recommendation exactly as before. A
+    # recorded override on the decision is the human call, and clears it -
+    # which is what -Force records below.
+    if ($answer.introduced_blocking -eq $true -and -not $answer.overridden) {
+        return @{ State = "refused"; Decision = $answer; Floor = $true }
+    }
     # An allow-list, not "anything that is not no_go". A verdict this script
     # does not recognise - a null, an empty string, a word a later policy
     # introduces - must not fall through to a pass. Under a fail-open gate the
@@ -277,6 +310,26 @@ $riskTokenIsAdmin = [bool]$riskToken
 if (-not $riskToken) { $riskToken = Read-EnvValue $backendEnv "MYKRONOS_VIEWER_TOKEN" }
 
 $verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+
+# #735: "no decision yet" is usually "the gate has not run yet". Wait for it,
+# bounded, and say so - a silent 30-minute pause reads as a hang.
+if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
+    Write-Host ("No risk decision for $Tag yet. The gate runs after every scan lane, " +
+        "about 30 minutes after Delivery. Waiting up to $GateWaitMinutes minutes " +
+        "(-GateWaitMinutes 0 skips; Ctrl+C stops with nothing pulled).") -ForegroundColor Yellow
+    $waitStart = Get-Date
+    $deadline = $waitStart.AddMinutes($GateWaitMinutes)
+    $lastReport = 0
+    while ($verdict.State -eq "unjudged" -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 30
+        $verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+        $waitedMinutes = [int][math]::Floor(((Get-Date) - $waitStart).TotalMinutes)
+        if ($verdict.State -eq "unjudged" -and $waitedMinutes -ge $lastReport + 5) {
+            $lastReport = $waitedMinutes
+            Write-Host "  still waiting for the gate: $waitedMinutes of $GateWaitMinutes minutes" -ForegroundColor DarkGray
+        }
+    }
+}
 $decision = $verdict.Decision
 
 # Repeated as the very last line of the run. The banner above scrolls away
@@ -306,6 +359,7 @@ switch ($verdict.State) {
             -Heading "NOT JUDGED - NO RISK DECISION EXISTS FOR $Tag" `
             -Lines @(
                 "The platform was reached and asked. It has never scored this commit.",
+                $(if ($GateWaitMinutes -gt 0) { "Waited $GateWaitMinutes minutes for the gate to answer." } else { "Did not wait for the gate (-GateWaitMinutes 0)." }),
                 "",
                 "THAT IS NOT A PASS. It is the absence of one, and it is a different",
                 "fact from 'asked, and it was fine'. Most likely the oracle gate did",
@@ -315,7 +369,8 @@ switch ($verdict.State) {
                 "that cannot answer must not be worse than the no check before it."
             )
         $riskSummary = "Risk gate: NOT JUDGED - nothing has ever scored $Tag. It shipped unassessed."
-        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unjudged" } | Out-Null
+        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unjudged";
+            waited_minutes = $GateWaitMinutes } | Out-Null
         Start-Sleep -Seconds 5
     }
 
@@ -340,6 +395,14 @@ switch ($verdict.State) {
     }
 
     "refused" {
+        $intro = $decision.introduced
+        $newCritical = if ($intro -and $intro.critical) { $intro.critical } else { 0 }
+        $newHigh = if ($intro -and $intro.high) { $intro.high } else { 0 }
+        $why = if ($verdict.Floor) {
+            "The risk gate refused ${Tag}: it introduced $newCritical critical and $newHigh high open finding(s) (D-048)."
+        } else {
+            "The risk gate scored $Tag no_go."
+        }
         $detail = @(
             "Score $($decision.overall_risk_score), policy $($decision.policy_version), decided $($decision.evaluated_at).",
             "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
@@ -347,10 +410,10 @@ switch ($verdict.State) {
         )
 
         if (-not $Force) {
-            $lines = @("The risk gate scored $Tag no_go. Nothing has been pulled.") + $detail + @(
+            $lines = @("$why Nothing has been pulled.") + $detail + @(
                 "",
                 "To deploy it anyway:",
-                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships despite no_go>""",
+                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships despite the refusal>""",
                 "",
                 "The reason is written to deploy-risk-log.jsonl and, with an admin",
                 "token, recorded against the decision itself so the override is",
@@ -364,13 +427,13 @@ switch ($verdict.State) {
                 recommendation = $decision.recommendation;
                 effective = $decision.effective_recommendation;
                 decision_id = $decision.decision_id; score = $decision.overall_risk_score;
-                repo = $decision.repo_full_name } | Out-Null
+                repo = $decision.repo_full_name; floor = [bool]$verdict.Floor } | Out-Null
             throw ($lines -join [Environment]::NewLine)
         }
 
         Write-RiskBanner -Color Red `
-            -Heading "OVERRIDDEN - SHIPPING A no_go SHA" `
-            -Lines (@("$Tag was refused by the risk gate and is being deployed anyway.") + $detail + @(
+            -Heading "OVERRIDDEN - SHIPPING A REFUSED SHA" `
+            -Lines (@("$why It is being deployed anyway.") + $detail + @(
                 "",
                 "Reason given: $ForceReason"
             ))
@@ -382,7 +445,7 @@ switch ($verdict.State) {
             recommendation = $decision.recommendation;
             effective = $decision.effective_recommendation;
             decision_id = $decision.decision_id; score = $decision.overall_risk_score;
-            repo = $decision.repo_full_name; reason = $ForceReason }
+            repo = $decision.repo_full_name; floor = [bool]$verdict.Floor; reason = $ForceReason }
         if (-not $recorded) {
             throw "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
         }
@@ -413,7 +476,7 @@ switch ($verdict.State) {
             Write-Host "No MYKRONOS_ADMIN_TOKEN here, so the override is in the local ledger only." -ForegroundColor Yellow
         }
 
-        $riskSummary = "Risk gate: OVERRIDDEN - $Tag was no_go and shipped with -Force ($pushed). Reason: $ForceReason"
+        $riskSummary = "Risk gate: OVERRIDDEN - $Tag was refused and shipped with -Force ($pushed). Reason: $ForceReason"
         Start-Sleep -Seconds 5
     }
 }

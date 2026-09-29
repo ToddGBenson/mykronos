@@ -3576,6 +3576,26 @@ export interface components {
             policy_version?: string | null;
             /** Evaluated At */
             evaluated_at?: string | null;
+            /**
+             * Introduced
+             * @description Open findings this commit introduced, by severity, judged now (D-048) - the same count `/evaluate` returns to the gate job.
+             */
+            introduced?: {
+                [key: string]: number;
+            };
+            /**
+             * Disclosed
+             * @description Newly disclosed in unchanged images; never blocking (#734).
+             */
+            disclosed?: {
+                [key: string]: number;
+            };
+            /**
+             * Introduced Blocking
+             * @description Whether this commit introduced an open critical or high - the floor the gate job refuses on (#735). `recommendation` describes the whole backlog and is almost never `no_go`, so a deploy host that read only the recommendation shipped commits the gate had refused. Judged now, so a finding dispositioned since no longer counts.
+             * @default false
+             */
+            introduced_blocking: boolean;
         };
         /** ConsultAnswerOut */
         ConsultAnswerOut: {

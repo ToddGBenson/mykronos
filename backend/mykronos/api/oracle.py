@@ -380,6 +380,28 @@ class CommitDecisionOut(BaseModel):
     reasoning: str | None = None
     policy_version: str | None = None
     evaluated_at: str | None = None
+    introduced: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Open findings this commit introduced, by severity, judged now "
+            "(D-048) - the same count `/evaluate` returns to the gate job."
+        ),
+    )
+    disclosed: dict[str, int] = Field(
+        default_factory=dict,
+        description="Newly disclosed in unchanged images; never blocking (#734).",
+    )
+    introduced_blocking: bool = Field(
+        default=False,
+        description=(
+            "Whether this commit introduced an open critical or high - the "
+            "floor the gate job refuses on (#735). `recommendation` describes "
+            "the whole backlog and is almost never `no_go`, so a deploy host "
+            "that read only the recommendation shipped commits the gate had "
+            "refused. Judged now, so a finding dispositioned since no longer "
+            "counts."
+        ),
+    )
 
 
 @router.get("/decisions/by-commit/{commit_sha}", response_model=CommitDecisionOut)
@@ -430,6 +452,12 @@ async def decision_for_commit(
         evaluated_at = raw_evaluated_at.isoformat()
     else:
         evaluated_at = str(raw_evaluated_at)
+    # Keyed by the sha the decision was filed under, which is the full one:
+    # scan runs carry 40 characters, and the operator may have typed 7.
+    queries = DashboardQueries(request.app.state.catalog)
+    repo = str(record["repo_full_name"])
+    filed_sha = str(record.get("commit_sha") or commit_sha)
+    introduced = queries.introduced_by(repo, filed_sha)
     return CommitDecisionOut(
         commit_sha=commit_sha,
         found=True,
@@ -444,6 +472,10 @@ async def decision_for_commit(
         reasoning=str(record.get("reasoning") or ""),
         policy_version=str(record.get("policy_version") or ""),
         evaluated_at=evaluated_at,
+        introduced=introduced,
+        disclosed=queries.disclosed_by(repo, filed_sha),
+        # The same floor as `/evaluate`, from the same constant rule.
+        introduced_blocking=bool(introduced.get("critical") or introduced.get("high")),
     )
 
 
