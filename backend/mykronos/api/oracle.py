@@ -86,6 +86,15 @@ class EvaluateResult(BaseModel):
             "therefore refuses every commit once the backlog is large."
         ),
     )
+    disclosed: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Open container findings this commit's scans saw first in an image "
+            "the previous scan had already seen byte for byte (#734): the "
+            "vulnerability database moved, not the commit. Reported so they "
+            "are not lost, and excluded from `introduced` and the floor."
+        ),
+    )
     introduced_blocking: bool = Field(
         default=False,
         description=(
@@ -217,9 +226,9 @@ async def evaluate(
 
     # The severity floor. Deliberately a constant rather than policy: a floor
     # an operator can lower under pressure is a floor that reaches zero.
-    introduced = DashboardQueries(request.app.state.catalog).introduced_by(
-        token.repo_full_name, body.commit_sha
-    )
+    queries = DashboardQueries(request.app.state.catalog)
+    introduced = queries.introduced_by(token.repo_full_name, body.commit_sha)
+    disclosed = queries.disclosed_by(token.repo_full_name, body.commit_sha)
     introduced_blocking = bool(
         introduced.get("critical", 0) or introduced.get("high", 0)
     )
@@ -235,6 +244,7 @@ async def evaluate(
         check_run_id=published.check_run_id,
         check_run_error=published.check_run_error,
         introduced=introduced,
+        disclosed=disclosed,
         introduced_blocking=introduced_blocking,
     )
 

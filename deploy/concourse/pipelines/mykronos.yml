@@ -2101,6 +2101,12 @@ jobs:
                 fi
 
                 echo "Introduced by this commit: ${NEW_CRITICAL} critical, ${NEW_HIGH} high."
+                # #734: new CVEs in images this commit did not change. Shown,
+                # never blocking - the database moved, not the code.
+                DISCLOSED=$(jq -r '.disclosed // {} | to_entries | map("\(.value) \(.key)") | join(", ")' decision.json)
+                if [ -n "$DISCLOSED" ]; then
+                  echo "Newly disclosed in unchanged images (not blocking): ${DISCLOSED}."
+                fi
 
                 if [ "$INTRODUCED_BLOCKING" = "true" ]; then
                   echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."

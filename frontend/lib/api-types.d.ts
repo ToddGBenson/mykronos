@@ -4238,6 +4238,13 @@ export interface components {
                 [key: string]: number;
             };
             /**
+             * Disclosed
+             * @description Open container findings this commit's scans saw first in an image the previous scan had already seen byte for byte (#734): the vulnerability database moved, not the commit. Reported so they are not lost, and excluded from `introduced` and the floor.
+             */
+            disclosed?: {
+                [key: string]: number;
+            };
+            /**
              * Introduced Blocking
              * @description Whether this commit introduced an open finding at or above the severity floor. Unambiguous, and it does not drift as the backlog grows - which is why it replaces the composite score as the thing CI blocks on.
              * @default false

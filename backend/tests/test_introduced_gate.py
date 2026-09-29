@@ -8,6 +8,8 @@ off, and then it protects nothing.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,6 +22,7 @@ from tests.conftest import (
     post_findings,
     post_scan,
 )
+from tests.test_reprocess import _set_raw_ref
 
 
 @pytest.fixture
@@ -228,3 +231,159 @@ class TestTheGateDecision:
         ).json()
 
         assert body["introduced_blocking"] is False
+
+
+# -- #734: newly disclosed is not introduced ---------------------------------
+
+ZAP = "ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31"
+SAME_BYTES = "sha256:9e18"
+REBUILT = "sha256:77aa"
+
+
+def _container_scan(
+    client, run_compaction, scan_run_id, commit, started_at, image_id, cves
+):
+    """One containers scan of the ZAP image: its findings, and the archived
+    Trivy report whose run properties say which bytes were scanned."""
+    auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'containers')}"}
+    post_scan(
+        client,
+        auth,
+        scan_run_id=scan_run_id,
+        commit_sha=commit,
+        capability="containers",
+        tool_name="trivy",
+        tool_version="0.58.1",
+        started_at=started_at,
+    )
+    post_findings(
+        client,
+        auth,
+        [
+            finding_payload(
+                rule_id=cve,
+                severity="high",
+                title=f"libxtst6 {cve}",
+                file_path="zaproxy/zaproxy",
+                line_start=1,
+                line_end=1,
+                symbol=None,
+                code_snippet=None,
+                package_name="libxtst6",
+                package_version="2:1.2.5-1",
+                raw_finding_json={"ruleId": cve, "image": ZAP},
+            )
+            for cve in cves
+        ],
+        scan_run_id=scan_run_id,
+        capability="containers",
+    )
+    settings = client.app.state.settings
+    owner, name = REPO.split("/")
+    folder = settings.raw_dir / owner / name / scan_run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    report = {
+        "version": "2.1.0",
+        "runs": [{"results": [], "properties": {"imageName": ZAP, "imageID": image_id}}],
+    }
+    (folder / "trivy-estate-zap.sarif").write_text(json.dumps(report), encoding="utf-8")
+    run_compaction()
+    _set_raw_ref(
+        client.app.state.catalog,
+        scan_run_id,
+        f"raw/{owner}/{name}/{scan_run_id}/trivy-estate-zap.sarif",
+    )
+
+
+class TestNewlyDisclosedIsNotIntroduced:
+    def test_a_new_cve_in_unchanged_bytes_is_disclosed_not_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The refusal of 1588e40: the ZAP image had the same imageID in the
+        scan before, so the new high came from the vulnerability database,
+        not from the commit."""
+        _container_scan(
+            client, run_compaction, "ctr-old", OLD, "2026-09-29T01:18:00", SAME_BYTES,
+            ["CVE-OLD"],
+        )
+        _container_scan(
+            client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00", SAME_BYTES,
+            ["CVE-OLD", "CVE-NEW"],
+        )
+
+        queries = DashboardQueries(catalog)
+        assert queries.introduced_by(REPO, NEW) == {}
+        assert queries.introduced_rows(REPO, NEW) == []
+        assert queries.disclosed_by(REPO, NEW) == {"high": 1}
+
+    def test_a_rebuilt_image_still_introduces(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """Different bytes: the commit may well have changed the image, and
+        a new high in it is the commit's to answer for."""
+        _container_scan(
+            client, run_compaction, "ctr-old", OLD, "2026-09-29T01:18:00", SAME_BYTES,
+            ["CVE-OLD"],
+        )
+        _container_scan(
+            client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00", REBUILT,
+            ["CVE-OLD", "CVE-NEW"],
+        )
+
+        queries = DashboardQueries(catalog)
+        assert queries.introduced_by(REPO, NEW) == {"high": 1}
+        assert queries.disclosed_by(REPO, NEW) == {}
+
+    def test_with_no_earlier_scan_everything_is_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """No evidence the image existed before, so no excuse."""
+        _container_scan(
+            client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00", SAME_BYTES,
+            ["CVE-NEW"],
+        )
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
+    def test_a_missing_archive_counts_as_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The comparison needs both reports. Losing one must not open the
+        gate - missing evidence answers "introduced"."""
+        _container_scan(
+            client, run_compaction, "ctr-old", OLD, "2026-09-29T01:18:00", SAME_BYTES,
+            ["CVE-OLD"],
+        )
+        _container_scan(
+            client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00", SAME_BYTES,
+            ["CVE-OLD", "CVE-NEW"],
+        )
+        owner, name = REPO.split("/")
+        (
+            client.app.state.settings.raw_dir / owner / name / "ctr-old"
+            / "trivy-estate-zap.sarif"
+        ).unlink()
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
+    def test_the_gate_reports_it_and_does_not_block_on_it(
+        self, client, oracle_auth, run_compaction
+    ) -> None:
+        _container_scan(
+            client, run_compaction, "ctr-old", OLD, "2026-09-29T01:18:00", SAME_BYTES,
+            ["CVE-OLD"],
+        )
+        _container_scan(
+            client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00", SAME_BYTES,
+            ["CVE-OLD", "CVE-NEW"],
+        )
+
+        body = client.post(
+            "/api/oracle/evaluate",
+            json={"commit_sha": NEW, "decision_type": "portfolio"},
+            headers=oracle_auth,
+        ).json()
+
+        assert body["introduced_blocking"] is False
+        assert body["introduced"] == {}
+        assert body["disclosed"] == {"high": 1}
