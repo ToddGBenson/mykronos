@@ -120,7 +120,7 @@ requests for a human to review. **Patchwork never merges anything itself.**
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `source_capabilities` | list | `["sast", "secrets", "containers", "iac"]` | which capabilities' findings Patchwork may generate a **fix** for. Code-fixable by construction — see §5a |
+| `source_capabilities` | list | `["sast", "secrets", "containers", "iac", "atlas"]` | which capabilities' findings Patchwork may generate a **fix** for. Code-fixable by construction — see §5a |
 | `correlation_capabilities` | list | every capability | which capabilities' findings **toxic-combination detection** may consider (§5a) |
 | `min_confidence_to_generate_fix` | float (0–1) | `0.7` | below this, stage stops at `no_fix_available` rather than generating a possibly-wrong fix |
 | ~~`fix_generator_url`~~ | — | — | **Withdrawn (D-096).** Never reached an HTTP call; see §2 stage 4. Stripped from stored configs on save rather than rejected, so a repo configured before the withdrawal still saves |
