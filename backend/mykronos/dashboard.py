@@ -503,6 +503,16 @@ REPORTS_ELSEWHERE: dict[str, tuple[str, str]] = {
 }
 
 
+_INTRODUCED_FIELDS = ("severity", "capability", "rule_id", "title", "file_path", "line_start")
+
+
+def _by_severity(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["severity"]] = counts.get(row["severity"], 0) + 1
+    return counts
+
+
 class DashboardQueries:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
@@ -2015,9 +2025,32 @@ class DashboardQueries:
         a false positive, an accepted risk - is not a reason to refuse the
         commit that introduced it.
         """
+        introduced, _ = self._first_seen_at(repo_full_name, commit_sha)
+        return _by_severity(introduced)
+
+    def disclosed_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
+        """Open container findings this commit's scans saw first in an image
+        the previous scan had already seen, byte for byte (#734).
+
+        Reported beside `introduced_by`, never inside it: the finding is real
+        and open, but the vulnerability database moved, not the commit.
+        """
+        _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
+        return _by_severity(disclosed)
+
+    def _first_seen_at(
+        self, repo_full_name: str, commit_sha: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Open findings first seen by a scan of this commit, split into
+        (introduced, newly disclosed). The one definition both `introduced_by`
+        and `introduced_rows` read, so they cannot disagree."""
+        from mykronos.disclosure import CAPABILITY, disclosed_ids
+
         rows = self.catalog.query(
             """
-            SELECT f.severity, count(*)
+            SELECT f.finding_id, f.severity, f.capability, f.rule_id, f.title,
+                   f.file_path, f.line_start, f.first_seen_scan_run_id,
+                   json_extract_string(f.raw_finding_json, '$.image')
             FROM findings f
             WHERE f.asset_id = ?
               AND f.status = 'open'
@@ -2025,11 +2058,40 @@ class DashboardQueries:
                     SELECT scan_run_id FROM scan_runs
                     WHERE repo_full_name = ? AND commit_sha = ?
               )
-            GROUP BY 1
             """,
             [repo_full_name, repo_full_name, commit_sha],
         )
-        return {str(severity): int(count) for severity, count in rows}
+        found = [
+            {
+                "finding_id": str(finding_id),
+                "severity": str(severity),
+                "capability": str(capability),
+                "rule_id": str(rule_id),
+                "title": str(title),
+                "file_path": None if file_path is None else str(file_path),
+                "line_start": None if line_start is None else int(line_start),
+                "_scan": str(scan),
+                "_image": None if image is None else str(image),
+            }
+            for (
+                finding_id, severity, capability, rule_id, title,
+                file_path, line_start, scan, image,
+            ) in rows
+        ]
+        disclosed = disclosed_ids(
+            self.catalog,
+            [
+                (
+                    str(row["finding_id"]),
+                    str(row["_scan"]),
+                    None if row["_image"] is None else str(row["_image"]),
+                )
+                for row in found
+                if row["capability"] == CAPABILITY
+            ],
+        )
+        introduced = [row for row in found if row["finding_id"] not in disclosed]
+        return introduced, [row for row in found if row["finding_id"] in disclosed]
 
     def introduced_rows(
         self, repo_full_name: str, commit_sha: str, *, limit: int = 25
@@ -2046,35 +2108,15 @@ class DashboardQueries:
         better served by the worst twenty-five and a count than by sixty rows
         nobody scrolls.
         """
-        rows = self.catalog.query(
-            """
-            SELECT f.severity, f.capability, f.rule_id, f.title,
-                   f.file_path, f.line_start
-            FROM findings f
-            WHERE f.asset_id = ?
-              AND f.status = 'open'
-              AND f.first_seen_scan_run_id IN (
-                    SELECT scan_run_id FROM scan_runs
-                    WHERE repo_full_name = ? AND commit_sha = ?
-              )
-            ORDER BY CASE f.severity
-                       WHEN 'critical' THEN 0 WHEN 'high' THEN 1
-                       WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-                     f.capability, f.rule_id
-            LIMIT ?
-            """,
-            [repo_full_name, repo_full_name, commit_sha, limit],
+        introduced, _ = self._first_seen_at(repo_full_name, commit_sha)
+        introduced.sort(
+            key=lambda row: (
+                -_SEVERITY_RANK.get(row["severity"], -1), row["capability"], row["rule_id"]
+            )
         )
         return [
-            {
-                "severity": str(severity),
-                "capability": str(capability),
-                "rule_id": str(rule_id),
-                "title": str(title),
-                "file_path": None if file_path is None else str(file_path),
-                "line_start": None if line_start is None else int(line_start),
-            }
-            for severity, capability, rule_id, title, file_path, line_start in rows
+            {k: v for k, v in row.items() if k in _INTRODUCED_FIELDS}
+            for row in introduced[:limit]
         ]
 
     def vulnerability_management(self, repo_full_name: str | None = None) -> dict[str, Any]:
