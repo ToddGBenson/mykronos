@@ -5760,3 +5760,43 @@ is the image's own `silo healthcheck ready`.
 
 The service keeps its name and container name, because pipelines address it
 as S3 and renaming it would orphan the container.
+
+## D-130 — A decision's rationale is at least 20 characters, and a placeholder is refused
+
+**2026-09-27.** **Status:** Decided by the operator, implemented (#716; wording corrected in #718)
+
+The approval engine (spec 34) refused only an **empty** rationale. On
+2026-09-27 the governance-tier approval of #708 went onto the hash-chained
+record with the rationale `...`. A rationale is what an audit reads to learn
+*why* an action was allowed. A decision whose reason is `...` is a decision
+with no reason, and the chain proves only that someone pressed a button.
+
+**The rule.** `rationale_problem()` in `backend/mykronos/approvals/engine.py`
+refuses, with a message saying what to write instead:
+
+- a **placeholder**: the text compared case-insensitively, with punctuation
+  ignored, against a fixed list (`ok`, `lgtm`, `looks good`, `n/a`,
+  `approved`, `fine`, `done`, `see above`, `reviewed`, …);
+- anything **under 20 characters**.
+
+**It applies to people and agents alike.** Spec 34 §4.3 says only that an
+*agent* approver's rationale "is required and stored". It sets no length and
+lists no placeholders. This decision is the source of both, not the spec:
+#716 first cited §4.3 for them, and #718 removed that citation as untrue.
+Amending spec 34 to point here is open.
+
+**20 is a judgment, not a measurement.** It is long enough that a real reason
+fits ("Reviewed diff: set -e fix correct" is 33), and short enough not to
+invite padding. It is the number to revisit if people start padding to clear it.
+
+**Rejected.**
+- *Warn only* (accept, flag the decision `thin_rationale`). A flag nobody
+  reads changes nothing, and the record still has no reason.
+- *Leave it* (any non-empty text). That is how `...` got in.
+
+**Consequences.** Existing decisions are untouched, `...` on #708 included:
+the chain is append-only, and rewriting it to tidy the record would be worse
+than the placeholder. The operator's helpers (`decide.ps1`, `review.ps1`)
+ask for 20+ characters before they call the API, so the refusal is rarely
+the first a person hears of it.
+
