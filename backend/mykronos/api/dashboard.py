@@ -8,6 +8,7 @@ policy — which is why it demands a reason.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -3391,6 +3392,10 @@ def _lane_branches(request: Request, repo_full_name: str) -> dict[str, str]:
     return out
 
 
+#: How long a repository's language mix is reused before GitHub is asked again.
+LANGUAGES_TTL_SECONDS = 6 * 3600
+
+
 async def _languages(
     request: Request,
 ) -> tuple[dict[str, dict[str, int]], dict[str, str | list[str]]]:
@@ -3441,15 +3446,35 @@ async def _languages(
         for name in configured
     }
 
-    languages: dict[str, dict[str, int]] = {}
-    for name, installation_id in rows:
+    # Concurrent, and cached per repository for LANGUAGES_TTL (#730). One
+    # sequential GitHub call per repository - each minting its own installation
+    # token - made this endpoint 11 s, and the Vulnerability Management page
+    # waits on it. A language mix moves on the scale of weeks; six hours old is
+    # still "live" for the question this answers. A failed read is never
+    # cached, so "could not look" is retried rather than remembered.
+    cache: dict[str, tuple[float, dict[str, int]]] = getattr(
+        request.app.state, "languages_cache", None
+    ) or {}
+    request.app.state.languages_cache = cache
+    now = time.monotonic()
+
+    async def one(name: str, installation_id: int | None) -> tuple[str, dict[str, int] | None]:
+        hit = cache.get(name)
+        if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
+            return name, hit[1]
         try:
             counts = await request.app.state.github_factory.for_installation(
                 installation_id
             ).languages(name)
         except Exception:  # noqa: BLE001
             logger.warning("Could not read languages for %s", scrub(name))
-            continue
+            return name, None
+        if counts is not None:
+            cache[name] = (now, counts)
+        return name, counts
+
+    languages: dict[str, dict[str, int]] = {}
+    for name, counts in await asyncio.gather(*(one(n, i) for n, i in rows)):
         if counts is not None:
             languages[name] = counts
     return languages, tools
