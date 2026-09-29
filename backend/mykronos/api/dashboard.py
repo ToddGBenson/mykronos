@@ -673,6 +673,8 @@ class ToxicCombinationMemberOut(BaseModel):
     rule_id: str
     title: str
     severity: Severity
+    #: `accepted_risk` members count: accepting half a pair must not hide it.
+    status: str | None = None
     file_path: str | None = None
 
 
@@ -682,7 +684,11 @@ class ToxicCombinationOut(BaseModel):
     combination_id: str
     rule_id: str
     name: str
-    severity: Severity
+    severity: Severity = Field(
+        description="Worse than the worst member by the Oracle policy's "
+        "`escalate_steps`, and critical when a member is KEV-listed."
+    )
+    partly_accepted: bool = False
     rationale: str
     members: list[ToxicCombinationMemberOut]
 
@@ -1201,6 +1207,53 @@ async def pull_requests(request: Request, principal: PrincipalDep) -> PullReques
             UnreachableRepoOut(repo_full_name=name, reason=reason)
             for name, reason in result.unreachable
         ],
+    )
+
+
+class EstateToxicCombinationsOut(BaseModel):
+    """Every toxic combination in the estate, and what could not be looked for."""
+
+    count: int
+    by_severity: dict[str, int]
+    combinations: list[dict[str, Any]]
+    coverage: dict[str, Any] = Field(
+        description="Rules whose inputs never reach the lake cannot fire; an "
+        "empty list from them is not evidence of safety."
+    )
+
+
+@router.get("/toxic-combinations", response_model=EstateToxicCombinationsOut)
+async def toxic_combinations(
+    request: Request,
+    principal: PrincipalDep,
+    repo: Annotated[str | None, Query(max_length=255)] = None,
+) -> EstateToxicCombinationsOut:
+    """Toxic combinations across the estate (spec 08 §5), worst first.
+
+    The same detection and severity the Oracle's risk decision uses
+    (`mykronos.toxic`), including combinations with an accepted member.
+    """
+    from mykronos import toxic
+    from mykronos.oracle.policy import load_policy
+
+    catalog = request.app.state.catalog
+    try:
+        policy = load_policy(request.app.state.settings.oracle_policy_path)
+        steps = policy.toxic_combinations.escalate_steps
+    except Exception:  # noqa: BLE001 - the listing must not depend on the policy parsing
+        steps = 1
+    with request.app.state.db.session() as session:
+        combos = toxic.detect(catalog, repo=repo, session=session, escalate_steps=steps)
+    order = {s: i for i, s in enumerate(reversed(toxic.SEVERITIES))}
+    combos.sort(key=lambda c: (order.get(c.severity, 9), c.repo_full_name, c.name))
+    by_severity: dict[str, int] = {}
+    for c in combos:
+        by_severity[c.severity] = by_severity.get(c.severity, 0) + 1
+    return EstateToxicCombinationsOut(
+        count=len(combos),
+        by_severity=by_severity,
+        combinations=[c.to_dict() for c in combos],
+        coverage=toxic.coverage(catalog),
     )
 
 

@@ -703,6 +703,13 @@ class Briefing:
     #: page would ever mention it. The acceptance sweep failed for four days
     #: with the evidence sitting correct and unread in `job_runs`.
     unhealthy_jobs: list[Any] = field(default_factory=list)
+    #: Toxic combinations (`mykronos.toxic`), as dicts, worst first. Leads the
+    #: page: a combination is the most serious thing it can say.
+    toxic: list[dict[str, Any]] = field(default_factory=list)
+    #: `toxic.coverage()`: which rules could not fire for want of data.
+    toxic_coverage: dict[str, Any] | None = None
+    #: True when detection could not run. Not the same as none found.
+    toxic_unknown: bool = False
     #: True when job health could not be read at all. Distinct from an empty
     #: list, which means it was read and everything is running.
     jobs_unknown: bool = False
@@ -1359,6 +1366,8 @@ def build(
     failing_jobs: list[FailingLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
     tokens: list[TokenDelivery] | None = None,
+    toxic_combinations: list[dict[str, Any]] | None = None,
+    toxic_coverage: dict[str, Any] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1440,6 +1449,13 @@ def build(
         # direction.
         unhealthy_jobs=list(unhealthy_jobs or []),
         jobs_unknown=unhealthy_jobs is None,
+        toxic=[
+            c
+            for c in (toxic_combinations or [])
+            if asset_id is None or c.get("repo_full_name") == asset_id
+        ],
+        toxic_coverage=toxic_coverage,
+        toxic_unknown=toxic_combinations is None,
         # Scoped by `asset_id` unlike the three above it, because a token *is*
         # keyed by repository — it is the one thing in this group the lake's
         # denominator applies to.
@@ -1466,6 +1482,57 @@ def _cadence(days: float) -> str:
     return f"{hours:.0f} hours" if hours >= 1 else "few minutes"
 
 
+def _render_toxic(briefing: Briefing) -> list[str]:
+    """First on the page, and present even when empty.
+
+    Empty is still a statement worth its three lines: it says which rules
+    could not have fired, so "none found" cannot be read as "none present".
+    """
+    lines = ["TOXIC COMBINATIONS"]
+    if briefing.toxic_unknown:
+        return lines + [
+            "  Could not be computed. Not the same as none present.",
+            "",
+        ]
+    if briefing.toxic:
+        lines.append(
+            "  Findings that together are worse than apart. Each counts in the"
+        )
+        lines.append(
+            "  Oracle's risk decision; a critical one forces no_go on its own."
+        )
+        for c in briefing.toxic:
+            flags = []
+            if c.get("partly_accepted"):
+                flags.append("partly accepted")
+            if c.get("kev_cves"):
+                flags.append("KEV " + ", ".join(c["kev_cves"]))
+            repo = str(c.get("repo_full_name", "")).split("/")[-1]
+            lines.append(
+                f"  [{c['severity']}] {repo}  {c['name']}"
+                + (f"  ({'; '.join(flags)})" if flags else "")
+            )
+            for m in c.get("members", [])[:3]:
+                lines.append(
+                    f"      {m['capability']:<10} {m['severity']:<8} "
+                    f"{str(m['title'])[:60]}"
+                    + ("  [accepted]" if m.get("status") == "accepted_risk" else "")
+                )
+    else:
+        lines.append("  None detected in open or accepted findings.")
+    dark = (briefing.toxic_coverage or {}).get("cannot_fire") or []
+    total = (briefing.toxic_coverage or {}).get("rules")
+    if dark:
+        missing = sorted({cap for r in dark for cap in r.get("missing", [])})
+        lines.append(
+            f"  {len(dark)} of {total} rules cannot fire: no {' or '.join(missing)} "
+            "findings reach the lake, so"
+        )
+        lines.append("  their silence is not a clean result.")
+    lines += ["  → GET /api/dashboard/toxic-combinations", ""]
+    return lines
+
+
 def render(briefing: Briefing) -> str:
     """The briefing as a person reads it after a deploy."""
     lines = [
@@ -1473,6 +1540,8 @@ def render(briefing: Briefing) -> str:
         f"{briefing.total_open} open findings.",
         "",
     ]
+
+    lines += _render_toxic(briefing)
 
     # Split before deciding what to print, not after. A lane holding nothing
     # open is still broken and still worth knowing about, but it must not push

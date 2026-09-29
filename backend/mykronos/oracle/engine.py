@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from mykronos import blast_radius, governance, regression
+from mykronos import blast_radius, governance, regression, toxic
 from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskProfile, ThreatIntelMatch
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
@@ -150,6 +150,7 @@ MODIFIER_CATEGORIES = (
     "risk_profile",
     "governance",
     "blast_radius",
+    "toxic_combinations",
     "overdue_findings",
     "posture_credits",
 )
@@ -1728,6 +1729,54 @@ class OracleEngine:
         )
         return ([str(row[0]) for row in rows], blast_radius.build(self.catalog))
 
+    def _toxic_combinations(self, repo_full_name: str) -> tuple[dict[str, Any], float, bool]:
+        """Combinations in this repository, what they add, and whether one forces no_go.
+
+        Accepted findings are included (see `mykronos.toxic`). Points are per
+        combination by its escalated severity, capped; a critical one is not
+        also given points when it forces no_go, because the floor term already
+        carries it and counting it twice would double what the reader is told.
+        """
+        pol = self.policy.toxic_combinations
+        if self.db is not None:
+            with self.db.session() as session:
+                combos = toxic.detect(
+                    self.catalog, repo=repo_full_name, session=session,
+                    escalate_steps=pol.escalate_steps,
+                )
+        else:
+            combos = toxic.detect(
+                self.catalog, repo=repo_full_name, escalate_steps=pol.escalate_steps
+            )
+        forces = pol.critical_forces_no_go and any(c.severity == "critical" for c in combos)
+        points = sum(
+            pol.points.get(c.severity, 0.0)
+            for c in combos
+            if not (forces and c.severity == "critical")
+        )
+        points = min(points, pol.cap)
+        snapshot = {
+            "available": True,
+            "count": len(combos),
+            "forces_no_go": forces,
+            "contribution": round(points, 2),
+            "kev_threat_intel": self.db is not None,
+            "combinations": [
+                {
+                    "combination_id": c.combination_id,
+                    "rule_id": c.rule_id,
+                    "name": c.name,
+                    "severity": c.severity,
+                    "member_severity": c.member_severity,
+                    "kev_cves": list(c.kev_cves),
+                    "partly_accepted": c.partly_accepted,
+                    "finding_ids": [m["finding_id"] for m in c.members],
+                }
+                for c in combos
+            ],
+        }
+        return snapshot, points, forces
+
     def _governance(self, repo_full_name: str) -> dict[str, Any] | None:
         """The last reading of this repository's change controls (spec 30 §4).
 
@@ -2225,6 +2274,31 @@ class OracleEngine:
                 )
             )
 
+        # 7a. Toxic combinations (spec 08 §5; operator decision 2026-09-28).
+        #     Findings that together are worse than apart. Accepted members
+        #     count: accepting half a pair must not hide the pair.
+        toxic_snapshot, toxic_points, toxic_forces = self._toxic_combinations(repo_full_name)
+        if toxic_points:
+            named = toxic_snapshot["combinations"]
+            terms.append(
+                Term(
+                    key="toxic_combinations",
+                    label="Toxic combinations",
+                    contribution=toxic_points,
+                    detail=(
+                        f"{len(named)} combination(s): "
+                        + ", ".join(
+                            f"{c['name']} ({c['severity']}"
+                            + (", partly accepted" if c["partly_accepted"] else "")
+                            + ")"
+                            for c in named[:4]
+                        )
+                        + (" …" if len(named) > 4 else "")
+                    ),
+                    inputs={"combinations": named},
+                )
+            )
+
         # 7b. Change governance (spec 30 §4). With the profile rather than
         #     with the findings: how hard it is to get a bad change in is a
         #     fact about what this repository *is*, which is what the profile
@@ -2291,6 +2365,26 @@ class OracleEngine:
         terms.extend(posture_terms)
 
         raw_score = sum(term.contribution for term in terms)
+        # A critical toxic combination forces no_go (oracle-policy
+        # `critical_forces_no_go`). As a term, not a silent floor: the score
+        # is the sum of what the reasoning lists, and this is listed.
+        if toxic_forces and raw_score < self.policy.no_go:
+            critical = [c for c in toxic_snapshot["combinations"] if c["severity"] == "critical"]
+            lift = self.policy.no_go - raw_score
+            terms.append(
+                Term(
+                    key="toxic_combination_no_go",
+                    label="Critical toxic combination",
+                    contribution=lift,
+                    detail=(
+                        "A critical toxic combination forces no_go: "
+                        + ", ".join(c["name"] for c in critical[:3])
+                        + ". Resolve the combination, not one half of it."
+                    ),
+                    inputs={"combinations": critical},
+                )
+            )
+            raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
         # The verdict, and the one place a score is allowed not to be the whole
@@ -2358,6 +2452,7 @@ class OracleEngine:
             exploitable=exploitable,
             risk_profile=risk_profile,
             blast_radius_snapshot=radius_snapshot,
+            toxic_combinations_snapshot=toxic_snapshot,
             governance_snapshot=governance_snapshot,
             reachability_snapshot=reach_snapshot,
             overdue_snapshot=overdue_snapshot,
@@ -2405,6 +2500,7 @@ class OracleEngine:
         exploitable: list[dict[str, Any]] | None = None,
         risk_profile: dict[str, Any] | None = None,
         blast_radius_snapshot: dict[str, Any] | None = None,
+        toxic_combinations_snapshot: dict[str, Any] | None = None,
         governance_snapshot: dict[str, Any] | None = None,
         reachability_snapshot: dict[str, Any] | None = None,
         overdue_snapshot: dict[str, Any] | None = None,
@@ -2500,6 +2596,9 @@ class OracleEngine:
             "risk_profile": _risk_profile_snapshot(risk_profile, self.policy)[0],
             "blast_radius": blast_radius_snapshot
             or blast_radius.snapshot([], None)[0],
+            "toxic_combinations": toxic_combinations_snapshot
+            or {"available": False, "reason": "Not computed for this decision.",
+                "count": 0, "contribution": 0.0, "combinations": []},
             # spec 09 §9: a category with nothing to say still appears, so a
             # reader can tell "not weighed" from "weighed and found nothing".
             "governance": governance_snapshot
@@ -2563,7 +2662,13 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     # decision can still have Atlas or Aegis data to report, and the old
     # unconditional "every other category is unavailable" was wrong exactly
     # in that case — restated to say what is actually known, not guessed.
-    unavailable = [name for name in MODIFIER_CATEGORIES if not snapshot[name]["available"]]
+    # `name in snapshot`: a decision stored before a category existed is
+    # re-rendered as it was, not told the new category was "not consulted".
+    unavailable = [
+        name
+        for name in MODIFIER_CATEGORIES
+        if name in snapshot and not snapshot[name]["available"]
+    ]
 
     if withheld:
         sentence = (

@@ -36,7 +36,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, prior_disposition, worklist
+from mykronos import blast_radius, prior_disposition, toxic, worklist
 from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
@@ -987,8 +987,20 @@ class DashboardQueries:
         pool = self._finding_rows(
             repo_full_name, columns, finding_status, capabilities=CORRELATION_CAPABILITIES
         )
+        # Accepted findings join the open view's pool (operator decision
+        # 2026-09-28, `mykronos.toxic`): accepting half of a toxic pair is a
+        # decision about that half alone, and must not hide the pair here
+        # while the risk decision still counts it.
+        if finding_status == "open":
+            pool = pool + self._finding_rows(
+                repo_full_name,
+                columns,
+                "accepted_risk",
+                capabilities=CORRELATION_CAPABILITIES,
+            )
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
+        kev_cves: set[str] = set()
         if session is not None and combinations:
             kev_cves = self._kev_cve_ids(session, by_id.values())
             combinations = correlate.kev_boosted(combinations, by_id, kev_cves)
@@ -1113,7 +1125,7 @@ class DashboardQueries:
             "by_severity": counts,
             "groups": groups,
             "toxic_combinations": [
-                self._describe_combination(combo, by_id) for combo in combinations
+                self._describe_combination(combo, by_id, kev_cves) for combo in combinations
             ],
             "truncated": truncated,
         }
@@ -1579,22 +1591,33 @@ class DashboardQueries:
 
     @staticmethod
     def _describe_combination(
-        combination: correlate.Combination, by_id: dict[str, dict[str, Any]]
+        combination: correlate.Combination,
+        by_id: dict[str, dict[str, Any]],
+        kev_cves: set[str] | None = None,
     ) -> dict[str, Any]:
         members = [by_id[fid] for fid in sorted(combination.finding_ids) if fid in by_id]
         rule = next(
             (r for r in correlate.BUILT_IN_RULES if r.rule_id == combination.rule_id),
             None,
         )
-        severity = "info"
-        for member in members:
-            if _worse(str(member["severity"]), severity):
-                severity = str(member["severity"])
+        # The same rule the risk decision uses (`mykronos.toxic`): worse than
+        # its worst member, critical when a member is KEV-listed. The worst
+        # member's own severity understated the whole point of a combination.
+        member_kev = {
+            cve
+            for m in members
+            if (cve := extract_cve(str(m.get("rule_id") or ""), str(m.get("title") or "")))
+            and cve in (kev_cves or set())
+        }
+        severity = toxic.combination_severity(
+            [str(m["severity"]) for m in members], kev=bool(member_kev), escalate_steps=1
+        )
         return {
             "combination_id": combination.combination_id,
             "rule_id": combination.rule_id,
             "name": rule.name if rule else combination.rule_id,
             "severity": severity,
+            "partly_accepted": any(str(m.get("status")) == "accepted_risk" for m in members),
             "rationale": combination.rationale,
             "members": [
                 {
@@ -1603,6 +1626,7 @@ class DashboardQueries:
                     "rule_id": str(member["rule_id"]),
                     "title": str(member["title"]),
                     "severity": str(member["severity"]),
+                    "status": str(member.get("status") or ""),
                     "file_path": member.get("file_path"),
                 }
                 for member in members
@@ -2151,12 +2175,17 @@ class DashboardQueries:
             params,
         )
 
-        # One row per combination, not per member. A toxic combination is one
-        # decision to make; listing its members separately is how it stops
-        # looking like a single thing.
+        current_toxic = toxic.detect(self.catalog, repo=repo_full_name)
+
+        # What auto-remediation has *recorded* over time: every combination it
+        # declined to fix half of. History, not current risk - these ids
+        # outlive their findings (all 16 on 2026-09-28 pointed at findings
+        # that no longer exist), so it is reported as `_recorded`, dated, and
+        # never as the live count. The live count is `toxic.detect`, the same
+        # detection the Oracle's risk decision uses.
         combinations = self.catalog.query(
             f"""
-            SELECT count(DISTINCT toxic_combination_id)
+            SELECT count(DISTINCT toxic_combination_id), min(created_at)
             FROM remediation_events
             WHERE toxic_combination_id IS NOT NULL
               {"AND repo_full_name = ?" if repo_full_name else ""}
@@ -2211,7 +2240,14 @@ class DashboardQueries:
                 }
                 for fid, sev, cap, title, seen in oldest
             ],
-            "toxic_combinations": int(combinations[0][0]) if combinations else 0,
+            "toxic_combinations": len(current_toxic),
+            #: The combinations themselves, so the page can show what the
+            #: count is counting (it used to be a bare number with no list).
+            "toxic_combination_list": [c.to_dict() for c in current_toxic],
+            "toxic_combinations_recorded": int(combinations[0][0]) if combinations else 0,
+            "toxic_combinations_recorded_since": (
+                combinations[0][1] if combinations and combinations[0][0] else None
+            ),
         }
 
     def last_successful_scan_at(self, repo_full_name: str) -> dict[str, datetime]:

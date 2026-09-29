@@ -209,7 +209,8 @@ def render_check_run_summary(
     unavailable = [
         (name, snapshot[name]["reason"])
         for name in MODIFIER_CATEGORIES
-        if not snapshot[name]["available"]
+        # A decision stored before a category existed has no key for it.
+        if name in snapshot and not snapshot[name]["available"]
     ]
     if unavailable:
         for name, reason in unavailable:

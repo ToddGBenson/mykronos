@@ -165,6 +165,23 @@ class GovernancePolicy:
 
 
 @dataclass(frozen=True)
+class ToxicCombinationsPolicy:
+    """How toxic combinations move the risk decision (operator, 2026-09-28).
+
+    `points` is per combination by its severity (the worst member's raised by
+    `escalate_steps`, critical when a member is KEV-listed); `cap` bounds the
+    total. `critical_forces_no_go` raises the score to the no_go threshold
+    when any combination is critical: a critical composite risk stops a
+    deploy on its own, whatever else the repository scores.
+    """
+
+    points: dict[str, float]
+    cap: float
+    escalate_steps: int
+    critical_forces_no_go: bool
+
+
+@dataclass(frozen=True)
 class BlastRadiusPolicy:
     """Weights for portfolio-wide package concentration (spec 19 §2.4).
 
@@ -343,6 +360,7 @@ class Policy:
     risk_profile: RiskProfilePolicy
     governance: GovernancePolicy
     blast_radius: BlastRadiusPolicy
+    toxic_combinations: ToxicCombinationsPolicy
     reachability: ReachabilityPolicy
     unfixable: UnfixableDampening
     remediation_targets: RemediationTargets
@@ -441,6 +459,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
     # before spec 19 §2.4 loads, with the category available and worth
     # zero, rather than refusing to load at all.
     blast_raw = modifiers.get("blast_radius") or {}
+    toxic_raw = modifiers.get("toxic_combinations") or {}
     reach_raw = modifiers.get("reachability") or {}
     # Optional like the two above: a policy file from before this loads,
     # with the factor at zero, and every score stays exactly as it was.
@@ -577,6 +596,20 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 profile_raw.get("compliance_scope_points_per_entry", 0),
                 "risk_profile.compliance_scope_points_per_entry",
             ),
+        ),
+        toxic_combinations=ToxicCombinationsPolicy(
+            points={
+                sev: _number(
+                    (toxic_raw.get("points") or {}).get(sev, 0),
+                    f"toxic_combinations.points.{sev}",
+                )
+                for sev in ("critical", "high", "medium", "low", "info")
+            },
+            cap=_number(toxic_raw.get("cap", 0), "toxic_combinations.cap"),
+            escalate_steps=int(
+                _number(toxic_raw.get("escalate_steps", 1), "toxic_combinations.escalate_steps")
+            ),
+            critical_forces_no_go=bool(toxic_raw.get("critical_forces_no_go", False)),
         ),
         blast_radius=BlastRadiusPolicy(
             min_dependents=int(
