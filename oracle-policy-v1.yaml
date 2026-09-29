@@ -68,6 +68,14 @@
 # deliberate: the term rests on a reading of GitHub settings, and moving every
 # score in the portfolio on deploy day for a reading nobody had reviewed is
 # exactly the kind of change this file's two rules exist to prevent.
+#
+# 1.10 — adds toxic_combinations (spec 08 §5; operator decision 2026-09-28).
+# Unlike 1.9 it is live on deploy: a repository with a detected combination
+# scores higher, and one with a critical combination is no_go. A combination
+# rates one band above its worst member, critical when a member is KEV-listed,
+# and accepted members still count. On 2026-09-28 the estate had none, so no
+# existing score moved; four of the nine rules cannot fire yet for want of
+# network and cloud findings.
 version: "1.10"
 
 # ---------------------------------------------------------------------------
