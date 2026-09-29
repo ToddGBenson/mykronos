@@ -233,6 +233,57 @@ class TestTheGateDecision:
         assert body["introduced_blocking"] is False
 
 
+
+class TestTheDeployHostHearsTheFloor:
+    """#735. deploy.ps1 stopped only on a `no_go` recommendation, but the gate
+    job refuses on the introduced floor - and the recommendation describes
+    the backlog, so it is almost never `no_go`. 1588e40 was refused by the
+    gate and would have shipped with a yellow note."""
+
+    def test_a_commit_that_introduced_a_high_is_blocking_at_deploy_time(
+        self, client, auth, oracle_auth, viewer_auth, run_compaction
+    ) -> None:
+        _scan(
+            client, auth, run_compaction, "run-new", NEW,
+            [finding_payload(rule_id="R1", severity="high")],
+        )
+        client.post(
+            "/api/oracle/evaluate",
+            json={"commit_sha": NEW, "decision_type": "commit_gate"},
+            headers=oracle_auth,
+        )
+        run_compaction()
+
+        body = client.get(
+            f"/api/oracle/decisions/by-commit/{NEW[:7]}", headers=viewer_auth
+        ).json()
+
+        assert body["found"] is True
+        assert body["recommendation"] != "no_go", "the case the old check missed"
+        assert body["introduced"] == {"high": 1}
+        assert body["introduced_blocking"] is True
+
+    def test_a_clean_commit_is_not(
+        self, client, auth, oracle_auth, viewer_auth, run_compaction
+    ) -> None:
+        _scan(
+            client, auth, run_compaction, "run-new", NEW,
+            [finding_payload(rule_id="R1", severity="medium")],
+        )
+        client.post(
+            "/api/oracle/evaluate",
+            json={"commit_sha": NEW, "decision_type": "commit_gate"},
+            headers=oracle_auth,
+        )
+        run_compaction()
+
+        body = client.get(
+            f"/api/oracle/decisions/by-commit/{NEW}", headers=viewer_auth
+        ).json()
+
+        assert body["introduced_blocking"] is False
+        assert body["introduced"] == {"medium": 1}
+
 # -- #734: newly disclosed is not introduced ---------------------------------
 
 ZAP = "ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31"
