@@ -752,6 +752,10 @@ class TriageState(Base):
     #: one whose deferral nobody can review, which is the failure mode spec 11
     #: §4 keeps naming.
     snooze_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    #: When the current snooze was set. A snooze breaks when its finding joins
+    #: CISA KEV *after* this (spec 27 §3, #728): one set knowingly on an
+    #: already-listed finding is a decision, and waking it daily overrides it.
+    snoozed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow

@@ -153,6 +153,7 @@ def snooze(
     row = _ensure(session, finding_id, repo_full_name)
     row.snoozed_until = until
     row.snooze_reason = reason.strip()
+    row.snoozed_at = moment
     session.flush()
     return state_of(row, now=moment)
 
@@ -164,8 +165,78 @@ def wake(session: Session, finding_id: str, *, now: datetime | None = None) -> R
         return RowState()
     row.snoozed_until = None
     row.snooze_reason = None
+    row.snoozed_at = None
     session.flush()
     return state_of(row, now=now)
+
+
+def break_snoozes_on_kev(db: Any, catalog: Any, *, now: datetime | None = None) -> list[str]:
+    """Wake every snoozed finding whose CVE joined CISA KEV after the snooze.
+
+    Spec 27 §3 (#728). A snooze is "come back to this later", said about a
+    finding as it was then; being added to the Known Exploited catalogue
+    changes what it is. The queue hid it; this puts it back, and the audit
+    log says why and what the snooze had said, so the person who set it is
+    not left wondering. A finding already on KEV when it was snoozed stays
+    snoozed: that was a decision taken with the fact in view.
+    """
+    from mykronos.db.models import ThreatIntelMatch
+    from mykronos.threat_intel import extract_cve
+
+    moment = now or utcnow()
+    woken: list[str] = []
+    with db.session() as session:
+        rows = list(
+            session.execute(
+                select(TriageState).where(TriageState.snoozed_until > moment.date())
+            ).scalars()
+        )
+        if not rows:
+            return woken
+        kev = {
+            str(m.cve_id).upper(): m.kev_added_at
+            for m in session.execute(
+                select(ThreatIntelMatch).where(ThreatIntelMatch.in_kev.is_(True))
+            ).scalars()
+        }
+        if not kev:
+            return woken
+        by_id = {row.finding_id: row for row in rows}
+        ids = sorted(by_id)
+        placeholders = ", ".join("?" for _ in ids)
+        found = catalog.query(
+            f"SELECT finding_id, rule_id, title FROM findings WHERE finding_id IN ({placeholders})",
+            ids,
+        )
+        for finding_id, rule_id, title in found:
+            cve = extract_cve(str(rule_id or ""), str(title or ""))
+            if cve is None or cve.upper() not in kev:
+                continue
+            row = by_id[str(finding_id)]
+            added = kev[cve.upper()]
+            snoozed_on = (row.snoozed_at or row.updated_at).date()
+            # Listed before the snooze: the snooze was set knowing it.
+            if added is not None and added < snoozed_on:
+                continue
+            reason = row.snooze_reason
+            row.snoozed_until = None
+            row.snooze_reason = None
+            row.snoozed_at = None
+            db.audit(
+                session,
+                actor="job:threat-intel",
+                action="triage.snooze_broken",
+                entity_type="finding",
+                entity_id=str(finding_id),
+                repo=row.repo_full_name,
+                cve=cve.upper(),
+                kev_added_at=added.isoformat() if added else None,
+                snooze_reason=reason,
+            )
+            woken.append(str(finding_id))
+    if woken:
+        logger.warning("KEV broke %d snooze(s): %s", len(woken), ", ".join(woken))
+    return woken
 
 
 def state_of(row: TriageState | None, *, now: datetime | None = None) -> RowState:

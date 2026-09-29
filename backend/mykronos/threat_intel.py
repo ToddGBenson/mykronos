@@ -445,6 +445,15 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
     with db.session() as session:
         result = refresh(session, relevant)
         apply_kev_due_dates(session, catalog)
+    # A finding that joined KEV comes back out of snooze (spec 27 §3, #728).
+    # After the session above commits, so the new KEV rows are readable.
+    from mykronos.worklist import break_snoozes_on_kev
+
+    try:
+        break_snoozes_on_kev(db, catalog)
+    except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
+        logger.warning("Could not break snoozes on KEV: %s", scrub(str(exc)))
+    with db.session() as session:
         # After the upsert, so a CVE that arrived on this run is eligible
         # immediately rather than a day later.
         try:

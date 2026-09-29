@@ -511,3 +511,83 @@ class TestBatchDisposition:
         )
 
         assert r.status_code in (401, 403)
+
+
+class TestKevBreaksASnooze:
+    """Spec 27 §3, #728: a finding that joins CISA KEV comes back out of snooze.
+
+    A snooze is "not this week", said about the finding as it was. Being added
+    to the Known Exploited catalogue changes what it is.
+    """
+
+    CVE = "CVE-2026-41111"
+
+    def _seed_cve(self, client, admin_auth, auth, run_compaction) -> str:
+        onboard(client, admin_auth)
+        with client.app.state.db.session() as session:
+            session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == REPO)
+            ).scalars().one().status = "active"
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id=self.CVE, title=f"{self.CVE} in libfoo", symbol="f")],
+        )
+        run_compaction()
+        return str(client.app.state.catalog.query("SELECT finding_id FROM findings")[0][0])
+
+    def _snooze(self, client, admin_auth, finding_id: str) -> None:
+        response = client.post(
+            f"/api/dashboard/triage/{finding_id}/snooze",
+            json={"until": (tomorrow() + timedelta(days=30)).isoformat(), "reason": "vendor"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+
+    def _list_in_kev(self, client, added: date | None) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id=self.CVE, in_kev=True, kev_added_at=added))
+
+    def test_joining_kev_after_the_snooze_wakes_it_and_says_why(
+        self, client, admin_auth, auth, run_compaction
+    ) -> None:
+        from mykronos.db.models import AuditLogEntry
+
+        finding_id = self._seed_cve(client, admin_auth, auth, run_compaction)
+        self._snooze(client, admin_auth, finding_id)
+        assert queue(client, admin_auth) == []
+        self._list_in_kev(client, utcnow().date())
+
+        woken = worklist.break_snoozes_on_kev(client.app.state.db, client.app.state.catalog)
+
+        assert woken == [finding_id]
+        assert len(queue(client, admin_auth)) == 1
+        with client.app.state.db.session() as session:
+            entry = session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == "triage.snooze_broken")
+            ).scalar_one()
+            assert entry.entity_id == finding_id
+            assert self.CVE in str(entry.detail) and "vendor" in str(entry.detail)
+
+    def test_a_snooze_set_knowing_it_was_on_kev_stays(
+        self, client, admin_auth, auth, run_compaction
+    ) -> None:
+        finding_id = self._seed_cve(client, admin_auth, auth, run_compaction)
+        self._list_in_kev(client, utcnow().date() - timedelta(days=60))
+        self._snooze(client, admin_auth, finding_id)
+
+        woken = worklist.break_snoozes_on_kev(client.app.state.db, client.app.state.catalog)
+
+        assert woken == []
+        assert queue(client, admin_auth) == []
+
+    def test_a_finding_not_on_kev_stays_snoozed(
+        self, client, admin_auth, auth, run_compaction
+    ) -> None:
+        finding_id = self._seed_cve(client, admin_auth, auth, run_compaction)
+        self._snooze(client, admin_auth, finding_id)
+
+        assert worklist.break_snoozes_on_kev(client.app.state.db, client.app.state.catalog) == []
