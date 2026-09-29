@@ -1202,3 +1202,33 @@ class TestRemediationCoverageIsStated:
             "fixer_count",
             "unfixed_by_rule",
         }
+
+
+class TestEveryFixerIsOfferedFindings:
+    """#727. Patchwork only takes candidates from `source_capabilities`, and
+    all three dependency-pinning fixers are registered under `atlas`, which
+    the default left out - so across 1,513 recorded events no fix was ever
+    generated. A fixer whose capability is not a source is dead code that
+    the Remediation tab still advertises."""
+
+    def test_every_fixer_capability_is_a_default_source(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE
+        from mykronos.patchwork.pipeline import DEFAULT_SOURCE_CAPABILITIES
+
+        unreachable = {row["capability"] for row in COVERAGE} - set(
+            DEFAULT_SOURCE_CAPABILITIES
+        )
+        assert not unreachable, (
+            f"fixers under {sorted(unreachable)} are never offered a finding"
+        )
+
+    def test_the_config_default_matches_the_pipeline_default(self) -> None:
+        """Two copies of one default. A repo with no stored config gets the
+        pipeline's; a repo that saves its config gets the model's. They must
+        not disagree, or saving an unchanged form turns a fixer off."""
+        from mykronos.capabilities import PatchworkConfig
+        from mykronos.patchwork.pipeline import DEFAULT_SOURCE_CAPABILITIES
+
+        assert tuple(PatchworkConfig().source_capabilities) == (
+            DEFAULT_SOURCE_CAPABILITIES
+        )

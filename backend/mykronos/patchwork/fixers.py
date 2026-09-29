@@ -333,10 +333,10 @@ FIXERS: list[tuple[str, Fixer]] = [
 #:
 #: Stated rather than inferred, because the alternative is a page reporting
 #: zero fixes with nothing saying whether that means "nothing was fixable" or
-#: "the fixer is broken". Across 560 remediation events on this estate nothing
-#: has ever reached `fix_generated`, and that is correct: the open backlog is
-#: overwhelmingly container, DAST and SAST findings, and none of those is a
-#: class any fixer here covers.
+#: "the fixer is broken". Until #727 nothing on this estate had ever reached
+#: `fix_generated`, partly because the open backlog is container, DAST and
+#: SAST findings no fixer covers, and partly because `atlas` - where the
+#: pinning fixers live - was not a default source capability at all.
 #:
 #: `test_coverage_names_every_fixer` fails if a fixer is added without a line
 #: here, so the page cannot silently fall behind the code.

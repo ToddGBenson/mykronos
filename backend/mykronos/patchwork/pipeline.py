@@ -50,7 +50,9 @@ STAGES = (
 
 #: What Patchwork may write a patch for. Narrow by construction: each of
 #: these points at a line in a file a deterministic fixer can change.
-DEFAULT_SOURCE_CAPABILITIES = ("sast", "secrets", "containers", "iac")
+#: `atlas` is here because the three dependency-pinning fixers are registered
+#: under it; without it they were never offered a finding (#727).
+DEFAULT_SOURCE_CAPABILITIES = ("sast", "secrets", "containers", "iac", "atlas")
 
 #: What toxic-combination detection may consider (spec 08 §5a). Wider, and
 #: deliberately so - correlation is not fix generation. A DAST finding can be

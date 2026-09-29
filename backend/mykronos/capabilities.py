@@ -503,7 +503,7 @@ class PatchworkConfig(BaseCapabilityConfig):
     """
 
     source_capabilities: list[str] = Field(
-        default_factory=lambda: ["sast", "secrets", "containers", "iac"],
+        default_factory=lambda: ["sast", "secrets", "containers", "iac", "atlas"],
         max_length=10,
     )
     min_confidence_to_generate_fix: float = Field(
