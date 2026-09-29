@@ -1151,3 +1151,41 @@ class TestABlockedLaneCannotDispatchItsUpstreamEither:
         assert "capabilities=unit" not in lane.action.path
         # It still names the upstream, which is the part that was useful.
         assert "until unit is green" in lane.action.effect
+
+
+class TestTheBriefingDoesNotReadGitHubOnEveryLoad:
+    """#730: the briefing asked GitHub for every repository's languages, one
+    after another, on every request (11 s), and the Vulnerability Management
+    page waits on it."""
+
+    def test_a_second_load_uses_the_cached_languages(
+        self, client, admin_auth, github
+    ) -> None:
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth)
+        github.repos[REPO].languages = {"Python": 1000}
+        github.calls.clear()
+
+        client.get("/api/dashboard/briefing", headers=admin_auth)
+        client.get("/api/dashboard/briefing", headers=admin_auth)
+
+        assert [c for c in github.calls if c[0] == "languages"] == [("languages", REPO)]
+
+    def test_a_failed_read_is_asked_again_not_remembered(
+        self, client, admin_auth, github
+    ) -> None:
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth)
+        repo = github.repos.pop(REPO)  # unreadable: the fake returns None
+        github.calls.clear()
+        client.get("/api/dashboard/briefing", headers=admin_auth)
+        github.repos[REPO] = repo
+
+        client.get("/api/dashboard/briefing", headers=admin_auth)
+
+        assert [c for c in github.calls if c[0] == "languages"] == [
+            ("languages", REPO),
+            ("languages", REPO),
+        ]
