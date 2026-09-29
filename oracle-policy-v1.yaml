@@ -68,7 +68,7 @@
 # deliberate: the term rests on a reading of GitHub settings, and moving every
 # score in the portfolio on deploy day for a reading nobody had reviewed is
 # exactly the kind of change this file's two rules exist to prevent.
-version: "1.9"
+version: "1.10"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -247,6 +247,28 @@ modifiers:
     # letting this run away would let one dependency-heavy repo dominate the
     # ranking on the most approximate signal in the set.
     cap: 20
+
+  # Toxic combinations (spec 08 §5; operator decision 2026-09-28): findings
+  # that together are worse than apart - an unauthenticated endpoint that is
+  # also injectable, a reachable service running a known-exploitable image.
+  # Detection counts accepted findings too: accepting half of a toxic pair is
+  # a decision about that half alone, and must not hide the pair.
+  #
+  # A combination's severity is its worst member's raised by
+  # `escalate_steps` bands, and critical when a member is KEV-listed. A
+  # critical one forces no_go on its own; the rest add these points each,
+  # capped. Set `critical_forces_no_go: false` and the points to 0 to keep the
+  # category reported but out of the score.
+  toxic_combinations:
+    escalate_steps: 1
+    critical_forces_no_go: true
+    points:
+      critical: 40    # moot while critical forces no_go; kept for when it does not
+      high: 25
+      medium: 12
+      low: 5
+      info: 0
+    cap: 40
 
   # Findings in code nothing imports (spec 19 §2.1). The only negative weight
   # in this file, and the only one where being wrong lowers a score.

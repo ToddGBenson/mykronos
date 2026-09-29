@@ -292,7 +292,31 @@ export type VulnerabilityManagement = {
     title: string;
     first_seen_at: string | null;
   }[];
+  /** Current toxic combinations - the same detection the risk decision uses. */
   toxic_combinations: number;
+  toxic_combination_list?: {
+    repo_full_name: string;
+    combination_id: string;
+    rule_id: string;
+    name: string;
+    severity: string;
+    member_severity: string;
+    kev_cves: string[];
+    partly_accepted: boolean;
+    rationale: string;
+    members: {
+      finding_id: string;
+      capability: string;
+      rule_id: string;
+      title: string;
+      severity: string;
+      status: string;
+      file_path: string | null;
+    }[];
+  }[];
+  /** Auto-remediation's lifetime log of combinations: history, not current. */
+  toxic_combinations_recorded?: number;
+  toxic_combinations_recorded_since?: string | null;
 };
 
 export type TriageQueue =

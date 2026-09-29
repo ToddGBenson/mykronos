@@ -343,6 +343,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/toxic-combinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Toxic Combinations
+         * @description Toxic combinations across the estate (spec 08 §5), worst first.
+         *
+         *     The same detection and severity the Oracle's risk decision uses
+         *     (`mykronos.toxic`), including combinations with an accepted member.
+         */
+        get: operations["toxic_combinations_api_dashboard_toxic_combinations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/triage": {
         parameters: {
             query?: never;
@@ -4144,6 +4167,29 @@ export interface components {
             note: string;
         };
         /**
+         * EstateToxicCombinationsOut
+         * @description Every toxic combination in the estate, and what could not be looked for.
+         */
+        EstateToxicCombinationsOut: {
+            /** Count */
+            count: number;
+            /** By Severity */
+            by_severity: {
+                [key: string]: number;
+            };
+            /** Combinations */
+            combinations: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Coverage
+             * @description Rules whose inputs never reach the lake cannot fire; an empty list from them is not evidence of safety.
+             */
+            coverage: {
+                [key: string]: unknown;
+            };
+        };
+        /**
          * EvaluateRequest
          * @description What the gate workflow sends.
          *
@@ -6767,6 +6813,8 @@ export interface components {
             /** Title */
             title: string;
             severity: components["schemas"]["Severity"];
+            /** Status */
+            status?: string | null;
             /** File Path */
             file_path?: string | null;
         };
@@ -6781,7 +6829,13 @@ export interface components {
             rule_id: string;
             /** Name */
             name: string;
+            /** @description Worse than the worst member by the Oracle policy's `escalate_steps`, and critical when a member is KEV-listed. */
             severity: components["schemas"]["Severity"];
+            /**
+             * Partly Accepted
+             * @default false
+             */
+            partly_accepted: boolean;
             /** Rationale */
             rationale: string;
             /** Members */
@@ -7426,6 +7480,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PullRequestsPage"];
+                };
+            };
+        };
+    };
+    toxic_combinations_api_dashboard_toxic_combinations_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstateToxicCombinationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

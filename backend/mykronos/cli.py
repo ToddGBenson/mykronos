@@ -1539,6 +1539,23 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a briefing must not die on this
                 logging.getLogger(__name__).debug("Could not read token deliveries")
 
+            # Toxic combinations (`mykronos.toxic`): the same detection and
+            # severity the Oracle's risk decision uses. `None` on failure, so
+            # the page says "could not be computed" rather than "none".
+            toxic_combinations: list[dict[str, Any]] | None = None
+            toxic_coverage: dict[str, Any] | None = None
+            try:
+                from mykronos import toxic
+
+                with db.session() as session:
+                    toxic_found = toxic.detect(catalog, session=session)
+                order = {s: i for i, s in enumerate(reversed(toxic.SEVERITIES))}
+                toxic_found.sort(key=lambda c: (order.get(c.severity, 9), c.repo_full_name))
+                toxic_combinations = [c.to_dict() for c in toxic_found]
+                toxic_coverage = toxic.coverage(catalog)
+            except Exception:  # noqa: BLE001 - a briefing must not die on this
+                logging.getLogger(__name__).debug("Could not compute toxic combinations")
+
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
@@ -1550,6 +1567,8 @@ def main(argv: list[str] | None = None) -> int:
                 failing_jobs=failing_jobs,
                 unhealthy_jobs=unhealthy_jobs,
                 tokens=tokens,
+                toxic_combinations=toxic_combinations,
+                toxic_coverage=toxic_coverage,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
