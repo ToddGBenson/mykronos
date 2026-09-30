@@ -67,8 +67,12 @@ def tiered(monkeypatch):
 
 @pytest.fixture
 def model(client, monkeypatch):
-    """Install a fake model behind the reviewer, and a key so it may run."""
+    """Install a fake model behind the reviewer, and a key so it may run.
+
+    `live` explicitly: these tests are about the reviewer whose verdict counts.
+    The default is `shadow`, which has tests of its own below."""
     monkeypatch.setattr(client.app.state.settings, "reviewer_api_key", "test-key")
+    monkeypatch.setattr(client.app.state.settings, "reviewer_mode", "live")
     holder: dict[str, FakeAnthropic] = {}
 
     def install(**kwargs: Any) -> FakeAnthropic:
@@ -417,3 +421,162 @@ def engine_policy(client):
     from mykronos.approvals.policy import cached_policy
 
     return cached_policy(client.app.state.settings.approval_policy_path)
+
+
+# -- Shadow mode ----------------------------------------------------------------
+
+
+@pytest.fixture
+def shadow(client, model, monkeypatch):
+    """The fake model, in shadow mode - the default a deployment starts in."""
+    monkeypatch.setattr(client.app.state.settings, "reviewer_mode", "shadow")
+    return model
+
+
+def _policy(client):
+    from mykronos.approvals.policy import cached_policy
+
+    return cached_policy(client.app.state.settings.approval_policy_path)
+
+
+def _another(client, author, n: int) -> dict[str, Any]:
+    response = client.post(
+        "/api/approvals",
+        json={
+            "duty": "risk_acceptance",
+            "subject_ref": f"acc-{n}",
+            "statement": "",
+            "context": {"tier": "medium"},
+        },
+        headers=_bearer(author["token"]),
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _human_decides(client, admin_auth, request: dict[str, Any], verdict: str) -> None:
+    response = client.post(
+        f"/api/approvals/{request['id']}/decisions",
+        json={
+            "verdict": verdict,
+            "rationale": "Checked the evidence bundle myself before deciding this.",
+            "evidence_digest": request["evidence_digest"],
+        },
+        headers=admin_auth,
+    )
+    assert response.status_code in (200, 201), response.text
+
+
+class TestShadowMode:
+    def test_it_is_the_default(self) -> None:
+        from mykronos.config import Settings
+
+        assert Settings.model_fields["reviewer_mode"].default == "shadow"
+
+    def test_a_shadow_verdict_is_recorded_and_never_counts(
+        self, client, admin_auth, tiered, shadow
+    ) -> None:
+        """No delegation exists, and none is needed: the answer never reaches
+        the engine. The request stays pending for a person."""
+        shadow(answer=APPROVE)
+        author = _mint(client, admin_auth)
+        request = _request(client, _bearer(author["token"]))
+
+        response = _review(client, _bearer(author["token"]), request)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["shadow"] is True
+        assert body["verdict"] == "approve"
+        assert body["state"] == "pending"
+        assert body["decision_id"] is None
+        with client.app.state.db.session() as session:
+            assert session.execute(select(ApprovalDecision)).scalars().all() == []
+            entry = session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == reviewer.SHADOW_ACTION)
+            ).scalar_one()
+            assert entry.entity_id == request["id"]
+            assert entry.detail["verdict"] == "approve"
+        state = client.get(f"/api/approvals/{request['id']}", headers=admin_auth).json()
+        assert state["state"] == "pending"
+
+    def test_the_sweep_reviews_each_pending_request_once_and_is_bounded(
+        self, client, admin_auth, tiered, shadow
+    ) -> None:
+        fake = shadow(answer=APPROVE)
+        author = _mint(client, admin_auth)
+        for n in range(3):
+            _another(client, author, n)
+        db, settings, policy = client.app.state.db, client.app.state.settings, _policy(client)
+
+        first = reviewer.shadow_sweep(db, policy, settings, limit=2)
+        second = reviewer.shadow_sweep(db, policy, settings, limit=2)
+        third = reviewer.shadow_sweep(db, policy, settings, limit=2)
+
+        assert len(first) == 2 and len(second) == 1 and third == []
+        assert len(fake.messages.calls) == 3, "each request is reviewed exactly once"
+
+    def test_the_sweep_does_nothing_in_live_mode(
+        self, client, admin_auth, tiered, model
+    ) -> None:
+        """Live reviews are started deliberately and need a delegation; the
+        sweep is shadow-only and must not start counting reviews on its own."""
+        fake = model(answer=APPROVE)
+        author = _mint(client, admin_auth)
+        _request(client, _bearer(author["token"]))
+
+        done = reviewer.shadow_sweep(
+            client.app.state.db, _policy(client), client.app.state.settings, limit=5
+        )
+
+        assert done == [] and fake.messages.calls == []
+
+    def test_off_refuses(self, client, admin_auth, tiered, shadow, monkeypatch) -> None:
+        fake = shadow(answer=APPROVE)
+        monkeypatch.setattr(client.app.state.settings, "reviewer_mode", "off")
+        author = _mint(client, admin_auth)
+        request = _request(client, _bearer(author["token"]))
+
+        response = _review(client, _bearer(author["token"]), request)
+
+        assert response.status_code == 503
+        assert fake.messages.calls == []
+
+    def test_the_report_sets_each_verdict_beside_the_person(
+        self, client, admin_auth, tiered, shadow
+    ) -> None:
+        author = _mint(client, admin_auth)
+        agreed = _request(client, _bearer(author["token"]))
+        shadow(answer=APPROVE)
+        _review(client, _bearer(author["token"]), agreed)
+        _human_decides(client, admin_auth, agreed, "approve")
+
+        disputed = _another(client, author, 2)
+        shadow(answer={**APPROVE, "verdict": "reject"})
+        _review(client, _bearer(author["token"]), disputed)
+        _human_decides(client, admin_auth, disputed, "approve")
+
+        report = client.get("/api/approvals/shadow-reviews", headers=admin_auth).json()
+
+        assert report["mode"] == "shadow"
+        assert report["counts"] == {"agree": 1, "disagree": 1, "undecided": 0}
+        assert report["agreement"] == 0.5
+        by_id = {row["request_id"]: row for row in report["reviews"]}
+        assert by_id[agreed["id"]]["agree"] is True
+        assert by_id[disputed["id"]]["agree"] is False
+        assert by_id[disputed["id"]]["human_verdicts"] == ["approve"]
+
+    def test_needs_info_is_never_agreement(self, client, admin_auth, tiered, shadow) -> None:
+        """Asking is not deciding; counting it as agreement would flatter a
+        reviewer that never commits."""
+        author = _mint(client, admin_auth)
+        request = _request(client, _bearer(author["token"]))
+        shadow(answer={**APPROVE, "verdict": "needs_info"})
+        _review(client, _bearer(author["token"]), request)
+        _human_decides(client, admin_auth, request, "approve")
+
+        report = client.get("/api/approvals/shadow-reviews", headers=admin_auth).json()
+
+        assert report["counts"]["agree"] == 0
+        assert report["counts"]["disagree"] == 1
+
