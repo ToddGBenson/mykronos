@@ -315,6 +315,8 @@ class TestTheIndependentReviewer:
 
         fake = SimpleNamespace(messages=SimpleNamespace(create=create))
         monkeypatch.setattr(client.app.state.settings, "reviewer_api_key", "test-key")
+        # A delegated reviewer whose verdict counts: live, not the shadow default.
+        monkeypatch.setattr(client.app.state.settings, "reviewer_mode", "live")
         monkeypatch.setattr(reviewer.anthropic, "Anthropic", lambda api_key: fake)
         agent = _agent(client, admin_auth)
         _open_pr(github, ["docs/a.md"])
