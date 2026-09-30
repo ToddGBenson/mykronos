@@ -16,6 +16,17 @@ package in them was already there, and a finding that is new now is new
 because the vulnerability database moved - disclosed, not introduced. It is
 still an open finding and still scores; it just is not this commit's fault.
 
+**Images the commit rebuilds.** The repository's own images get a new
+`imageID` on every commit, so the test above can never clear them - and
+8ac4ef8 was refused for openssl CVEs published that morning, on the same
+openssl 3.5.7-1~deb13u2 the unchanged postgres and ZAP images carry. The
+second test is corroboration: a finding in a changed image is disclosed when
+the same CVE, on the same package at the same version, was first seen in the
+same scan in an image the first test cleared. That pairing can only happen
+when the database learned about a package version both images already had.
+A commit that *introduces* a vulnerable version has nothing to pair with -
+no unchanged image newly gained that CVE at that moment - so it still counts.
+
 Anything this cannot establish - no archived report, an image named
 ambiguously, no earlier scan - answers "introduced". A gate that fails open
 on missing evidence is the wrong way round.
@@ -27,7 +38,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -106,28 +117,55 @@ def _previous_scan(catalog: Any, repo_full_name: str, scan_run_id: str) -> str |
     return str(rows[0][0]) if rows else None
 
 
-def disclosed_ids(catalog: Any, candidates: list[tuple[str, str, str | None]]) -> set[str]:
+class Candidate(NamedTuple):
+    """One open container finding a commit's scans saw first."""
+
+    finding_id: str
+    scan: str
+    image: str | None
+    rule_id: str = ""
+    package: str = ""
+    version: str = ""
+
+
+def disclosed_ids(catalog: Any, candidates: list[tuple[Any, ...]]) -> set[str]:
     """Which of these container findings are newly disclosed, not introduced.
 
-    `candidates` are `(finding_id, first_seen_scan_run_id, image)` for open
-    container findings a commit's scans saw first; `image` is the finding's
-    `raw_finding_json.image`. Returns the ids whose image the previous scan
-    already saw byte-for-byte.
+    `candidates` are `Candidate`s, or tuples in its field order: `image` is
+    the finding's `raw_finding_json.image`. A finding is disclosed when its
+    image is byte-identical to the previous scan's, or - for an image this
+    commit changed - when the same rule, package and version was disclosed
+    that way in the same scan (see the module docstring).
     """
     if not candidates:
         return set()
-    repo = _repo_of(catalog, candidates[0][1])
+    rows = [Candidate(*c) for c in candidates]
+    repo = _repo_of(catalog, rows[0].scan)
     disclosed: set[str] = set()
     try:
-        for scan_run_id in sorted({scan for _, scan, _ in candidates}):
+        for scan_run_id in sorted({row.scan for row in rows}):
             previous = _previous_scan(catalog, repo, scan_run_id) if repo else None
             if previous is None:
                 continue
             now = _images(catalog, scan_run_id)
             before = set(_images(catalog, previous).values())
-            for finding_id, scan, image in candidates:
-                if scan == scan_run_id and image and now.get(image) in before:
-                    disclosed.add(finding_id)
+            in_scan = [row for row in rows if row.scan == scan_run_id]
+            unchanged = {
+                row.finding_id
+                for row in in_scan
+                if row.image and now.get(row.image) in before
+            }
+            disclosed |= unchanged
+            # Corroboration: what the database newly said about a package
+            # version, proven on an image that did not change.
+            proven = {
+                (row.rule_id, row.package, row.version)
+                for row in in_scan
+                if row.finding_id in unchanged and row.rule_id and row.package and row.version
+            }
+            for row in in_scan:
+                if (row.rule_id, row.package, row.version) in proven:
+                    disclosed.add(row.finding_id)
     except Exception:  # noqa: BLE001 - no evidence means "introduced"
         logger.warning(
             "Could not compare container images for disclosure; every "

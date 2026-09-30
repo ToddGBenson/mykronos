@@ -438,3 +438,103 @@ class TestNewlyDisclosedIsNotIntroduced:
         assert body["introduced_blocking"] is False
         assert body["introduced"] == {}
         assert body["disclosed"] == {"high": 1}
+
+
+# -- Rebuilt images: corroborated disclosure ---------------------------------
+
+PG = "postgres:15"
+APP = "192.168.0.14:5000/mykronos-frontend:abc"
+U2 = "3.5.7-1~deb13u2"
+
+
+def _estate_scan(client, run_compaction, scan_run_id, commit, started_at, images):
+    """One containers scan over several images. `images` maps an image name to
+    `(imageID, [(cve, package, version), ...])`."""
+    auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'containers')}"}
+    post_scan(
+        client, auth, scan_run_id=scan_run_id, commit_sha=commit,
+        capability="containers", tool_name="trivy", tool_version="0.58.1",
+        started_at=started_at,
+    )
+    findings = []
+    for image, (_, rows) in images.items():
+        for cve, package, version in rows:
+            findings.append(
+                finding_payload(
+                    rule_id=cve, severity="high", title=f"{package} {cve}",
+                    file_path=image.split(":")[0].split("/")[-1], line_start=1, line_end=1,
+                    symbol=None, code_snippet=None, package_name=package,
+                    package_version=version,
+                    raw_finding_json={"ruleId": cve, "image": image},
+                )
+            )
+    post_findings(client, auth, findings, scan_run_id=scan_run_id, capability="containers")
+    owner, name = REPO.split("/")
+    folder = client.app.state.settings.raw_dir / owner / name / scan_run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    for n, (image, (image_id, _)) in enumerate(images.items()):
+        report = {
+            "version": "2.1.0",
+            "runs": [{"results": [], "properties": {"imageName": image, "imageID": image_id}}],
+        }
+        (folder / f"trivy-{n}.sarif").write_text(json.dumps(report), encoding="utf-8")
+    run_compaction()
+    _set_raw_ref(
+        client.app.state.catalog, scan_run_id, f"raw/{owner}/{name}/{scan_run_id}/trivy-0.sarif"
+    )
+
+
+class TestRebuiltImagesAreCorroborated:
+    """8ac4ef8: openssl CVEs published that morning, on the openssl version the
+    unchanged postgres and ZAP images also carry, refused a commit that only
+    rebuilt its own images - which get a new imageID every time."""
+
+    def _before(self, client, run_compaction):
+        _estate_scan(client, run_compaction, "ctr-old", OLD, "2026-09-30T01:00:00", {
+            PG: ("sha256:pg", [("CVE-OLD", "libssl3t64", U2)]),
+            APP: ("sha256:app1", [("CVE-OLD", "libssl3t64", U2)]),
+        })
+
+    def test_the_same_cve_on_the_same_version_in_an_unchanged_image_clears_it(
+        self, client, run_compaction, catalog
+    ) -> None:
+        self._before(client, run_compaction)
+        _estate_scan(client, run_compaction, "ctr-new", NEW, "2026-09-30T18:00:00", {
+            PG: ("sha256:pg", [("CVE-OLD", "libssl3t64", U2), ("CVE-NEW", "libssl3t64", U2)]),
+            APP: ("sha256:app2", [("CVE-OLD", "libssl3t64", U2), ("CVE-NEW", "libssl3t64", U2)]),
+        })
+
+        queries = DashboardQueries(catalog)
+        assert queries.introduced_by(REPO, NEW) == {}
+        assert queries.disclosed_by(REPO, NEW) == {"high": 2}
+
+    def test_a_different_version_is_not_corroboration(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The rebuilt image carries an older openssl than the one the database
+        just learned about elsewhere: that version is this commit's doing."""
+        self._before(client, run_compaction)
+        _estate_scan(client, run_compaction, "ctr-new", NEW, "2026-09-30T18:00:00", {
+            PG: ("sha256:pg", [("CVE-OLD", "libssl3t64", U2), ("CVE-NEW", "libssl3t64", U2)]),
+            APP: ("sha256:app2", [
+                ("CVE-OLD", "libssl3t64", U2), ("CVE-NEW", "libssl3t64", "3.5.6-1"),
+            ]),
+        })
+
+        queries = DashboardQueries(catalog)
+        assert queries.introduced_by(REPO, NEW) == {"high": 1}
+        assert queries.disclosed_by(REPO, NEW) == {"high": 1}
+
+    def test_nothing_to_pair_with_is_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """Only the rebuilt image has the CVE: no unchanged image proves the
+        database moved, so the commit answers for it."""
+        self._before(client, run_compaction)
+        _estate_scan(client, run_compaction, "ctr-new", NEW, "2026-09-30T18:00:00", {
+            PG: ("sha256:pg", [("CVE-OLD", "libssl3t64", U2)]),
+            APP: ("sha256:app2", [("CVE-OLD", "libssl3t64", U2), ("CVE-NEW", "libssl3t64", U2)]),
+        })
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
