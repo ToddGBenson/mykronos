@@ -308,6 +308,11 @@ if ($ForceReason -and -not $Force) {
 $riskToken = Read-EnvValue $backendEnv "MYKRONOS_ADMIN_TOKEN"
 $riskTokenIsAdmin = [bool]$riskToken
 if (-not $riskToken) { $riskToken = Read-EnvValue $backendEnv "MYKRONOS_VIEWER_TOKEN" }
+# The perimeter gate's token. Only the by-commit lookup is exempt from the
+# gate; recording an override is not, and without this header it answered
+# 401 - so every -Force since the gate was switched on landed in the local
+# ledger only, while the decision still read as un-overridden.
+$gateToken = Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN"
 
 $verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
 
@@ -460,7 +465,11 @@ switch ($verdict.State) {
             try {
                 Invoke-RestMethod -Method Post `
                     -Uri "$PlatformUrl/api/oracle/decisions/$($decision.decision_id)/override" `
-                    -Headers @{ Authorization = "Bearer $riskToken" } `
+                    -Headers $(if ($gateToken) {
+                        @{ Authorization = "Bearer $riskToken"; "X-Hub-Token" = $gateToken }
+                    } else {
+                        @{ Authorization = "Bearer $riskToken" }
+                    }) `
                     -ContentType "application/json" `
                     -Body (@{ reason = "Deployed by deploy.ps1 -Force: $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
                     -TimeoutSec 10 | Out-Null
