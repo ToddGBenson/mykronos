@@ -24,6 +24,15 @@ records which model answered. It cannot attest what the model did with them.
 That is why agent approvals need a delegation and are sampled for human
 review (spec 34 §5.2), and why the sample verdicts can suspend it.
 
+**Shadow mode (the default).** Until an operator has watched the reviewer
+work, its verdicts should be seen, not counted. With `reviewer_mode: shadow`
+the reviewer runs on any pending request - no delegation needed, because its
+answer never reaches `engine.decide` - and its verdict is recorded as an
+`approval.shadow_review` audit entry beside the request. The request stays
+pending for a person. `shadow_report` then sets each shadow verdict against
+what the person decided, which is the track record a delegation should rest
+on. `live` is the behaviour above; `off` refuses to run at all.
+
 **No refusal fallback.** A delegation names the model families it trusts. A
 server-side fallback would answer from a model the operator may not have
 named, and the decision would record the wrong family. A declined review
@@ -53,10 +62,22 @@ from mykronos.approvals.engine import (
 )
 from mykronos.approvals.policy import ApprovalPolicy
 from mykronos.auth import hash_token
-from mykronos.db.models import AgentCredential, ApprovalRequest, new_id
+from mykronos.db.models import (
+    AgentCredential,
+    ApprovalDecision,
+    ApprovalRequest,
+    AuditLogEntry,
+    new_id,
+)
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
+
+#: The audit action a shadow verdict is recorded under. It is the whole record:
+#: a shadow review writes no ApprovalDecision, so nothing can count it.
+SHADOW_ACTION = "approval.shadow_review"
+DECLINED_ACTION = "approval.review_declined"
+MODES = ("off", "shadow", "live")
 
 #: A review is one request and one answer; the credential lives no longer.
 REVIEWER_TTL = timedelta(hours=1)
@@ -132,6 +153,14 @@ class ReviewOutcome:
     rationale: str
     decision_id: str | None
     api_request_id: str | None
+    shadow: bool = False
+
+
+def mode(settings: Any) -> str:
+    """`off`, `shadow` or `live`. Anything unrecognised is `shadow`: the mode
+    whose mistakes cost an API call, not an approval."""
+    value = str(getattr(settings, "reviewer_mode", "") or "shadow").strip().lower()
+    return value if value in MODES else "shadow"
 
 
 def api_key(settings: Any) -> str | None:
@@ -330,10 +359,20 @@ def run_review(
     starting a review is not choosing the reviewer. The platform picks the
     model, the instructions and the evidence.
     """
+    current = mode(settings)
+    if current == "off":
+        raise ReviewerUnavailableError(
+            "The independent reviewer is switched off (reviewer_mode: off). "
+            "The request stays pending for a person."
+        )
+    shadow = current == "shadow"
     model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5")
     family = model
     req = _load(db, request_id)
-    _preflight(db, policy, req, family)
+    # The preflight asks whether `decide` would accept this reviewer's answer.
+    # A shadow answer never reaches `decide`, so there is nothing to refuse.
+    if not shadow:
+        _preflight(db, policy, req, family)
 
     if client is None:
         key = api_key(settings)
@@ -370,7 +409,7 @@ def run_review(
                 db.audit(
                     session,
                     actor=reviewer.actor,
-                    action="approval.review_declined",
+                    action=DECLINED_ACTION,
                     entity_type="approval_request",
                     entity_id=request_id,
                     stop_reason=reason,
@@ -386,6 +425,39 @@ def run_review(
                 "The request stays pending for a person.",
                 decision_id=None,
                 api_request_id=api_request_id,
+                shadow=shadow,
+            )
+
+        rationale = _render_rationale(answer)
+        if shadow:
+            with db.session() as session:
+                db.audit(
+                    session,
+                    actor=reviewer.actor,
+                    action=SHADOW_ACTION,
+                    entity_type="approval_request",
+                    entity_id=request_id,
+                    verdict=answer["verdict"],
+                    rationale=rationale,
+                    checks=answer.get("checks") or [],
+                    duty=req["duty"],
+                    tier=req["tier"],
+                    subject_ref=req["subject_ref"],
+                    evidence_digest=req["evidence_digest"],
+                    model=served,
+                    api_request_id=api_request_id,
+                    started_by=started_by.actor,
+                )
+            return ReviewOutcome(
+                request_id=request_id,
+                reviewer=reviewer.actor,
+                model=served,
+                verdict=answer["verdict"],
+                state="pending",
+                rationale=rationale,
+                decision_id=None,
+                api_request_id=api_request_id,
+                shadow=True,
             )
 
         # What answered goes on the decision, beside who: the decision's
@@ -401,7 +473,6 @@ def run_review(
                 "started_by": started_by.actor,
             },
         )
-        rationale = _render_rationale(answer)
         outcome = decide(
             db,
             policy,
@@ -423,3 +494,137 @@ def run_review(
         )
     finally:
         _retire(db, instance)
+
+
+# -- Shadow mode: the sweep and the track record -------------------------------
+
+#: What a person's final state says, in the reviewer's vocabulary.
+_FINAL_VERDICT = {"approved": "approve", "rejected": "reject"}
+
+
+def shadow_sweep(
+    db: Any,
+    policy: ApprovalPolicy,
+    settings: Any,
+    *,
+    limit: int = 3,
+    client: Any = None,
+) -> list[ReviewOutcome]:
+    """Shadow-review pending requests that have not had one, oldest first.
+
+    Bounded per run because every review is a paid model call, and a backlog
+    of forty requests should drain over a few runs rather than in one burst.
+    A request the model declined is not retried: the declined entry is the
+    answer, and retrying would spend again for the same outcome.
+    """
+    if mode(settings) != "shadow" or (client is None and api_key(settings) is None):
+        return []
+    now = utcnow()
+    with db.session() as session:
+        seen = set(
+            session.execute(
+                select(AuditLogEntry.entity_id).where(
+                    AuditLogEntry.action.in_((SHADOW_ACTION, DECLINED_ACTION)),
+                    AuditLogEntry.entity_type == "approval_request",
+                )
+            ).scalars()
+        )
+        pending = [
+            row.id
+            for row in session.execute(
+                select(ApprovalRequest)
+                .where(ApprovalRequest.state == "pending")
+                .where(ApprovalRequest.expires_at > now)
+                .order_by(ApprovalRequest.created_at)
+            ).scalars()
+            if row.id not in seen
+        ]
+    job = Principal(
+        actor="job:shadow-reviews", role=Role.VIEWER, kind=ActorKind.AUTOMATION
+    )
+    outcomes: list[ReviewOutcome] = []
+    for request_id in pending[: max(0, limit)]:
+        try:
+            outcomes.append(
+                run_review(
+                    db, policy, settings, request_id=request_id, started_by=job, client=client
+                )
+            )
+        except ReviewerUnavailableError:
+            # The model or the key is the problem, not this request; the next
+            # run tries again rather than burning through the queue now.
+            logger.warning("Shadow review unavailable; stopping this run.", exc_info=True)
+            break
+        except ApprovalError as exc:
+            logger.info("Shadow review skipped %s: %s", request_id, exc)
+    return outcomes
+
+
+def shadow_report(db: Any) -> dict[str, Any]:
+    """Every shadow verdict beside what a person decided (spec 34 §5.2).
+
+    `agree` is only judged once a person has decided: a request still pending,
+    or one that expired, has no human verdict to compare with. A `needs_info`
+    shadow verdict agrees with nothing, deliberately - asking is not deciding,
+    and counting it as agreement would flatter a reviewer that never commits.
+    """
+    with db.session() as session:
+        entries = list(
+            session.execute(
+                select(AuditLogEntry)
+                .where(AuditLogEntry.action == SHADOW_ACTION)
+                .order_by(AuditLogEntry.created_at.desc())
+            ).scalars()
+        )
+        ids = {entry.entity_id for entry in entries}
+        requests = {
+            row.id: row
+            for row in session.execute(
+                select(ApprovalRequest).where(ApprovalRequest.id.in_(ids))
+            ).scalars()
+        } if ids else {}
+        humans: dict[str, list[str]] = {}
+        if ids:
+            for decision in session.execute(
+                select(ApprovalDecision)
+                .where(ApprovalDecision.request_id.in_(ids))
+                .where(ApprovalDecision.approver_kind == ActorKind.HUMAN.value)
+                .order_by(ApprovalDecision.created_at)
+            ).scalars():
+                humans.setdefault(decision.request_id, []).append(decision.verdict)
+
+    rows: list[dict[str, Any]] = []
+    counts = {"agree": 0, "disagree": 0, "undecided": 0}
+    for entry in entries:
+        detail = dict(entry.detail or {})
+        request = requests.get(entry.entity_id)
+        state = request.state if request is not None else "unknown"
+        human = humans.get(entry.entity_id, [])
+        final = _FINAL_VERDICT.get(state)
+        if final is None:
+            agree = None
+            counts["undecided"] += 1
+        else:
+            agree = detail.get("verdict") == final
+            counts["agree" if agree else "disagree"] += 1
+        rows.append(
+            {
+                "request_id": entry.entity_id,
+                "duty": detail.get("duty"),
+                "tier": detail.get("tier"),
+                "subject_ref": detail.get("subject_ref"),
+                "shadow_verdict": detail.get("verdict"),
+                "shadow_rationale": detail.get("rationale"),
+                "model": detail.get("model"),
+                "reviewed_at": entry.created_at.isoformat(),
+                "state": state,
+                "human_verdicts": human,
+                "agree": agree,
+            }
+        )
+    judged = counts["agree"] + counts["disagree"]
+    return {
+        "counts": counts,
+        "agreement": round(counts["agree"] / judged, 3) if judged else None,
+        "reviews": rows,
+    }

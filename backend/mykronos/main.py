@@ -37,6 +37,7 @@ from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.approvals import pull_requests as approval_pull_requests
+from mykronos.approvals import reviewer as approval_reviewer
 from mykronos.approvals import sampling as approval_sampling
 from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
@@ -527,6 +528,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db, policy, app.state.github_factory
             )
 
+        async def _shadow_reviews() -> None:
+            # spec 34 §4.3 shadow mode: the reviewer reads pending requests and
+            # its verdict is recorded, never counted. A no-op unless the mode is
+            # `shadow` and a key is set, so the job is safe to always schedule.
+            try:
+                policy = cached_approval_policy(settings.approval_policy_path)
+            except ApprovalPolicyError:
+                return
+            done = await asyncio.to_thread(
+                approval_reviewer.shadow_sweep,
+                app.state.db,
+                policy,
+                settings,
+                limit=settings.shadow_reviews_per_run,
+            )
+            if done:
+                logger.info(
+                    "Shadow reviews: %s",
+                    ", ".join(f"{o.request_id[:8]}={o.verdict}" for o in done),
+                )
+
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and
             # awaiting it lets the rest of the app serve while GitHub answers.
@@ -615,6 +637,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
             ("pull-request-stamps", 120, _pull_request_stamps),
+            ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (
                 "deployment-probe",

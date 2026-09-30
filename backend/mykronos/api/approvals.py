@@ -379,6 +379,19 @@ async def delegation_stats(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/shadow-reviews")
+async def shadow_reviews(request: Request, principal: PrincipalDep) -> dict[str, Any]:
+    """The reviewer's shadow verdicts beside what a person decided (spec 34 §4.3).
+
+    The track record a delegation should rest on: how often the reviewer and the
+    operator agreed, and every case where they did not. Ordered before
+    `/{request_id}` so the literal path is not read as a request id.
+    """
+    report = await asyncio.to_thread(reviewer.shadow_report, request.app.state.db)
+    report["mode"] = reviewer.mode(request.app.state.settings)
+    return report
+
+
 @router.post("/{request_id}/independent-review")
 async def independent_review(
     request: Request, request_id: str, principal: PrincipalDep

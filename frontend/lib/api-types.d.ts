@@ -2794,6 +2794,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/approvals/shadow-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Shadow Reviews
+         * @description The reviewer's shadow verdicts beside what a person decided (spec 34 §4.3).
+         *
+         *     The track record a delegation should rest on: how often the reviewer and the
+         *     operator agreed, and every case where they did not. Ordered before
+         *     `/{request_id}` so the literal path is not read as a request id.
+         */
+        get: operations["shadow_reviews_api_approvals_shadow_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals/{request_id}/independent-review": {
         parameters: {
             query?: never;
@@ -10660,6 +10684,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    shadow_reviews_api_approvals_shadow_reviews_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

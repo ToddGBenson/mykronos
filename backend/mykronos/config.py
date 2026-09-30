@@ -395,6 +395,31 @@ class Settings(BaseSettings):
             "Recorded as the reviewer's family, so a delegation must name it."
         ),
     )
+    reviewer_mode: str = Field(
+        default="shadow",
+        pattern="^(off|shadow|live)$",
+        description=(
+            "How the independent reviewer's verdicts count (spec 34 §4.3). `shadow` "
+            "(default): it reviews pending requests and its verdict is recorded "
+            "beside the request but never counts - the person still decides. "
+            "`live`: its verdict goes through the approval engine and counts where "
+            "a delegation allows. `off`: it never runs."
+        ),
+    )
+    shadow_review_interval_seconds: int = Field(
+        default=600,
+        ge=60,
+        description="How often shadow mode looks for pending requests to review.",
+    )
+    shadow_reviews_per_run: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description=(
+            "Reviews per shadow run. Each one is a paid model call, so a backlog "
+            "drains over several runs instead of in one burst."
+        ),
+    )
     reviewer_api_key: str = Field(
         default="",
         repr=False,
