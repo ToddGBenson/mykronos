@@ -2044,7 +2044,8 @@ class DashboardQueries:
             """
             SELECT f.finding_id, f.severity, f.capability, f.rule_id, f.title,
                    f.file_path, f.line_start, f.first_seen_scan_run_id,
-                   json_extract_string(f.raw_finding_json, '$.image')
+                   json_extract_string(f.raw_finding_json, '$.image'),
+                   f.package_name, f.package_version
             FROM findings f
             WHERE f.asset_id = ?
               AND f.status = 'open'
@@ -2066,10 +2067,12 @@ class DashboardQueries:
                 "line_start": None if line_start is None else int(line_start),
                 "_scan": str(scan),
                 "_image": None if image is None else str(image),
+                "_package": str(package or ""),
+                "_version": str(version or ""),
             }
             for (
                 finding_id, severity, capability, rule_id, title,
-                file_path, line_start, scan, image,
+                file_path, line_start, scan, image, package, version,
             ) in rows
         ]
         disclosed = disclosed_ids(
@@ -2079,6 +2082,9 @@ class DashboardQueries:
                     str(row["finding_id"]),
                     str(row["_scan"]),
                     None if row["_image"] is None else str(row["_image"]),
+                    str(row["rule_id"]),
+                    str(row["_package"]),
+                    str(row["_version"]),
                 )
                 for row in found
                 if row["capability"] == CAPABILITY
