@@ -52,7 +52,6 @@ class TestTheWeightedSum:
             "blast_radius_ratio": 0.0,
             "blast_radius_repos": 0,
             "repo_recommendation": "go",
-            "orphaned": False,
             "effort": "small",
         }
         item.update(overrides)
@@ -89,11 +88,19 @@ class TestTheWeightedSum:
         high, _ = rank_terms(self._item(epss_score=0.9), policy)
         assert high > low
 
-    def test_orphaned_only_ever_discounts(self, policy: Any) -> None:
-        """D-072's direction: never a promotion, only a reduction."""
+    def test_the_queue_does_not_claim_reachability(self, policy: Any) -> None:
+        """#729. The queue carried an "orphaned" discount it could never apply
+        (every row was hard-set to not orphaned) while its disclosure listed
+        reachability as an input it consulted. Removed rather than faked: the
+        rank neither uses reachability nor says it does."""
+        from mykronos.dashboard import RANK_INPUTS
+
+        assert "orphaned" not in RANK_INPUTS
+        assert not any("reachab" in label for label in RANK_INPUTS.values())
+        assert not hasattr(policy.triage_rank, "orphaned_discount")
         plain, _ = rank_terms(self._item(severity="high"), policy)
-        orphaned, _ = rank_terms(self._item(severity="high", orphaned=True), policy)
-        assert orphaned < plain
+        flagged, _ = rank_terms(self._item(severity="high", orphaned=True), policy)
+        assert flagged == plain
 
     def test_fixable_is_a_cheapness_bonus(self, policy: Any) -> None:
         plain, _ = rank_terms(self._item(), policy)
@@ -121,7 +128,6 @@ class TestEveryTermSaysWhatInputItIs:
             "blast_radius_ratio": 1.0,
             "blast_radius_repos": 4,
             "repo_recommendation": "no_go",
-            "orphaned": True,
             "effort": "one_click",
         }
 
@@ -177,7 +183,6 @@ class TestEveryTermSaysWhatInputItIs:
             "blast_radius_ratio": 0.0,
             "blast_radius_repos": 0,
             "repo_recommendation": "go",
-            "orphaned": False,
             "effort": "small",
         }
 

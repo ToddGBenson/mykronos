@@ -247,7 +247,6 @@ RANK_INPUTS: dict[str, str] = {
     "due_soon": "remediation target",
     "blast_radius": "blast radius",
     "repo_is_no_go": "the repository's own risk decision",
-    "orphaned": "reachability (Python only)",
     "fixable": "whether a fix already exists",
 }
 """Every term `rank_terms` can produce, and the input each one discloses.
@@ -319,12 +318,6 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             "repo_is_no_go",
             rank.repo_is_no_go,
             "in a repository the risk decision already refuses",
-        )
-    if item.get("orphaned"):
-        add(
-            "orphaned",
-            rank.orphaned_discount,
-            "in a file nothing in the repository imports (Python only)",
         )
     if item.get("effort") == "one_click":
         add("fixable", rank.fixable_bonus, "auto-remediation has produced a fix for this")
@@ -1840,10 +1833,17 @@ class DashboardQueries:
     def _attach_rank_inputs(self, queue: list[dict[str, Any]]) -> None:
         """Stamp the signals ranking needs but the queue did not carry.
 
-        Three lookups for the whole page rather than per row: the fix stages
-        for every repository represented, the package blast-radius map, and
-        each repository's orphaned-file list. A per-row query here would be
-        the portfolio's two-second budget spent on a list of a hundred.
+        Two lookups for the whole page rather than per row: the fix stages
+        for every repository represented, and the package blast-radius map. A
+        per-row query here would be the portfolio's two-second budget spent on
+        a list of a hundred.
+
+        There is no reachability term (#729). The queue carried a -10
+        "orphaned" discount that this method hard-set to off, because
+        reachability lives per repository in the operational store and was
+        never joined in - so the term never applied, while `ranking_inputs`
+        told readers the queue consulted reachability. The risk score's own
+        reachability modifier is unaffected: it does read the reports.
         """
         repos = {str(item["repo_full_name"]) for item in queue}
         stages: dict[str, str] = {}
@@ -1865,12 +1865,6 @@ class DashboardQueries:
             item["blast_radius_ratio"] = (
                 repos_affected / widest if widest > 1 and repos_affected > 1 else 0.0
             )
-            # Orphaned-file reachability is per repository and lives in the
-            # operational store; the queue is cross-repo and has no session
-            # for it here. Left absent rather than assumed false — the
-            # discount simply does not apply until spec 19's report is joined
-            # in, and absent is the direction that cannot bury live work.
-            item["orphaned"] = False
 
     # -- Aegis and Atlas ------------------------------------------------
 

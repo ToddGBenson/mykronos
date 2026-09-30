@@ -275,10 +275,10 @@ class TriageRankPolicy:
     of work. That makes the ordering explicitly economic, which is what a
     worklist is.
 
-    `orphaned_discount` is negative, and is the same discount the risk model
-    applies for the same reason (D-072) — never a promotion, only ever a
-    reduction, because the analysis behind it can be wrong about dead code and
-    must not be able to bury live work.
+    There is no reachability term (#729, policy 1.11). `orphaned_discount`
+    was declared here and never applied, because the queue could not see the
+    per-repository reachability reports; a weight in reviewed policy that is
+    always zero reads as a control that is not there.
     """
 
     severity: dict[str, float]
@@ -288,7 +288,6 @@ class TriageRankPolicy:
     due_soon: float
     blast_radius_at_max: float
     repo_is_no_go: float
-    orphaned_discount: float
     fixable_bonus: float
 
     @property
@@ -679,9 +678,6 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
             repo_is_no_go=_number(
                 rank_raw.get("repo_is_no_go", 0), "triage_rank.repo_is_no_go"
-            ),
-            orphaned_discount=_number(
-                rank_raw.get("orphaned_discount", 0), "triage_rank.orphaned_discount"
             ),
             fixable_bonus=_number(
                 rank_raw.get("fixable_bonus", 0), "triage_rank.fixable_bonus"

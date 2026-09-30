@@ -76,7 +76,14 @@
 # and accepted members still count. On 2026-09-28 the estate had none, so no
 # existing score moved; four of the nine rules cannot fire yet for want of
 # network and cloud findings.
-version: "1.10"
+#
+# 1.11 — removes triage_rank.orphaned_discount (#729; operator decision
+# 2026-09-30). It never applied: the work queue hard-set every row to "not
+# orphaned" because reachability lives per repository and was never joined
+# into ranking, while the queue's own disclosure listed reachability as an
+# input it consulted. No risk score changes - triage_rank orders the work
+# queue only - and the risk model's reachability modifier is untouched.
+version: "1.11"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -440,10 +447,6 @@ triage_rank:
   due_soon: 5
   blast_radius_at_max: 10   # scaled by dependent-repo count
   repo_is_no_go: 8          # the same finding matters more in a failing repo
-  # Negative, and the same discount the risk model applies for the same reason
-  # (D-072): never a promotion, only ever a reduction. The analysis can be
-  # wrong about dead code and must not be able to bury live work.
-  orphaned_discount: -10
   # Not a claim that a fixable finding is more dangerous — a claim that it is
   # cheaper. A worklist's job is risk removed per unit of work.
   fixable_bonus: 6
