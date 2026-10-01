@@ -417,3 +417,33 @@ class TestTheDetectorsAreActuallyInvokable:
             "A drift check that crashes reports no drift, which is "
             f"indistinguishable from finding none.\n{result.stderr[-2000:]}"
         )
+
+
+class TestFetchReadsLargeFiles:
+    """2026-10-01: TheHub's `develop` pipeline crossed 1 MB. The contents API's
+    JSON envelope carries no content above that size, the old fetch decoded an
+    empty string, and the cross-repo check crashed on `None.get`. Offline:
+    these pin the request shape, not GitHub."""
+
+    def test_it_asks_for_the_raw_file(self, monkeypatch) -> None:
+        seen: list[list[str]] = []
+
+        def run(args, **kwargs):
+            seen.append(args)
+            assert kwargs.get("encoding") == "utf-8"
+            return subprocess.CompletedProcess(args, 0, stdout="jobs: []", stderr="")
+
+        monkeypatch.setattr(gates_check.subprocess, "run", run)
+
+        assert gates_check.fetch("o/r", "p.yml", "develop") == "jobs: []"
+        assert "Accept: application/vnd.github.raw" in seen[0]
+
+    def test_an_empty_answer_is_unreadable_not_an_empty_pipeline(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            gates_check.subprocess,
+            "run",
+            lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+        )
+
+        assert gates_check.fetch("o/r", "p.yml", "develop") is None
+
