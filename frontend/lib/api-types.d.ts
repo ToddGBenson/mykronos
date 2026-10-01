@@ -1248,6 +1248,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/disposition-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Finding Disposition
+         * @description Ask for a critical or high finding to be closed as a false positive (#713).
+         *
+         *     The finding stays open. The platform freezes the finding row, its raw scanner
+         *     record and the reason into an approval request under the `finding_disposition`
+         *     duty, tiered by the finding's own severity, and applies the disposition only
+         *     when an approver the policy admits says yes.
+         */
+        post: operations["request_finding_disposition_api_dashboard_findings__finding_id__disposition_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/findings/{finding_id}/status": {
         parameters: {
             query?: never;
@@ -3984,6 +4009,33 @@ export interface components {
             fix_pr_url?: string | null;
             /** Pr Status */
             pr_status?: string | null;
+        };
+        /**
+         * DispositionRequestIn
+         * @description An agent asking for a critical or high finding to be closed (#713).
+         */
+        DispositionRequestIn: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "false_positive" | "suppressed";
+            /**
+             * Reason
+             * @description What was checked and why the finding is not real here. Frozen into the evidence an approver reads, beside the finding and its raw scanner record.
+             */
+            reason: string;
+        };
+        /** DispositionRequestOut */
+        DispositionRequestOut: {
+            /** Approval Request Id */
+            approval_request_id: string;
+            /** Tier */
+            tier: string;
+            /** State */
+            state: string;
+            /** Evidence Digest */
+            evidence_digest: string;
         };
         /**
          * EcosystemEvidence
@@ -8696,6 +8748,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClassificationReviewResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_finding_disposition_api_dashboard_findings__finding_id__disposition_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispositionRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispositionRequestOut"];
                 };
             };
             /** @description Validation Error */

@@ -27,6 +27,7 @@ from mykronos import (
     consult,
     controls,
     cvss,
+    finding_disposition,
     finding_record,
     governance,
     guidance,
@@ -49,6 +50,9 @@ from mykronos.api.ingest import (
     installation_client_for_repo,
     profile_owner_for_repo,
 )
+from mykronos.approvals.engine import ApprovalError
+from mykronos.approvals.engine import create_request as create_approval_request
+from mykronos.approvals.policy import cached_policy as cached_approval_policy
 from mykronos.ci import (
     ACTIONS,
     ALL_STAGES,
@@ -3837,6 +3841,72 @@ def _check_acceptance_is_earned(
             )
 
 
+class DispositionRequestIn(BaseModel):
+    """An agent asking for a critical or high finding to be closed (#713)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["false_positive", "suppressed"]
+    reason: str = Field(
+        min_length=1,
+        max_length=8000,
+        description=(
+            "What was checked and why the finding is not real here. Frozen into the "
+            "evidence an approver reads, beside the finding and its raw scanner record."
+        ),
+    )
+
+
+class DispositionRequestOut(BaseModel):
+    approval_request_id: str
+    tier: str
+    state: str
+    evidence_digest: str
+
+
+@router.post(
+    "/findings/{finding_id}/disposition-requests",
+    response_model=DispositionRequestOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_finding_disposition(
+    request: Request, finding_id: str, body: DispositionRequestIn, principal: PrincipalDep
+) -> DispositionRequestOut:
+    """Ask for a critical or high finding to be closed as a false positive (#713).
+
+    The finding stays open. The platform freezes the finding row, its raw scanner
+    record and the reason into an approval request under the `finding_disposition`
+    duty, tiered by the finding's own severity, and applies the disposition only
+    when an approver the policy admits says yes.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requesting a disposition requires write access.",
+        )
+    settings = request.app.state.settings
+    try:
+        policy = cached_approval_policy(settings.approval_policy_path)
+        created = await asyncio.to_thread(
+            create_approval_request,
+            request.app.state.db,
+            policy,
+            duty=finding_disposition.DUTY,
+            subject_ref=finding_id,
+            requested_by=principal,
+            statement=body.reason,
+            context={"status": body.status, "reason": body.reason},
+        )
+    except ApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return DispositionRequestOut(
+        approval_request_id=created.id,
+        tier=created.tier,
+        state=created.state,
+        evidence_digest=created.evidence_digest,
+    )
+
+
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)
 async def set_finding_status(
     request: Request, finding_id: str, body: StatusChange, principal: PrincipalDep
@@ -3873,6 +3943,25 @@ async def set_finding_status(
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+
+    # #713: an agent may not close a critical or high finding on its own word.
+    # A false positive or a suppression goes through the governed duty; an
+    # acceptance already has one. A person's direct call is unchanged.
+    if finding_disposition.governed(principal, existing.get("severity")):
+        governed_route = (
+            "POST /api/risk-acceptances"
+            if body.status is FindingStatus.ACCEPTED_RISK
+            else f"POST /api/dashboard/findings/{finding_id}/disposition-requests"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"An agent may not set a {existing.get('severity')} finding to "
+                f"'{body.status.value}' directly: closing a serious finding is a "
+                f"governed decision (#713). Use {governed_route}; someone independent "
+                "approves it, and the finding stays open until they do."
+            ),
         )
 
     accepting = body.status is FindingStatus.ACCEPTED_RISK

@@ -164,6 +164,32 @@ duties:
         independence: [distinct_principal]
         cooling_off_hours: 0
 
+  finding_disposition:                 # mykronos #713 - an agent closing a serious finding
+    # Severity of the finding, read from the lake. Only critical and high are
+    # governed; a person's direct disposition, and an agent's on medium and
+    # below, still use the status endpoint as before.
+    tier_by: severity
+    requesters: [agent]                # a person dispositions directly
+    reviewer_instructions: |
+      This is a request by an agent to stop tracking a critical or high finding as a
+      false positive (or to suppress it). The evidence holds the finding, its raw scanner
+      record and the agent's reason. Approve only when the reason shows the finding is
+      not real here - name the payload, path or version the reason relies on and check it
+      against the raw record. A reason that argues the risk is acceptable rather than
+      absent is a risk acceptance, not a false positive: reject it. If the reason
+      asserts something the evidence cannot show, answer needs_info.
+    tiers:
+      critical:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 0
+      high:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context, different_family]
+        cooling_off_hours: 0
+
   delegation_grant:                    # spec 34 §5 - trusting an agent approver
     tier_by: fixed
     requesters: [human]                # an agent cannot ask for authority either
