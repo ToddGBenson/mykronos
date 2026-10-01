@@ -10,6 +10,7 @@ an agent's on medium and below, are unchanged.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -202,3 +203,67 @@ class TestTheGovernedRoute:
         )
 
         assert response.status_code in (400, 409, 422), response.text
+
+
+class TestReopening:
+    """There was no way back from false_positive (#713 follow-up)."""
+
+    def test_an_agent_can_reopen_and_then_ask_properly(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        finding = _seed(client, auth, run_compaction, "high")
+        assert _patch(client, admin_auth, finding, "false_positive").status_code == 200
+        run_compaction()
+        agent = _agent(client, admin_auth)
+
+        reopened = client.post(
+            f"/api/dashboard/findings/{finding}/reopen",
+            json={"reason": "Disposition made before #713; resubmitting for a second signature."},
+            headers=agent,
+        )
+
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["previous_status"] == "false_positive"
+        run_compaction()
+        assert _status(client, finding) == "open"
+        assert _ask(client, agent, finding).status_code == 201
+        with client.app.state.db.session() as session:
+            entry = session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == "finding.reopened")
+            ).scalar_one()
+            assert entry.detail["previous_status"] == "false_positive"
+
+    def test_an_acceptance_is_not_reopened_here(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        finding = _seed(client, auth, run_compaction, "medium")
+        until = (date.today() + timedelta(days=30)).isoformat()
+        accepted = _patch(
+            client, admin_auth, finding, "accepted_risk",
+            accepted_reason_code="not_exploitable_here", accepted_until=until,
+        )
+        assert accepted.status_code == 200, accepted.text
+        run_compaction()
+
+        response = client.post(
+            f"/api/dashboard/findings/{finding}/reopen",
+            json={"reason": "Trying to undo an acceptance the wrong way."},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 409
+        assert "risk acceptance" in response.json()["detail"]
+
+    def test_an_open_finding_is_not_reopened(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        finding = _seed(client, auth, run_compaction, "high")
+
+        response = client.post(
+            f"/api/dashboard/findings/{finding}/reopen",
+            json={"reason": "Nothing to reopen here at all."},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 409
+

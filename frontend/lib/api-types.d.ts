@@ -1273,6 +1273,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reopen Finding
+         * @description Put a dispositioned finding back to `open` (#713 follow-up).
+         *
+         *     Until this there was no way back from `false_positive` or `suppressed`:
+         *     the status route sets dispositions and refuses `open`, rightly, because
+         *     `open` is the scanners' word. But a disposition somebody now doubts - or
+         *     one an agent made before #713, that needs a second signature - had to
+         *     stand or be edited in the lake by hand.
+         *
+         *     Any writer may reopen, agents included: reopening only ever adds
+         *     tracking, so it is the direction that needs no approval. Audited with the
+         *     previous status and the reason.
+         */
+        post: operations["reopen_finding_api_dashboard_findings__finding_id__reopen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/findings/{finding_id}/status": {
         parameters: {
             query?: never;
@@ -6033,6 +6063,23 @@ export interface components {
                 [key: string]: unknown;
             }[] | null;
         };
+        /** ReopenIn */
+        ReopenIn: {
+            /**
+             * Reason
+             * @description Why the disposition no longer stands, or why it needs a second signature.
+             */
+            reason: string;
+        };
+        /** ReopenOut */
+        ReopenOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Previous Status */
+            previous_status: string;
+            /** Status */
+            status: string;
+        };
         /**
          * ReownOut
          * @description What a re-derive changed, or would change.
@@ -8783,6 +8830,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DispositionRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reopen_finding_api_dashboard_findings__finding_id__reopen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReopenIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReopenOut"];
                 };
             };
             /** @description Validation Error */
