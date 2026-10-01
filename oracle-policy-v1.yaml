@@ -83,7 +83,14 @@
 # into ranking, while the queue's own disclosure listed reachability as an
 # input it consulted. No risk score changes - triage_rank orders the work
 # queue only - and the risk model's reachability modifier is untouched.
-version: "1.11"
+#
+# 1.12 - adds scope.exclude_tool_images (#666; operator decision 2026-10-01).
+# Findings in images declared tools stop counting toward the score, the
+# forecast, the accepted-risk totals and the blast radius; they stay open,
+# listed, and counted in decision_scope.tool_images. On 2026-10-01 this was
+# the ZAP scanner image alone: 30 of the mykronos repository's 39 open highs.
+# Live from the first containers scan that carries the role.
+version: "1.12"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -473,3 +480,10 @@ scope:
   # incoherent, since the PR neither caused it nor fixes it. They still count
   # toward the portfolio decision.
   capabilities_excluded_from_gates: [network]
+
+  # #666 (policy 1.12): findings in an image a compose file declares
+  # `x-mykronos-role: tool` - a scanner run against a synthetic demo, never a
+  # service anything depends on - stay open and listed, and do not count. The
+  # role is declared, never guessed, and an image any compose file runs as a
+  # service counts. Each decision records how many it left out.
+  exclude_tool_images: true

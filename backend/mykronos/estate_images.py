@@ -466,6 +466,46 @@ def _environment(pairs: Iterable[str]) -> dict[str, str]:
     return env
 
 
+def annotate_reports(derivation: Derivation, directory: Path) -> dict[str, int]:
+    """Stamp each Trivy report with the role its image was declared to have (#666).
+
+    The containers lane scans every image the compose files run, and until this
+    the role a compose file declared - `x-mykronos-role: tool` - stopped at the
+    build log: the findings, and so the risk score, never heard it. This writes
+    `properties.mykronosRole` into each run whose `imageName` is a declared
+    tool, which the Trivy adapter carries onto every finding.
+
+    Only `tool` is written. A service needs no mark - it is the default, and
+    the default is the direction that cannot lose a finding.
+    """
+    tools = {
+        str(image["reference"])
+        for image in derivation.as_dict()["images"]
+        if image.get("role") == "tool"
+    }
+    counts = {"reports": 0, "tool_reports": 0}
+    for path in sorted(directory.glob("*.sarif")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        counts["reports"] += 1
+        changed = False
+        for run in document.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            properties = run.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            if str(properties.get("imageName") or "").strip() in tools:
+                properties["mykronosRole"] = "tool"
+                changed = True
+        if changed:
+            path.write_text(json.dumps(document), encoding="utf-8")
+            counts["tool_reports"] += 1
+    return counts
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m mykronos.estate_images",
@@ -492,6 +532,12 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="NAME=VALUE",
         help="A compose variable, repeatable. The process environment is used as well.",
+    )
+    parser.add_argument(
+        "--annotate",
+        metavar="DIR",
+        help="Also mark every Trivy report in DIR whose image a compose file declares "
+        "a tool (#666), so its findings are listed but not scored.",
     )
     parser.add_argument(
         "--use-process-env",
@@ -524,6 +570,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(payload)
     else:
         Path(arguments.output).write_text(payload, encoding="utf-8")
+
+    if arguments.annotate:
+        counts = annotate_reports(derivation, Path(arguments.annotate))
+        print(
+            f"Marked {counts['tool_reports']} of {counts['reports']} report(s) as "
+            "tool images (#666).",
+            file=sys.stderr,
+        )
 
     return 0
 

@@ -44,6 +44,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     # (#325).
     outcome = sarif_to_findings(raw_output, context, warn_degraded=False)
     image = _image_name(raw_output)
+    role = _image_role(raw_output)
     if outcome.findings and image is None:
         outcome.warn(
             "The Trivy report names no single image (runs[].properties.imageName), "
@@ -80,6 +81,11 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         # `usr/local/bin/gosu` is the same path in every image that ships it.
         if image is not None and isinstance(finding.raw_finding_json, dict):
             finding.raw_finding_json["image"] = image
+        # #666: what a compose file declared the image FOR, stamped onto the
+        # report by `estate_images annotate-roles`. Only `tool` is recorded;
+        # anything else, or nothing, leaves the finding counting as before.
+        if role == "tool" and isinstance(finding.raw_finding_json, dict):
+            finding.raw_finding_json["image_role"] = "tool"
 
     if outcome.findings and not enriched:
         outcome.warn(
@@ -90,6 +96,23 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome
+
+
+def _image_role(raw_output: bytes) -> str | None:
+    """`properties.mykronosRole` when every run in the report agrees on it."""
+    try:
+        document = json.loads(raw_output)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    runs = document.get("runs") if isinstance(document, dict) else None
+    if not isinstance(runs, list) or not runs:
+        return None
+    roles = {
+        str((run.get("properties") or {}).get("mykronosRole") or "")
+        for run in runs
+        if isinstance(run, dict)
+    }
+    return roles.pop() if len(roles) == 1 and "" not in roles else None
 
 
 def _image_name(raw_output: bytes) -> str | None:
