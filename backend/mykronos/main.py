@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from mykronos import __version__, logsafe, platform_health, risk_acceptance
+from mykronos import __version__, finding_disposition, logsafe, platform_health, risk_acceptance
 from mykronos.adminauth import (
     ActorKind,
     Principal,
@@ -318,6 +318,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Spec 33: the risk-acceptance duty stamps findings in the lake when an
     # approval lands, and reads its limits from the approval policy.
     risk_acceptance.bind(app.state.catalog)
+    finding_disposition.bind(app.state.catalog)
     try:
         risk_acceptance.bind_policy(cached_approval_policy(settings.approval_policy_path))
     except ApprovalPolicyError as exc:
