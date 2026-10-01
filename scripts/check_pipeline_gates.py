@@ -40,8 +40,6 @@ applied-pipeline check does: "no network here" is not drift.
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -86,24 +84,36 @@ class Report:
 
 
 def fetch(repo: str, path: str, ref: str) -> str | None:
-    """The file as that repository has it, or None if it cannot be read."""
+    """The file as that repository has it, or None if it cannot be read.
+
+    The raw media type, not the JSON envelope. Above 1 MB the contents API
+    returns `"encoding": "none"` with an empty `content`, and decoding that
+    gave an empty string that parsed as no pipeline at all: TheHub's
+    `develop` copy crossed 1 MB (1,204,476 bytes on 2026-10-01) and the
+    cross-repo check crashed on `None.get` instead of comparing anything.
+    UTF-8 explicitly, because `text=True` alone decodes with the Windows code
+    page.
+    """
     try:
         result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/contents/{path}?ref={ref}"],
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw",
+                f"repos/{repo}/contents/{path}?ref={ref}",
+            ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
-    if result.returncode != 0:
+    if result.returncode != 0 or not result.stdout:
         return None
-    try:
-        payload = json.loads(result.stdout)
-        return base64.b64decode(payload["content"]).decode("utf-8")
-    except (json.JSONDecodeError, KeyError, ValueError):
-        return None
+    return str(result.stdout)
 
 
 def gates(config: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
