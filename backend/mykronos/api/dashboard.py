@@ -3907,6 +3907,99 @@ async def request_finding_disposition(
     )
 
 
+class ReopenIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Why the disposition no longer stands, or why it needs a second signature.",
+    )
+
+
+class ReopenOut(BaseModel):
+    finding_id: str
+    previous_status: str
+    status: str
+
+
+#: What reopening may undo. `accepted_risk` is not here: an acceptance has its
+#: own route out (revoking the risk acceptance record), which also handles the
+#: record's other findings and its approval history.
+REOPENABLE = (FindingStatus.FALSE_POSITIVE.value, FindingStatus.SUPPRESSED.value)
+
+
+@router.post("/findings/{finding_id}/reopen", response_model=ReopenOut)
+async def reopen_finding(
+    request: Request, finding_id: str, body: ReopenIn, principal: PrincipalDep
+) -> ReopenOut:
+    """Put a dispositioned finding back to `open` (#713 follow-up).
+
+    Until this there was no way back from `false_positive` or `suppressed`:
+    the status route sets dispositions and refuses `open`, rightly, because
+    `open` is the scanners' word. But a disposition somebody now doubts - or
+    one an agent made before #713, that needs a second signature - had to
+    stand or be edited in the lake by hand.
+
+    Any writer may reopen, agents included: reopening only ever adds
+    tracking, so it is the direction that needs no approval. Audited with the
+    previous status and the reason.
+    """
+    if not principal.may_write:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Reopening a finding requires write access.",
+        )
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Reopening needs a reason.",
+        )
+    catalog = request.app.state.catalog
+    existing = DashboardQueries(catalog).finding(finding_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
+        )
+    previous = str(existing.get("status") or "")
+    if previous not in REOPENABLE:
+        detail = (
+            "An acceptance is ended by revoking its risk acceptance record."
+            if previous == FindingStatus.ACCEPTED_RISK.value
+            else "Only a false_positive or suppressed finding can be reopened."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Finding {finding_id} is {previous}. {detail}",
+        )
+    outcome = update_findings(
+        catalog,
+        locate_findings(catalog, [finding_id]),
+        "status = 'open', resolved_at = NULL, accepted_until = NULL, accepted_reason_code = NULL",
+        [],
+        only_if_status=previous,
+    )
+    if not outcome.count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The finding could not be updated; its status may have just changed.",
+        )
+    with request.app.state.db.session() as session:
+        request.app.state.db.audit(
+            session,
+            actor=principal.actor,
+            action="finding.reopened",
+            entity_type="finding",
+            entity_id=finding_id,
+            repo=existing.get("repo_full_name"),
+            capability=existing.get("capability"),
+            previous_status=previous,
+            reason=reason,
+        )
+    return ReopenOut(finding_id=finding_id, previous_status=previous, status="open")
+
+
 @router.patch("/findings/{finding_id}/status", response_model=StatusChangeResult)
 async def set_finding_status(
     request: Request, finding_id: str, body: StatusChange, principal: PrincipalDep
