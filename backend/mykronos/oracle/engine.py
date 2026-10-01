@@ -56,6 +56,13 @@ DECISION_TYPES = ("pr_gate", "commit_gate", "release_gate", "portfolio")
 GATE_DECISION_TYPES = ("pr_gate", "commit_gate", "release_gate")
 
 
+#: #666 / policy 1.12. Set by the Trivy adapter from the role a compose file
+#: declares for the image (`x-mykronos-role`). Declared, never guessed: an
+#: image with no declared role, or any compose that runs it as a service,
+#: carries no role here and counts as before.
+TOOL_IMAGE_SQL = "coalesce(json_extract_string(raw_finding_json, '$.image_role'), '') = 'tool'"
+
+
 def normalise_pr_number(pr_number: int | None) -> int | None:
     """`0` means "no pull request", not pull request zero.
 
@@ -1137,6 +1144,46 @@ class OracleEngine:
             "reason": reason,
         }
 
+    def _excluded(self, for_gate: bool) -> str:
+        """The scope every scoring query shares: capabilities kept out of gates
+        (spec 14 §7), and - policy 1.12, #666 - findings in images declared
+        tools rather than services."""
+        parts: list[str] = []
+        if for_gate and self.policy.capabilities_excluded_from_gates:
+            names = ", ".join(f"'{c}'" for c in self.policy.capabilities_excluded_from_gates)
+            parts.append(f"AND capability NOT IN ({names})")
+        parts.append(self._not_tool())
+        return " ".join(p for p in parts if p)
+
+    def _not_tool(self) -> str:
+        return f"AND NOT ({TOOL_IMAGE_SQL})" if self.policy.exclude_tool_images else ""
+
+    def _tool_images(self, repo_full_name: str) -> dict[str, Any]:
+        """What the tool-image scope left out, for the snapshot and the reasoning.
+
+        Counted, never hidden: the findings are real, and a decision that
+        dropped them silently would be a decision nobody could check."""
+        if not self.policy.exclude_tool_images:
+            return {"excluded": False}
+        statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
+        rows = self.catalog.query(
+            f"""
+            SELECT lower(severity), count(*), list(DISTINCT file_path)
+            FROM findings
+            WHERE asset_id = ? AND status IN ({statuses}) AND {TOOL_IMAGE_SQL}
+            GROUP BY 1
+            """,
+            [repo_full_name],
+        )
+        images: set[str] = set()
+        for _, _, paths in rows:
+            images.update(str(p) for p in (paths or []) if p)
+        return {
+            "excluded": True,
+            "open_by_severity": {str(sev): int(n) for sev, n, _ in rows},
+            "images": sorted(images),
+        }
+
     def _finding_counts(
         self, repo_full_name: str, *, for_gate: bool, dampened: list[str] | None = None
     ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
@@ -1149,12 +1196,7 @@ class OracleEngine:
         statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
         severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
 
-        excluded = ""
-        if for_gate and self.policy.capabilities_excluded_from_gates:
-            names = ", ".join(
-                f"'{c}'" for c in self.policy.capabilities_excluded_from_gates
-            )
-            excluded = f"AND capability NOT IN ({names})"
+        excluded = self._excluded(for_gate)
 
         # Parameters are bound in the order their placeholders appear in the
         # SQL *text*, and this one's are in the SELECT clause — before the
@@ -1383,12 +1425,7 @@ class OracleEngine:
         """
         statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
         severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
-        excluded = ""
-        if for_gate and self.policy.capabilities_excluded_from_gates:
-            names = ", ".join(
-                f"'{c}'" for c in self.policy.capabilities_excluded_from_gates
-            )
-            excluded = f"AND capability NOT IN ({names})"
+        excluded = self._excluded(for_gate)
 
         rows = self.catalog.query(
             f"""
@@ -1439,10 +1476,11 @@ class OracleEngine:
             return {"available": False, "reason": "Already at no_go."}
 
         rows = self.catalog.query(
-            """
+            f"""
             SELECT severity, first_seen_at FROM findings
             WHERE repo_full_name = ? AND status = 'open'
               AND severity IN ('critical', 'high')
+              {self._not_tool()}
             """,
             [repo_full_name],
         )
@@ -1556,12 +1594,7 @@ class OracleEngine:
         """
         statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
         severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
-        excluded = ""
-        if for_gate and self.policy.capabilities_excluded_from_gates:
-            names = ", ".join(
-                f"'{c}'" for c in self.policy.capabilities_excluded_from_gates
-            )
-            excluded = f"AND capability NOT IN ({names})"
+        excluded = self._excluded(for_gate)
         rows = self.catalog.query(
             f"""
             SELECT count(*) FILTER (WHERE due_at <= ?) AS overdue,
@@ -1650,7 +1683,7 @@ class OracleEngine:
         if not self.catalog.all_files("findings"):
             return {"unqualified": 0, "expired": 0, "total": 0}
         rows = self.catalog.query(
-            """
+            f"""
             SELECT
               count(*),
               sum(CASE WHEN accepted_until IS NULL
@@ -1662,6 +1695,7 @@ class OracleEngine:
                        THEN 1 ELSE 0 END)
             FROM findings
             WHERE asset_id = ? AND status = 'accepted_risk'
+              {self._not_tool()}
             """,
             [repo_full_name],
         )
@@ -1691,7 +1725,7 @@ class OracleEngine:
         if not self.catalog.all_files("findings"):
             return {}
         rows = self.catalog.query(
-            """
+            f"""
             SELECT lower(severity), count(*)
             FROM findings
             WHERE asset_id = ?
@@ -1700,6 +1734,7 @@ class OracleEngine:
               AND accepted_reason_code IS NOT NULL
               AND trim(accepted_reason_code) <> ''
               AND (accepted_until IS NULL OR accepted_until >= current_date)
+              {self._not_tool()}
             GROUP BY 1
             """,
             [repo_full_name],
@@ -1720,10 +1755,11 @@ class OracleEngine:
         portfolio is carried by five repositories" is a real answer.
         """
         rows = self.catalog.query(
-            """
+            f"""
             SELECT DISTINCT lower(trim(package_name)) FROM findings
             WHERE asset_id = ? AND status = 'open'
               AND package_name IS NOT NULL AND trim(package_name) <> ''
+              {self._not_tool()}
             """,
             [repo_full_name],
         )
@@ -1842,10 +1878,7 @@ class OracleEngine:
 
         statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
         severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
-        excluded = ""
-        if for_gate and self.policy.capabilities_excluded_from_gates:
-            names = ", ".join(f"'{c}'" for c in self.policy.capabilities_excluded_from_gates)
-            excluded = f"AND capability NOT IN ({names})"
+        excluded = self._excluded(for_gate)
 
         rows = self.catalog.query(
             f"""
@@ -2460,6 +2493,7 @@ class OracleEngine:
             forecast=self._forecast(repo_full_name, raw_score),
             path_to_green=path,
             evidence=evidence,
+            tool_images=self._tool_images(repo_full_name),
         )
 
         decision = Decision(
@@ -2508,6 +2542,7 @@ class OracleEngine:
         forecast: dict[str, Any] | None = None,
         path_to_green: dict[str, Any] | None = None,
         evidence: dict[str, Any] | None = None,
+        tool_images: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -2526,6 +2561,7 @@ class OracleEngine:
                 "capabilities_excluded": (
                     list(self.policy.capabilities_excluded_from_gates) if for_gate else []
                 ),
+                "tool_images": tool_images or {"excluded": False},
             },
             # Whether anything has ever looked (issue #341). Deliberately not
             # one of MODIFIER_CATEGORIES: it contributes nothing to the score
@@ -2703,6 +2739,13 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
         sentence += (
             f" Raw score {totals['raw_score']:.1f} was clamped to 100; the "
             "unclamped value is kept for ranking."
+        )
+    tools = (snapshot.get("decision_scope") or {}).get("tool_images") or {}
+    left_out = sum((tools.get("open_by_severity") or {}).values())
+    if tools.get("excluded") and left_out:
+        sentence += (
+            f" {left_out} open finding(s) in tool images "
+            f"({', '.join(tools.get('images') or [])}) are listed but not counted (#666)."
         )
     if unavailable:
         sentence += (

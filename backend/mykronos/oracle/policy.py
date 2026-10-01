@@ -373,6 +373,9 @@ class Policy:
     minimum_severity: str
     statuses_considered: tuple[str, ...]
     capabilities_excluded_from_gates: tuple[str, ...]
+    #: #666: findings in an image a compose file declares `x-mykronos-role:
+    #: tool` stay open and listed but do not count toward the score.
+    exclude_tool_images: bool
 
     #: Verbatim source, echoed by GET /api/oracle/policy so an admin can see
     #: precisely what is running rather than a re-serialisation of it.
@@ -395,6 +398,12 @@ def _require(mapping: dict[str, Any], key: str, where: str) -> Any:
     if key not in mapping:
         raise PolicyError(f"Policy is missing '{key}' under {where}.")
     return mapping[key]
+
+
+def _flag(value: Any, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise PolicyError(f"{where} must be true or false, got {value!r}.")
+    return value
 
 
 def _number(value: Any, where: str) -> float:
@@ -700,6 +709,9 @@ def parse_policy(document: dict[str, Any]) -> Policy:
         statuses_considered=tuple(scope.get("statuses_considered", ["open"])),
         capabilities_excluded_from_gates=tuple(
             scope.get("capabilities_excluded_from_gates", [])
+        ),
+        exclude_tool_images=_flag(
+            scope.get("exclude_tool_images", False), "scope.exclude_tool_images"
         ),
         raw=document,
     )

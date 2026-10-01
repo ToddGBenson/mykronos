@@ -2792,6 +2792,11 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  # #666: stamp each report with the role its compose file
+                  # declared, from this commit's source, so a tool image's
+                  # findings are listed but not scored.
+                  PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
+                    --root source --output /dev/null --annotate results
                   python -m mykronos.upload \
                     --capability containers --tool trivy \
                     --results-path results \
