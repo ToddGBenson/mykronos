@@ -28,6 +28,7 @@ from mykronos.api import refusals
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.dashboard import router as dashboard_router
+from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
@@ -550,6 +551,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     ", ".join(f"{o.request_id[:8]}={o.verdict}" for o in done),
                 )
 
+        async def _exposure() -> None:
+            # What a public endpoint shows anyone who asks (mykronos.exposure).
+            # A no-op with nothing registered.
+            from mykronos import exposure
+
+            await exposure.run_sweep(app.state.db)
+
         async def _governance() -> None:
             # Not in a thread: it is HTTP-bound, one call per repository, and
             # awaiting it lets the rest of the app serve while GitHub answers.
@@ -638,6 +646,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
             ("pull-request-stamps", 120, _pull_request_stamps),
+            ("exposure", settings.exposure_probe_interval_seconds, _exposure),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (
@@ -716,6 +725,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
+    app.include_router(exposure_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)
     app.include_router(patchwork_router)

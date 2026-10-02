@@ -395,6 +395,15 @@ class Settings(BaseSettings):
             "Recorded as the reviewer's family, so a delegation must name it."
         ),
     )
+    exposure_probe_interval_seconds: int = Field(
+        default=21_600,
+        ge=300,
+        description=(
+            "How often every registered public endpoint is probed anonymously "
+            "(mykronos.exposure). Six hours: exposure changes when somebody edits "
+            "a tunnel or a gate, not by the minute."
+        ),
+    )
     reviewer_mode: str = Field(
         default="shadow",
         pattern="^(off|shadow|live)$",
