@@ -88,6 +88,10 @@ deploy/thehub/registry-pull-deploy.log
 # Held open for the life of a deploy so two of them cannot interleave. Purely
 # a runtime handle - it exists only while a deploy is in flight.
 deploy/thehub/.deploy-lock-*
+# [#60517] When the hourly "quiet" heartbeat was last written to the log. State,
+# not configuration: it exists so a silent agent is distinguishable from a
+# stopped one without a marker on every cycle.
+deploy/thehub/.pull-deploy-heartbeat
 
 # Vault unseal task log (#60474). Timestamps and outcomes, no key material.
 deploy/concourse/vault-unseal.log
