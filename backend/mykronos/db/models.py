@@ -779,7 +779,7 @@ class PublicEndpoint(Base):
     __tablename__ = "public_endpoints"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    url: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    url: Mapped[str] = mapped_column(String(512), unique=True, index=True, default="")
     repo_full_name: Mapped[str] = mapped_column(String(255), default="", index=True)
     label: Mapped[str] = mapped_column(String(255), default="")
     declared_by: Mapped[str] = mapped_column(String(255), default="")
