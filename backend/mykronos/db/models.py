@@ -768,6 +768,28 @@ class TriageState(Base):
         )
 
 
+class PublicEndpoint(Base):
+    """A URL the operator says is reachable from the internet (mykronos.exposure).
+
+    Declared, then observed: the row is the operator's claim that this URL is
+    public; `observations` is what an anonymous GET actually got back the last
+    time the exposure job asked.
+    """
+
+    __tablename__ = "public_endpoints"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    url: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    declared_by: Mapped[str] = mapped_column(String(255), default="")
+    declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_status: Mapped[str] = mapped_column(String(32), default="not_probed")
+    last_probed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_detail: Mapped[str] = mapped_column(Text, default="")
+    observations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+
 class RepoSurface(Base):
     """An asset, an entry point, or a trust boundary this repository has
     (B-029).

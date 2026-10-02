@@ -710,6 +710,12 @@ class Briefing:
     toxic_coverage: dict[str, Any] | None = None
     #: True when detection could not run. Not the same as none found.
     toxic_unknown: bool = False
+    #: Registered public endpoints and what an anonymous visitor got there
+    #: (`mykronos.exposure`), worst first. Second on the page: exposure is the
+    #: question every finding below it depends on.
+    exposure: list[dict[str, Any]] = field(default_factory=list)
+    #: True when the endpoints could not be read. Not the same as none.
+    exposure_unknown: bool = False
     #: True when job health could not be read at all. Distinct from an empty
     #: list, which means it was read and everything is running.
     jobs_unknown: bool = False
@@ -1368,6 +1374,7 @@ def build(
     tokens: list[TokenDelivery] | None = None,
     toxic_combinations: list[dict[str, Any]] | None = None,
     toxic_coverage: dict[str, Any] | None = None,
+    exposure: list[dict[str, Any]] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1456,6 +1463,12 @@ def build(
         ],
         toxic_coverage=toxic_coverage,
         toxic_unknown=toxic_combinations is None,
+        exposure=[
+            e
+            for e in (exposure or [])
+            if asset_id is None or e.get("repo_full_name") in ("", asset_id)
+        ],
+        exposure_unknown=exposure is None,
         # Scoped by `asset_id` unlike the three above it, because a token *is*
         # keyed by repository — it is the one thing in this group the lake's
         # denominator applies to.
@@ -1533,6 +1546,34 @@ def _render_toxic(briefing: Briefing) -> list[str]:
     return lines
 
 
+def _render_exposure(briefing: Briefing) -> list[str]:
+    """What the internet can see. Silent when nothing is registered and the
+    read worked: an estate with no public endpoint has nothing to say here."""
+    if briefing.exposure_unknown:
+        return ["PUBLIC ENDPOINTS", "  Could not be read. Not the same as none exposed.", ""]
+    if not briefing.exposure:
+        return []
+    lines = [
+        "PUBLIC ENDPOINTS",
+        "  What an anonymous visitor gets from each registered public URL.",
+    ]
+    for e in briefing.exposure:
+        when = (e.get("last_probed_at") or "never")[:16].replace("T", " ")
+        obs = e.get("observations") or []
+        status = e.get("last_status")
+        if status == "not_probed":
+            state = "not probed yet"
+        elif status == "unreachable":
+            state = "unreachable at last probe"
+        else:
+            state = "nothing exposed" if not obs else f"{len(obs)} exposure(s)"
+        lines.append(f"  {e.get('url')}  ({state}; probed {when})")
+        for o in obs:
+            lines.append(f"      [{o.get('severity')}] {o.get('title')}")
+    lines += ["  → GET /api/exposure", ""]
+    return lines
+
+
 def render(briefing: Briefing) -> str:
     """The briefing as a person reads it after a deploy."""
     lines = [
@@ -1542,6 +1583,7 @@ def render(briefing: Briefing) -> str:
     ]
 
     lines += _render_toxic(briefing)
+    lines += _render_exposure(briefing)
 
     # Split before deciding what to print, not after. A lane holding nothing
     # open is still broken and still worth knowing about, but it must not push

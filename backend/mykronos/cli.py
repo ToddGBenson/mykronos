@@ -1556,6 +1556,17 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - a briefing must not die on this
                 logging.getLogger(__name__).debug("Could not compute toxic combinations")
 
+            # Public endpoints (`mykronos.exposure`): the last anonymous probe
+            # of every registered public URL. `None` on failure, so the page
+            # says "could not be read" rather than "nothing exposed".
+            exposure_rows: list[dict[str, Any]] | None = None
+            try:
+                from mykronos import exposure as exposure_report
+
+                exposure_rows = exposure_report.summary(db)
+            except Exception:  # noqa: BLE001 - a briefing must not die on this
+                logging.getLogger(__name__).debug("Could not read public endpoints")
+
             report = briefing_report.build(
                 catalog,
                 default_branches=default_branches,
@@ -1569,6 +1580,7 @@ def main(argv: list[str] | None = None) -> int:
                 tokens=tokens,
                 toxic_combinations=toxic_combinations,
                 toxic_coverage=toxic_coverage,
+                exposure=exposure_rows,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
