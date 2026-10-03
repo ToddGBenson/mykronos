@@ -335,6 +335,68 @@ function Invoke-ComposeUp {
     Assert-RunningImage -Expected $expected -ImageRef $ImageRef
 }
 
+function Repair-CollationDrift {
+    <#
+        Rebuild text indexes in any database whose recorded collation version
+        is not the one its container's OS provides, then record the new one.
+
+        WHY HERE. TheHub's databases use the libc collation provider. A
+        Postgres image on a newer glibc (Debian 12 -> 13: 2.36 -> 2.41) starts
+        happily on the old data directory, and every text index is then sorted
+        by rules the OS no longer uses - ordering, range scans and UNIQUE
+        checks on text can silently disagree with the data. `compose up` above
+        recreates any service whose image changed, so this deploy is exactly
+        where that happens; repairing it here makes the deploy safe whichever
+        comes first, the runbook (TheHub scripts/postgres-os-migrate.ps1) or a
+        release.
+
+        `IS DISTINCT FROM`, not `<>`: production's databases predate recorded
+        collation versions (datcollversion is NULL), and NULL <> '2.41' is
+        NULL - the drift would never be seen. The first deploy with this guard
+        therefore reindexes those databases once and records the version;
+        after that it is a no-op until the OS really changes.
+
+        A failure here fails the deploy: a database running on mismatched
+        indexes is not a deploy anyone should acknowledge.
+    #>
+    $ids = docker compose --project-name $project --file $composeFile ps --quiet
+    foreach ($id in $ids) {
+        if (-not $id) { continue }
+        $imageName = docker inspect -f '{{.Config.Image}}' $id 2>$null
+        if ($imageName -notmatch 'postgres|pgvector') { continue }
+        $name = (docker inspect -f '{{.Name}}' $id).TrimStart('/')
+        $pgUser = (docker exec $name sh -c 'echo ${POSTGRES_USER:-postgres}').Trim()
+        # stderr dropped on purpose: until the repair, every connection warns
+        # "collation version mismatch", which is the condition, not an error.
+        $drifted = docker exec $name psql -U $pgUser -d postgres -At -c (
+            "select datname || '|' || (datcollversion is null) from pg_database where datallowconn and " +
+            "datcollversion is distinct from pg_database_collation_actual_version(oid)") 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Could not read collation versions in $name." }
+        foreach ($row in @($drifted | Where-Object { $_ -and $_.Trim() })) {
+            $db, $unrecorded = $row.Trim().Split('|')
+            $quoted = '"' + $db.Replace('"', '""') + '"'
+            Write-Host "  $name/$db : collation version changed - REINDEX + REFRESH" -ForegroundColor Yellow
+            $started = Get-Date
+            docker exec $name psql -U $pgUser -d $db -v ON_ERROR_STOP=1 -q -c "REINDEX DATABASE $quoted" 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "REINDEX DATABASE $db failed in $name." }
+            # REFRESH refuses to start from NULL ("invalid collation version
+            # change"), which is production's state; there the version is
+            # recorded directly - what REFRESH does itself - after the reindex.
+            # Run connected to $db itself, so neither statement has to quote
+            # the name inside a string literal.
+            $record = if ($unrecorded -eq 'true') {
+                "UPDATE pg_database SET datcollversion = pg_database_collation_actual_version(oid) " +
+                "WHERE datname = current_database()"
+            } else {
+                "ALTER DATABASE $quoted REFRESH COLLATION VERSION"
+            }
+            docker exec $name psql -U $pgUser -d $db -v ON_ERROR_STOP=1 -q -c $record 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "Could not record the collation version for $db in $name." }
+            Write-Host ("  $name/$db repaired in {0:N1}s" -f ((Get-Date) - $started).TotalSeconds) -ForegroundColor DarkGray
+        }
+    }
+}
+
 function Test-Healthy {
     # Two questions, because they fail separately and mean different things.
     #
@@ -376,6 +438,15 @@ do {
 } while (-not $healthy -and (Get-Date) -lt $deadline)
 
 if ($healthy) {
+    try {
+        Repair-CollationDrift
+    } catch {
+        Write-Host "COLLATION REPAIR FAILED: $_" -ForegroundColor Red
+        Write-Host "$Environment is running $Sha on indexes sorted for a different OS." -ForegroundColor Red
+        Write-Host "Not acknowledged. Fix with TheHub scripts/postgres-os-migrate.ps1." -ForegroundColor Red
+        exit 1
+    }
+
     # Seeded only after the stack is healthy, because both steps run through
     # `compose exec` into a container that has to be up to receive them.
     #
