@@ -48,6 +48,14 @@ RUN apt-get update -qq \
     && apt-get upgrade -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
+# No setuid or setgid binaries. The base image ships eight (su, passwd, mount,
+# chsh, chfn, gpasswd, newgrp, umount); this service runs as uid 10001 and
+# needs none of them, and each is a way for a local foothold to become root.
+# compose's no-new-privileges blocks them at runtime too; this removes them
+# from the image, so the guarantee does not depend on how it is run.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+    && test -z "$(find / -xdev -perm /6000 -type f)"
+
 # pip and setuptools from the base image, not from this project's
 # dependencies. The platform's own scan found the last remaining findings
 # there: setuptools (CVE-2025-47273, path traversal) and the msgpack pip

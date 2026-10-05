@@ -20,6 +20,16 @@ services:
     image: ${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}
     container_name: mykronos-backend
     restart: unless-stopped
+    # No process here may gain privileges it did not start with (setuid,
+    # file capabilities), and it starts with none: both containers run as a
+    # non-root user and need no capability to listen above 1024 or read their
+    # volumes. Measured 2026-10-05: the backend image's remaining high CVEs
+    # with no Debian fix (libacl symlink traversal, systemd-homed) need a
+    # privileged caller to matter, and this is what guarantees there is none.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       # All interfaces, not loopback. Concourse task containers reach this by
       # host IP -- they resolve through public DNS and have never heard of
@@ -131,6 +141,11 @@ services:
     image: ${MYKRONOS_IMAGE_FRONTEND:-mykronos-frontend:latest}
     container_name: mykronos-frontend
     restart: unless-stopped
+    # Same as the backend: no privilege to start with, none to gain.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       backend:
         condition: service_healthy
