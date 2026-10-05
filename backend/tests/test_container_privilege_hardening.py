@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _service(name: str) -> dict:
-    compose = yaml.safe_load((ROOT / "deploy" / "mykronos" / "docker-compose.yml").read_text(encoding="utf-8"))
+    path = ROOT / "deploy" / "mykronos" / "docker-compose.yml"
+    compose = yaml.safe_load(path.read_text(encoding="utf-8"))
     return compose["services"][name]
 
 
