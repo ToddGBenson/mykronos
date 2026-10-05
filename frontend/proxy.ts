@@ -1,5 +1,74 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import {
+  COOKIE_MAX_AGE,
+  TOKEN_COOKIE,
+  TOKEN_HEADER,
+  TOKEN_QUERY,
+  isExempt,
+  presentedToken,
+  tokensMatch,
+} from "./lib/gate";
+
+/**
+ * Every request passes the perimeter gate (`lib/gate.ts`) first; only then
+ * does a page get its CSP. The gate covers what the CSP matcher used to skip
+ * - `/api/*` route handlers and prefetches - because those carry the admin
+ * token to the backend just as pages do.
+ */
+export async function proxy(request: NextRequest) {
+  const expected = process.env.MYKRONOS_GATE_TOKEN ?? "";
+  if (expected && !isExempt(request.nextUrl.pathname)) {
+    const url = request.nextUrl;
+    const fromLink = url.searchParams.get(TOKEN_QUERY);
+    const presented = presentedToken({
+      header: request.headers.get(TOKEN_HEADER),
+      cookie: request.cookies.get(TOKEN_COOKIE)?.value,
+      query: fromLink,
+    });
+    if (!(await tokensMatch(presented, expected))) {
+      // Terse and identical for absent, wrong and malformed, as the backend.
+      return NextResponse.json(
+        { detail: "Not authorised for this host." },
+        { status: 401, headers: { "WWW-Authenticate": 'X-Hub-Token realm="mykronos"' } },
+      );
+    }
+    if (fromLink) {
+      // Followed a link: keep the token out of the address bar, history and
+      // Referer. HttpOnly because nothing in the browser reads it.
+      //
+      // The redirect is built from the request's own Host / X-Forwarded-*
+      // headers, not `nextUrl`: behind the tunnel `nextUrl` can carry the
+      // container's bind address, and Next refuses a relative Location.
+      const proto = (
+        request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "")
+      ).toLowerCase();
+      const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? url.host;
+      const clean = new URL(url.pathname, `${proto}://${host}`);
+      url.searchParams.forEach((value, key) => {
+        if (key !== TOKEN_QUERY) clean.searchParams.append(key, value);
+      });
+      const response = NextResponse.redirect(clean, 302);
+      response.cookies.set(TOKEN_COOKIE, presented, {
+        path: "/",
+        sameSite: "lax",
+        maxAge: COOKIE_MAX_AGE,
+        httpOnly: true,
+        secure: proto === "https",
+      });
+      return response;
+    }
+  }
+
+  const path = request.nextUrl.pathname;
+  const prefetch =
+    request.headers.has("next-router-prefetch") || request.headers.get("purpose") === "prefetch";
+  if (path === "/api" || path.startsWith("/api/") || prefetch) {
+    return NextResponse.next();
+  }
+  return withCsp(request);
+}
+
 /**
  * The Content-Security-Policy, with a per-request nonce.
  *
@@ -26,7 +95,7 @@ import { NextResponse, type NextRequest } from "next/server";
  * server-side rendering from the request's own CSP header. Every page here is
  * already `force-dynamic` — they all read live data — so nothing is given up.
  */
-export function proxy(request: NextRequest) {
+function withCsp(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
 
   // React uses `eval` in development to reconstruct server-side error stacks
@@ -97,16 +166,7 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    {
-      // Everything but API routes and static assets. A prefetch is excluded
-      // too: it never executes a script, so giving it a nonce spends entropy
-      // and cache-busts a response that could have been shared.
-      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
-      missing: [
-        { type: "header", key: "next-router-prefetch" },
-        { type: "header", key: "purpose", value: "prefetch" },
-      ],
-    },
-  ],
+  // Everything but Next's own build assets, which are the same public bytes for
+  // everybody. Narrowing this is narrowing the gate.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

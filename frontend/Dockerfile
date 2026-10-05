@@ -105,7 +105,7 @@ EXPOSE 3100
 
 # Absolute path to node: the healthcheck is exec form, so it does not inherit
 # the image ENTRYPOINT, and there is no shell to resolve a bare `node`.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3     CMD ["/nodejs/bin/node", "-e", "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3     CMD ["/nodejs/bin/node", "-e", "fetch('http://localhost:3100/api/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 # The distroless ENTRYPOINT is node itself, so CMD is the script and its
 # arguments. `node_modules/.bin/next` is a symlink to a shebang script and
