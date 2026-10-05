@@ -169,6 +169,30 @@ def validate_scope(scope: dict[str, Any]) -> None:
         raise RiskAcceptanceError("scope.fixed_version is absent, present or any.")
 
 
+def scope_images(scope_image: str) -> frozenset[str]:
+    """The repositories a scope's `image` may name.
+
+    `image_repository` is not idempotent for an image built here: a finding's
+    `registry.lan:5000/mykronos-backend:<sha>` becomes `mykronos-backend`, and
+    feeding that back in - which is exactly what the legacy migration stored as
+    the scope - gives `library/mykronos-backend`, because a bare single name
+    reads as a Docker Hub official image. So a migrated acceptance on one of
+    our own images matched nothing, could not be renewed or re-proposed with
+    the scope it carried, and lapsed (c62c9d7d, 2026-10-03).
+
+    A bare single name is genuinely ambiguous - `postgres` is Docker Hub's,
+    `mykronos-backend` is ours - so it matches either reading. Anything with a
+    `/` or a registry host is unambiguous and matches only itself.
+    """
+    canonical = image_repository(scope_image)
+    ref = scope_image.strip().split("@", 1)[0]
+    if ref.rfind(":") > ref.rfind("/"):
+        ref = ref[: ref.rfind(":")]
+    if "/" not in ref and ref:
+        return frozenset({canonical, ref.lower()})
+    return frozenset({canonical})
+
+
 def match_scope(
     catalog: Catalog,
     repo: str,
@@ -189,7 +213,7 @@ def match_scope(
         f"AND status IN ({placeholders})",
         [repo, scope["capability"], *statuses],
     )
-    want_image = image_repository(scope["image"]) if scope.get("image") else None
+    want_images = scope_images(scope["image"]) if scope.get("image") else None
     rules = set(scope.get("rule_ids") or ["*"])
     severities = set(scope.get("severities") or SEVERITIES)
     packages = set(scope.get("package_names") or [])
@@ -197,7 +221,7 @@ def match_scope(
     fixed = scope.get("fixed_version", "any")
     out: list[MatchedFinding] = []
     for fid, rule, pkg, sev, path, image, fixed_version, status in rows:
-        if want_image is not None and (not image or image_repository(image) != want_image):
+        if want_images is not None and (not image or image_repository(image) not in want_images):
             continue
         if "*" not in rules and rule not in rules:
             continue

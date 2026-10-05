@@ -536,3 +536,47 @@ class TestTheTierCannotBeForged:
         record = client.get(f"/api/risk-acceptances/{record_id}", headers=admin_auth).json()
         assert record["status"] == "pending_approval"
         assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
+
+
+class TestAScopeNamesAnImageBuiltHere:
+    """c62c9d7d: the migration stored `image_repository(image)` as the scope,
+    and re-normalising a bare `mykronos-backend` gave `library/mykronos-backend`,
+    so an acceptance on our own image matched nothing and lapsed."""
+
+    LOCAL = "registry.lan:5000/mykronos-backend:26954952103d338e8f7256f9f3bc7445025972e0"
+
+    @pytest.mark.parametrize(
+        ("scope", "finding", "matches"),
+        [
+            ("mykronos-backend", LOCAL, True),
+            ("mykronos-backend:abc", LOCAL, True),
+            ("registry.lan:5000/mykronos-backend", LOCAL, True),
+            ("mykronos-frontend", LOCAL, False),
+            ("postgres:15", "postgres:15", True),
+            ("postgres", "library/postgres", True),
+            ("library/postgres", LOCAL, False),
+            ("hashicorp/vault", "postgres:15", False),
+        ],
+    )
+    def test_scope_images(self, scope, finding, matches) -> None:
+        from mykronos.fingerprint import image_repository
+
+        assert (image_repository(finding) in ra.scope_images(scope)) is matches
+
+    def test_the_migrated_scope_round_trips(self) -> None:
+        from mykronos.fingerprint import image_repository
+
+        stored = image_repository(self.LOCAL)
+        assert image_repository(self.LOCAL) in ra.scope_images(stored)
+
+    def test_a_proposal_on_a_local_image_matches_its_findings(
+        self, client, admin_auth, lake
+    ) -> None:
+        lake("scan-local", [_finding("CVE-2026-7", "high", image=self.LOCAL)])
+        response = _propose(
+            client,
+            _agent(client, admin_auth),
+            scope={"capability": "containers", "image": "mykronos-backend"},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["risk_acceptance"]["findings"] == 1
