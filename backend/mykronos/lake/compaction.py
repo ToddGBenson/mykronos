@@ -494,9 +494,10 @@ def consolidate_fragmented(
             continue
         for part_dir in sorted(directory.glob("dt=*")):
             dt = part_dir.name.removeprefix("dt=")
-            if len(catalog.partition_files(table, dt)) > max_files:
-                if consolidate_partition(con, catalog, table, dt):
-                    done += 1
+            if len(catalog.partition_files(table, dt)) > max_files and consolidate_partition(
+                con, catalog, table, dt
+            ):
+                done += 1
     if done:
         catalog.refresh_views(con)
     return done
