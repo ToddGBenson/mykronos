@@ -233,6 +233,8 @@ class CompactionResult:
     reopened: list[str] = field(default_factory=list)
     segments_consumed: int = 0
     partitions_written: int = 0
+    #: Partitions rewritten into one file because appends had fragmented them.
+    partitions_consolidated: int = 0
 
     @property
     def total_rows(self) -> int:
@@ -435,6 +437,71 @@ def _compact_table(
         result.updated[table] = result.updated.get(table, 0) + updated
 
 
+#: A partition holding more Parquet files than this is rewritten as one.
+#:
+#: Appends write a new part file per partition per compaction run (every five
+#: minutes), and only an *update* used to consolidate. `scan_runs` is nearly
+#: all appends, so on 2026-10-08 it was 1,648 files for 8.3MB, and every query
+#: that touched it opened all of them: about 200ms before doing any work, paid
+#: by every dashboard aggregate (maturity 9.9s, the Decisions page 47s).
+MAX_PARTITION_FILES = 4
+
+
+def consolidate_partition(
+    con: duckdb.DuckDBPyConnection, catalog: Catalog, table: str, dt: str
+) -> bool:
+    """Rewrite one partition as a single `part-0000.parquet`.
+
+    The same rewrite the update path performs - read every file with
+    `union_by_name`, fill columns a file predates with NULL, write atomically,
+    delete the rest - without changing a row. Returns whether it rewrote.
+    """
+    files = catalog.partition_files(table, dt)
+    if len(files) <= 1:
+        return False
+    pattern = sql_path(catalog.partition_dir(table, dt) / "*.parquet")
+    con.execute("DROP TABLE IF EXISTS part")
+    con.execute(
+        f"CREATE TEMP TABLE part AS SELECT * FROM read_parquet('{pattern}', union_by_name = 1)"
+    )
+    add_missing_columns(con, "part", table)
+    target = catalog.partition_dir(table, dt) / "part-0000.parquet"
+    _write_parquet(con, f"SELECT {', '.join(column_names(table))} FROM part", target)
+    for stale in files:
+        if stale != target:
+            stale.unlink(missing_ok=True)
+    con.execute("DROP TABLE part")
+    return True
+
+
+def consolidate_fragmented(
+    con: duckdb.DuckDBPyConnection,
+    catalog: Catalog,
+    tables: list[str] | None = None,
+    max_files: int = MAX_PARTITION_FILES,
+) -> int:
+    """Consolidate every partition holding more than `max_files` files.
+
+    Run at the end of each compaction, so a partition never grows past the
+    threshold for long; on the first run after deploy it also clears whatever
+    had already accumulated. A directory listing per partition when there is
+    nothing to do.
+    """
+    done = 0
+    for table in tables or list(TABLES):
+        directory = catalog.table_dir(table)
+        if not directory.is_dir():
+            continue
+        for part_dir in sorted(directory.glob("dt=*")):
+            dt = part_dir.name.removeprefix("dt=")
+            if len(catalog.partition_files(table, dt)) > max_files:
+                if consolidate_partition(con, catalog, table, dt):
+                    done += 1
+    if done:
+        catalog.refresh_views(con)
+    return done
+
+
 def compact(
     catalog: Catalog,
     buffer: WriteAheadBuffer,
@@ -471,6 +538,14 @@ def compact(
 
             buffer.consume(segments)
             result.segments_consumed += len(segments)
+
+        # Kept out of the per-table loop's error handling: a failure here
+        # loses nothing (every row is still in its original files) and must
+        # not stop the buffer being consumed.
+        try:
+            result.partitions_consolidated = consolidate_fragmented(con, catalog, targets)
+        except Exception:
+            logger.exception("Consolidating fragmented partitions failed; files left as they were")
 
     if result.reopened:
         # Feeds spec 11 retro signals once the Knowledge Store exists (Phase 5).
