@@ -540,18 +540,22 @@ class OracleService:
                 params,
             )
         }
+        # Batched: one query for which repositories each commit belongs to,
+        # one for what they introduced. Asking per commit took 37s at a few
+        # hundred merges (2026-10-08).
+        pairs = self._repos_for_commits(sorted(merged_commits), repo_full_name)
+        introduced_by = _dashboard_queries(self.catalog).introduced_by_commits(pairs)
         refused: list[dict[str, Any]] = []
-        for commit in sorted(merged_commits):
-            for repo in self._repos_for_commit(commit, repo_full_name):
-                introduced = _dashboard_queries(self.catalog).introduced_by(repo, commit)
-                if introduced.get("critical", 0) or introduced.get("high", 0):
-                    refused.append(
-                        {
-                            "repo_full_name": repo,
-                            "commit_sha": commit,
-                            "introduced": introduced,
-                        }
-                    )
+        for repo, commit in pairs:
+            introduced = introduced_by.get((repo, commit), {})
+            if introduced.get("critical", 0) or introduced.get("high", 0):
+                refused.append(
+                    {
+                        "repo_full_name": repo,
+                        "commit_sha": commit,
+                        "introduced": introduced,
+                    }
+                )
         totals["would_have_blocked_on_introduced"] = len(refused)
 
         # Coverage. Which repositories this number is drawn from, and which
@@ -603,18 +607,24 @@ class OracleService:
         }
 
 
-    def _repos_for_commit(
-        self, commit_sha: str, repo_full_name: str | None
-    ) -> list[str]:
+    def _repos_for_commits(
+        self, commits: list[str], repo_full_name: str | None
+    ) -> list[tuple[str, str]]:
+        """(repository, commit) for every commit, in commit order - what
+        `_repos_for_commit` answers, for all of them in one query."""
         if repo_full_name is not None:
-            return [repo_full_name]
-        return [
-            str(repo)
-            for (repo,) in self.catalog.query(
-                "SELECT DISTINCT repo_full_name FROM risk_decisions WHERE commit_sha = ?",
-                [commit_sha],
-            )
-        ]
+            return [(repo_full_name, c) for c in commits]
+        if not commits:
+            return []
+        marks = ", ".join("?" for _ in commits)
+        found: dict[str, list[str]] = {}
+        for repo, commit in self.catalog.query(
+            f"SELECT DISTINCT repo_full_name, commit_sha FROM risk_decisions "
+            f"WHERE commit_sha IN ({marks})",
+            commits,
+        ):
+            found.setdefault(str(commit), []).append(str(repo))
+        return [(r, c) for c in commits for r in sorted(found.get(c, []))]
 
     def recent_decisions(
         self,

@@ -538,3 +538,40 @@ class TestRebuiltImagesAreCorroborated:
 
         assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
 
+
+
+class TestIntroducedByCommitsIsTheSameAnswer:
+    """`introduced_by_commits` batches `introduced_by` for the shadow-mode
+    report (37s on 2026-10-08). It must give exactly the per-pair answer."""
+
+    def test_code_findings_across_commits(
+        self, client, oracle_auth, run_compaction, catalog
+    ) -> None:
+        _scan(client, oracle_auth, run_compaction, "s-old", OLD,
+              [finding_payload(rule_id="R1", severity="high", symbol="a")])
+        _scan(client, oracle_auth, run_compaction, "s-new", NEW,
+              [finding_payload(rule_id="R1", severity="high", symbol="a"),
+               finding_payload(rule_id="R2", severity="critical", symbol="b"),
+               finding_payload(rule_id="R3", severity="medium", symbol="c")])
+        queries = DashboardQueries(catalog)
+        pairs = [(REPO, OLD), (REPO, NEW), (REPO, "c" * 40), ("other/repo", NEW)]
+        batch = queries.introduced_by_commits(pairs)
+        assert batch == {pair: queries.introduced_by(*pair) for pair in pairs}
+        assert batch[(REPO, NEW)] == {"critical": 1, "medium": 1}
+
+    @pytest.mark.parametrize("second_image", [SAME_BYTES, REBUILT])
+    def test_container_disclosure_is_respected(
+        self, client, run_compaction, catalog, second_image
+    ) -> None:
+        _container_scan(client, run_compaction, "ctr-old", OLD, "2026-09-29T01:18:00",
+                        SAME_BYTES, ["CVE-OLD"])
+        _container_scan(client, run_compaction, "ctr-new", NEW, "2026-09-29T15:34:00",
+                        second_image, ["CVE-OLD", "CVE-NEW"])
+        queries = DashboardQueries(catalog)
+        pairs = [(REPO, OLD), (REPO, NEW)]
+        assert queries.introduced_by_commits(pairs) == {
+            pair: queries.introduced_by(*pair) for pair in pairs
+        }
+
+    def test_no_pairs_is_no_query(self, catalog) -> None:
+        assert DashboardQueries(catalog).introduced_by_commits([]) == {}
