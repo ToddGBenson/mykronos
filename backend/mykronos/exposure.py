@@ -29,8 +29,11 @@ deployment it does not (production answers 401 to the same request).
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
+import socket
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -54,6 +57,28 @@ WRITE_METHODS = ("post", "put", "patch", "delete")
 NOT_PROBED = "not_probed"
 PROBED = "probed"
 UNREACHABLE = "unreachable"
+#: The hostname resolves, from where the probe runs, only to loopback or
+#: private addresses - a hosts-file entry or split DNS. A request would reach
+#: the local service, not the internet path, so nothing is probed: reporting
+#: that as "unreachable" or as clean would both be wrong.
+RESOLVES_LOCALLY = "resolves_locally"
+
+
+def _local_only(host: str) -> list[str] | None:
+    """The addresses `host` resolves to here, if every one is loopback,
+    private or link-local; None if any is public or it does not resolve."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return None
+    addresses = sorted({str(info[4][0]) for info in infos})
+    if not addresses:
+        return None
+    for address in addresses:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+        if not (ip.is_loopback or ip.is_private or ip.is_link_local):
+            return None
+    return addresses
 
 
 @dataclass
@@ -175,6 +200,16 @@ async def probe_endpoint(
 ) -> tuple[str, dict[str, Answer], str]:
     """GET each of `PATHS` under `url`, anonymously. Returns `(status, answers, detail)`."""
     base = url.rstrip("/")
+    host = urlsplit(base).hostname or ""
+    local = await asyncio.to_thread(_local_only, host) if host else None
+    if local is not None:
+        return (
+            RESOLVES_LOCALLY,
+            {},
+            f"{host} resolves to {', '.join(local)} from where the probe runs (a hosts-file "
+            "entry or split DNS), so a request would reach the local service rather than the "
+            "internet path. Not probed; probe it from outside, or remove the local override.",
+        )
     answers: dict[str, Answer] = {}
     errors: list[str] = []
     async with httpx2.AsyncClient(timeout=timeout, follow_redirects=False) as http:
