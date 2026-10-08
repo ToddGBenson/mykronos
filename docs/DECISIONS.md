@@ -5800,3 +5800,50 @@ than the placeholder. The operator's helpers (`decide.ps1`, `review.ps1`)
 ask for 20+ characters before they call the API, so the refusal is rarely
 the first a person hears of it.
 
+## D-131 — The dashboard is published again, behind its own gate
+
+**2026-10-07.** **Status:** Decided by the operator, implemented (#753, #754)
+
+D-118 recorded that the dashboard was unpublished on 2026-09-03 and that what
+the internet reached was "an authenticated API, not a browsable application".
+The operator asked for Mykronos to be reachable from the internet, and the
+dashboard is now published again, on a tunnel hostname of its own.
+
+**Why it was unpublished, and what changed.** The browser never talks to the
+API: Next makes every backend call server-side, carrying
+`MYKRONOS_ADMIN_TOKEN`. So the backend's `PerimeterGate` only ever saw Next,
+and Next always passed. A published dashboard served every page and every
+disposition control with admin rights to anyone who reached it. #753 gives
+the dashboard its own gate (`frontend/proxy.ts`, `frontend/lib/gate.ts`):
+every request except Next's build assets and `/api/healthz` must present
+`MYKRONOS_GATE_TOKEN` as a header, the `hub_token` cookie, or a `?_token=`
+link. The publish script refused to add the route unless the live dashboard
+already answered 401 without a token.
+
+**Why a hostname of its own, not the API's.** The API hostname sends `/api`,
+`/webhooks`, `/healthz` and the docs to the backend by path. The dashboard's
+own action routes (`/api/findings/{id}/status`, the oracle override, the
+patchwork fix) are also under `/api`, so a shared hostname would have routed
+them to the backend and every button would have failed. A third option,
+listing the dashboard's `/api` routes ahead of the backend rule, was rejected:
+the ingress would have to change whenever either side added an `/api` route,
+and a miss fails silently.
+
+**Hardening shipped with it (#754).** Both production containers start with
+`no-new-privileges` and `cap_drop: [ALL]`, and the backend image carries no
+setuid or setgid binary (the build fails if one survives).
+
+**Verified from outside.** No token: `/`, `/triage`, and POSTs to the action
+routes all 401; `/api/healthz` 200. With the token: a link sets a `Secure`,
+`HttpOnly` cookie and redirects to the clean URL. The exposure probe watches
+the hostname (registered 2026-10-07).
+
+**The gate token is not the Hub's.** `gate.py` used to say one credential
+opened both. It did not: the values differ. Corrected in the docstring.
+
+**Rejected.**
+- *Keep the dashboard LAN-only.* That was the safe state, and the operator
+  asked for internet access.
+- *Cloudflare Access in front.* Stronger than a shared static token, and it
+  needs no code. It is an operator setting outside this repository, and it
+  remains the recommended next step.

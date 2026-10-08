@@ -1,9 +1,16 @@
-"""Perimeter gate — the same credential that opens the Hub opens Mykronos.
+"""Perimeter gate — the Hub's scheme, with Mykronos's own secret.
 
 The Hub (a sibling service on this host) fronts itself with a static token
 presented as `X-Hub-Token`, a `hub_token` cookie, or a `?_token=` query
-parameter. This mirrors that exactly, against the same secret, so one
-credential reaches both and browser sessions behave the same way on each.
+parameter. This mirrors that scheme exactly - same carriers, same names - so
+browser sessions behave the same way on each.
+
+**The secret is not shared.** This compares against `MYKRONOS_GATE_TOKEN`,
+which is a different value from the Hub's `HUB_API_TOKEN` (checked
+2026-10-08). An earlier version of this docstring said "the same secret, so
+one credential reaches both"; it was not true when checked, and it sent the
+operator to the dashboard with the Hub's token. Keeping them separate is the
+better property anyway: a leaked Hub token does not open Mykronos.
 
 **This is a perimeter, not an authorisation model.** It answers "may you talk
 to this host at all". Who you are once inside — admin or viewer — is still
@@ -171,7 +178,7 @@ class PerimeterGate(BaseHTTPMiddleware):
                 # why it is not HttpOnly there. Nothing in this dashboard reads
                 # it — every backend call is made server-side by Next — so it
                 # can be HttpOnly here, and an XSS in the dashboard cannot
-                # walk off with the credential that opens the Hub as well.
+                # walk off with the credential that opens this host.
                 httponly=True,
             )
             return response
