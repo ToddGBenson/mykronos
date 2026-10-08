@@ -2022,6 +2022,76 @@ class DashboardQueries:
         introduced, _ = self._first_seen_at(repo_full_name, commit_sha)
         return _by_severity(introduced)
 
+    def introduced_by_commits(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, int]]:
+        """`introduced_by` for many (repository, commit) pairs at once.
+
+        The same definition as `_first_seen_at`, in one findings query instead
+        of one per pair. The shadow-mode report asked `introduced_by` once per
+        merged commit in its window, and at a few hundred commits that took
+        37s on 2026-10-08 - the whole of the Decisions page's load time.
+
+        Disclosure stays one `disclosed_ids` call per repository, because that
+        function resolves the repository from its first candidate; within a
+        repository it already works scan by scan, so grouping cannot change
+        its answer. A pair with nothing introduced is present with `{}`.
+        """
+        from mykronos.disclosure import CAPABILITY, disclosed_ids
+
+        wanted = {(str(r), str(c)) for r, c in pairs}
+        if not wanted:
+            return {}
+        commits = sorted({c for _, c in wanted})
+        marks = ", ".join("?" for _ in commits)
+        rows = self.catalog.query(
+            f"""
+            SELECT DISTINCT s.repo_full_name, s.commit_sha, f.finding_id, f.severity,
+                   f.capability, f.rule_id, f.first_seen_scan_run_id,
+                   json_extract_string(f.raw_finding_json, '$.image'),
+                   f.package_name, f.package_version
+            FROM findings f
+            JOIN scan_runs s
+              ON s.scan_run_id = f.first_seen_scan_run_id
+             AND s.repo_full_name = f.asset_id
+            WHERE f.status = 'open' AND s.commit_sha IN ({marks})
+            """,
+            commits,
+        )
+        found: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        for (repo, commit, finding_id, severity, capability, rule_id, scan,
+             image, package, version) in rows:
+            key = (str(repo), str(commit))
+            if key not in wanted:
+                continue
+            found.setdefault(key, {})[str(finding_id)] = {
+                "finding_id": str(finding_id),
+                "severity": str(severity),
+                "capability": str(capability),
+                "rule_id": str(rule_id),
+                "_scan": str(scan),
+                "_image": None if image is None else str(image),
+                "_package": str(package or ""),
+                "_version": str(version or ""),
+            }
+        disclosed: set[str] = set()
+        by_repo: dict[str, list[tuple[str, str, str | None, str, str, str]]] = {}
+        for (repo, _), rows_by_id in found.items():
+            for row in rows_by_id.values():
+                if row["capability"] == CAPABILITY:
+                    by_repo.setdefault(repo, []).append(
+                        (row["finding_id"], row["_scan"], row["_image"],
+                         row["rule_id"], row["_package"], row["_version"])
+                    )
+        for candidates in by_repo.values():
+            disclosed |= disclosed_ids(self.catalog, candidates)
+        return {
+            key: _by_severity(
+                [r for r in found.get(key, {}).values() if r["finding_id"] not in disclosed]
+            )
+            for key in wanted
+        }
+
     def disclosed_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
         """Open container findings this commit's scans saw first in an image
         the previous scan had already seen, byte for byte (#734).
