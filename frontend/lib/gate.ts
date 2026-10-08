@@ -10,9 +10,10 @@
  * who could reach it. That is why the dashboard was unpublished on 2026-09-03,
  * and this is what publishing it again requires.
  *
- * Same credential, same three carriers, same names as the backend and the
- * Hub: `X-Hub-Token`, a `hub_token` cookie, or `?_token=` on a link, compared
- * against `MYKRONOS_GATE_TOKEN`. Unset means disabled, as on the backend: a
+ * Same credential as the backend, and the Hub's three carriers and names:
+ * `X-Hub-Token`, a `hub_token` cookie, or `?_token=` on a link, compared
+ * against `MYKRONOS_GATE_TOKEN` - which is NOT the Hub's token, whatever the
+ * shared header name suggests. Unset means disabled, as on the backend: a
  * laptop dashboard bound to 127.0.0.1 has nothing to gate.
  *
  * One path is exempt: `/api/healthz`, the container healthcheck, which reads
