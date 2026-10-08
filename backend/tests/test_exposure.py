@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from datetime import UTC, datetime
 from typing import Any
 
@@ -113,6 +114,20 @@ class FakeClient:
         return FakeResponse(404, "")
 
 
+def _resolves_to(*addresses: str):
+    def getaddrinfo(host, port, *args, **kwargs):
+        return [(2, 1, 6, "", (a, 0)) for a in addresses]
+
+    return getaddrinfo
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Hermetic: every host resolves to a public address (example.com's) unless
+    a test says otherwise, so no test depends on this machine's resolver."""
+    monkeypatch.setattr("mykronos.exposure.socket.getaddrinfo", _resolves_to("93.184.215.14"))
+
+
 @pytest.fixture
 def fake_http(monkeypatch):
     holder: dict[str, FakeClient] = {}
@@ -143,6 +158,44 @@ class TestProbe:
 
         assert status == exposure.UNREACHABLE
         assert "could not be reached" in detail
+
+    def test_a_host_that_resolves_locally_is_not_probed(self, fake_http, monkeypatch) -> None:
+        """A hosts-file entry pointing the public name at 127.0.0.1 made the
+        probe test the local service and call the result the internet path -
+        it reported the API hostname "unreachable" (2026-10-08)."""
+        client = fake_http({"/openapi.json": FakeResponse(200, SCHEMA)})
+        monkeypatch.setattr("mykronos.exposure.socket.getaddrinfo", _resolves_to("127.0.0.1"))
+
+        status, answers, detail = asyncio.run(exposure.probe_endpoint("https://api.example.com"))
+
+        assert status == exposure.RESOLVES_LOCALLY
+        assert answers == {} and client.asked == []
+        assert "127.0.0.1" in detail and "Not probed" in detail
+
+    @pytest.mark.parametrize("addresses", [("10.0.0.5",), ("192.168.1.9", "fe80::1"), ("::1",)])
+    def test_private_and_link_local_count_as_local(self, fake_http, monkeypatch, addresses):
+        fake_http()
+        monkeypatch.setattr("mykronos.exposure.socket.getaddrinfo", _resolves_to(*addresses))
+        status, _, _ = asyncio.run(exposure.probe_endpoint("https://api.example.com"))
+        assert status == exposure.RESOLVES_LOCALLY
+
+    def test_one_public_address_is_enough_to_probe(self, fake_http, monkeypatch) -> None:
+        client = fake_http({"/openapi.json": FakeResponse(200, SCHEMA)})
+        monkeypatch.setattr(
+            "mykronos.exposure.socket.getaddrinfo", _resolves_to("127.0.0.1", "93.184.215.14")
+        )
+        status, _, _ = asyncio.run(exposure.probe_endpoint("https://api.example.com"))
+        assert status == exposure.PROBED and client.asked
+
+    def test_a_name_that_does_not_resolve_is_left_to_the_probe(self, fake_http, monkeypatch):
+        fake_http(error=OSError("name or service not known"))
+
+        def nxdomain(*_args, **_kwargs):
+            raise socket.gaierror("not known")
+
+        monkeypatch.setattr("mykronos.exposure.socket.getaddrinfo", nxdomain)
+        status, _, _ = asyncio.run(exposure.probe_endpoint("https://gone.example.com"))
+        assert status == exposure.UNREACHABLE
 
 
 class TestTheApi:
@@ -232,6 +285,24 @@ class TestTheBriefing:
         )
         assert "PUBLIC ENDPOINTS" in text
         assert "[high] API schema served" in text
+
+    def test_a_local_resolution_says_so(self) -> None:
+        text = "\n".join(
+            briefing_report._render_exposure(
+                self._briefing(
+                    [
+                        {
+                            "url": "https://api.example.com",
+                            "last_status": "resolves_locally",
+                            "last_probed_at": "2026-10-08T15:47:00",
+                            "observations": [],
+                        }
+                    ]
+                )
+            )
+        )
+        assert "resolves to a local address here; not probed" in text
+        assert "nothing exposed" not in text
 
     def test_nothing_registered_says_nothing(self) -> None:
         assert briefing_report._render_exposure(self._briefing([])) == []

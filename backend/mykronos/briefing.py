@@ -1565,6 +1565,8 @@ def _render_exposure(briefing: Briefing) -> list[str]:
             state = "not probed yet"
         elif status == "unreachable":
             state = "unreachable at last probe"
+        elif status == "resolves_locally":
+            state = "resolves to a local address here; not probed"
         else:
             state = "nothing exposed" if not obs else f"{len(obs)} exposure(s)"
         lines.append(f"  {e.get('url')}  ({state}; probed {when})")
