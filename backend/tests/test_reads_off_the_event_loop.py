@@ -39,11 +39,32 @@ def _awaits(fn) -> bool:
     return any(isinstance(n, (ast.Await, ast.AsyncFor, ast.AsyncWith)) for n in ast.walk(tree))
 
 
+def _api_routes(routes) -> list[APIRoute]:
+    """Every APIRoute, including those behind `include_router`, which this
+    FastAPI keeps as `_IncludedRouter` wrappers rather than flattening."""
+    found: list[APIRoute] = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            found.append(route)
+        elif hasattr(route, "original_router"):
+            found += _api_routes(route.original_router.routes)
+        elif hasattr(route, "routes"):
+            found += _api_routes(route.routes)
+    return found
+
+
+def test_the_walk_reaches_the_api(settings) -> None:
+    """Without this the guard below passes vacuously - it did, once."""
+    paths = {r.path for r in _api_routes(create_app(settings).routes)}
+    assert "/api/oracle/shadow-mode" in paths
+    assert len(paths) > 100
+
+
 def test_no_get_handler_is_async_without_awaiting(settings) -> None:
     """An `async def` that never awaits gains nothing and blocks the loop."""
     offenders = [
         f"{route.path} ({route.endpoint.__module__}.{route.endpoint.__name__})"
-        for route in create_app(settings).routes
+        for route in _api_routes(create_app(settings).routes)
         if isinstance(route, APIRoute)
         and "GET" in route.methods
         # The API modules, where handlers reach the lake and the database.
