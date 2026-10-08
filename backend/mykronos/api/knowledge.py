@@ -113,7 +113,7 @@ def _entry_out(store: Any, entry: Any) -> EntryOut:
 
 
 @router.get("/entries", response_model=EntriesPage)
-async def list_entries(
+def list_entries(
     request: Request,
     principal: PrincipalDep,
     repo_full_name: Annotated[str | None, Query()] = None,
@@ -172,7 +172,7 @@ async def add_note(request: Request, body: RetroNote, actor: AdminDep) -> EntryO
 
 
 @router.get("/retro")
-async def retro(
+def retro(
     request: Request,
     principal: PrincipalDep,
     period_days: Annotated[int, Query(ge=1, le=365)] = 14,
@@ -224,7 +224,7 @@ async def retro(
 
 
 @router.get("/trend")
-async def trend(
+def trend(
     request: Request,
     principal: PrincipalDep,
     periods: Annotated[int, Query(ge=1, le=52)] = 4,
@@ -255,7 +255,7 @@ async def trend(
 
 
 @router.get("/promotion-candidates")
-async def promotion_candidates(
+def promotion_candidates(
     request: Request,
     principal: PrincipalDep,
     min_projects: Annotated[int, Query(ge=2, le=50)] = 2,

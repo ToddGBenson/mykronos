@@ -114,7 +114,7 @@ async def propose(request: Request, body: ProposeIn, principal: PrincipalDep) ->
 
 
 @router.get("")
-async def list_acceptances(
+def list_acceptances(
     request: Request,
     principal: PrincipalDep,
     status_filter: str | None = None,
@@ -156,7 +156,7 @@ async def migrate(request: Request, body: MigrateIn, principal: PrincipalDep) ->
 
 
 @router.get("/{record_id}")
-async def get_acceptance(
+def get_acceptance(
     request: Request, record_id: str, principal: PrincipalDep
 ) -> dict[str, Any]:
     with request.app.state.db.session() as session:

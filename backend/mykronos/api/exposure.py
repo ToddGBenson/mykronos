@@ -35,7 +35,7 @@ def _require_writer(principal: Any, what: str) -> None:
 
 
 @router.get("")
-async def list_endpoints(request: Request, principal: PrincipalDep) -> dict[str, Any]:
+def list_endpoints(request: Request, principal: PrincipalDep) -> dict[str, Any]:
     """Every registered public endpoint with its last observations, worst first."""
     rows = exposure.summary(request.app.state.db)
     return {

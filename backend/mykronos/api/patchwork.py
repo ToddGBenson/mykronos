@@ -397,7 +397,7 @@ async def fix_finding(
 
 
 @router.get("/digest", response_model=DigestPage)
-async def cross_repo_digest(
+def cross_repo_digest(
     request: Request,
     principal: PrincipalDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
@@ -546,7 +546,7 @@ def _efficacy_rows(catalog: Any, *, key: str, join: str, filter_: str) -> list[E
 
 
 @router.get("/efficacy", response_model=EfficacyPage)
-async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
+def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
     """Does auto-remediation actually remove risk? (spec 25 §3)
 
     Until the verification loop shipped, a fixer that opened pull requests
@@ -618,7 +618,7 @@ async def efficacy(request: Request, principal: PrincipalDep) -> EfficacyPage:
 
 
 @router.get("/repos/{repo_id}", response_model=RemediationPage)
-async def repo_events(
+def repo_events(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,

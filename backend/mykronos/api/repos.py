@@ -401,7 +401,7 @@ def _get(session: Session, repo_id: str) -> RepoOnboarding:
 
 
 @router.get("/-/capabilities", tags=["onboarding"])
-async def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
+def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
     """Config schema per capability, for the UI to render a form from.
 
     Under `/-/` so it cannot be mistaken for a repo id. The valid tool list in
@@ -469,7 +469,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
 
 
 @router.get("", response_model=list[RepoSummary])
-async def list_repos(
+def list_repos(
     request: Request,
     actor: AdminDep,
     include_removed: bool = Query(
@@ -487,7 +487,7 @@ async def list_repos(
 
 
 @router.get("/{repo_id}", response_model=RepoDetail)
-async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetail:
+def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetail:
     with request.app.state.db.session() as session:
         row = _get(session, repo_id)
         registry = TokenRegistry(session)
@@ -1360,7 +1360,7 @@ def _profile_out(row: RiskProfile | None) -> RiskProfileOut:
 
 
 @router.get("/{repo_id}/reachability", response_model=ReachabilityOut)
-async def get_reachability(
+def get_reachability(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> ReachabilityOut:
     """The stored import analysis for one repository (spec 19 §2.1).
@@ -1399,7 +1399,7 @@ async def get_reachability(
 
 
 @router.get("/{repo_id}/risk-profile", response_model=RiskProfileOut)
-async def get_risk_profile(
+def get_risk_profile(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> RiskProfileOut:
     """What this application is, as an asset (spec 21 §1.3).

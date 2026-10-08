@@ -217,7 +217,7 @@ async def create(request: Request, body: CreateRequest, principal: PrincipalDep)
 
 
 @router.get("", response_model=list[RequestOut])
-async def list_requests(
+def list_requests(
     request: Request, principal: PrincipalDep, state: str | None = None, duty: str | None = None
 ) -> list[RequestOut]:
     with request.app.state.db.session() as session:
@@ -230,7 +230,7 @@ async def list_requests(
 
 
 @router.get("/delegations", response_model=list[DelegationOut])
-async def delegations(request: Request, principal: PrincipalDep) -> list[DelegationOut]:
+def delegations(request: Request, principal: PrincipalDep) -> list[DelegationOut]:
     from mykronos.schemas import utcnow
 
     now = utcnow()
@@ -347,7 +347,7 @@ class SampleVerdictIn(BaseModel):
 
 
 @router.get("/samples")
-async def samples(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
+def samples(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
     """Sampled agent decisions waiting for a person's after-the-fact review."""
     return sampling.sample_queue(request.app.state.db)
 
@@ -370,7 +370,7 @@ async def sample_verdict(
 
 
 @router.get("/delegations/{delegation_id}/stats")
-async def delegation_stats(
+def delegation_stats(
     request: Request, delegation_id: str, principal: PrincipalDep
 ) -> dict[str, Any]:
     try:
@@ -424,7 +424,7 @@ async def independent_review(
 
 
 @router.get("/{request_id}", response_model=RequestOut)
-async def get_request(request: Request, request_id: str, principal: PrincipalDep) -> RequestOut:
+def get_request(request: Request, request_id: str, principal: PrincipalDep) -> RequestOut:
     with request.app.state.db.session() as session:
         row = session.get(ApprovalRequest, request_id)
         if row is None:
@@ -433,7 +433,7 @@ async def get_request(request: Request, request_id: str, principal: PrincipalDep
 
 
 @router.get("/{request_id}/evidence", response_model=EvidenceOut)
-async def evidence(request: Request, request_id: str, principal: PrincipalDep) -> EvidenceOut:
+def evidence(request: Request, request_id: str, principal: PrincipalDep) -> EvidenceOut:
     with request.app.state.db.session() as session:
         row = session.get(ApprovalRequest, request_id)
         if row is None:
@@ -471,7 +471,7 @@ async def decide_request(
 
 
 @router.get("/{request_id}/chain", response_model=ChainOut)
-async def chain(request: Request, request_id: str, principal: PrincipalDep) -> ChainOut:
+def chain(request: Request, request_id: str, principal: PrincipalDep) -> ChainOut:
     with request.app.state.db.session() as session:
         ok, detail = verify_chain(session, request_id)
         events = session.execute(

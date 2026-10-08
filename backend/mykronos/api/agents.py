@@ -98,7 +98,7 @@ async def mint(request: Request, body: MintRequest, principal: PrincipalDep) -> 
 
 
 @router.get("/whoami", response_model=WhoAmI)
-async def whoami(principal: PrincipalDep) -> WhoAmI:
+def whoami(principal: PrincipalDep) -> WhoAmI:
     provenance = {
         k: (v.isoformat() if isinstance(v, datetime) else v)
         for k, v in principal.provenance.items()
@@ -112,7 +112,7 @@ async def whoami(principal: PrincipalDep) -> WhoAmI:
 
 
 @router.get("/credentials", response_model=list[AgentOut])
-async def credentials(
+def credentials(
     request: Request, principal: PrincipalDep, include_inactive: bool = False
 ) -> list[AgentOut]:
     if not principal.may_write:

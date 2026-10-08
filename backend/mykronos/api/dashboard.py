@@ -1228,7 +1228,7 @@ class EstateToxicCombinationsOut(BaseModel):
 
 
 @router.get("/toxic-combinations", response_model=EstateToxicCombinationsOut)
-async def toxic_combinations(
+def toxic_combinations(
     request: Request,
     principal: PrincipalDep,
     repo: Annotated[str | None, Query(max_length=255)] = None,
@@ -1263,7 +1263,7 @@ async def toxic_combinations(
 
 
 @router.get("/triage", response_model=TriageQueue)
-async def triage(
+def triage(
     request: Request,
     principal: PrincipalDep,
     severity: Annotated[Severity | None, Query()] = None,
@@ -1338,7 +1338,7 @@ async def triage(
 
 
 @router.get("/trends")
-async def trends(
+def trends(
     request: Request,
     principal: PrincipalDep,
     repo_id: Annotated[str | None, Query()] = None,
@@ -1416,7 +1416,7 @@ async def trends(
 
 
 @router.get("/maturity")
-async def maturity(
+def maturity(
     request: Request,
     principal: PrincipalDep,
     repo_id: Annotated[str | None, Query()] = None,
@@ -1505,7 +1505,7 @@ def _require_writer(principal: Any, verb: str) -> None:
 
 
 @router.get("/triage/throughput")
-async def triage_throughput(
+def triage_throughput(
     request: Request,
     principal: PrincipalDep,
     repo_id: Annotated[str | None, Query()] = None,
@@ -1727,7 +1727,7 @@ async def triage_batch(
 
 
 @router.get("/repos/{repo_id}/insider-risk", response_model=InsiderRiskPage)
-async def repo_insider_risk(
+def repo_insider_risk(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -1866,7 +1866,7 @@ class CiPage(BaseModel):
 
 
 @router.get("/vulnerability-management")
-async def vulnerability_management(
+def vulnerability_management(
     request: Request,
     principal: PrincipalDep,
     repo_id: Annotated[str | None, Query()] = None,
@@ -2036,7 +2036,7 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
 
 
 @router.get("/repos/{repo_id}/sscs", response_model=SscsPage)
-async def repo_sscs(
+def repo_sscs(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -2053,7 +2053,7 @@ async def repo_sscs(
 
 
 @router.get("/repos/{repo_id}/sscs/sbom")
-async def repo_sbom(
+def repo_sbom(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -2215,7 +2215,7 @@ async def link_regression_test(
 
 
 @router.get("/repos/{repo_id}/regression-coverage")
-async def regression_coverage(
+def regression_coverage(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> dict[str, Any]:
     """Which fixed vulnerabilities would we notice coming back? (spec 31 §3)
@@ -2515,7 +2515,7 @@ def _source_paths(request: Request, repo_full_name: str) -> list[str]:
 
 
 @router.get("/incident", response_model=IncidentOut)
-async def incident_lookup(
+def incident_lookup(
     request: Request,
     principal: PrincipalDep,
     q: Annotated[str, Query(min_length=1, max_length=300)],
@@ -2806,7 +2806,7 @@ class SupplyChainPackagesOut(BaseModel):
 
 
 @router.get("/repos/{repo_id}/sscs/packages", response_model=SupplyChainPackagesOut)
-async def repo_vulnerable_packages(
+def repo_vulnerable_packages(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> SupplyChainPackagesOut:
     """Which packages are vulnerable, and which you can act on (B-027).
@@ -2861,7 +2861,7 @@ async def repo_vulnerable_packages(
 
 
 @router.get("/repos/{repo_id}/threat-model", response_model=ThreatModelOut)
-async def repo_threat_model(
+def repo_threat_model(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> ThreatModelOut:
     """A STRIDE-categorized attack-surface inventory for one repo (spec 18 §6).
@@ -2965,7 +2965,7 @@ class RepoGuidanceOut(BaseModel):
 
 
 @router.get("/repos/{repo_id}/guidance", response_model=RepoGuidanceOut)
-async def repo_guidance(
+def repo_guidance(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> RepoGuidanceOut:
     """The scanners' own remediation for this repository (B-030).
@@ -3014,7 +3014,7 @@ async def repo_guidance(
 
 
 @router.get("/repos/{repo_id}/surfaces", response_model=SurfacesOut)
-async def repo_surfaces(
+def repo_surfaces(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> SurfacesOut:
     """Assets, entry points and trust boundaries (B-029).
@@ -3249,7 +3249,7 @@ async def withdraw_control(
 
 
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)
-async def repo_findings(
+def repo_findings(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -3308,7 +3308,7 @@ async def repo_findings(
 
 
 @router.get("/repos/{repo_id}/open-findings", response_model=OpenFindingsPage)
-async def repo_open_findings(
+def repo_open_findings(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -3515,7 +3515,7 @@ def _scanned_by(request: Request) -> dict[str, str]:
 
 
 @router.get("/repos/{repo_id}/scan-health")
-async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -> dict[str, Any]:
+def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -> dict[str, Any]:
     """Per-capability run history and freshness (spec 10 §2.2).
 
     Auditable from the lake alone, which is the point of writing a ScanRun for
@@ -3552,7 +3552,7 @@ async def scan_health(request: Request, repo_id: str, principal: PrincipalDep) -
 
 
 @router.get("/repos/{repo_id}/scan-runs/trend")
-async def scan_run_trend(
+def scan_run_trend(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
@@ -3576,7 +3576,7 @@ async def scan_run_trend(
 
 
 @router.get("/findings/{finding_id}", response_model=FindingOut)
-async def finding_detail(
+def finding_detail(
     request: Request, finding_id: str, principal: PrincipalDep
 ) -> FindingOut:
     """One finding, by id.
@@ -4266,7 +4266,7 @@ class ThreatIntelEntryOut(BaseModel):
 
 
 @router.get("/threat-intel", response_model=list[ThreatIntelEntryOut])
-async def threat_intel(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
+def threat_intel(request: Request, principal: PrincipalDep) -> list[dict[str, Any]]:
     """Every CVE currently matched to an open finding somewhere in the
     portfolio, KEV first then EPSS descending (spec 17 §4.4).
 
@@ -4530,7 +4530,7 @@ def _severity_here(
 
 
 @router.get("/findings/{finding_id}/record", response_model=FindingRecordOut)
-async def whole_finding_record(
+def whole_finding_record(
     request: Request, finding_id: str, principal: PrincipalDep
 ) -> FindingRecordOut:
     """Everything about one finding, in one call (B-032).
@@ -4774,7 +4774,7 @@ class LibrariesOut(BaseModel):
 
 
 @router.get("/libraries", response_model=LibrariesOut)
-async def estate_libraries(
+def estate_libraries(
     request: Request,
     principal: PrincipalDep,
     ecosystem: Annotated[str | None, Query(max_length=40)] = None,
@@ -4848,7 +4848,7 @@ class ProfileProposalOut(BaseModel):
 
 
 @router.get("/repos/{repo_id}/risk-profile/proposal", response_model=ProfileProposalOut)
-async def risk_profile_proposal(
+def risk_profile_proposal(
     request: Request, repo_id: str, principal: PrincipalDep
 ) -> ProfileProposalOut:
     """Propose a risk profile from evidence, for a person to confirm.
@@ -5304,7 +5304,7 @@ class TestEstateOut(BaseModel):
 
 
 @router.get("/repos/{repo_id}/tests", response_model=TestEstateOut)
-async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) -> TestEstateOut:
+def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) -> TestEstateOut:
     """What testing exists here, and what kinds of it do not.
 
     The Harness tab answers "did the suite pass". This answers the question
@@ -5668,7 +5668,7 @@ class DeploymentsOut(BaseModel):
 
 
 @router.get("/deployments", response_model=DeploymentsOut)
-async def deployments_page(request: Request, principal: PrincipalDep) -> DeploymentsOut:
+def deployments_page(request: Request, principal: PrincipalDep) -> DeploymentsOut:
     """What each repository is actually running.
 
     Reads the revision recorded by the `deployment-probe` job rather than

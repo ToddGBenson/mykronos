@@ -250,7 +250,7 @@ async def evaluate(
 
 
 @router.get("/policy")
-async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, Any]:
+def active_policy(request: Request, principal: PrincipalDep) -> dict[str, Any]:
     """The policy currently in force, verbatim (spec 09 §7).
 
     Readable by viewers as well as admins. Anyone whose pull request the
@@ -271,7 +271,7 @@ async def active_policy(request: Request, principal: PrincipalDep) -> dict[str, 
 
 
 @router.get("/policy/history")
-async def policy_history(request: Request, principal: PrincipalDep) -> dict[str, Any]:
+def policy_history(request: Request, principal: PrincipalDep) -> dict[str, Any]:
     """Which policy version scored what, and when (spec 21 §5).
 
     Readable by viewers, on the same reasoning as `/policy` itself: somebody
@@ -293,7 +293,7 @@ async def policy_history(request: Request, principal: PrincipalDep) -> dict[str,
 
 
 @router.get("/shadow-mode")
-async def shadow_mode(
+def shadow_mode(
     request: Request,
     principal: PrincipalDep,
     days: Annotated[int, Query(ge=1, le=730)] = 90,
@@ -327,7 +327,7 @@ async def shadow_mode(
 
 
 @router.get("/term-analytics")
-async def term_analytics(
+def term_analytics(
     request: Request,
     principal: PrincipalDep,
     days: Annotated[int, Query(ge=1, le=365)] = 30,
@@ -405,7 +405,7 @@ class CommitDecisionOut(BaseModel):
 
 
 @router.get("/decisions/by-commit/{commit_sha}", response_model=CommitDecisionOut)
-async def decision_for_commit(
+def decision_for_commit(
     request: Request, commit_sha: str, principal: PrincipalDep
 ) -> CommitDecisionOut:
     """The risk decision for one commit, for the deploy host (#60487, D-125).
@@ -480,7 +480,7 @@ async def decision_for_commit(
 
 
 @router.get("/decisions/{repo_id}")
-async def decisions_for_repo(
+def decisions_for_repo(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
