@@ -55,10 +55,9 @@ def test_an_already_fragmented_partition_is_consolidated_without_changing_a_row(
         run_compaction()
     # Fragment it the way the old compaction did: one file per row.
     part_dir = next(catalog.table_dir("scan_runs").glob("dt=*"))
+    pattern = f"{part_dir.as_posix()}/*.parquet"
     with catalog.connect() as con:
-        con.execute(
-            f"CREATE TEMP TABLE all_rows AS SELECT * FROM read_parquet('{part_dir.as_posix()}/*.parquet')"
-        )
+        con.execute(f"CREATE TEMP TABLE all_rows AS SELECT * FROM read_parquet('{pattern}')")
         before = sorted(con.execute("SELECT * FROM all_rows ORDER BY scan_run_id").fetchall())
         for f in part_dir.glob("*.parquet"):
             f.unlink()
@@ -73,7 +72,7 @@ def test_an_already_fragmented_partition_is_consolidated_without_changing_a_row(
         assert [p.name for p in part_dir.glob("*.parquet")] == ["part-0000.parquet"]
         after = sorted(
             con.execute(
-                f"SELECT * FROM read_parquet('{part_dir.as_posix()}/*.parquet') ORDER BY scan_run_id"
+                f"SELECT * FROM read_parquet('{pattern}') ORDER BY scan_run_id"
             ).fetchall()
         )
     assert after == before
