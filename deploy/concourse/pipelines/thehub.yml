@@ -4953,7 +4953,7 @@ jobs:
   # dozen single requests.
   #
   # **Its findings are `--tool zap-edge`, not `zap`, and that is the whole of
-  # the separation (D-153).** Every DAST lane in this file uploads as `zap`,
+  # the separation (D-154).** Every DAST lane in this file uploads as `zap`,
   # and the `zap` adapter keys a finding on the route alone, so the edge and
   # the origin reporting on `/` would be one finding that each lane
   # re-describes. `zap-edge` keeps the scheme and host in the location, so its
@@ -4962,7 +4962,7 @@ jobs:
   # close an origin finding.
   #
   # **It needs an uploader that knows `zap-edge`.** ((mykronos-ref)) must be a
-  # tag cut after D-153 merged; the task checks for the adapter before it
+  # tag cut after D-154 merged; the task checks for the adapter before it
   # uploads and names the fix if it is missing, rather than failing on a
   # LookupError halfway through.
   #
@@ -4982,8 +4982,17 @@ jobs:
   # stay at four 401s on hub, but the crawl adds more. TheHub's IPS auto-bans
   # only on a known attack-tool user agent, and ZAP's default user agent is
   # not one, so the scan does not lock the address out. That was read from
-  # `services/security_monitor.py`, not measured. Classifying this traffic is
-  # TheHub's decision to make.
+  # `services/security_monitor.py`, not measured.
+  #
+  # **The scan does not mark itself synthetic, because TheHub has no marker an
+  # external scanner can send.** TheHub's marker is `synthetic_origin`
+  # (`services/synthetic_origin.py`). It is set inside the process, by a
+  # `synthetic()` block or by `deploy.sh --probe` in an authenticated deploy
+  # payload, and only for a harness in `KNOWN_HARNESSES`. No request header or
+  # user agent sets it, by design: a header anyone can send would let anyone
+  # label a real attack as a test. Even when it is set, it labels a row; the
+  # brute-force check does not read it. So a custom user agent or header here
+  # would be a convention nothing reads. The TheHub side is a separate story.
   #
   # **The scanner has no token, on purpose.** On the internet path the gate is
   # the only control. Cloudflare Access is on no rule. So the checks prove the
@@ -5191,7 +5200,7 @@ jobs:
                   exit 1
                 }
                 python3 -c "from mykronos.adapters.registry import get_adapter; get_adapter('dast', 'zap-edge')" || {
-                  echo "::error::The uploader at mykronos-ref '${MYKRONOS_REF}' has no zap-edge adapter (D-153)."
+                  echo "::error::The uploader at mykronos-ref '${MYKRONOS_REF}' has no zap-edge adapter (D-154)."
                   echo "::error::Cut a mykronos tag that contains it and bump mykronos-ref."
                   exit 1
                 }

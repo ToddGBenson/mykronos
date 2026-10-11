@@ -1,4 +1,4 @@
-## D-153 — The public edge is scanned as its own DAST tool, `zap-edge`
+## D-154 — The public edge is scanned as its own DAST tool, `zap-edge`
 
 **2026-10-11.** **Status:** Decided, implemented. It is live once a tag carries
 it and `mykronos-ref` points at that tag.

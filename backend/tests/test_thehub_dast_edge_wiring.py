@@ -1,4 +1,4 @@
-"""`dast-edge` scans TheHub through Cloudflare and reports as its own lane (TheHub #60708, D-153).
+"""`dast-edge` scans TheHub through Cloudflare and reports as its own lane (TheHub #60708, D-154).
 
 `dast-prod` scans the origin on the LAN, so the edge's headers and TLS and the
 tunnel's path allowlist were outside every scan. `dast-edge` is the same
@@ -305,7 +305,7 @@ def test_a_scanner_failure_is_not_a_result(tmp_path: Path) -> None:
 
 
 def test_an_uploader_without_the_adapter_names_the_pin(tmp_path: Path) -> None:
-    """`mykronos-ref` at a tag that predates D-153 fails loudly, before uploading."""
+    """`mykronos-ref` at a tag that predates D-154 fails loudly, before uploading."""
     r = _run(tmp_path, ADAPTER_RC="1")
 
     assert r.returncode != 0

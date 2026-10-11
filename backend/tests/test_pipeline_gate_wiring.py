@@ -158,7 +158,7 @@ EXPLAINED_DIVERGENCE = {
         "stands until TheHub's copy changes to match"
     ),
     "dast-edge": (
-        "ours only, added by TheHub #60708 (D-153): production scanned through "
+        "ours only, added by TheHub #60708 (D-154): production scanned through "
         "Cloudflare at the public hostname, beside `dast-prod` at the origin. "
         "Time-triggered and ungated for `dast-prod`'s reason. TheHub's copy "
         "predates it; this stands until that copy gains the job or is retired"

@@ -105,7 +105,7 @@ REQUIRED_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("cloud", "prowler"),
     ("containers", "trivy"),
     ("dast", "zap"),
-    # thehub's `dast-edge` (TheHub #60708, D-153). Red here until a tag carries it.
+    # thehub's `dast-edge` (TheHub #60708, D-154). Red here until a tag carries it.
     ("dast", "zap-edge"),
     ("functional", "junit"),
     ("iac", "checkov"),
