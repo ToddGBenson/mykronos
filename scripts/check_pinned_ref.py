@@ -105,6 +105,10 @@ REQUIRED_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("cloud", "prowler"),
     ("containers", "trivy"),
     ("dast", "zap"),
+    # TheHub's three LAN lanes, one tool per environment (D-155).
+    ("dast", "zap-demo"),
+    ("dast", "zap-prod"),
+    ("dast", "zap-staging"),
     ("functional", "junit"),
     ("iac", "checkov"),
     ("qa", "junit"),
