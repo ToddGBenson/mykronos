@@ -256,6 +256,10 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # absence, so the coverage cross-check is the only thing that can notice it
     # has stopped.
     ((THEHUB,), "dast-staging", "dast"),
+    # `dast-edge` scans production through Cloudflare on the same timer
+    # (TheHub #60708). It uploads as `zap-edge`, but the capability is `dast`,
+    # and that is what this table answers for.
+    ((THEHUB,), "dast-edge", "dast"),
     # `functional-dast` was the third entry here, the one lane declaring two
     # capabilities from one build. It drove the demo environment through ZAP's
     # proxy and was removed with Path B (#59100). `functional` now has no
