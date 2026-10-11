@@ -125,8 +125,9 @@ It works in rounds. Each round:
    `origin/main` in a temporary worktree, from main's side, with
    `docs/DECISIONS.md` merged by `merge=union` (`.gitattributes`). The merged
    log is read back (main's entries intact and first, no number taken twice,
-   the branch's own entries ascending), `test_decisions_log.py` runs, and the
-   result is pushed with `--force-with-lease`. It descends from the PR head, so
+   the branch's own entries ascending), the generated decision index is
+   regenerated rather than trusted to union, `test_decisions_log.py` runs, and
+   the result is pushed with `--force-with-lease`. It descends from the PR head, so
    the push is a fast-forward. Branches named `main`, forks and drafts are
    refused.
 2. **Waits for the platform's request** on each current head, polling.
@@ -148,10 +149,24 @@ on: a conflict outside the decision log, a wrong union result, a red check, or
 a refusal. Tokens come from `backend/.env` and are never printed. Every step is
 logged to `~/approval-queue-logs/`.
 
-**What union does not fix.** GitHub's merge button runs no merge drivers, so
-two open PRs that both append to the decision log still conflict on GitHub.
-Each merge therefore re-heads the next such PR, and that PR waits one more
-request cycle (about ten minutes) and one more decision: an unattended one when
-the reviewer decides it, another prompt when you do. PRs that do not touch the
-log merge in the same round. D-149 records the follow-up that removes this.
+**What still conflicts on GitHub.** GitHub's merge button runs no merge
+drivers. Decisions are now one file each (`docs/decisions/`, D-149), and two new
+files never conflict, but the generated index in `docs/DECISIONS.md` gains a
+line for each. So two open PRs that both add a decision still conflict there,
+and the merge of one re-heads the other: one more request cycle (about ten
+minutes) and one more decision, unattended when the reviewer decides it. The
+queue's round simulation sees this coming and leaves the second PR for the next
+round instead of asking you twice. PRs that do not add a decision merge in the
+same round. Until `scripts/move-decisions-to-files.py` has run, PRs opened
+before D-149 still append to the log itself and conflict with each other the
+old way; the union merge covers them.
+
+## Recording a decision
+
+Write `docs/decisions/D-nnn-<slug>.md` (next free number across the log and the
+directory, one `## D-nnn — Title` heading, the usual entry format), then run
+`python scripts/decisions_index.py` and commit both. Do not append to
+`docs/DECISIONS.md`. `test_decisions_log.py` fails on a duplicate number, a
+file whose heading is not its filename's number, a stale index, or an entry
+with no reasoning.
 

@@ -395,3 +395,44 @@ def test_the_round_simulation_defers_a_pr_the_one_before_it_will_re_head(
     assert merge_tree(tip, "b").returncode == 1
     script = (ROOT / "scripts" / "approval-queue.ps1").read_text(encoding="utf-8")
     assert "'commit-tree', $tree, '-p', $tip" in script
+
+
+@needs_git
+def test_a_union_merged_index_is_repaired_by_regenerating_it(tmp_path: Path) -> None:
+    """Two PRs that each add a decision file both add a line at the end of the
+    generated index (D-149). Union keeps both lines in merge order, which is
+    not number order when the later number merged first; the queue
+    regenerates the index instead of trusting union."""
+    import decisions_index
+
+    r = tmp_path / "r"
+    (r / "docs" / "decisions").mkdir(parents=True)
+    _git(r, "init", "-q", "-b", "main")
+    shutil.copy(ROOT / ".gitattributes", r / ".gitattributes")
+    log = r / "docs" / "DECISIONS.md"
+    log.write_text(
+        "# Decision log\n\n" + decisions_index.render([]) + "\n\n---\n\n" + entry(135),
+        encoding="utf-8",
+    )
+    decisions_index.write(r)
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "base")
+    for name, number in (("low", 152), ("high", 153)):
+        _git(r, "checkout", "-qb", name, "main")
+        path = r / "docs" / "decisions" / f"D-{number}-{name}.md"
+        path.parent.mkdir(exist_ok=True)  # git drops the empty directory on checkout
+        path.write_text(entry(number, name), encoding="utf-8")
+        decisions_index.write(r)
+        _git(r, "add", "-A")
+        _git(r, "commit", "-qm", name)
+    _git(r, "checkout", "-q", "main")
+    assert _git(r, "merge", "--no-ff", "-m", "high first", "high").returncode == 0
+
+    merged = _git(r, "merge", "--no-ff", "-m", "queue", "low")
+
+    assert merged.returncode == 0, merged.stdout
+    assert decisions_index.check(r), "union put D-153 before D-152 and the check saw it"
+    decisions_index.write(r)
+    assert decisions_index.check(r) == []
+    script = (ROOT / "scripts" / "approval-queue.ps1").read_text(encoding="utf-8")
+    assert "& $Python $indexer --check --root $wt" in script

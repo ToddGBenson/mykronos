@@ -228,6 +228,21 @@ function Update-Branch($p) {
       return "conflicts with main outside what the queue can merge: $($files -join ', ')"
     }
     if ((Invoke-Git @('merge-base', '--is-ancestor', $old, 'HEAD') $wt).Code -ne 0) { return "the merge does not descend from the PR head $old" }
+    # The decision index (D-149) is generated, so it is regenerated rather than
+    # trusted to union: two PRs that each add a decision file both add a line
+    # at its end. Folded into the merge commit, which only this run has seen.
+    $indexer = Join-Path $wt 'scripts\decisions_index.py'
+    if (Test-Path -LiteralPath $indexer) {
+      & $Python $indexer --check --root $wt 2>$null | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+        $w = & $Python $indexer --root $wt 2>&1
+        if ($LASTEXITCODE -ne 0) { return "the decision index could not be regenerated: $(($w | ForEach-Object { "$_" }) -join ' ')" }
+        Invoke-Git @('add', 'docs/DECISIONS.md') $wt | Out-Null
+        $r = Invoke-Git @('commit', '--quiet', '--amend', '--no-edit') $wt
+        if ($r.Code -ne 0) { return "could not fold the regenerated index into the merge: $($r.Out)" }
+        Log "  #$($p.number): regenerated the decision index after the merge" 'DarkGray'
+      }
+    }
     $log = Join-Path $wt 'docs\DECISIONS.md'
     if (Test-Path -LiteralPath $log) {
       # Python reads main's log from git as bytes: PowerShell would decode
