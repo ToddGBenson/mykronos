@@ -6045,3 +6045,43 @@ JSON
   a permission means re-approving the installation.
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
+
+## D-136 — Process drift is computed on read from the stored governance reading
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.1, B-070)
+
+A manifest is a declaration, and phase 1 only displayed it. B-070 compares two
+kinds of declaration with what MyKronos can observe: `branch_controls` (what the
+default branch is declared to enforce) and a gate's `enforced_by` switch.
+
+**Observed from data MyKronos already holds.** Branch controls are compared with
+`repo_governance.control_states`, the per-control reading the governance sweep
+and the Insider Threat panel already store (spec 30). No GitHub operation is
+added. A reading older than `governance.STALE_AFTER_DAYS`, or none at all, makes
+the declaration **unobserved**, never consistent: "no reading" is not evidence
+that the control is on. A gate switch is a file and key in the repository, read
+at the default branch with the client and `get_file` call that already read the
+manifest.
+
+**Three states, kept apart.** `consistent`, `drift` and `unobserved`, each with
+the declared side and the observed side as separate fields. Only `drift` is a
+finding. Each finding names an owner: `branch_controls.owner` for branch
+controls (default "Repository admins"), and the gate's approver for a switch.
+
+**Not a lake finding.** The governance reading is already an Oracle term
+(`risk_profile.governance`). Writing drift into `findings` would score the same
+weak control twice, once as posture and once as a finding.
+
+**What it cannot see.** A running process's environment. TheHub's inception gate
+is off in its live `.env` and on in `.env.example`, so a manifest that points
+`enforced_by` at `.env.example` reports it as consistent. That is the truth
+about what the repository says. It is not the running state, and the spec says
+so (§7.1).
+
+**Rejected.**
+- *A live `governance.read` on every render.* It works, and it is a second GitHub
+  read of the same data per page view. The stored row is current enough to
+  score Oracle with, so it is current enough to compare against.
+- *Inferring the inception flag from TheHub's behaviour* (whether a sprint pull
+  is refused for a missing checklist). That is a guess drawn from one refusal,
+  presented as a configuration fact.

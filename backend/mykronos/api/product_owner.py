@@ -16,16 +16,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import governance
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep
-from mykronos.db.models import PoBacklogRank, RepoOnboarding
+from mykronos.db.models import PoBacklogRank, RepoGovernance, RepoOnboarding
+from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +98,29 @@ class HubOut(BaseModel):
 
 
 class NeedsHumanOut(BaseModel):
-    #: invalid_manifest | sprint_gate_failed | ready_manual_item
+    #: invalid_manifest | sprint_gate_failed | ready_manual_item | process_drift
     kind: str
     story_id: int | None
     title: str
     reason: str
+    #: Who fixes it, where the item is a finding with an owner (drift).
+    owner: str | None = None
+
+
+class ObservationOut(BaseModel):
+    """One declaration beside its observation (spec 35 §7.1). The two are
+    separate fields so the view never merges them into one word."""
+
+    id: str
+    #: branch_control | gate_switch
+    kind: str
+    subject: str
+    declared: str
+    observed: str
+    #: consistent | drift | unobserved. Only drift is a finding.
+    status: str
+    owner: str
+    detail: str
 
 
 class SprintProgressOut(BaseModel):
@@ -134,6 +154,9 @@ class ProductOwnerOut(BaseModel):
     membership_source: str
     hub: HubOut
     needs_human: list[NeedsHumanOut]
+    #: Every declaration the platform can compare with what it observes,
+    #: including the consistent and unobserved ones (B-070).
+    observations: list[ObservationOut]
     counts: dict[str, int]
     sprint_progress: SprintProgressOut
     oracle: OracleOut | None
@@ -225,6 +248,73 @@ async def _read_manifest(
             error=f"{po.MANIFEST_PATH} could not be read from GitHub.",
         )
     return po.parse_manifest(text)
+
+
+def _governance_states(request: Request, repo_full_name: str) -> tuple[dict[str, str] | None, str]:
+    """The stored governance reading's per-control states, or None with the
+    reason when there is no current one (spec 35 §7.1).
+
+    Stored, not read live: the governance sweep and the Insider Threat panel
+    already keep this row current, and B-070 is a comparison against data the
+    platform holds, not a second GitHub client. Stale is unobserved for the
+    reason `governance.stored` gives -- a six-week-old reading of a setting is
+    a claim about a repository that may have been reconfigured since.
+    """
+    with request.app.state.db.session() as session:
+        row = session.get(RepoGovernance, repo_full_name)
+        if row is None or not row.control_states:
+            return None, "No governance reading is stored for this repository yet."
+        cutoff = utcnow() - timedelta(days=governance.STALE_AFTER_DAYS)
+        if row.read_at is None or row.read_at < cutoff:
+            return None, (
+                f"The last governance reading is older than {governance.STALE_AFTER_DAYS} days."
+            )
+        return dict(row.control_states), ""
+
+
+async def _read_repo_files(
+    request: Request,
+    repo_full_name: str,
+    branch: str,
+    installation_id: int | None,
+    paths: list[str],
+) -> dict[str, str | None]:
+    """Each path's text at `branch`, or None when absent or unreadable. The
+    same client and call the manifest is read with."""
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation_id is None or not paths:
+        return {path: None for path in paths}
+    github = factory.for_installation(installation_id)
+    out: dict[str, str | None] = {}
+    for path in paths:
+        try:
+            out[path] = await github.get_file(repo_full_name, path, branch)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not read %s from %s", path, repo_full_name)
+            out[path] = None
+    return out
+
+
+async def _observations(
+    request: Request,
+    repo_full_name: str,
+    branch: str,
+    installation_id: int | None,
+    manifest: po.ProcessManifest | None,
+) -> list[po.Observation]:
+    if manifest is None:
+        return []
+    observations: list[po.Observation] = []
+    if manifest.branch_controls is not None:
+        states, reason = _governance_states(request, repo_full_name)
+        observations += po.branch_control_observations(
+            manifest, branch, states, unobserved_reason=reason
+        )
+    files = await _read_repo_files(
+        request, repo_full_name, branch, installation_id, po.switch_files(manifest)
+    )
+    observations += po.gate_switch_observations(manifest, files)
+    return observations
 
 
 def _membership(state: po.ManifestState, repo_full_name: str) -> tuple[str, bool, str]:
@@ -392,6 +482,8 @@ async def product_owner(
     sprint = [_story_out(s, manifest, None) for s in sprint_raw]
     sprint.sort(key=lambda s: (po.SPINE.index(s.spine), s.id))
 
+    observations = await _observations(request, repo_full_name, branch, installation, manifest)
+
     needs: list[NeedsHumanOut] = []
     if state.state == "invalid":
         needs.append(
@@ -402,6 +494,17 @@ async def product_owner(
                 reason=state.error or "The manifest is invalid.",
             )
         )
+    for observation in observations:
+        if observation.status == "drift":
+            needs.append(
+                NeedsHumanOut(
+                    kind="process_drift",
+                    story_id=None,
+                    title=f"Declared, not observed: {observation.subject}",
+                    reason=observation.detail,
+                    owner=observation.owner,
+                )
+            )
     for story in sprint:
         if story.check.failed:
             needs.append(
@@ -449,6 +552,19 @@ async def product_owner(
         membership_source=membership_source,
         hub=hub_out,
         needs_human=needs,
+        observations=[
+            ObservationOut(
+                id=o.id,
+                kind=o.kind,
+                subject=o.subject,
+                declared=o.declared,
+                observed=o.observed,
+                status=o.status,
+                owner=o.owner,
+                detail=o.detail,
+            )
+            for o in observations
+        ],
         counts=counts,
         sprint_progress=SprintProgressOut(
             done=sum(1 for s in sprint if s.spine == "done"), committed=len(sprint)

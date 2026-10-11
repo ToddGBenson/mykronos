@@ -1282,7 +1282,7 @@ correct, but it leaves the next step to the person reading.
 
 ### B-070 — Declared process versus observed process
 
-**Size:** M **State:** open **Verified:** 2026-10-11
+**Size:** M **State:** done (spec 35 §7.1, D-136) **Verified:** 2026-10-11
 
 A manifest is a declaration. Phase 1 shows it and never checks it. The two
 gaps already known are the reason this matters: TheHub's inception gate is

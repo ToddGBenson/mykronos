@@ -70,8 +70,9 @@ DEFAULT_SPINE_MAP: dict[str, str] = {
 EvidenceKey = Literal["acceptance_criteria", "detail_500", "sized", "threat_model", "sprint"]
 
 #: A path inside the repository: relative, no traversal, no scheme. Rendered as
-#: a link, so a `javascript:` or absolute URL must never get through.
-_SAFE_PATH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
+#: a link, so a `javascript:` or absolute URL must never get through. A leading
+#: dot is allowed (`.env.example`, `.github/CODEOWNERS`); a `..` segment is not.
+_SAFE_PATH = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_./-]*$")
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +99,24 @@ class ChecklistItem(_Strict):
     evidence: EvidenceKey | None = None
 
 
+#: A setting name in a dotenv, YAML or JSON file: letters, digits, `_`, and
+#: `.` for a dotted YAML path. Nothing that could be read as a pattern.
+_SWITCH_KEY = r"^[A-Za-z_][A-Za-z0-9_.-]*$"
+
+
+class Switch(_Strict):
+    """The setting that turns a gate on (spec 35 §7.1). Read from the
+    repository at the default branch, never from a running process."""
+
+    file: str = Field(min_length=1, max_length=512)
+    key: str = Field(min_length=1, max_length=128, pattern=_SWITCH_KEY)
+
+    @field_validator("file")
+    @classmethod
+    def _file_in_repo(cls, value: str) -> str:
+        return _repo_path(value) or value
+
+
 class Gate(_Strict):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=128)
@@ -107,6 +126,9 @@ class Gate(_Strict):
     #: TheHub `dev_stories.gate` values this gate covers.
     story_gates: list[str] = Field(default_factory=list)
     checklist: list[ChecklistItem] = Field(default_factory=list)
+    #: What switches this gate on, where the gate is enforced by a flag. Drift
+    #: when the declared gate's switch reads off (B-070).
+    enforced_by: Switch | None = None
 
     @field_validator("doc")
     @classmethod
@@ -152,6 +174,25 @@ class DocLink(_Strict):
         return _repo_path(value) or value
 
 
+class BranchControls(_Strict):
+    """What the default branch is declared to enforce (spec 35 §7.1).
+
+    Each is optional: an omitted key declares nothing, so it cannot drift.
+    Only `true` is a declaration worth checking -- `false` says the control is
+    not part of this process, and a branch that enforces more than declared
+    has not drifted in any direction that needs a person.
+    """
+
+    required_review: bool | None = None
+    required_checks: bool | None = None
+    codeowner_review: bool | None = None
+    enforced_for_admins: bool | None = None
+    signed_commits: bool | None = None
+    force_push_blocked: bool | None = None
+    #: Who fixes a branch-control drift: whoever can change branch protection.
+    owner: str = Field(default="Repository admins", min_length=1, max_length=128)
+
+
 class ProcessManifest(_Strict):
     """`.sdlc/process.yaml`, version 1 (spec 35 §2)."""
 
@@ -163,6 +204,7 @@ class ProcessManifest(_Strict):
     delivery: Delivery | None = None
     automation_policy: list[PolicyItem] = Field(default_factory=list)
     docs: list[DocLink] = Field(default_factory=list)
+    branch_controls: BranchControls | None = None
 
 
 ManifestStateName = Literal["valid", "invalid", "absent", "unreadable"]
@@ -373,6 +415,223 @@ def moved(order: list[int], story_id: int, direction: Literal["up", "down"]) -> 
     if 0 <= target < len(result):
         result[index], result[target] = result[target], result[index]
     return result
+
+
+# --------------------------------------------------------------------------
+# Declared versus observed (B-070, spec 35 §7.1, D-136)
+# --------------------------------------------------------------------------
+
+#: A `branch_controls` declaration -> (the governance control that observes
+#: it, the observed states that satisfy it, what the declaration says).
+#: `required_review` is satisfied by one approval (`partial`): the manifest
+#: declares that review is required, not how many reviewers.
+DECLARED_CONTROLS: dict[str, tuple[str, frozenset[str], str]] = {
+    "required_review": (
+        "approving_reviews_required",
+        frozenset({"on", "partial"}),
+        "an approving review is required",
+    ),
+    "required_checks": (
+        "required_status_checks",
+        frozenset({"on"}),
+        "a status check must pass before a merge",
+    ),
+    "codeowner_review": (
+        "codeowner_review_required",
+        frozenset({"on"}),
+        "a CODEOWNERS review is required",
+    ),
+    "enforced_for_admins": (
+        "enforced_for_admins",
+        frozenset({"on"}),
+        "administrators are bound by the rules",
+    ),
+    "signed_commits": (
+        "signed_commits_required",
+        frozenset({"on"}),
+        "commits must be signed",
+    ),
+    "force_push_blocked": (
+        "force_push_blocked",
+        frozenset({"on"}),
+        "force pushes are blocked",
+    ),
+}
+
+ObservationStatus = Literal["consistent", "drift", "unobserved"]
+
+_ON = frozenset({"true", "1", "yes", "on"})
+_OFF = frozenset({"false", "0", "no", "off"})
+
+
+@dataclass
+class Observation:
+    """One declaration beside what MyKronos can see of it.
+
+    `declared` and `observed` are kept as two fields and rendered as two, so
+    "the manifest says required" and "branch protection says none" are never
+    collapsed into a single word that hides which side is which.
+    """
+
+    id: str
+    #: branch_control | gate_switch
+    kind: str
+    subject: str
+    declared: str
+    observed: str
+    status: ObservationStatus
+    owner: str
+    detail: str = ""
+
+
+def branch_control_observations(
+    manifest: ProcessManifest | None,
+    branch: str,
+    control_states: dict[str, str] | None,
+    *,
+    unobserved_reason: str = "",
+) -> list[Observation]:
+    """Each `branch_controls: true` declaration against the stored governance
+    reading. `control_states` is None when there is no current reading, which
+    makes every declaration unobserved rather than consistent."""
+    if manifest is None or manifest.branch_controls is None:
+        return []
+    declared = manifest.branch_controls
+    out: list[Observation] = []
+    for name, (control_key, satisfied, says) in DECLARED_CONTROLS.items():
+        if getattr(declared, name) is not True:
+            continue
+        state = None if control_states is None else control_states.get(control_key)
+        if state is None or state == "unknown":
+            status: ObservationStatus = "unobserved"
+            observed = "not observed"
+            detail = unobserved_reason or f"{control_key} could not be read."
+        elif state in satisfied:
+            status, observed, detail = "consistent", f"{control_key}: {state}", ""
+        else:
+            status = "drift"
+            observed = f"{control_key}: {state}"
+            detail = (
+                f"The manifest declares that {says} on {branch}; branch protection on "
+                f"{branch} reports {control_key} as {state}."
+            )
+        out.append(
+            Observation(
+                id=f"branch:{name}",
+                kind="branch_control",
+                subject=f"{name} on {branch}",
+                declared=f"{name}: true",
+                observed=observed,
+                status=status,
+                owner=declared.owner,
+                detail=detail,
+            )
+        )
+    return out
+
+
+def switch_files(manifest: ProcessManifest | None) -> list[str]:
+    """The distinct files the declared gate switches live in."""
+    if manifest is None:
+        return []
+    return sorted({g.enforced_by.file for g in manifest.gates if g.enforced_by is not None})
+
+
+def read_switch(text: str | None, path: str, key: str) -> str | None:
+    """The raw value of `key` in a file, or None if it is not there.
+
+    `.yaml`, `.yml` and `.json` are read as YAML (JSON is YAML) with `key` as
+    a dotted path. Anything else is read as dotenv: the last `KEY=value` line
+    wins, as it does for every dotenv loader, and a trailing comment or quotes
+    around the value are stripped.
+    """
+    if text is None:
+        return None
+    if path.endswith((".yaml", ".yml", ".json")):
+        try:
+            node: Any = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        if isinstance(node, bool):
+            return "true" if node else "false"
+        return None if node is None or isinstance(node, dict | list) else str(node)
+    value: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, rest = line.partition("=")
+        if name.strip() != key:
+            continue
+        rest = rest.strip()
+        if len(rest) >= 2 and rest[0] in "'\"" and rest[-1] == rest[0]:
+            rest = rest[1:-1]
+        else:
+            rest = rest.split(" #", 1)[0].strip()
+        value = rest
+    return value
+
+
+def gate_switch_observations(
+    manifest: ProcessManifest | None, files: dict[str, str | None]
+) -> list[Observation]:
+    """Each declared gate against the switch that is meant to enforce it.
+
+    `files` maps a path to its text, or to None when it is absent or could
+    not be read -- either way the switch is unobserved, never "off".
+    """
+    if manifest is None:
+        return []
+    fallback_owner = (
+        manifest.branch_controls.owner if manifest.branch_controls else "Repository admins"
+    )
+    out: list[Observation] = []
+    for gate in manifest.gates:
+        switch = gate.enforced_by
+        if switch is None:
+            continue
+        raw = read_switch(files.get(switch.file), switch.file, switch.key)
+        where = f"{switch.key} in {switch.file}"
+        value = (raw or "").strip().lower()
+        status: ObservationStatus
+        if raw is None:
+            status, observed = "unobserved", "not observed"
+            detail = (
+                f"{switch.file} is not on the default branch."
+                if files.get(switch.file) is None
+                else f"{switch.key} is not set in {switch.file}."
+            )
+        elif value in _ON:
+            status, observed, detail = "consistent", f"{where} = {raw}", ""
+        elif value in _OFF or value == "":
+            status = "drift"
+            observed = f"{where} = {raw or '(empty)'}"
+            detail = (
+                f"The manifest declares gate {gate.id} ({gate.name}); its switch "
+                f"{switch.key} is off in {switch.file}."
+            )
+        else:
+            status, observed = "unobserved", f"{where} = {raw}"
+            detail = f"{raw!r} is neither on nor off."
+        out.append(
+            Observation(
+                id=f"gate:{gate.id}",
+                kind="gate_switch",
+                subject=f"gate {gate.id} ({gate.name})",
+                declared=f"gate {gate.id} enforced by {switch.key}",
+                observed=observed,
+                status=status,
+                owner=gate.approves or fallback_owner,
+                detail=detail,
+            )
+        )
+    return out
 
 
 # --------------------------------------------------------------------------

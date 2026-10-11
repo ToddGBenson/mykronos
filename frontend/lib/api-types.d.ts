@@ -5490,6 +5490,8 @@ export interface components {
             title: string;
             /** Reason */
             reason: string;
+            /** Owner */
+            owner?: string | null;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -5558,6 +5560,29 @@ export interface components {
             input: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * ObservationOut
+         * @description One declaration beside its observation (spec 35 §7.1). The two are
+         *     separate fields so the view never merges them into one word.
+         */
+        ObservationOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Declared */
+            declared: string;
+            /** Observed */
+            observed: string;
+            /** Status */
+            status: string;
+            /** Owner */
+            owner: string;
+            /** Detail */
+            detail: string;
         };
         /** OnboardRequest */
         OnboardRequest: {
@@ -5930,6 +5955,8 @@ export interface components {
             hub: components["schemas"]["HubOut"];
             /** Needs Human */
             needs_human: components["schemas"]["NeedsHumanOut"][];
+            /** Observations */
+            observations: components["schemas"]["ObservationOut"][];
             /** Counts */
             counts: {
                 [key: string]: number;

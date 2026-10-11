@@ -50,6 +50,13 @@ type Manifest = {
   docs: { label: string; path: string }[];
 };
 
+const NEEDS_LABEL: Record<string, string> = {
+  invalid_manifest: "manifest",
+  sprint_gate_failed: "sprint check",
+  ready_manual_item: "manual item",
+  process_drift: "drift",
+};
+
 const SPINE_LABEL: Record<string, string> = {
   idea: "Idea",
   ready: "Ready",
@@ -180,8 +187,8 @@ function Overview({ data }: { data: ProductOwnerView }) {
       >
         {data.needs_human.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-ink-3">
-            No sprint story fails a gate check, no Ready story has a manual item, and the
-            manifest is not invalid.
+            No sprint story fails a gate check, no Ready story has a manual item, no
+            declaration is observed to have drifted, and the manifest is not invalid.
           </p>
         ) : (
           <ul className="flex flex-col">
@@ -191,17 +198,16 @@ function Overview({ data }: { data: ProductOwnerView }) {
                 className="flex flex-wrap items-baseline gap-2 border-t border-rule-soft px-3 py-1.5"
               >
                 <Pill tone={item.kind === "ready_manual_item" ? "warn" : "critical"}>
-                  {item.kind === "invalid_manifest"
-                    ? "manifest"
-                    : item.kind === "sprint_gate_failed"
-                      ? "sprint check"
-                      : "manual item"}
+                  {NEEDS_LABEL[item.kind] ?? item.kind}
                 </Pill>
                 {item.story_id ? (
                   <span className="font-mono text-[11px] text-ink-3">#{item.story_id}</span>
                 ) : null}
                 <span className="text-[13px] text-ink">{item.title}</span>
                 <span className="text-[12px] text-ink-3">{item.reason}</span>
+                {item.owner ? (
+                  <span className="font-mono text-[11px] text-ink-2">owner: {item.owner}</span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -411,6 +417,8 @@ function Process({ data }: { data: ProductOwnerView }) {
         ))}
       </Section>
 
+      <DeclaredVsObserved data={data} />
+
       {manifest.delivery ? <Delivery delivery={manifest.delivery} /> : null}
 
       {manifest.automation_policy.length > 0 ? (
@@ -462,6 +470,44 @@ function Delivery({ delivery }: { delivery: NonNullable<Manifest["delivery"]> })
           </li>
         ))}
       </ol>
+    </Section>
+  );
+}
+
+const OBSERVATION_TONE = {
+  consistent: "pass",
+  drift: "critical",
+  unobserved: "muted",
+} as const;
+
+/** Each declaration beside what the platform observes (spec 35 §7.1). Declared
+ *  and observed are separate columns: one word for both would hide which side
+ *  said what. */
+function DeclaredVsObserved({ data }: { data: ProductOwnerView }) {
+  if (data.observations.length === 0) return null;
+  const drift = data.observations.filter((o) => o.status === "drift").length;
+  return (
+    <Section
+      title="Declared vs observed"
+      detail={drift ? `${drift} drift` : "no drift observed"}
+    >
+      {data.observations.map((o) => (
+        <div
+          key={o.id}
+          className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-t border-rule-soft px-3 py-1.5"
+        >
+          <Pill
+            tone={OBSERVATION_TONE[o.status as keyof typeof OBSERVATION_TONE] ?? "muted"}
+          >
+            {o.status}
+          </Pill>
+          <span className="text-[13px] text-ink">{o.subject}</span>
+          <span className="font-mono text-[11px] text-ink-2">declared: {o.declared}</span>
+          <span className="font-mono text-[11px] text-ink-2">observed: {o.observed}</span>
+          <span className="font-mono text-[11px] text-ink-3">owner: {o.owner}</span>
+          {o.detail ? <span className="w-full text-[12px] text-ink-3">{o.detail}</span> : null}
+        </div>
+      ))}
     </Section>
   );
 }
