@@ -30,6 +30,7 @@ export const PO_VIEWS = [
   { id: "approvals", label: "Approvals" },
   { id: "roles", label: "Roles & agents" },
   { id: "retro", label: "Retro" },
+  { id: "trace", label: "Trace" },
 ] as const;
 
 export type PoViewId = (typeof PO_VIEWS)[number]["id"];

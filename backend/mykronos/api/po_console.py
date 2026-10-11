@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos import po_console as pc
+from mykronos import po_trace
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep, Role
 from mykronos.api import product_owner as phase1
@@ -642,4 +643,225 @@ async def retro(
         summary=report["summary"],
         limitation=report["limitation"],
         stories=[PoRetroStoryOut(**s) for s in report["stories"]],
+    )
+
+
+# --------------------------------------------------------------------------
+# Delivery trace (§8.5)
+# --------------------------------------------------------------------------
+
+
+class PoTracePrOut(BaseModel):
+    number: int
+    url: str
+    #: Where the link came from: MyKronos's scan and decision record, or
+    #: GitHub's squash-merge subject.
+    source: str
+
+
+class PoTraceScanOut(BaseModel):
+    #: `commit`, or `pull request #n` for a scan of the PR's head.
+    of: str
+    capability: str | None
+    status: str | None
+    at: str | None
+    run_url: str | None
+
+
+class PoTraceDeployOut(BaseModel):
+    source: str
+    id: str | int | None
+    status: str | None
+    at: str | None
+    sha: str | None
+
+
+class PoTraceCommitOut(BaseModel):
+    sha: str
+    url: str
+    subject: str
+    committed_at: str | None
+    prs: list[PoTracePrOut]
+    scans: list[PoTraceScanOut]
+    deploys: list[PoTraceDeployOut]
+    running: bool
+    #: The first link this commit's chain is missing, or None when complete.
+    missing: str | None
+
+
+class PoTraceLinksOut(BaseModel):
+    commit: bool
+    pr: bool
+    scan: bool
+    deploy: bool
+
+
+class PoTraceStoryOut(BaseModel):
+    id: int
+    title: str
+    bucket: str
+    gate: str
+    created_at: str | None
+
+
+class PoTraceOut(BaseModel):
+    story: PoTraceStoryOut
+    commits: list[PoTraceCommitOut]
+    #: Commits that name `#id` in prose without crediting it in a trailer.
+    #: Never shown as delivering the story (D-139).
+    prose_mentions: int
+    commits_read: int | None
+    links: PoTraceLinksOut
+    #: Never blank: the first missing link, or None when every link is there.
+    first_missing: str | None
+    github_error: str | None
+    #: Why TheHub's deploy list is absent, when it is.
+    deploys_error: str | None
+
+
+class PoTracePickOut(BaseModel):
+    id: int
+    title: str
+    bucket: str
+    gate: str
+
+
+class PoTraceViewOut(BaseModel):
+    repo_full_name: str
+    hub: PoHubStateOut
+    #: Stories to open a trace for: the sprint, then recently closed.
+    stories: list[PoTracePickOut]
+    trace: PoTraceOut | None
+
+
+#: How far back a trace reads commits when the story has no creation time.
+TRACE_FALLBACK_DAYS = 180
+
+
+@router.get("/repos/{repo_id}/product-owner/trace", response_model=PoTraceViewOut)
+async def trace(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    story_id: int | None = Query(None, ge=1),
+) -> PoTraceViewOut:
+    """One story's chain: commit, pull request, scan, deploy (spec 35 §8.5).
+    Commits are the ones whose `Stories:` trailer names the story (D-139)."""
+    repo_full_name, branch, installation = phase1._onboarding(request, repo_id)
+    _, _, _, tag, include_untagged = await repo_context(request, repo_id)
+    hub, hub_out = hub_state(request)
+    if hub is None:
+        return PoTraceViewOut(repo_full_name=repo_full_name, hub=hub_out, stories=[], trace=None)
+    try:
+        buckets = await member_stories(hub, ("sprint", "done"), tag, include_untagged)
+    except po.HubUnavailableError as exc:
+        return PoTraceViewOut(
+            repo_full_name=repo_full_name,
+            hub=PoHubStateOut(connected=False, error=str(exc)),
+            stories=[],
+            trace=None,
+        )
+    done = sorted(buckets["done"], key=lambda s: pc.closed_at(s) or datetime.min, reverse=True)
+    picks = [
+        PoTracePickOut(
+            id=int(s["id"]),
+            title=str(s.get("title") or ""),
+            bucket=str(s.get("bucket") or ""),
+            gate=str(s.get("gate") or "intake"),
+        )
+        for s in buckets["sprint"] + done[:30]
+    ]
+    if story_id is None:
+        return PoTraceViewOut(repo_full_name=repo_full_name, hub=hub_out, stories=picks, trace=None)
+
+    try:
+        story = await hub.get_story(story_id)
+    except po.HubUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if story is None or not po.belongs(story, tag, include_untagged):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Story {story_id} is not one of {repo_full_name}'s (tag {tag}).",
+        )
+
+    created = pc.parse_time(story.get("created_at"))
+    since = (created or pc.window_start(TRACE_FALLBACK_DAYS)) - timedelta(days=1)
+
+    commits: list[Any] | None = None
+    github_error: str | None = None
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:
+        github_error = "No GitHub installation to read commits with."
+    else:
+        try:
+            commits = await factory.for_installation(installation).list_commits(
+                repo_full_name, branch, since=since, limit=500
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Trace: commits could not be read for %s", repo_full_name)
+            github_error = f"Commits on {branch} could not be read from GitHub."
+
+    deploys_error: str | None = None
+    try:
+        body = await hub.get_json(f"/api/dev/stories/{story_id}/deploys")
+        hub_deploys = [d for d in (body or {}).get("deploys") or [] if isinstance(d, dict)]
+    except po.HubUnavailableError as exc:
+        hub_deploys, deploys_error = None, str(exc)
+
+    catalog = request.app.state.catalog
+    try:
+        scans, decisions = await asyncio.gather(
+            asyncio.to_thread(pc.scan_rows, catalog, repo_full_name, since),
+            asyncio.to_thread(pc.decision_rows, catalog, repo_full_name, since),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Trace: the lake could not be read for %s", repo_full_name)
+        scans, decisions = [], []
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        running = onboarding.deployed_revision if onboarding else None
+
+    built = po_trace.build_trace(
+        story,
+        repo_full_name,
+        commits,
+        scans,
+        decisions,
+        hub_deploys,
+        running,
+        github_error=github_error,
+    )
+    return PoTraceViewOut(
+        repo_full_name=repo_full_name,
+        hub=hub_out,
+        stories=picks,
+        trace=PoTraceOut(
+            story=PoTraceStoryOut(
+                id=int(story["id"]),
+                title=str(story.get("title") or ""),
+                bucket=str(story.get("bucket") or ""),
+                gate=str(story.get("gate") or "intake"),
+                created_at=pc.iso(created),
+            ),
+            commits=[
+                PoTraceCommitOut(
+                    sha=c.sha,
+                    url=c.url,
+                    subject=c.subject,
+                    committed_at=c.committed_at,
+                    prs=[PoTracePrOut(**p) for p in c.prs],
+                    scans=[PoTraceScanOut(**s) for s in c.scans],
+                    deploys=[PoTraceDeployOut(**d) for d in c.deploys],
+                    running=c.running,
+                    missing=c.missing,
+                )
+                for c in built["commits"]
+            ],
+            prose_mentions=built["prose_mentions"],
+            commits_read=built["commits_read"],
+            links=PoTraceLinksOut(**built["links"]),
+            first_missing=built["first_missing"],
+            github_error=built["github_error"],
+            deploys_error=deploys_error,
+        ),
     )

@@ -189,6 +189,19 @@ class PullRequestFile:
     previous_filename: str | None = None
 
 
+@dataclass
+class CommitInfo:
+    """One commit on a branch, with its full message (spec 35 §8.5).
+
+    The full message, not the subject: a `Stories:` trailer is in the body.
+    """
+
+    sha: str
+    message: str
+    url: str = ""
+    committed_at: datetime | None = None
+
+
 def _parse_time(value: object) -> datetime | None:
     """GitHub's ISO-8601 with a `Z`, which `fromisoformat` rejects before 3.11
     and which is worth not crashing a whole page over regardless."""
@@ -286,6 +299,21 @@ class GitHubClient(Protocol):
         nothing for a repository with fifteen open. A security platform that
         cannot see the changes people are actually proposing is looking at the
         wrong half of the repository.
+        """
+        ...
+
+    async def list_commits(
+        self,
+        repo_full_name: str,
+        ref: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[CommitInfo]:
+        """Commits reachable from `ref`, newest first, with full messages.
+
+        Errors propagate: "could not list" must never read as "no commits",
+        which for the delivery trace is the claim "nothing delivered this".
         """
         ...
 
@@ -535,6 +563,8 @@ class FakeRepo:
     #: the workflow exists and has never finished a run — which is a real
     #: state (`not_run`) and not an error.
     workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
+    #: Commits on the default branch, newest first (spec 35 §8.5).
+    commits: list[CommitInfo] = field(default_factory=list)
 
 
 class FakeGitHubClient:
@@ -726,6 +756,24 @@ class FakeGitHubClient:
     ) -> list[PullRequestFile]:
         self.calls.append(("pull_request_files", f"{repo_full_name}#{number}"))
         return list(self._repo(repo_full_name).pull_request_files.get(number, []))
+
+    async def list_commits(
+        self,
+        repo_full_name: str,
+        ref: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[CommitInfo]:
+        self.calls.append(("list_commits", f"{repo_full_name}@{ref}"))
+        commits = self._repo(repo_full_name).commits
+        if since is not None:
+            commits = [
+                c
+                for c in commits
+                if c.committed_at is None or c.committed_at.replace(tzinfo=None) >= since
+            ]
+        return list(commits[:limit])
 
     async def get_checks_summary(
         self, repo_full_name: str, ref: str
@@ -1444,6 +1492,41 @@ class RestGitHubClient:
             if len(items) < 100:
                 break
         return files
+
+    async def list_commits(
+        self,
+        repo_full_name: str,
+        ref: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[CommitInfo]:
+        """Commits on `ref`, newest first, a hundred to a page, up to `limit`.
+
+        `since` is naive UTC, as every timestamp here is.
+        """
+        out: list[CommitInfo] = []
+        page = 1
+        while len(out) < limit:
+            params: dict[str, Any] = {"sha": ref, "per_page": 100, "page": page}
+            if since is not None:
+                params["since"] = since.replace(microsecond=0).isoformat() + "Z"
+            payload = await self._json("GET", f"/repos/{repo_full_name}/commits", params=params)
+            items = payload if isinstance(payload, list) else []
+            for item in items:
+                commit = item.get("commit") or {}
+                out.append(
+                    CommitInfo(
+                        sha=str(item.get("sha", "")),
+                        message=str(commit.get("message") or ""),
+                        url=str(item.get("html_url") or ""),
+                        committed_at=_parse_time((commit.get("committer") or {}).get("date")),
+                    )
+                )
+            if len(items) < 100:
+                break
+            page += 1
+        return out[:limit]
 
     async def get_checks_summary(
         self, repo_full_name: str, ref: str

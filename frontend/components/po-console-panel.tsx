@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
 
 import { ApprovalsView, DeliveryView, RetroView, RolesView } from "@/components/po-console";
+import { TraceView } from "@/components/po-trace";
 import { ErrorPanel } from "@/components/primitives";
 import {
   getPoApprovals,
   getPoDelivery,
   getPoRetro,
   getPoRoles,
+  getPoTrace,
   windowDays,
 } from "@/lib/po-console";
 
@@ -53,6 +55,15 @@ export async function poConsoleView(
       <RetroView repoId={repoId} data={result.data} />
     ) : (
       <ErrorPanel title="Retro unavailable" detail={result.error} />
+    );
+  }
+  if (view === "trace") {
+    const id = Number(query.story);
+    const result = await getPoTrace(repoId, Number.isInteger(id) && id > 0 ? id : undefined);
+    return result.ok ? (
+      <TraceView repoId={repoId} data={result.data} />
+    ) : (
+      <ErrorPanel title="Delivery trace unavailable" detail={result.error} />
     );
   }
   return undefined;

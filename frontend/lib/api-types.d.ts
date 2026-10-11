@@ -2586,6 +2586,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trace
+         * @description One story's chain: commit, pull request, scan, deploy (spec 35 §8.5).
+         *     Commits are the ones whose `Stories:` trailer names the story (D-139).
+         */
+        get: operations["trace_api_dashboard_repos__repo_id__product_owner_trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -6163,6 +6184,123 @@ export interface components {
             independence: string[];
             /** Cooling Off Hours */
             cooling_off_hours: number;
+        };
+        /** PoTraceCommitOut */
+        PoTraceCommitOut: {
+            /** Sha */
+            sha: string;
+            /** Url */
+            url: string;
+            /** Subject */
+            subject: string;
+            /** Committed At */
+            committed_at: string | null;
+            /** Prs */
+            prs: components["schemas"]["PoTracePrOut"][];
+            /** Scans */
+            scans: components["schemas"]["PoTraceScanOut"][];
+            /** Deploys */
+            deploys: components["schemas"]["PoTraceDeployOut"][];
+            /** Running */
+            running: boolean;
+            /** Missing */
+            missing: string | null;
+        };
+        /** PoTraceDeployOut */
+        PoTraceDeployOut: {
+            /** Source */
+            source: string;
+            /** Id */
+            id: string | number | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Sha */
+            sha: string | null;
+        };
+        /** PoTraceLinksOut */
+        PoTraceLinksOut: {
+            /** Commit */
+            commit: boolean;
+            /** Pr */
+            pr: boolean;
+            /** Scan */
+            scan: boolean;
+            /** Deploy */
+            deploy: boolean;
+        };
+        /** PoTraceOut */
+        PoTraceOut: {
+            story: components["schemas"]["PoTraceStoryOut"];
+            /** Commits */
+            commits: components["schemas"]["PoTraceCommitOut"][];
+            /** Prose Mentions */
+            prose_mentions: number;
+            /** Commits Read */
+            commits_read: number | null;
+            links: components["schemas"]["PoTraceLinksOut"];
+            /** First Missing */
+            first_missing: string | null;
+            /** Github Error */
+            github_error: string | null;
+            /** Deploys Error */
+            deploys_error: string | null;
+        };
+        /** PoTracePickOut */
+        PoTracePickOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Bucket */
+            bucket: string;
+            /** Gate */
+            gate: string;
+        };
+        /** PoTracePrOut */
+        PoTracePrOut: {
+            /** Number */
+            number: number;
+            /** Url */
+            url: string;
+            /** Source */
+            source: string;
+        };
+        /** PoTraceScanOut */
+        PoTraceScanOut: {
+            /** Of */
+            of: string;
+            /** Capability */
+            capability: string | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Run Url */
+            run_url: string | null;
+        };
+        /** PoTraceStoryOut */
+        PoTraceStoryOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Bucket */
+            bucket: string;
+            /** Gate */
+            gate: string;
+            /** Created At */
+            created_at: string | null;
+        };
+        /** PoTraceViewOut */
+        PoTraceViewOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Stories */
+            stories: components["schemas"]["PoTracePickOut"][];
+            trace: components["schemas"]["PoTraceOut"] | null;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -11160,6 +11298,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoRetroOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trace_api_dashboard_repos__repo_id__product_owner_trace_get: {
+        parameters: {
+            query?: {
+                story_id?: number | null;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoTraceViewOut"];
                 };
             };
             /** @description Validation Error */

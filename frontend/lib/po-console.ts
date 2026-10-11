@@ -107,3 +107,26 @@ export async function getPoRetro(repoId: string, days: number): Promise<Result<P
     return failure(error, "Could not load the retro");
   }
 }
+
+export type PoTraceView = Json<"/api/dashboard/repos/{repo_id}/product-owner/trace">;
+export type PoTrace = NonNullable<PoTraceView["trace"]>;
+
+export async function getPoTrace(
+  repoId: string,
+  storyId: number | undefined,
+): Promise<Result<PoTraceView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/product-owner/trace",
+      {
+        params: { path: { repo_id: repoId }, query: storyId ? { story_id: storyId } : {} },
+        cache: "no-store",
+      },
+    );
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the delivery trace") };
+  } catch (error) {
+    return failure(error, "Could not load the delivery trace");
+  }
+}
