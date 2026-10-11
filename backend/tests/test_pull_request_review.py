@@ -142,11 +142,25 @@ class TestTheChangeClassIsComputed:
     def test_a_truncated_listing_is_classed_as_the_strictest(
         self, client, admin_auth, github, onboarded
     ) -> None:
-        _open_pr(github, ["docs/a.md"], changed_files=3001)
+        """GitHub's compare lists at most 300 files; files nobody saw are not
+        assumed routine."""
+        _open_pr(github, [f"docs/f{i}.md" for i in range(300)])
 
         body = _request(client, _agent(client, admin_auth)).json()
 
         assert body["tier"] == "governance"
+
+    def test_githubs_stale_changed_files_count_does_not_escalate(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        """`changed_files` is counted against GitHub's stale `base.sha` (42 for
+        #775's 9). It used to mark the listing incomplete and class the PR as
+        governance (D-152)."""
+        _open_pr(github, ["docs/a.md"], changed_files=42)
+
+        body = _request(client, _agent(client, admin_auth)).json()
+
+        assert body["tier"] == "routine"
 
 
 class TestTheEvidenceIsThePlatforms:

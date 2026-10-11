@@ -17,6 +17,7 @@ import base64
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx2
 
@@ -171,6 +172,9 @@ class PullRequest:
     created_at: datetime | None = None
     changed_files: int | None = None
     head_sha: str = ""
+    #: The branch it merges into. Read for the comparison the approval
+    #: evidence is built from: GitHub's own `base.sha` goes stale (D-152).
+    base_branch: str = ""
 
 
 @dataclass
@@ -187,6 +191,34 @@ class PullRequestFile:
     deletions: int = 0
     patch: str | None = None
     previous_filename: str | None = None
+
+
+#: GitHub's compare endpoint lists at most this many files, on its first page.
+COMPARE_MAX_FILES = 300
+
+
+@dataclass
+class Comparison:
+    """`base...head` as GitHub's compare endpoint answers it: the files `head`
+    changes since its merge-base with `base` as `base` is *now*."""
+
+    files: list[PullRequestFile]
+    merge_base_sha: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.files) >= COMPARE_MAX_FILES
+
+
+def _pull_request_file(item: dict[str, Any]) -> PullRequestFile:
+    return PullRequestFile(
+        filename=str(item["filename"]),
+        status=str(item.get("status", "")),
+        additions=int(item.get("additions") or 0),
+        deletions=int(item.get("deletions") or 0),
+        patch=item.get("patch"),
+        previous_filename=item.get("previous_filename"),
+    )
 
 
 @dataclass
@@ -351,7 +383,16 @@ class GitHubClient(Protocol):
         self, repo_full_name: str, number: int
     ) -> list[PullRequestFile]:
         """Every file the pull request changes, with its patch where GitHub
-        renders one. GitHub stops listing at 3,000 files."""
+        renders one. GitHub stops listing at 3,000 files.
+
+        Measured against the pull request's `base.sha`, which GitHub does not
+        always move when the base branch does: after main was merged into the
+        branch this listed 42 files for a 9-file change (#775, 2026-10-11).
+        Approval evidence uses `compare` instead (D-152)."""
+
+    async def compare(self, repo_full_name: str, base: str, head: str) -> Comparison:
+        """`base...head`: what `head` changes since its merge-base with `base`
+        as it stands now. At most 300 files (`Comparison.truncated`)."""
 
     async def create_check_run(
         self,
@@ -544,6 +585,10 @@ class FakeRepo:
     pull_requests: list[PullRequest] = field(default_factory=list)
     #: PR number -> the files it changes.
     pull_request_files: dict[int, list[PullRequestFile]] = field(default_factory=dict)
+    #: (base, head) -> what `compare` answers. Unset, `compare` answers with
+    #: the listing of the open PR whose head is `head`: the two agree unless a
+    #: test says otherwise, and the stale-base test says otherwise.
+    comparisons: dict[tuple[str, str], Comparison] = field(default_factory=dict)
     check_runs: list[dict[str, Any]] = field(default_factory=list)
     #: Bytes per language, as GitHub reports them (B-051). Empty by default,
     #: which reads as "nothing measured" rather than as "nothing analysable".
@@ -756,6 +801,16 @@ class FakeGitHubClient:
     ) -> list[PullRequestFile]:
         self.calls.append(("pull_request_files", f"{repo_full_name}#{number}"))
         return list(self._repo(repo_full_name).pull_request_files.get(number, []))
+
+    async def compare(self, repo_full_name: str, base: str, head: str) -> Comparison:
+        self.calls.append(("compare", f"{repo_full_name}@{base}...{head}"))
+        repo = self._repo(repo_full_name)
+        if (base, head) in repo.comparisons:
+            return repo.comparisons[(base, head)]
+        for pr in repo.pull_requests:
+            if pr.head_sha == head:
+                return Comparison(files=list(repo.pull_request_files.get(pr.number, [])))
+        raise GitHubError(f"No comparison {base}...{head}", status=404)
 
     async def list_commits(
         self,
@@ -1421,6 +1476,7 @@ class RestGitHubClient:
                 int(item["changed_files"]) if item.get("changed_files") is not None else None
             ),
             head_sha=str((item.get("head") or {}).get("sha", "")),
+            base_branch=str((item.get("base") or {}).get("ref", "")),
         )
 
     async def list_open_pull_requests(
@@ -1479,19 +1535,22 @@ class RestGitHubClient:
                 params={"per_page": 100, "page": page},
             )
             for item in items:
-                files.append(
-                    PullRequestFile(
-                        filename=str(item["filename"]),
-                        status=str(item.get("status", "")),
-                        additions=int(item.get("additions") or 0),
-                        deletions=int(item.get("deletions") or 0),
-                        patch=item.get("patch"),
-                        previous_filename=item.get("previous_filename"),
-                    )
-                )
+                files.append(_pull_request_file(item))
             if len(items) < 100:
                 break
         return files
+
+    async def compare(self, repo_full_name: str, base: str, head: str) -> Comparison:
+        # Files come on the first page only, up to 300; no paging parameter
+        # is sent, so this is that page.
+        item = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/compare/{quote(base, safe='/')}...{quote(head, safe='/')}",
+        )
+        return Comparison(
+            files=[_pull_request_file(f) for f in item.get("files") or []],
+            merge_base_sha=str((item.get("merge_base_commit") or {}).get("sha", "")),
+        )
 
     async def list_commits(
         self,
