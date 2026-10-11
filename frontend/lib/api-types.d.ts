@@ -5494,6 +5494,24 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /**
+         * IssuesSourceOut
+         * @description How a `github_issues` backlog was read (spec 35 §9, D-153).
+         */
+        IssuesSourceOut: {
+            /** Labels */
+            labels: string[];
+            /** Project */
+            project: number | null;
+            /** Gate Field */
+            gate_field: string;
+            /** Sprint Labels */
+            sprint_labels: string[];
+            /** Gate Source */
+            gate_source: string;
+            /** Gate Note */
+            gate_note: string | null;
+        };
         /** JobHealthOut */
         JobHealthOut: {
             /** Name */
@@ -6755,6 +6773,14 @@ export interface components {
             risk_model: components["schemas"]["RiskModelOut"];
             /** Backlog By Risk */
             backlog_by_risk: number[];
+            /**
+             * Backlog Source
+             * @default thehub
+             */
+            backlog_source: string;
+            /** Writes Refused */
+            writes_refused?: string | null;
+            issues?: components["schemas"]["IssuesSourceOut"] | null;
         };
         /**
          * ProfileProposalOut
@@ -7956,6 +7982,12 @@ export interface components {
             check: components["schemas"]["GateCheckOut"];
             dod?: components["schemas"]["GateCheckOut"] | null;
             risk?: components["schemas"]["StoryRiskOut"] | null;
+            /** Ref */
+            ref?: string | null;
+            /** Url */
+            url?: string | null;
+            /** State */
+            state?: string | null;
         };
         /** StoryRiskOut */
         StoryRiskOut: {

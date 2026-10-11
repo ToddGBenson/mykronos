@@ -1,6 +1,6 @@
 # Spec 35 — The Product Owner Tab: Each Repository's Declared Process, Backlog and Sprint
 
-**Status:** Approved for build, phase 1 (Product Owner decision 2026-10-11); phase 2a in §7, phase 2 views in §8
+**Status:** Approved for build, phase 1 (Product Owner decision 2026-10-11); phase 2a in §7, phase 2 views in §8, a GitHub-Issues backlog in §9
 **Depends on:** [17 — Harness, Threat Intel and i2i Grooming](17-harness-threat-intel-and-i2i.md) for "dev-ready", [34 — Independent Approval](34-duties-delegation-and-independent-approval.md) for who may change a process
 **I2I record:** TheHub oplan #11537 (problem, options, KPIs). Design canvas: three directions, **C chosen**.
 
@@ -59,7 +59,7 @@ gates:
         text: Acceptance criteria are binary and observable
         evidence: acceptance_criteria        # a known evidence key (§2.2), or omitted = manual
 backlog:
-  source: thehub                             # phase 1: thehub only
+  source: thehub                             # or github_issues (§9, B-072)
   tag: repo:keel
   include_untagged: false
 delivery:
@@ -144,7 +144,7 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 - B-070: **declared-vs-observed drift findings** (built in phase 2, §7.1). For example, the manifest declares required review but
   branch protection is off, or it declares the inception gate but the flag is off.
 - B-071: sub-views for Delivery, Approvals inbox, Roles & agents, and a generated retro. Built in phase 2 (§8).
-- B-072: a keel GitHub-Issues adapter (`backlog.source: github_issues`).
+- B-072: a keel GitHub-Issues adapter (`backlog.source: github_issues`). Built, read only (§9, D-153).
 
 ## 6. Tests
 
@@ -413,3 +413,86 @@ other phase 2 view is read-only, and a viewer sees all of them without the decid
   TheHub not connected.
 - `backend/tests/test_po_estate.py`: every repository listed, no manifest shown as "declares no process", and the
   totals equal the sum of the rows.
+
+## 9. A GitHub-Issues backlog (B-072)
+
+**Status:** Built 2026-10-11 (TheHub #60570). Recorded as D-153. It amends §2: `backlog.source` is `thehub` or
+`github_issues`, and nothing else.
+
+A repository whose work items are GitHub issues, as keel's are (keel `docs/15-tracking.md`), declares:
+
+```yaml
+backlog:
+  source: github_issues
+  labels: [story]            # optional; an issue must carry every one. Replaces `tag`
+  project: 3                 # optional; a Projects (v2) board owned by the repository's owner
+  gate_field: Gate           # optional; the board's single-select gate field (default Gate)
+  gate_label_prefix: "gate:" # optional; `gate:G1` -> G1 when there is no readable board
+  size_label_prefix: "size:" # optional; `size:S` -> S
+  sprint_labels: [ready]     # optional; issues carrying any of these are the Sprint view (default [ready])
+```
+
+`tag` and `include_untagged` belong to `thehub` and are refused here as unknown keys, like any typo.
+
+### 9.1 How an issue is read
+
+The issues are read through the platform's GitHub App client (`list_issues`), never a second credential. Open
+issues, and issues closed in the last 14 days, are read; pull requests are never issues. Each becomes a story in the
+tab's shape:
+
+- **id** is the issue number, and **ref**, which the tab shows, is `#<number>`. The response type is unchanged for
+  TheHub stories, which carry no `ref` and show `#<id>` as before.
+- **title**, **state** (open or closed), **labels** (as `tags`), and a link to the issue on GitHub.
+- **gate** is the repository's own gate id. With a `project` named and readable, it is the board's gate field: an
+  option such as `G1 ready` is read as `G1`. Otherwise it is the furthest `gate:G<n>` label. It is never a mix: with a
+  readable board, an issue that is not on it has no gate. A gate the manifest does not declare is `none`.
+- **spine** is the manifest's `spine_map` for that gate, `done` for a closed issue, and `idea` when there is no gate.
+- **size** is the `size:` label.
+
+The **Backlog** is the open issues without a sprint label, furthest gate first, then oldest. The **Sprint** is the
+issues carrying a sprint label: open ones by spine, and ones closed in the window as done, so sprint progress is
+closed / labelled. A closed issue that never carried one is not shown. For keel the labels are `ready`, exactly what
+`./keel sprint --unattended` may take, and `sprint`, which the supervised `./keel sprint` puts on the issue it opens
+(keel `docs/16-sprint-automation.md`, `scripts/sprint.sh`).
+
+Gate checks run against what an issue shows: `sized` from the size label, `detail_500` from the body and `sprint` from
+the label. `acceptance_criteria` and `threat_model` are in the body and the gate-record comments, which are not
+parsed, so they are **unavailable** ("could not see"), never failed. Manual items stay manual, so a Ready issue with
+one is in **Needs a human** as a TheHub story would be.
+
+### 9.2 Permissions, and saying which source was used
+
+`list_issues` needs `issues: read`. On a public repository GitHub answers without it. A refusal (403, or 404 on a
+private repository) is shown as GitHub's refusal naming `issues: read`, never as an empty backlog.
+
+The board is read with GraphQL (`project_field_values`). When it cannot be read, the header says so under the
+backlog line, with the reason, and the gates come from labels. GraphQL answers an unreadable board and a missing
+one alike (`NOT_FOUND`), so the two are reported as one. As GitHub documents App permissions,
+`organization_projects: read` covers an organisation's boards, and none covers a board owned by a user account.
+
+Measured 2026-10-11 on installation 152755402: the App holds **no `issues` permission** (although
+`REQUIRED_PERMISSIONS` lists `issues: write`), and reads keel's issues only because keel is public. It sees **no
+Projects** for `ToddGBenson` or `keel`. keel's manifest should therefore name no `project`, and its gates come from
+`gate:G<n>` labels.
+
+### 9.3 Writes are refused
+
+Pull into sprint, back to backlog and rank answer `409` for this source, before TheHub is asked anything, with one
+sentence: the backlog is GitHub Issues, which the tab reads only, and keel's sprint is `./keel sprint`, not this tab.
+Every refusal is written to `audit_log` with `outcome=refused_read_only_source`. The read returns `can_write: false`
+and `writes_refused` with the same sentence, so the tab shows no write controls. The write rules themselves stay in
+TheHub ADR 0093; this changes none of them.
+
+### 9.4 Tests
+
+`backend/tests/test_po_issues.py`, against the fake GitHub client:
+
+- the manifest accepts `github_issues` and its optional settings, and refuses `tag` on it and any other source;
+- gates from a readable board, which win over labels;
+- the label fallback, with the reason shown, when the App cannot read the board;
+- the Backlog and Sprint split, the window for closed issues, and the backlog order;
+- no issues permission is shown as such, and TheHub is not asked for this source;
+- every write refused, audited, and TheHub never called;
+- the live client's shapes: pull requests are not issues, an issues 404 is the App's permission, and an invisible
+  board is a permission error.
+

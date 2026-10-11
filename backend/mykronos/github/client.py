@@ -234,6 +234,25 @@ class CommitInfo:
     committed_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class IssueInfo:
+    """One issue as the Product Owner tab reads it (spec 35 §9, B-072).
+
+    Read only. Pull requests, which GitHub's issues endpoint also returns, are
+    never one of these.
+    """
+
+    number: int
+    title: str
+    state: str
+    labels: tuple[str, ...] = ()
+    body: str = ""
+    url: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    closed_at: datetime | None = None
+
+
 def _parse_time(value: object) -> datetime | None:
     """GitHub's ISO-8601 with a `Z`, which `fromisoformat` rejects before 3.11
     and which is worth not crashing a whole page over regardless."""
@@ -569,6 +588,31 @@ class GitHubClient(Protocol):
         issue depends on that issue still being open, and it can have been
         closed by a person this platform never told."""
 
+    async def list_issues(
+        self,
+        repo_full_name: str,
+        *,
+        state: str = "open",
+        labels: list[str] | None = None,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[IssueInfo]:
+        """Issues, never pull requests, carrying every label in `labels`.
+
+        Needs `issues: read` (on a public repository GitHub also answers
+        without it). `since` is naive UTC and filters on `updated_at`."""
+
+    async def project_field_values(
+        self, owner: str, project_number: int, field_name: str
+    ) -> dict[str, dict[int, str]]:
+        """A Projects (v2) single-select field for every issue on the board:
+        `owner/repo` -> issue number -> option name. Issues with no value are
+        absent.
+
+        Raises `PermissionDeniedError` when the App cannot see the project.
+        GraphQL answers that as NOT_FOUND, so a missing project and an
+        unreadable one are the same answer here."""
+
 
 # ---------------------------------------------------------------------------
 # Fake
@@ -641,6 +685,11 @@ class FakeGitHubClient:
         self._next_pr_number = 1
         self._next_issue_number = 1
         self.installations: dict[int, dict[str, Any]] = {}
+        #: (owner, project number) -> `owner/repo` -> issue number -> the
+        #: gate field's option name. Readable only with
+        #: `organization_projects: read`, the one Projects permission a
+        #: GitHub App can hold.
+        self.projects: dict[tuple[str, int], dict[str, dict[int, str]]] = {}
 
     # -- helpers --------------------------------------------------------
 
@@ -1067,6 +1116,59 @@ class FakeGitHubClient:
         repo = self._repo(repo_full_name)
         issue = next((i for i in repo.issues if i["number"] == number), None)
         return None if issue is None else str(issue.get("state") or "open")
+
+    async def list_issues(
+        self,
+        repo_full_name: str,
+        *,
+        state: str = "open",
+        labels: list[str] | None = None,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[IssueInfo]:
+        self.calls.append(("list_issues", f"{repo_full_name}:{state}"))
+        self._require("issues", "read", "Listing issues")
+        wanted = {label.lower() for label in labels or []}
+        out: list[IssueInfo] = []
+        for issue in sorted(
+            self._repo(repo_full_name).issues, key=lambda i: int(i["number"]), reverse=True
+        ):
+            issue_state = str(issue.get("state") or "open")
+            if state != "all" and issue_state != state:
+                continue
+            names = tuple(str(label) for label in issue.get("labels") or [])
+            if not wanted <= {name.lower() for name in names}:
+                continue
+            updated = issue.get("updated_at")
+            if since is not None and isinstance(updated, datetime) and updated < since:
+                continue
+            out.append(
+                IssueInfo(
+                    number=int(issue["number"]),
+                    title=str(issue.get("title") or ""),
+                    state=issue_state,
+                    labels=names,
+                    body=str(issue.get("body") or ""),
+                    url=f"https://github.com/{repo_full_name}/issues/{issue['number']}",
+                    created_at=issue.get("created_at"),
+                    updated_at=updated,
+                    closed_at=issue.get("closed_at"),
+                )
+            )
+        return out[:limit]
+
+    async def project_field_values(
+        self, owner: str, project_number: int, field_name: str
+    ) -> dict[str, dict[int, str]]:
+        self.calls.append(("project_field_values", f"{owner}#{project_number}:{field_name}"))
+        self._require("organization_projects", "read", "Reading a Projects board")
+        project = self.projects.get((owner, project_number))
+        if project is None:
+            raise PermissionDeniedError(
+                f"Project {owner}#{project_number} is not visible to the GitHub App.",
+                status=404,
+            )
+        return {repo: dict(values) for repo, values in project.items()}
 
     def _issue(self, repo_full_name: str, number: int) -> dict[str, Any]:
         repo = self._repo(repo_full_name)
@@ -1857,3 +1959,131 @@ class RestGitHubClient:
                 status=response.status_code,
             )
         return str(response.json().get("state") or "open")
+
+    async def list_issues(
+        self,
+        repo_full_name: str,
+        *,
+        state: str = "open",
+        labels: list[str] | None = None,
+        since: datetime | None = None,
+        limit: int = 300,
+    ) -> list[IssueInfo]:
+        out: list[IssueInfo] = []
+        page = 1
+        while len(out) < limit:
+            params: dict[str, Any] = {"state": state, "per_page": 100, "page": page}
+            if labels:
+                params["labels"] = ",".join(labels)
+            if since is not None:
+                params["since"] = since.replace(microsecond=0).isoformat() + "Z"
+            response = await self._request(
+                "GET", f"/repos/{repo_full_name}/issues", params=params
+            )
+            if response.status_code in (403, 404):
+                # A private repository without `issues: read` answers 404, not
+                # 403. Either way it is the App's permission, never "no issues".
+                raise PermissionDeniedError(
+                    f"GitHub refused to list {repo_full_name}'s issues "
+                    f"(HTTP {response.status_code}). The App needs 'issues: read'.",
+                    status=response.status_code,
+                )
+            if response.status_code >= 400:
+                raise GitHubError(
+                    f"Listing {repo_full_name}'s issues failed (HTTP {response.status_code})",
+                    status=response.status_code,
+                )
+            items = response.json() if response.content else []
+            items = items if isinstance(items, list) else []
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                out.append(
+                    IssueInfo(
+                        number=int(item["number"]),
+                        title=str(item.get("title") or ""),
+                        state=str(item.get("state") or "open"),
+                        labels=tuple(
+                            str(label.get("name") if isinstance(label, dict) else label)
+                            for label in item.get("labels") or []
+                        ),
+                        body=str(item.get("body") or ""),
+                        url=str(item.get("html_url") or ""),
+                        created_at=_naive(_parse_time(item.get("created_at"))),
+                        updated_at=_naive(_parse_time(item.get("updated_at"))),
+                        closed_at=_naive(_parse_time(item.get("closed_at"))),
+                    )
+                )
+            if len(items) < 100:
+                break
+            page += 1
+        return out[:limit]
+
+    async def project_field_values(
+        self, owner: str, project_number: int, field_name: str
+    ) -> dict[str, dict[int, str]]:
+        out: dict[str, dict[int, str]] = {}
+        cursor: str | None = None
+        for _ in range(10):  # 1,000 items; a larger board is not this estate's
+            payload = await self._json(
+                "POST",
+                "/graphql",
+                json={
+                    "query": _PROJECT_FIELD_QUERY,
+                    "variables": {
+                        "owner": owner,
+                        "number": project_number,
+                        "field": field_name,
+                        "cursor": cursor,
+                    },
+                },
+            )
+            errors = payload.get("errors") or []
+            owner_node = (payload.get("data") or {}).get("repositoryOwner") or {}
+            project = owner_node.get("projectV2")
+            if project is None:
+                kinds = sorted({str(e.get("type") or "error") for e in errors}) or ["NOT_FOUND"]
+                raise PermissionDeniedError(
+                    f"Project {owner}#{project_number} is not visible to the GitHub App "
+                    f"({', '.join(kinds)}).",
+                    status=403,
+                )
+            items = project.get("items") or {}
+            for node in items.get("nodes") or []:
+                content = (node or {}).get("content") or {}
+                value = ((node or {}).get("fieldValueByName") or {}).get("name")
+                number = content.get("number")
+                repo = (content.get("repository") or {}).get("nameWithOwner")
+                if value and number is not None and repo:
+                    out.setdefault(str(repo), {})[int(number)] = str(value)
+            page = items.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+        return out
+
+
+def _naive(value: datetime | None) -> datetime | None:
+    """Naive UTC, as every timestamp the platform stores is."""
+    return value.replace(tzinfo=None) if value is not None else None
+
+
+_PROJECT_FIELD_QUERY = """
+query($owner: String!, $number: Int!, $field: String!, $cursor: String) {
+  repositoryOwner(login: $owner) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        items(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            content { ... on Issue { number repository { nameWithOwner } } }
+            fieldValueByName(name: $field) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
