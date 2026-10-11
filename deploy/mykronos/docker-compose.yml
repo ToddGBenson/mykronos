@@ -46,6 +46,10 @@ services:
       MYKRONOS_ADMIN_TOKEN: ${MYKRONOS_ADMIN_TOKEN:?set it in backend/.env}
       MYKRONOS_VIEWER_TOKEN: ${MYKRONOS_VIEWER_TOKEN:-}
       MYKRONOS_GITHUB_WEBHOOK_SECRET: ${MYKRONOS_GITHUB_WEBHOOK_SECRET:-}
+      # Spec 35: the Product Owner tab reads and moves TheHub stories. The token is
+      # the Hub's own HUB_API_TOKEN value (D-133); empty = "TheHub is not connected".
+      MYKRONOS_HUB_API_URL: ${MYKRONOS_HUB_API_URL:-http://host.docker.internal:8000}
+      MYKRONOS_HUB_API_TOKEN: ${MYKRONOS_HUB_API_TOKEN:-}
       MYKRONOS_GITHUB_APP_ID: ${MYKRONOS_GITHUB_APP_ID:-}
       # Mounted read-only below. The container never holds a copy.
       MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
