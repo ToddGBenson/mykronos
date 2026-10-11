@@ -593,6 +593,29 @@ class Settings(BaseSettings):
         description="Concourse team whose pipelines cover these repositories.",
     )
 
+    # --- TheHub, the system of record for work items (spec 35, D-133) ----
+
+    hub_api_url: str = Field(
+        default="http://host.docker.internal:8000",
+        description=(
+            "Where this process reaches TheHub's API, for the Product Owner "
+            "tab's backlog and sprint (spec 35 §4.1). Empty disables the "
+            "integration: the tab then says TheHub is not connected and shows "
+            "the repository's declared process only."
+        ),
+    )
+
+    hub_api_token: str = Field(
+        default="",
+        description=(
+            "TheHub's own HUB_API_TOKEN, sent as X-Hub-Token. Not gate_token: "
+            "spec 35 §4.1 assumed the two were one value, and D-131 records "
+            "that they are not (checked 2026-10-08) -- so reusing gate_token "
+            "would be refused by the Hub and would hand Mykronos's perimeter "
+            "secret to another service. Empty disables the integration."
+        ),
+    )
+
     concourse_api_token: str = Field(
         default="",
         description=(

@@ -33,6 +33,7 @@ from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
+from mykronos.api.product_owner import router as product_owner_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.triage import router as triage_router
@@ -84,6 +85,7 @@ from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ownership import OwnershipResolver
+from mykronos.product_owner import HubClient
 from mykronos.ratelimit import SlidingWindowLimiter
 from mykronos.schemas import utcnow
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
@@ -723,12 +725,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     resolved = settings or get_settings()
     app.state.settings = resolved
+    # TheHub, for the Product Owner tab (spec 35 §4.1). None when either the
+    # URL or the token is empty, and the tab then says it is not connected.
+    app.state.hub = HubClient.from_settings(resolved)
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
     app.include_router(exposure_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)
     app.include_router(patchwork_router)
+    app.include_router(product_owner_router)
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(webhooks_router)
