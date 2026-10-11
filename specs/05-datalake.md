@@ -267,16 +267,26 @@ Notes on each:
   and is correctly retired when the vulnerable code itself changes.
 - **`symbol` is included but tolerated as null**, since not every tool reports
   one. Where present it disambiguates identical snippets appearing twice in a
-  file (two copies of the same unsafe call in different functions).
+  file (two copies of the same unsafe call in different functions). When the
+  adapter infers it (`v3-snippet`, D-139) it is the declaration that
+  *encloses* the finding — bounded by indentation in Python and by braces in
+  brace languages, never read from a string literal or a comment — and a
+  module-level finding has none. A snippet the adapter slices from disk is
+  the matched lines alone, with no context either side.
 - **Degradation is explicit, not silent.** If an adapter supplies neither
   `code_snippet` nor `symbol` for a code finding, the API falls back to
   hashing `line_start` and stamps `fingerprint_version = "v1-line"`. Those
   rows are known to be churn-prone and are reportable as a data-quality
-  metric; the intended path stamps `v2-snippet`.
+  metric; the intended path stamps `v3-snippet` (or `v2-snippet` from an
+  adapter that does not infer a symbol, or an uploader older than D-139).
 - Changing the fingerprint rule in future requires a new
   `fingerprint_version` and a migration that re-derives `finding_id` from the
   retained `code_snippet`, carrying `first_seen_at` across. Changing it in
-  place is prohibited.
+  place is prohibited. Where the new rule needs an input the lake never held
+  — `v3-snippet` needs the source file to find the enclosing symbol — the
+  adapter records the finding's old inputs in its raw record and ingestion
+  re-derives the old id from them, carrying `first_seen_at` and any
+  disposition onto the new one (D-139).
 - If a finding_id previously marked `fixed` reappears, flip its `status`
   back to `open` and log a `finding_reopened` event (feeds spec 11 retro
   signals — a reopened finding is a useful learning signal).

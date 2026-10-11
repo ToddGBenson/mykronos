@@ -22,7 +22,9 @@ from mykronos.fingerprint import (
     FINGERPRINT_REPO_LEVEL,
     FINGERPRINT_V1_LINE,
     FINGERPRINT_V2_SNIPPET,
+    FINGERPRINT_V3_SNIPPET,
     compute_finding_id,
+    identity_rule_of,
 )
 from mykronos.schemas import ScanStatus, Severity
 
@@ -367,9 +369,11 @@ class TestCodeQLDirectory:
 
 
 class TestSnippetHelpers:
-    def test_slice_includes_context_lines(self) -> None:
+    def test_slice_is_the_matched_lines_only(self) -> None:
+        """No context either side (B-067): it was hashed, so an edit to a
+        neighbouring line changed the finding's identity."""
         lines = [f"line{i}" for i in range(1, 21)]
-        assert slice_snippet(lines, 10, 10) == "line8\nline9\nline10\nline11\nline12"
+        assert slice_snippet(lines, 10, 10) == "line10"
 
     def test_slice_clamps_at_file_boundaries(self) -> None:
         assert slice_snippet(["only"], 1, 1) == "only"
@@ -385,26 +389,30 @@ class TestSnippetHelpers:
         assert slice_snippet(lines, 10, 4) == slice_snippet(lines, 10, 10)
 
     @pytest.mark.parametrize(
-        ("source", "line", "expected"),
+        ("source", "line", "path", "expected"),
         [
-            (["def handler(req):", "    x = 1"], 2, "handler"),
-            (["class Orders:", "    def get(self):", "        pass"], 3, "get"),
-            (["function doThing() {", "  bad();"], 2, "doThing"),
-            (["func Handle(w, r) {", "  bad()"], 2, "Handle"),
-            (["const run = async () => {", "  bad()"], 2, "run"),
-            (["x = 1", "y = 2"], 2, None),
+            (["def handler(req):", "    x = 1"], 2, "a.py", "handler"),
+            (["class Orders:", "    def get(self):", "        pass"], 3, "a.py", "get"),
+            (["function doThing() {", "  bad();"], 2, "a.js", "doThing"),
+            (["func Handle(w, r) {", "  bad()"], 2, "a.go", "Handle"),
+            (["const run = async () => {", "  bad()"], 2, "a.js", "run"),
+            (["x = 1", "y = 2"], 2, "a.py", None),
         ],
     )
     def test_symbol_inference(
-        self, source: list[str], line: int, expected: str | None
+        self, source: list[str], line: int, path: str, expected: str | None
     ) -> None:
-        assert infer_symbol(source, line) == expected
+        assert infer_symbol(source, line, path) == expected
 
     def test_symbol_inference_is_deterministic(self) -> None:
         """A consistently-wrong symbol still yields a stable fingerprint; an
         inconsistent one would not."""
         lines = VULNERABLE_SOURCE.splitlines()
-        assert infer_symbol(lines, 9) == infer_symbol(lines, 9) == "get_order"
+        assert (
+            infer_symbol(lines, 9, "orders/query.py")
+            == infer_symbol(lines, 9, "orders/query.py")
+            == "get_order"
+        )
 
     def test_unreadable_file_returns_none(self, tmp_path: Path) -> None:
         assert read_source_lines(tmp_path, "does/not/exist.py") is None
@@ -426,6 +434,7 @@ class TestFingerprintEndToEnd:
             symbol=finding.symbol,
             code_snippet=finding.code_snippet,
             line_start=finding.line_start,
+            identity_rule=identity_rule_of(finding.raw_finding_json),
         )
 
     def test_adapter_output_survives_a_line_shift(self, workspace: Path) -> None:
@@ -438,7 +447,7 @@ class TestFingerprintEndToEnd:
         after, version_after = self._finding_id(workspace, shifted, 12)
 
         assert before == after
-        assert version == version_after == FINGERPRINT_V2_SNIPPET
+        assert version == version_after == FINGERPRINT_V3_SNIPPET
 
     def test_adapter_output_changes_when_the_code_is_fixed(self, workspace: Path) -> None:
         """The counterweight — identity must not be so sticky that a real fix

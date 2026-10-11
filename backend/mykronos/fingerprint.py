@@ -16,7 +16,29 @@ import hashlib
 import re
 
 FINGERPRINT_V2_SNIPPET = "v2-snippet"
-"""Intended path: identity anchored to the code itself."""
+"""Identity anchored to the code itself, with a positional symbol.
+
+Superseded for the adapters that infer a symbol by `FINGERPRINT_V3_SNIPPET`.
+Still what a code finding gets when the adapter did not declare the newer
+rule: one that never infers a symbol (ZAP, gitleaks, checkov), or a runner
+still pinned to an older uploader.
+"""
+
+FINGERPRINT_V3_SNIPPET = "v3-snippet"
+"""Identity anchored to the code, with the symbol that *encloses* it (D-139).
+
+Same hash as `v2-snippet` over different inputs: the adapter's symbol is
+bounded by indentation or braces and never read from a string literal, and a
+snippet sliced from disk is the matched lines alone (B-067). Keeping the hash
+means a finding whose inputs did not change keeps its id; only the findings
+the old rule identified wrongly are re-keyed. The adapter declares the rule
+in the raw record (`IDENTITY_KEY`) because the uploader runs at whatever ref
+a pipeline pins, so the API cannot assume which rule produced a submission.
+"""
+
+#: Where an adapter records which identity rule produced a finding, and the
+#: `v2-snippet` inputs that differ from the submitted ones (D-139).
+IDENTITY_KEY = "mykronos_identity"
 
 FINGERPRINT_V1_LINE = "v1-line"
 """Degraded fallback when an adapter supplies no snippet or symbol.
@@ -153,6 +175,69 @@ def snippet_similarity(left: str | None, right: str | None) -> float:
     return len(left_lines & right_lines) / len(union)
 
 
+def identity_rule_of(raw_finding_json: object) -> str | None:
+    """The identity rule an adapter declared for a finding, or None."""
+    marker = _identity_marker(raw_finding_json)
+    rule = marker.get("rule") if marker else None
+    return rule if isinstance(rule, str) else None
+
+
+def _identity_marker(raw_finding_json: object) -> dict[str, object] | None:
+    if not isinstance(raw_finding_json, dict):
+        return None
+    marker = raw_finding_json.get(IDENTITY_KEY)
+    return marker if isinstance(marker, dict) else None
+
+
+def v2_predecessor_id(
+    *,
+    repo_full_name: str,
+    capability: str,
+    rule_id: str,
+    file_path: str | None,
+    symbol: str | None,
+    code_snippet: str | None,
+    line_start: int | None,
+    raw_finding_json: object,
+) -> str | None:
+    """The id this `v3-snippet` finding had under `v2-snippet`, if different.
+
+    Computed from the inputs the adapter recorded (`IDENTITY_KEY`), with the
+    submitted value standing in for any it did not — it records only what
+    changed. None for anything that is not a `v3-snippet` code finding, and
+    for one whose identity the new rule left alone.
+
+    This is the exact link D-139 rests on: no similarity, no threshold. It is
+    what lets a decision move to the re-keyed finding even when the two
+    snippets share one line out of five, which the content matcher in
+    `lake/carry_forward.py` would rightly refuse.
+    """
+    marker = _identity_marker(raw_finding_json)
+    if not marker or marker.get("rule") != FINGERPRINT_V3_SNIPPET or not file_path:
+        return None
+    v2_symbol = marker.get("v2_symbol", symbol)
+    v2_snippet = marker.get("v2_code_snippet", code_snippet)
+    old_id, new_id = (
+        compute_finding_id(
+            repo_full_name=repo_full_name,
+            capability=capability,
+            rule_id=rule_id,
+            file_path=file_path,
+            line_start=line_start,
+            symbol=sym,
+            code_snippet=snip,
+        )[0]
+        for sym, snip in (
+            (
+                v2_symbol if isinstance(v2_symbol, str) else None,
+                v2_snippet if isinstance(v2_snippet, str) else None,
+            ),
+            (symbol, code_snippet),
+        )
+    )
+    return None if old_id == new_id else old_id
+
+
 def _digest(*parts: str | None) -> str:
     joined = _SEP.join(_NULL if p is None else p for p in parts)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
@@ -172,6 +257,7 @@ def compute_finding_id(
     package_name: str | None = None,
     title: str | None = None,
     image: str | None = None,
+    identity_rule: str | None = None,
 ) -> tuple[str, str]:
     """Return ``(finding_id, fingerprint_version)``.
 
@@ -230,7 +316,9 @@ def compute_finding_id(
                 _digest(
                     "code", repo_full_name, capability, rule_id, file_path, symbol, normalized
                 ),
-                FINGERPRINT_V2_SNIPPET,
+                FINGERPRINT_V3_SNIPPET
+                if identity_rule == FINGERPRINT_V3_SNIPPET
+                else FINGERPRINT_V2_SNIPPET,
             )
         # Degraded: no anchor in the code itself, so identity is positional and
         # will churn on unrelated edits. Recorded, not hidden.

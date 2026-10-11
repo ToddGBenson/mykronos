@@ -6045,3 +6045,87 @@ JSON
   a permission means re-approving the installation.
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
+
+## D-139 — A finding's symbol is the declaration that encloses it (`v3-snippet`)
+
+**2026-10-11.** **Status:** Decided, implemented (B-067, TheHub #60572)
+**Spec:** [05 §5](../specs/05-datalake.md)
+
+**The rule.** `adapters/snippet.infer_symbol` returns the declaration that
+encloses the finding: bounded by indentation in Python (only a `def` or `class`
+whose body the finding's statement sits in), by braces in brace languages (only
+a declaration whose block is still open), and never read from a string literal
+or a comment. A file type it does not know gets no symbol rather than a guess.
+`slice_snippet` takes the matched lines alone. Findings an adapter produces this
+way are stamped `v3-snippet`; the hash is the same `code` digest as
+`v2-snippet`, over the corrected inputs.
+
+**Why.** The `v2-snippet` symbol was the first declaration-shaped line anywhere
+above the finding, and the disk slice carried two lines of context, so identity
+moved with edits that had nothing to do with the finding: one function inserted
+above a module-level line re-keyed it, and three TheHub findings in
+`lifecycle.py` were filed under `stories`, a word in a docstring. Keeping the
+digest rather than minting a new one means only the findings the old rule got
+wrong are re-keyed; one it got right keeps its row.
+
+**Measured before building, read-only, inside `mykronos-backend` on
+2026-10-11.** The source of every code finding a symbol-inferring adapter
+produced (semgrep, codeql, checkov, mykronos-ai-checks) was read at the commit
+its last scan named, and the old and new functions run over it. The old
+function reproduced the stored `finding_id` for all 514 rows (162 live, 352
+fixed or superseded), so the measurement is of the real rule. **42 of the 162
+live findings change identity**: 41 `false_positive`, 1 `accepted_risk`, 0
+open — 31 semgrep, 6 codeql, 5 mykronos-ai-checks. 36 change because the
+symbol was wrong (some lose context too), 6 only because context was dropped.
+120 keep their id, among them all 8 live checkov rows. No two live findings
+collapse onto one new id. Rows from ZAP and gitleaks never pass through the
+symbol inference, so nothing about them changes.
+
+**How the decisions carry, and why not a server-side re-derivation.** Spec 05
+§5 asks for a migration that re-derives each id from the retained
+`code_snippet`. That is impossible here: the new symbol depends on the whole
+file, and the lake has never held the file. So the re-derivation happens where
+the file is. The adapter records the finding's `v2-snippet` inputs that differ
+from the submitted ones under `raw_finding_json.mykronos_identity`
+(`snippet.v2_identity`), and the API — still the only producer of a
+`finding_id` — hashes them into the old id (`fingerprint.v2_predecessor_id`).
+Two places use that exact link:
+
+- **At ingestion** (`carry_forward.inherit_decisions`), before the buffer: the
+  re-keyed row is written already carrying the predecessor's `first_seen_*`
+  and, if a person decided something, its status, `resolved_at`,
+  `accepted_until` and `accepted_reason_code`. Waiting for the hourly
+  carry-forward would have let the Oracle gate count every re-keyed false
+  positive as introduced by the first commit scanned after the upgrade — the
+  2026-09-09 block, 42 findings at once.
+- **In `carry_forward`**, ahead of the similarity matcher: the predecessor is
+  paired with its claimant directly and withdrawn as `superseded` once its
+  lane has scanned without it. The 0.60 floor would have refused most of these
+  pairs: a one-line finding's v2 snippet was five lines, a Jaccard of 0.2.
+
+The 42 move when each lane next scans with an uploader at or after this change;
+nothing has to be run by hand. In the measurement every one of them resolved to
+its own predecessor (`v2_predecessor_id` equal to the stored id, 42 of 42).
+
+**What it refuses.** A predecessor claimed by two findings — two findings the
+old rule had collapsed into one row — is not given to either. The decision is
+logged as `Decision stranded` with that reason, at ingestion and in
+carry-forward, rather than applied to a finding nobody looked at
+(`rekey_containers` follows the same rule). The reverse — two old findings
+becoming one — inherits neither decision at ingestion and is logged. The
+measurement found neither shape among the live findings.
+
+**Rejected.**
+- *A server-side `rekey-snippets` command over a mounted checkout.* It needs
+  every repository checked out at the right commit on the host, and running it
+  is a manual step that could be forgotten while new ids arrive and strand
+  decisions in the meantime.
+- *Relying on the similarity matcher alone.* It refuses single-line findings
+  by construction and gives a gate an hour to block.
+- *A new digest prefix for `v3-snippet`.* It would re-key all 162 live
+  findings, 120 of them for no reason.
+
+**Known limits.** A `v2-snippet` finding that is `fixed` and comes back under
+the new rule returns as a new id, not a reopen. A lane whose uploader stays
+pinned below this change keeps producing `v2-snippet` ids, which is correct for
+that uploader.

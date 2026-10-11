@@ -35,7 +35,7 @@ from typing import Any
 
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.adapters.sarif import _clean_uri
-from mykronos.adapters.snippet import best_snippet
+from mykronos.adapters.snippet import best_snippet, v2_identity
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         message = str(record.get("Message") or rule_id).strip()
         severity = str(record.get("Severity", "")).strip().lower()
 
-        snippet, symbol, _ = best_snippet(
+        resolved = best_snippet(
             context_region_snippet=None,
             region_snippet=None,
             workspace=context.workspace,
@@ -133,9 +133,15 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                 file_path=file_path,
                 line_start=line_start,
                 line_end=line_start,
-                symbol=symbol,
-                code_snippet=snippet,
-                raw_finding_json=record,
+                symbol=resolved.symbol,
+                code_snippet=resolved.snippet,
+                raw_finding_json=v2_identity(
+                    record,
+                    snippet=resolved.snippet,
+                    symbol=resolved.symbol,
+                    v2_snippet=resolved.v2_snippet,
+                    v2_symbol=resolved.v2_symbol,
+                ),
             )
         )
 

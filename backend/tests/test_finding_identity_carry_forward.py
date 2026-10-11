@@ -211,15 +211,21 @@ QUERY = "SELECT * FROM orders WHERE id = " + os.environ["ORDER"]
 
 
 def _adapter_finding(workspace: Path, source: str, line: int) -> dict[str, Any]:
-    """What the SARIF adapter would submit for `line` of `source`.
+    """What a `v2-snippet` uploader submitted for `line` of `source`.
 
     Goes through `best_snippet` rather than hand-writing a snippet, because
     the mechanism under test is exactly what that function returns: the
     snippet it slices from disk and the symbol it infers are both read
     relative to the finding's position in the file.
+
+    The `v2` half of its answer, deliberately. Under `v3-snippet` this motion
+    no longer mints a second identity at all (B-067, D-139, and
+    `test_finding_symbol_identity.py`), but an uploader pinned to an older
+    ref still produces exactly this, and the similarity matcher is what
+    carries its decisions.
     """
     (workspace / "orders.py").write_text(source, encoding="utf-8")
-    snippet, symbol, _ = best_snippet(
+    resolved = best_snippet(
         context_region_snippet=None,
         region_snippet=None,
         workspace=workspace,
@@ -227,6 +233,7 @@ def _adapter_finding(workspace: Path, source: str, line: int) -> dict[str, Any]:
         start_line=line,
         end_line=line,
     )
+    snippet, symbol = resolved.v2_snippet, resolved.v2_symbol
     return finding_payload(
         rule_id="py/sql-injection",
         title="SQL query built from user input",

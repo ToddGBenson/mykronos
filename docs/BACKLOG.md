@@ -206,7 +206,13 @@ lasted four days and is in Closed.
 
 ### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal
 
-**Size:** M **State:** open **Verified:** 2026-09-10
+**Size:** M **State:** fixed in review (D-139, TheHub #60572) **Verified:** 2026-10-11
+
+**2026-10-11:** `v3-snippet` — the enclosing symbol, bounded by indentation or
+braces and never from a string literal, and a disk slice of the matched lines
+alone. 42 of 162 live code findings re-key (41 false positives, 1 accepted
+risk); their decisions travel through an exact link from the adapter's record
+of the old inputs, at ingestion and in carry-forward. See D-139.
 
 `compute_finding_id` hashes the enclosing `symbol` alongside the snippet
 (spec 05 §5), and `adapters/snippet.infer_symbol` produces it by scanning

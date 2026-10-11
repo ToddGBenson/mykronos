@@ -57,8 +57,14 @@ from mykronos.db.models import (
     RiskProfile,
     capability_config_for,
 )
-from mykronos.fingerprint import compute_finding_id, image_of
+from mykronos.fingerprint import (
+    compute_finding_id,
+    identity_rule_of,
+    image_of,
+    v2_predecessor_id,
+)
 from mykronos.github.client import GitHubError
+from mykronos.lake.carry_forward import inherit_decisions
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
 from mykronos.ownership import owner_for_finding
@@ -493,6 +499,8 @@ async def ingest_findings(
     )
     profile_owner = profile_owner_for_repo(request, token.repo_full_name)
     targets = request.app.state.oracle_policy.remediation_targets
+    #: Submitted id -> the id the same finding had under `v2-snippet` (D-139).
+    predecessors: dict[str, str] = {}
 
     for finding in batch.findings:
         finding_id, fingerprint_version = compute_finding_id(
@@ -508,7 +516,26 @@ async def ingest_findings(
             port=finding.port,
             title=finding.title,
             image=image_of(finding.raw_finding_json),
+            identity_rule=identity_rule_of(finding.raw_finding_json),
         )
+        predecessor = v2_predecessor_id(
+            repo_full_name=token.repo_full_name,
+            capability=capability,
+            rule_id=finding.rule_id,
+            file_path=finding.file_path,
+            symbol=finding.symbol,
+            code_snippet=finding.code_snippet,
+            line_start=finding.line_start,
+            raw_finding_json=finding.raw_finding_json,
+        )
+        if predecessor and predecessors.setdefault(finding_id, predecessor) != predecessor:
+            # Two old findings became this one. Which decision applies is a
+            # question for a person; an empty id matches no row, so neither
+            # is inherited, and carry-forward reports what it cannot place.
+            logger.warning(
+                "Decision not inherited: two v2-snippet findings became %s", finding_id[:12]
+            )
+            predecessors[finding_id] = ""
         owner, owner_source = owner_for_finding(
             file_path=finding.file_path,
             rules=rules,
@@ -575,6 +602,10 @@ async def ingest_findings(
         )
 
     _warn_on_collapse(rows, capability, token.repo_full_name, batch.scan_run_id)
+    # Before the buffer, so a finding re-keyed by B-067 is written already
+    # carrying its decision and its first sighting rather than as a new open
+    # finding a gate would count against this commit (D-139).
+    inherit_decisions(request.app.state.catalog, rows, predecessors)
 
     request.app.state.buffer.append("findings", rows)
 
