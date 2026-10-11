@@ -130,6 +130,8 @@ It works in rounds. Each round:
    the result is pushed with `--force-with-lease`. It descends from the PR head, so
    the push is a fast-forward. Branches named `main`, forks and drafts are
    refused.
+   Then a PR whose decision numbers repeat main's, or a PR's earlier in the
+   round, is refused with `renumber D-nnn -> D-mmm` (D-158).
 2. **Waits for the platform's request** on each current head, polling.
    `job:pull-request-requests` opens one about ten minutes after it first sees
    a head.

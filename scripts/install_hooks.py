@@ -30,13 +30,15 @@ def main() -> int:
     )
     # Git needs the hook executable on Unix; on Windows the shebang + bash is
     # what runs it, and the bit is a no-op, so this is best-effort.
-    try:
-        (hooks / "pre-commit").chmod(0o755)
-    except OSError:
-        pass
+    for hook in ("pre-commit", "pre-push"):
+        try:
+            (hooks / hook).chmod(0o755)
+        except OSError:
+            pass
 
     print("Hooks installed: core.hooksPath -> scripts/hooks")
     print("The pre-commit hook keeps frontend API types in sync with the schema.")
+    print("The pre-push hook warns when a decision number collides with main or an open PR.")
     return 0
 
 
