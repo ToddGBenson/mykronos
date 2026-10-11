@@ -316,7 +316,7 @@ def _ingest(
     list looking new, and every age-based measure would reset. The finding
     was genuinely first observed by this scan, at this time.
     """
-    from mykronos.fingerprint import compute_finding_id, image_of
+    from mykronos.fingerprint import compute_finding_id, identity_rule_of, image_of
 
     moment = observed_at if isinstance(observed_at, datetime) else utcnow()
     rows = []
@@ -349,6 +349,7 @@ def _ingest(
             package_name=finding.package_name,
             title=finding.title,
             image=image_of(finding.raw_finding_json),
+            identity_rule=identity_rule_of(finding.raw_finding_json),
         )
         ids.add(finding_id)
         if finding_id in settled:

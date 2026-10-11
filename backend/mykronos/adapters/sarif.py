@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
-from mykronos.adapters.snippet import best_snippet
+from mykronos.adapters.snippet import best_snippet, v2_identity
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
 logger = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ def _convert_result(
     start_line = region.get("startLine")
     end_line = region.get("endLine") or start_line
 
-    snippet, symbol, _source = best_snippet(
+    resolved = best_snippet(
         context_region_snippet=(context_region.get("snippet") or {}).get("text"),
         region_snippet=(region.get("snippet") or {}).get("text"),
         workspace=context.workspace,
@@ -437,12 +437,15 @@ def _convert_result(
         end_line=end_line,
     )
 
-    # A logical location from the tool beats our heuristic every time.
+    symbol, v2_symbol = resolved.symbol, resolved.v2_symbol
+
+    # A logical location from the tool beats our heuristic every time — under
+    # either identity rule, so it is never a reason for a finding to re-key.
     logical = raw.get("logicalLocations") or []
     if logical and isinstance(logical[0], dict):
         named = logical[0].get("fullyQualifiedName") or logical[0].get("name")
         if named:
-            symbol = str(named)[:500]
+            symbol = v2_symbol = str(named)[:500]
 
     return FindingSubmission(
         rule_id=rule_id[:255],
@@ -454,7 +457,13 @@ def _convert_result(
         line_start=start_line if isinstance(start_line, int) else None,
         line_end=end_line if isinstance(end_line, int) else None,
         symbol=symbol,
-        code_snippet=snippet,
+        code_snippet=resolved.snippet,
         cwe_ids=_cwe_ids(rule, raw),
-        raw_finding_json=raw,
+        raw_finding_json=v2_identity(
+            raw,
+            snippet=resolved.snippet,
+            symbol=symbol,
+            v2_snippet=resolved.v2_snippet,
+            v2_symbol=v2_symbol,
+        ),
     )

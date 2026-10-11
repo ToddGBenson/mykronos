@@ -37,16 +37,28 @@ separate, and nothing happens — the decision is reported as stranded, with the
 reason, rather than applied to a finding that did not earn it. A finding
 carrying no stored snippet cannot be matched at all and is named as such.
 Absence of evidence is not a reason to guess.
+
+**An exact link comes first (D-139).** A `v3-snippet` finding whose adapter
+recorded what its `v2-snippet` identity was (`fingerprint.v2_predecessor_id`)
+is paired with that predecessor directly — no floor, no margin, because
+nothing is being inferred. It is the only way across the B-067 re-key for a
+one-line finding: its old snippet carried four lines of context the new one
+does not, and one line in common out of five is a Jaccard of 0.2, which the
+similarity matcher must refuse. `inherit_decisions` applies the same link at
+ingestion, so a re-keyed finding lands already carrying its decision and is
+never counted by a gate as introduced; this module then withdraws the
+predecessor once its lane has scanned without it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from mykronos.fingerprint import snippet_similarity
+from mykronos.fingerprint import snippet_similarity, v2_predecessor_id
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.lake.reconcile import CONFIRMING_STATUSES
@@ -79,6 +91,11 @@ MIN_SIMILARITY = 0.6
 #: do not, and are refused.
 MIN_MARGIN = 0.2
 
+_COLLAPSED = (
+    "{} findings were one finding under v2-snippet and each claims it "
+    "— refusing to choose"
+)
+
 
 @dataclass(frozen=True)
 class _Finding:
@@ -98,6 +115,9 @@ class _Finding:
     resolved_at: datetime | None
     accepted_until: Any
     accepted_reason_code: str | None
+    #: The id this finding had under `v2-snippet`, when its adapter said so
+    #: and it differs (D-139). Only ever set on a `v3-snippet` row.
+    predecessor_id: str | None = None
 
     @property
     def group(self) -> tuple[str, ...]:
@@ -126,13 +146,20 @@ class Carried:
     #: The disposition that moved, or None when the predecessor was merely
     #: `open` and only its dates travelled.
     disposition: str | None
+    #: True when the link is the adapter's own record of the old identity
+    #: rather than a similarity judgement (D-139).
+    exact: bool = False
 
     def describe(self) -> str:
         moved = self.disposition or "first seen"
+        basis = (
+            "same finding, re-keyed under v3-snippet"
+            if self.exact
+            else f"similarity {self.similarity:.2f}, next best {self.runner_up:.2f}"
+        )
         return (
             f"{self.file_path} [{self.rule_id}]: {moved} carried "
-            f"{self.from_finding_id[:12]} -> {self.to_finding_id[:12]} "
-            f"(similarity {self.similarity:.2f}, next best {self.runner_up:.2f})"
+            f"{self.from_finding_id[:12]} -> {self.to_finding_id[:12]} ({basis})"
         )
 
 
@@ -209,7 +236,12 @@ def _rows(catalog: Catalog) -> list[Any]:
                coalesce(f.code_snippet, '') AS code_snippet,
                f.first_seen_at, f.first_seen_scan_run_id, f.last_seen_at,
                f.resolved_at, f.accepted_until, f.accepted_reason_code,
-               f.last_seen_scan_run_id = n.scan_run_id AS reported_now
+               f.last_seen_scan_run_id = n.scan_run_id AS reported_now,
+               f.repo_full_name, f.symbol, f.line_start,
+               -- Only a v3-snippet row can name a predecessor; reading the
+               -- raw record of every other row would be wasted I/O.
+               CASE WHEN f.fingerprint_version = 'v3-snippet'
+                    THEN f.raw_finding_json END AS raw_finding_json
         FROM findings f
         JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
         JOIN newest n
@@ -227,7 +259,7 @@ def _rows(catalog: Catalog) -> list[Any]:
           -- noise this mechanism exists to avoid generating.
           AND f.package_name IS NULL
           AND f.address IS NULL
-          AND coalesce(f.fingerprint_version, '') IN ('v2-snippet', 'v1-line')
+          AND coalesce(f.fingerprint_version, '') IN ('v3-snippet', 'v2-snippet', 'v1-line')
         """
     )
 
@@ -255,9 +287,30 @@ def _split(rows: list[Any]) -> tuple[list[_Finding], list[_Finding]]:
             resolved_at=row[13],
             accepted_until=row[14],
             accepted_reason_code=None if row[15] is None else str(row[15]),
+            predecessor_id=_predecessor(row),
         )
         (present if reported_now else gone).append(finding)
     return gone, present
+
+
+def _predecessor(row: Any) -> str | None:
+    raw = row[20]
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return v2_predecessor_id(
+        repo_full_name=str(row[17]),
+        capability=str(row[3]),
+        rule_id=str(row[4]),
+        file_path=str(row[5]),
+        symbol=None if row[18] is None else str(row[18]),
+        code_snippet=str(row[9]) or None,
+        line_start=row[19],
+        raw_finding_json=parsed,
+    )
 
 
 def _eligible(predecessor: _Finding, successor: _Finding) -> bool:
@@ -293,6 +346,28 @@ def match(
     for group, missing in sorted(grouped_gone.items()):
         free = sorted(by_group.get(group, []), key=lambda f: f.finding_id)
         outstanding = sorted(missing, key=lambda f: f.finding_id)
+
+        # Exact links first (D-139): the successor's adapter recorded this
+        # predecessor's id. One claimant is the same finding, re-keyed. Two
+        # are findings the old rule had collapsed into one row, and the
+        # decision about that row cannot be placed on either without someone
+        # looking — the narrow rule `rekey_containers` follows too.
+        claims: dict[str, list[_Finding]] = {}
+        for successor in free:
+            if successor.predecessor_id:
+                claims.setdefault(successor.predecessor_id, []).append(successor)
+        linked: set[str] = set()
+        for predecessor in outstanding:
+            claimants = claims.get(predecessor.finding_id, [])
+            if len(claimants) == 1:
+                pairs.append((predecessor, claimants[0], 1.0, 0.0))
+                linked |= {predecessor.finding_id, claimants[0].finding_id}
+            elif claimants:
+                linked.add(predecessor.finding_id)
+                if predecessor.status in HUMAN_DISPOSITIONS:
+                    refusals.append((predecessor, _COLLAPSED.format(len(claimants))))
+        free = [f for f in free if f.finding_id not in linked]
+        outstanding = [f for f in outstanding if f.finding_id not in linked]
 
         scores: dict[tuple[str, str], float] = {}
         for predecessor in outstanding:
@@ -427,6 +502,7 @@ def carry_forward(catalog: Catalog, *, dry_run: bool = False) -> CarryForwardRes
         )
         result.carried.append(
             Carried(
+                exact=successor.predecessor_id == predecessor.finding_id,
                 from_finding_id=predecessor.finding_id,
                 to_finding_id=successor.finding_id,
                 similarity=score,
@@ -532,3 +608,84 @@ def _apply(
         written += outcome.partitions_written
 
     return written
+
+
+def inherit_decisions(
+    catalog: Catalog,
+    rows: list[dict[str, Any]],
+    predecessors: dict[str, str],
+) -> list[Stranded]:
+    """Give each re-keyed finding what was decided about its old id, before
+    it is written (D-139).
+
+    `predecessors` maps a submitted `finding_id` to the id the same finding
+    had under `v2-snippet` (`fingerprint.v2_predecessor_id`). Where that id is
+    a live row in the lake, the incoming rows inherit its first sighting and,
+    if a person decided something, the decision. Doing it here rather than
+    waiting for `carry_forward` is the point: a re-keyed false positive that
+    landed `open` and dated today would be counted by the Oracle gate as
+    introduced by this commit until the next hourly pass — the 2026-09-09
+    block, for every re-keyed finding in the repository at once.
+
+    Only sets what compaction keeps for a *new* id; for an id the lake already
+    holds, compaction's rule (stored values win) applies and this changes
+    nothing. The predecessor row is left for `carry_forward` to withdraw once
+    its lane has scanned without it.
+
+    Returns the decisions that could not be placed — a predecessor claimed by
+    two different findings — after logging each one.
+    """
+    if not predecessors or not catalog.all_files("findings"):
+        return []
+    wanted = sorted(set(predecessors.values()))
+    found = {
+        str(row[0]): row
+        for row in catalog.query(
+            "SELECT finding_id, status, first_seen_at, first_seen_scan_run_id, "
+            "       resolved_at, accepted_until, accepted_reason_code, asset_id, "
+            "       capability, rule_id, coalesce(file_path, '') "
+            f"FROM findings WHERE finding_id IN ({', '.join('?' for _ in wanted)}) "
+            f"  AND status IN ({', '.join('?' for _ in CARRIED_STATUSES)})",
+            [*wanted, *CARRIED_STATUSES],
+        )
+    }
+    claimants: dict[str, set[str]] = {}
+    for new_id, old_id in predecessors.items():
+        claimants.setdefault(old_id, set()).add(new_id)
+
+    stranded = [
+        Stranded(
+            finding_id=old_id,
+            asset_id=str(found[old_id][7]),
+            capability=str(found[old_id][8]),
+            rule_id=str(found[old_id][9]),
+            file_path=str(found[old_id][10]),
+            status=str(found[old_id][1]),
+            reason=_COLLAPSED.format(len(new_ids)),
+        )
+        for old_id, new_ids in sorted(claimants.items())
+        if old_id in found
+        and len(new_ids) > 1
+        and found[old_id][1] in HUMAN_DISPOSITIONS
+    ]
+
+    for row in rows:
+        predecessor = predecessors.get(row["finding_id"])
+        if predecessor not in found or len(claimants[predecessor]) != 1:
+            continue
+        old = found[predecessor]
+        row["first_seen_at"] = old[2]
+        row["first_seen_scan_run_id"] = old[3]
+        if old[1] in HUMAN_DISPOSITIONS:
+            row["status"] = old[1]
+            row["resolved_at"] = old[4]
+            # A `date`, which the write-ahead buffer cannot serialise;
+            # compaction casts the ISO string back (as in rekey_containers).
+            row["accepted_until"] = (
+                old[5].isoformat() if hasattr(old[5], "isoformat") else old[5]
+            )
+            row["accepted_reason_code"] = old[6]
+
+    for item in stranded:
+        logger.warning("Decision stranded: %s", item.describe())
+    return stranded
