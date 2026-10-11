@@ -14,10 +14,14 @@ directory, which is pointed at a temporary directory.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +75,15 @@ def test_it_is_in_the_prod_group() -> None:
 
 
 def test_the_scan_profile_is_dast_prods() -> None:
-    """Baseline, passive, 5-minute spider. Not an active scan through Cloudflare."""
+    """Baseline, passive, 5-minute spider. Not an active scan through Cloudflare.
+
+    The one addition is `--hook`, which loads the request signer (#60724) and
+    changes no rule, no spider budget and no scan mode.
+    """
     profile = re.compile(r"zap-baseline\.py [^\n|]*")
-    assert profile.findall(_script()) == profile.findall(_script("dast-prod", "zap-baseline"))
+    edge = [re.sub(r' --hook="[^"]*"', "", line) for line in profile.findall(_script())]
+    assert edge == profile.findall(_script("dast-prod", "zap-baseline"))
+    assert '--hook="$SIGNER_DIR/hook.py"' in _script()
     assert "zap-full-scan" not in _script()
     assert "zap-api-scan" not in _script()
 
@@ -109,6 +119,200 @@ def test_the_perimeter_checks_stay_under_thehubs_brute_force_threshold() -> None
     assert 0 < len(hub_401s) < 5
 
 
+def test_the_scanner_token_comes_from_vault_with_an_apply_fallback() -> None:
+    """TheHub #60724. `Add-Secret` probes Vault, then TheHub's .env."""
+    params = _task(JOB, TASK)["config"]["params"]
+    script = (ROOT / "deploy" / "concourse" / "set-thehub-pipeline.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert params["HUB_SCANNER_TOKEN"] == "((hub-scanner-token))"
+    assert re.search(r'^Add-Secret -Name "hub-scanner-token"', script, re.M)
+    assert '"HUB_SCANNER_TOKEN" -Optional' in script
+    assert "hub-scanner-token" not in yaml.safe_load(VARS.read_text(encoding="utf-8"))
+
+
+def test_the_signer_files_stay_out_of_the_results_directory() -> None:
+    """Every *.json in /zap/wrk is parsed as a ZAP report by the upload."""
+    script = _script()
+    assert 'HUB_SCANNER_SCRIPT="$SIGNER_DIR/' in script
+    assert 'cat > "$SIGNER_DIR/hook.py"' in script
+    assert not re.search(r"cat > \S*/zap/wrk", script)
+
+
+# -- the signature: a known vector, three implementations -----------------------
+#
+# TheHub's verifier (services/scanner_identity.py at ffe23ede) computes
+# hmac.new(key.encode(), f"{ts}{path}".encode(), hashlib.sha256).hexdigest().
+# The job signs in two places -- python3 for its own probes, a ZAP script for
+# the crawl -- and both must agree with that byte for byte.
+
+VECTOR_KEY = "unit-test-scanner-token"
+VECTOR_TS = "1700000000"
+VECTOR_PATH = "/api/auth/me"
+VECTOR_HEX = "e19a5a679c9f45e5e99e69c7f2d8b987cf461f316d227b2b333bd0ee0d55669c"
+
+
+def test_the_vector_is_thehubs_formula() -> None:
+    mac = hmac.new(
+        VECTOR_KEY.encode(), f"{VECTOR_TS}{VECTOR_PATH}".encode(), hashlib.sha256
+    ).hexdigest()
+    assert mac == VECTOR_HEX
+
+
+def _heredoc(tag: str) -> str:
+    match = re.search(rf"<<'{tag}'\n(.*?)\n{tag}\n", _script(), re.S)
+    assert match, f"no <<'{tag}' heredoc in the {TASK} script"
+    return match.group(1)
+
+
+#: Just enough of GraalJS's `Java.type` for the sender script, backed by node's
+#: crypto. Bytes come back signed, as Java's do, so `& 0xff` is exercised.
+_JAVA_SHIM = r"""
+const crypto = require('crypto');
+const ENV = JSON.parse(process.env.SHIM_ENV);
+const Java = { type(name) {
+  if (name === 'java.lang.String') {
+    return function (s) { this.getBytes = () => Buffer.from(String(s), 'utf8'); };
+  }
+  if (name === 'java.nio.charset.StandardCharsets') return { UTF_8: 'UTF-8' };
+  if (name === 'java.lang.System') return { getenv: (k) => (k in ENV ? ENV[k] : null) };
+  if (name === 'javax.crypto.spec.SecretKeySpec') return function (key) { this.key = key; };
+  if (name === 'javax.crypto.Mac') return { getInstance() {
+    let h; return { init(spec) { h = crypto.createHmac('sha256', spec.key); },
+                    doFinal(data) { return Int8Array.from(h.update(data).digest()); } };
+  } };
+  throw new Error('unshimmed ' + name);
+} };
+"""
+
+_JS_DRIVER = r"""
+const out = { vector: hubScannerSignature(ENV.KEY, ENV.TS, ENV.PATH), headers: {} };
+for (const [host, path] of [['hub.example.net', '/api/auth/me'], ['mk.example.net', '/api/health'],
+                            ['HUB.example.net', '']]) {
+  const set = {};
+  const msg = { getRequestHeader: () => ({
+    getURI: () => ({ getHost: () => host, getPath: () => path }),
+    setHeader: (k, v) => { set[k] = v; } }) };
+  sendingRequest(msg, 1, null);
+  out.headers[host + (path || '<empty>')] = set['X-Hub-Scanner'] || null;
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def _run_js(env: dict[str, str]) -> dict[str, Any]:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to execute the ZAP sender script")
+    source = _JAVA_SHIM + _heredoc("JS") + _JS_DRIVER
+    r = subprocess.run(
+        [node, "-e", source], env={**os.environ, "SHIM_ENV": json.dumps(env)},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_the_zap_sender_script_signs_the_known_vector() -> None:
+    out = _run_js({"KEY": VECTOR_KEY, "TS": VECTOR_TS, "PATH": VECTOR_PATH})
+    assert out["vector"] == f"{VECTOR_TS}.{VECTOR_HEX}"
+
+
+def test_the_zap_sender_script_signs_hubs_host_only() -> None:
+    out = _run_js({
+        "KEY": VECTOR_KEY, "TS": VECTOR_TS, "PATH": VECTOR_PATH,
+        "HUB_SCANNER_TOKEN": VECTOR_KEY, "HUB_SCANNER_HOST": "hub.example.net",
+    })
+    signed = out["headers"]["hub.example.net/api/auth/me"]
+    ts, _, mac = signed.partition(".")
+    expected = hmac.new(
+        VECTOR_KEY.encode(), f"{ts}/api/auth/me".encode(), hashlib.sha256
+    ).hexdigest()
+    assert mac == expected
+    assert out["headers"]["mk.example.net/api/health"] is None
+    # Host compared case-insensitively; an empty path is signed as "/".
+    root = out["headers"]["HUB.example.net<empty>"]
+    ts, _, mac = root.partition(".")
+    assert mac == hmac.new(VECTOR_KEY.encode(), f"{ts}/".encode(), hashlib.sha256).hexdigest()
+
+
+def test_the_zap_sender_script_does_nothing_without_a_token() -> None:
+    out = _run_js({
+        "KEY": VECTOR_KEY, "TS": VECTOR_TS, "PATH": VECTOR_PATH,
+        "HUB_SCANNER_HOST": "hub.example.net",
+    })
+    assert set(out["headers"].values()) == {None}
+
+
+# -- the hook that loads it -------------------------------------------------------
+
+
+class _FakeScript:
+    def __init__(self, engines: list[str], accepts: str | None) -> None:
+        self.list_engines = engines
+        self.accepts = accepts
+        self.loaded: list[tuple[str, ...]] = []
+        self.enabled: list[str] = []
+
+    def load(self, *args: str) -> str:
+        self.loaded.append(args)
+        if args[2] != self.accepts:
+            raise RuntimeError("no such engine")
+        return "OK"
+
+    def enable(self, name: str) -> str:
+        self.enabled.append(name)
+        return "OK"
+
+
+class _FakeZap:
+    def __init__(self, engines: list[str], accepts: str | None) -> None:
+        self.script = _FakeScript(engines, accepts)
+
+
+def _hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token: str) -> dict[str, Any]:
+    namespace: dict[str, Any] = {}
+    exec(compile(_heredoc("PY"), "hook.py", "exec"), namespace)  # noqa: S102 - our own heredoc
+    monkeypatch.setenv("HUB_SCANNER_STATUS", str(tmp_path / "status"))
+    monkeypatch.setenv("HUB_SCANNER_SCRIPT", "/s/hub-scanner-sign.js")
+    monkeypatch.setenv("HUB_SCANNER_TOKEN", token)
+    return namespace
+
+
+def test_the_hook_loads_and_enables_an_httpsender_script(tmp_path, monkeypatch) -> None:
+    hook = _hook(tmp_path, monkeypatch, "k")
+    zap = _FakeZap(["Zest : Mozilla Zest", "ECMAScript : Graal.js"], accepts="Graal.js")
+
+    hook["zap_started"](zap, "https://hub.example.net")
+
+    assert zap.script.loaded[-1] == (
+        "hub-scanner-sign", "httpsender", "Graal.js", "/s/hub-scanner-sign.js",
+    )
+    assert zap.script.enabled == ["hub-scanner-sign"]
+    assert (tmp_path / "status").read_text(encoding="utf-8") == "signed"
+
+
+def test_the_hook_fails_loudly_when_no_engine_takes_the_script(tmp_path, monkeypatch) -> None:
+    hook = _hook(tmp_path, monkeypatch, "k")
+    zap = _FakeZap(["Zest : Mozilla Zest"], accepts=None)
+
+    with pytest.raises(RuntimeError):
+        hook["zap_started"](zap, "https://hub.example.net")
+
+    assert (tmp_path / "status").read_text(encoding="utf-8").startswith("failed")
+    assert zap.script.enabled == []
+
+
+def test_the_hook_loads_nothing_without_a_token(tmp_path, monkeypatch) -> None:
+    hook = _hook(tmp_path, monkeypatch, "")
+    zap = _FakeZap(["ECMAScript : Graal.js"], accepts="Graal.js")
+
+    hook["zap_started"](zap, "https://hub.example.net")
+
+    assert zap.script.loaded == []
+    assert (tmp_path / "status").read_text(encoding="utf-8") == "unsigned"
+
+
 # -- the script, executed -----------------------------------------------------
 
 _STUBS = r"""
@@ -141,11 +345,20 @@ zap-baseline.py() {
     printf '{"site": [{"@name": "x", "alerts": [{"alert": "A"}]}]}' > "$ZAPWRK/zap.json"
   fi
   if [ -n "${CHALLENGE_DURING_SCAN:-}" ]; then : > "$WORK/challenged"; fi
+  # Stands in for the hook (tested on its own above): what it would record.
+  if [ -z "${HUB_SCANNER_TOKEN:-}" ]; then printf unsigned > "$HUB_SCANNER_STATUS"
+  elif [ -n "${SIGNER_FAILS:-}" ]; then printf 'failed: test' > "$HUB_SCANNER_STATUS"
+  else printf signed > "$HUB_SCANNER_STATUS"; fi
   return "${ZAP_RC:-2}"
 }
 pip() { return 0; }
 python3() {
-  if [ "$1" = "-c" ]; then return "${ADAPTER_RC:-0}"; fi
+  if [ "$1" = "-c" ]; then
+    # The signer and the host lookup run for real; the adapter probe is stubbed.
+    case "$2" in *get_adapter*) return "${ADAPTER_RC:-0}" ;; esac
+    "$REAL_PY" "$@"
+    return $?
+  fi
   printf '%s\n' "$@" > "$WORK/upload.args"
   return 0
 }
@@ -179,8 +392,10 @@ def _run(
         "".join(f"{url} {code}\n" for url, code in table.items()), encoding="utf-8"
     )
     script = _script().replace("/zap/wrk", zapwrk.as_posix())
+    inherited = {k: v for k, v in os.environ.items() if k != "HUB_SCANNER_TOKEN"}
     full_env = {
-        **os.environ,
+        **inherited,
+        "REAL_PY": Path(sys.executable).as_posix(),
         "WORK": tmp_path.as_posix(),
         "ZAPWRK": zapwrk.as_posix(),
         "SHA": SHA,
@@ -310,4 +525,69 @@ def test_an_uploader_without_the_adapter_names_the_pin(tmp_path: Path) -> None:
 
     assert r.returncode != 0
     assert "no zap-edge adapter" in r.stdout and "mykronos-ref" in r.stdout
+    assert _uploaded(tmp_path) is None
+
+
+# -- signing, executed ----------------------------------------------------------
+
+_SIGNED = re.compile(r"-H X-Hub-Scanner: (\d+)\.([0-9a-f]{64})")
+
+
+def _calls(tmp_path: Path) -> list[str]:
+    return (tmp_path / "curl.calls").read_text(encoding="utf-8").splitlines()
+
+
+def test_the_probes_sign_the_known_vector(tmp_path: Path) -> None:
+    """The job's own 401 probes sign too, so they do not count toward brute force."""
+    r = _run(tmp_path, HUB_SCANNER_TOKEN=VECTOR_KEY, SIGN_TS=VECTOR_TS)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    me = next(c for c in _calls(tmp_path) if c.startswith(f"{HUB}/api/auth/me "))
+    assert f"-H X-Hub-Scanner: {VECTOR_TS}.{VECTOR_HEX}" in me
+
+
+def test_every_hub_probe_is_signed_and_no_sibling_probe_is(tmp_path: Path) -> None:
+    r = _run(tmp_path, HUB_SCANNER_TOKEN=VECTOR_KEY)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    for call in _calls(tmp_path):
+        url = call.split(" ", 1)[0]
+        match = _SIGNED.search(call)
+        if url.startswith(SIBLING):
+            assert match is None, call
+        elif url.startswith(HUB) and "--tls" not in call and " -D - " not in call:
+            assert match, call
+            path = url[len(HUB):] or "/"
+            expected = hmac.new(
+                VECTOR_KEY.encode(), f"{match.group(1)}{path}".encode(), hashlib.sha256
+            ).hexdigest()
+            assert match.group(2) == expected, call
+    assert "X-Hub-Scanner: signed." in r.stdout
+
+
+def test_the_token_is_never_printed(tmp_path: Path) -> None:
+    secret = "sentinel-scanner-token-must-not-appear"
+    r = _run(tmp_path, HUB_SCANNER_TOKEN=secret)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert secret not in r.stdout + r.stderr
+    assert not any(secret in p.read_text(encoding="utf-8", errors="replace")
+                   for p in (tmp_path / "zapwrk").iterdir())
+
+
+def test_an_empty_token_scans_unsigned_and_warns(tmp_path: Path) -> None:
+    r = _run(tmp_path, HUB_SCANNER_TOKEN="")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "UNSIGNED" in r.stdout and "brute_force" in r.stdout
+    assert not any(_SIGNED.search(c) for c in _calls(tmp_path))
+    assert _uploaded(tmp_path) is not None
+
+
+def test_a_token_with_a_broken_signer_is_not_uploaded(tmp_path: Path) -> None:
+    """A token and an unsigned crawl means the signer broke, not 'no token'."""
+    r = _run(tmp_path, HUB_SCANNER_TOKEN=VECTOR_KEY, SIGNER_FAILS="1")
+
+    assert r.returncode != 0
+    assert "did not sign its requests" in r.stdout
     assert _uploaded(tmp_path) is None

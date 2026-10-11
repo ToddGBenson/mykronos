@@ -4984,15 +4984,36 @@ jobs:
   # not one, so the scan does not lock the address out. That was read from
   # `services/security_monitor.py`, not measured.
   #
-  # **The scan does not mark itself synthetic, because TheHub has no marker an
-  # external scanner can send.** TheHub's marker is `synthetic_origin`
-  # (`services/synthetic_origin.py`). It is set inside the process, by a
-  # `synthetic()` block or by `deploy.sh --probe` in an authenticated deploy
-  # payload, and only for a harness in `KNOWN_HARNESSES`. No request header or
-  # user agent sets it, by design: a header anyone can send would let anyone
-  # label a real attack as a test. Even when it is set, it labels a row; the
-  # brute-force check does not read it. So a custom user agent or header here
-  # would be a convention nothing reads. The TheHub side is a separate story.
+  # **Every request to hub is signed, so TheHub records the scan as synthetic
+  # (TheHub #60724, commit ffe23ede).** The header is
+  # `X-Hub-Scanner: <ts>.<hmac>`. hmac is lowercase hex HMAC-SHA256, keyed by
+  # ((hub-scanner-token)), over `<ts><path>`. The path is percent-decoded and
+  # has no query string. TheHub checks the header in
+  # `services/scanner_identity.py`: it allows 5 minutes of clock skew either
+  # way and compares in constant time. With a valid signature, TheHub records
+  # the 401 as an auth failure inside `synthetic("dast_edge")`, which never
+  # reaches the brute-force window. A valid signature never authenticates:
+  # the gate still answers 401.
+  #
+  # A static replacer rule cannot do this, because the path is inside the MAC
+  # and the header expires. ZAP signs each request with an HTTP Sender
+  # script, which a zap-baseline `--hook` loads. The perimeter probes sign
+  # with the same formula in python3. Only requests to hub's host are signed.
+  # MyKronos has no use for the header and should not be handed a credential
+  # for TheHub.
+  #
+  # Both signers read the token from the environment. It is never written to
+  # a file, never printed, and never put on a command line. Only the derived
+  # per-request header is. Secret redaction is not enabled in this stack's
+  # compose, so not printing the token is the only masking.
+  #
+  # **An empty token scans unsigned and warns.** The scan is still valid, and
+  # TheHub files its `brute_force` alert as it did before #60724. A missing
+  # Vault entry is different: Concourse cannot resolve an undefined var, so
+  # the job errors. `set-thehub-pipeline.ps1` falls back to
+  # HUB_SCANNER_TOKEN in TheHub's .env, or empty if it is absent. The
+  # self-apply job reads only Vault, though, so the entry must exist there,
+  # even if it is empty.
   #
   # **The scanner has no token, on purpose.** On the internet path the gate is
   # the only control. Cloudflare Access is on no rule. So the checks prove the
@@ -5052,6 +5073,8 @@ jobs:
             <<: *mykronos_env
             TARGET_URL: ((thehub-public-url))
             SIBLING_URL: ((mykronos-public-url))
+            # TheHub #60724. Empty means unsigned, not failed.
+            HUB_SCANNER_TOKEN: ((hub-scanner-token))
           run:
             path: bash
             args:
@@ -5061,6 +5084,10 @@ jobs:
                 TARGET_URL="${TARGET_URL%/}"
                 SIBLING_URL="${SIBLING_URL%/}"
                 HDRS=$(mktemp)
+                if [ -z "${HUB_SCANNER_TOKEN:-}" ]; then
+                  echo "::warning::hub-scanner-token is empty, so this scan is UNSIGNED. TheHub will record its"
+                  echo "::warning::401s as real traffic and file a critical brute_force alert (#60724)."
+                fi
 
                 # IPv4, because this host's IPv6 route is dead (#59976) and
                 # because ZAP's JVM prefers IPv4. These checks then measure the
@@ -5068,10 +5095,30 @@ jobs:
                 #
                 # --retry covers transport errors and 5xx. A 401 or 404 is an
                 # answer, and it is returned as one.
+                # TheHub #60724: `<ts>.<hmac_sha256(token, ts + path)>`, for
+                # hub's host only. Prints nothing when unsigned. The token and
+                # the URL go in by environment, not on the command line.
+                sign_for() {
+                  [ -n "${HUB_SCANNER_TOKEN:-}" ] || return 0
+                  SIGN_URL="$1" python3 -c '
+                import hashlib, hmac, os, time
+                from urllib.parse import unquote, urlsplit
+                url, target = urlsplit(os.environ["SIGN_URL"]), urlsplit(os.environ["TARGET_URL"])
+                if url.hostname == target.hostname:
+                    ts = os.environ.get("SIGN_TS") or str(int(time.time()))
+                    path = unquote(url.path) or "/"
+                    key = os.environ["HUB_SCANNER_TOKEN"].encode("utf-8")
+                    mac = hmac.new(key, (ts + path).encode("utf-8"), hashlib.sha256).hexdigest()
+                    print(ts + "." + mac)
+                '
+                }
                 status_of() {
                   : > "$HDRS"
+                  local sig
+                  sig=$(sign_for "$1") || sig=""
                   curl -4 --silent --show-error --max-time 30 \
                     --retry 3 --retry-delay 5 \
+                    ${sig:+-H "X-Hub-Scanner: $sig"} \
                     -o /dev/null -D "$HDRS" -w '%{http_code}' "$1"
                 }
                 header() { grep -i "^$1:" "$HDRS" | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
@@ -5162,10 +5209,93 @@ jobs:
                   echo "::warning::$TARGET_URL/ sends no Strict-Transport-Security header at the edge."
                 fi
 
-                # 4. The scan. Exactly `dast-prod`'s profile.
+                # 4. The scan: `dast-prod`'s profile, plus a hook that signs.
+                #
+                # The hook and the sender script go in a private directory,
+                # never in /zap/wrk. That directory is the upload's
+                # --results-path, and every *.json in it is parsed as a report.
+                SIGNER_DIR=$(mktemp -d)
+                export HUB_SCANNER_SCRIPT="$SIGNER_DIR/hub-scanner-sign.js"
+                export HUB_SCANNER_STATUS="$SIGNER_DIR/status"
+                HUB_SCANNER_HOST=$(python3 -c 'import os; from urllib.parse import urlsplit; print(urlsplit(os.environ["TARGET_URL"]).hostname or "")')
+                export HUB_SCANNER_HOST
+                cat > "$HUB_SCANNER_SCRIPT" <<'JS'
+                // TheHub #60724. A ZAP HTTP Sender script that signs every request
+                // to hub's host with X-Hub-Scanner: <ts>.<hmac>. The token comes
+                // from the environment and is never written anywhere.
+                var Mac = Java.type('javax.crypto.Mac');
+                var SecretKeySpec = Java.type('javax.crypto.spec.SecretKeySpec');
+                var JString = Java.type('java.lang.String');
+                var UTF_8 = Java.type('java.nio.charset.StandardCharsets').UTF_8;
+                var System = Java.type('java.lang.System');
+
+                function hubScannerSignature(token, ts, path) {
+                  var mac = Mac.getInstance('HmacSHA256');
+                  mac.init(new SecretKeySpec(new JString(token).getBytes(UTF_8), 'HmacSHA256'));
+                  var digest = mac.doFinal(new JString(ts + path).getBytes(UTF_8));
+                  var hex = '';
+                  for (var i = 0; i < digest.length; i++) {
+                    hex += ('0' + (digest[i] & 0xff).toString(16)).slice(-2);
+                  }
+                  return ts + '.' + hex;
+                }
+
+                function sendingRequest(msg, initiator, helper) {
+                  var token = System.getenv('HUB_SCANNER_TOKEN');
+                  var host = System.getenv('HUB_SCANNER_HOST');
+                  if (!token || !host) { return; }
+                  var uri = msg.getRequestHeader().getURI();
+                  if (String(uri.getHost()).toLowerCase() !== String(host).toLowerCase()) { return; }
+                  // getPath() returns the decoded path without the query, which
+                  // is what TheHub's request.url.path sees.
+                  var path = uri.getPath();
+                  path = (path === null || String(path) === '') ? '/' : String(path);
+                  var ts = String(Math.floor(Date.now() / 1000));
+                  msg.getRequestHeader().setHeader('X-Hub-Scanner', hubScannerSignature(String(token), ts, path));
+                }
+
+                function responseReceived(msg, initiator, helper) {}
+                JS
+                cat > "$SIGNER_DIR/hook.py" <<'PY'
+                # TheHub #60724. Loads and enables the signing script once ZAP is up.
+                import os
+
+                NAME = "hub-scanner-sign"
+
+
+                def _status(text):
+                    with open(os.environ["HUB_SCANNER_STATUS"], "w") as handle:
+                        handle.write(text)
+
+
+                def zap_started(zap, target):
+                    if not os.environ.get("HUB_SCANNER_TOKEN"):
+                        _status("unsigned")
+                        return
+                    engines = list(zap.script.list_engines)
+                    wanted = [
+                        e for e in engines
+                        if any(k in e.lower() for k in ("graal", "ecmascript", "javascript"))
+                    ]
+                    for engine in wanted:
+                        for name in (engine.split(" : ")[-1], engine):
+                            try:
+                                result = zap.script.load(
+                                    NAME, "httpsender", name, os.environ["HUB_SCANNER_SCRIPT"]
+                                )
+                            except Exception:  # a ZAP API refusal: try the next spelling
+                                continue
+                            if result == "OK":
+                                zap.script.enable(NAME)
+                                _status("signed")
+                                return
+                    _status("failed: no JavaScript engine accepted the script; engines: %s" % engines)
+                    raise RuntimeError("could not load the X-Hub-Scanner signing script")
+                PY
+
                 mkdir -p /zap/wrk
                 rc=0
-                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 --hook="$SIGNER_DIR/hook.py" || rc=$?
                 if [ "$rc" -gt 2 ]; then
                   echo "::error::zap-baseline exited $rc - a scan failure, not a result"
                   exit "$rc"
@@ -5174,6 +5304,16 @@ jobs:
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
+
+                # With a token set, an unsigned crawl means the signer is
+                # broken; it is not the empty-token case. It would raise the
+                # alert #60724 exists to stop, with nothing saying why.
+                SIGNER=$(cat "$HUB_SCANNER_STATUS" 2>/dev/null || echo "hook never ran")
+                if [ -n "${HUB_SCANNER_TOKEN:-}" ] && [ "$SIGNER" != "signed" ]; then
+                  echo "::error::A scanner token is set but ZAP did not sign its requests ($SIGNER)."
+                  exit 1
+                fi
+                echo "X-Hub-Scanner: $SIGNER."
 
                 # A challenge can start mid-crawl, once the spider's rate is
                 # visible. So look again after the scan.

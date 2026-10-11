@@ -292,6 +292,13 @@ $hubDeployToken = ""
 if (Test-Path $TheHubEnvPath) {
     $hubDeployToken = Read-EnvValue $TheHubEnvPath "OPS_DEPLOY_TOKEN" -Optional
 }
+# [TheHub #60724] The key dast-edge signs X-Hub-Scanner with, so TheHub records
+# the scan's 401s as synthetic. The same value as TheHub's HUB_SCANNER_TOKEN.
+# Optional: empty means dast-edge scans unsigned and warns.
+$hubScannerToken = ""
+if (Test-Path $TheHubEnvPath) {
+    $hubScannerToken = Read-EnvValue $TheHubEnvPath "HUB_SCANNER_TOKEN" -Optional
+}
 if ($hubDeployToken) {
     Write-Host "Pipeline stages will report to TheHub at $TheHubUrl." -ForegroundColor DarkGray
 } else {
@@ -408,6 +415,7 @@ function Add-Secret {
 Add-Secret -Name "thehub-ingestion-token" -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN' }
 Add-Secret -Name "mykronos-gate-token"    -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN' }
 Add-Secret -Name "hub-deploy-token"       -Fallback { $hubDeployToken }
+Add-Secret -Name "hub-scanner-token"      -Fallback { $hubScannerToken }
 Add-Secret -Name "anthropic-api-key"      -Fallback { $hubAnthropicKey }
 Add-Secret -Name "minio-access-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_USER' }
 Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD' }
