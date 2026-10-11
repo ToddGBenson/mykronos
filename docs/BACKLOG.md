@@ -172,9 +172,9 @@ downstream: a notification about an unowned finding has nowhere to go, and a
 finding record with an empty owner field is a record of an unmade decision. Do
 this before B-035 or the alerts will be broadcasts.
 
-**3 · B-035 — the notifier.** One environment variable once somebody supplies
-the URL, and it converts the whole platform from pull to push. Held only because
-the credential cannot live in this repository.
+**3 · B-035 — the notifier.** Converts the whole platform from pull to push.
+Since D-137 the deploy reads the host's Slack bot token and channel from Vault,
+so it is held only on a deploy and one visible test message.
 
 **4 · B-033 — say what the ranking is.** The honest half is small: the ranking
 degrades to severity when no risk profile exists, and every surface that ranks
@@ -283,6 +283,14 @@ every other secret. B-034 closing is what unblocked it — before ownership was
 real these would have been broadcasts. Three separate multi-day scanning outages
 in two weeks (B-024, B-055, B-057), none of which announced itself, are the
 argument.
+
+**Amended 2026-10-11 — D-137: the host's Slack bot, not a webhook.** PS-9: a
+webhook's secret sits in its URL. `deploy.ps1` now reads the bot token and the
+alert channel from Vault (`concourse/main/slack-bot-token`,
+`concourse/main/slack-alert-channel`), the pair the Concourse pipeline alerts
+already post with, and passes them to compose. Nothing goes into
+`backend/.env`. What is left is the operator's: deploy a sha carrying it, and
+see one test message arrive (OPERATOR-TASKS task 2).
 
 **And the weekly digest would not have arrived even with one.** Found
 2026-09-09 while reading this entry. `SlackNotifier.send` is a coroutine;
@@ -733,6 +741,15 @@ PLpgSQL. That is a bigger unread surface than anything the entry started
 with — keel's 219 KB of shell was the headline — and it was invisible until
 something measured it. It needs its own answer and is not covered by either
 analyser added today; `SAST_LANGUAGES` has no tool for it to name.
+
+**Corrected 2026-10-11 — D-138: most of it was never stored procedures.** It
+is DDL migrations, which linguist names PLpgSQL on markers as weak as `BEGIN;`.
+The language read now splits a repository's SQL by file. Declarations go to
+`SQL schema` in `NOT_SOURCE`, and only files with a function, a procedure,
+`LANGUAGE plpgsql` or a `DO` block stay unread source. For TheHub that is 34
+of 376 files (324 KB of the 711 KB GitHub counts). The share under codeql +
+semgrep goes from 3.05% to 1.81%. A SQL analyser lane for the procedural
+remainder is still open.
 
 `mykronos`'s 197 KB of PowerShell is its own operations scripts, and the
 `sast-powershell` lane built today closes it the moment it is enabled here.
