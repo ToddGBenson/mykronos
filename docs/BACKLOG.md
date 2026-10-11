@@ -4,6 +4,10 @@ Open work that is not a decision and not a retro. Decisions that settle *how*
 something is built belong in [`DECISIONS.md`](DECISIONS.md); what happened on a
 bad day belongs in [`retros/`](retros/). This file is what is *not done yet*.
 
+**Open and icebox entries now live in TheHub `dev_stories` (D-133, 2026-10-11).**
+Each storied entry's heading carries its TheHub story id; that story, not this
+file, is the record of its state from here on.
+
 Format: `B-nnn` / size / state / the problem / acceptance criteria / provenance.
 Entries move to the Closed section when they land, with the closing commit or
 decision noted, rather than being deleted outright.
@@ -204,7 +208,7 @@ the consequence of a blocked release, not to this file.
 inert, which the entry itself called the one indefensible state; that hold
 lasted four days and is in Closed.
 
-### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal
+### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal — TheHub #60572
 
 **Size:** M **State:** open **Verified:** 2026-09-10
 
@@ -260,7 +264,7 @@ other.
 an edit inside the matched snippet — but the same class, and the one that
 makes "inserting code above a finding" literally true.
 
-### B-035 — The notifier is configured and addressed to nobody
+### B-035 — The notifier is configured and addressed to nobody — TheHub #60573
 
 **Size:** S **State:** open **Verified:** 2026-09-03
 
@@ -426,7 +430,7 @@ and "recorded nothing".
 
 ---
 
-### B-050 — Eight live TheHub findings, verified against `develop`
+### B-050 — Eight live TheHub findings, verified against `develop` — TheHub #60574, #60575, #60576
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -597,7 +601,7 @@ for it.
 
 ---
 
-### B-051 — SAST is language-blind, and two repositories are green because nothing can read them — **half done**
+### B-051 — SAST is language-blind, and two repositories are green because nothing can read them — **half done** — TheHub #60577, #60578
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -937,7 +941,7 @@ answer because it only knows the ones it was told about.
 
 ---
 
-### B-060 — Branch protection, read for the first time, against CIS §1.1
+### B-060 — Branch protection, read for the first time, against CIS §1.1 — TheHub #60579, #60580
 
 **Size:** M **State:** open **Verified:** 2026-09-04
 
@@ -1121,7 +1125,7 @@ enforced" including the ones that were on.
 
 ---
 
-### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done**
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done** — TheHub #60581 (and #59082)
 
 **Size:** S **State:** open **Verified:** 2026-09-05
 
@@ -1240,7 +1244,7 @@ nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
 
-### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub
+### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — TheHub #60566
 
 **Size:** S **State:** open **Verified:** 2026-10-11
 
@@ -1261,7 +1265,7 @@ Control shows a backlog in a different order from this tab.
 
 **Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
 
-### B-069 — A repository with no manifest is told so, and offered nothing
+### B-069 — A repository with no manifest is told so, and offered nothing — TheHub #60567
 
 **Size:** S **State:** open **Verified:** 2026-10-11
 
@@ -1280,7 +1284,7 @@ correct, but it leaves the next step to the person reading.
 
 **Provenance:** spec 35 §2.3 and §5.
 
-### B-070 — Declared process versus observed process
+### B-070 — Declared process versus observed process — TheHub #60568
 
 **Size:** M **State:** open **Verified:** 2026-10-11
 
@@ -1303,7 +1307,7 @@ declaration without the drift reads as reassurance.
 
 **Provenance:** spec 35 §5.
 
-### B-071 — The rest of the Product Owner console
+### B-071 — The rest of the Product Owner console — TheHub #60569
 
 **Size:** L **State:** open **Verified:** 2026-10-11
 
@@ -1324,7 +1328,7 @@ deliberately left out are listed here.
 
 **Provenance:** spec 35 §5, D-135.
 
-### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only
+### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — TheHub #60570
 
 **Size:** M **State:** open **Verified:** 2026-10-11
 
