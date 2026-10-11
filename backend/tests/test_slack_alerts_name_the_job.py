@@ -71,6 +71,12 @@ def _render(hook: dict, tmp_path: Path, **overrides) -> dict:
     sh = shutil.which("sh")
     assert sh, "sh is required to execute the notify script"
     script = hook["config"]["run"]["args"][-1]
+    # The hook writes a fixed /tmp/payload.json -- right in a Concourse
+    # container, where nothing runs beside it, but under pytest-xdist every
+    # case on the host shares that one file and they race. Each case gets its
+    # own path, substituted here; the pipeline itself is unchanged.
+    assert "/tmp/payload.json" in script, "the hook no longer writes /tmp/payload.json"
+    script = script.replace("/tmp/payload.json", (tmp_path / "sent.json").as_posix())
     params = {k: str(v) for k, v in (hook.get("params") or {}).items()}
     # The real token/channel are Vault refs; any non-empty value enables posting.
     params.update(SLACK_BOT_TOKEN="xoxb-test", SLACK_CHANNEL="C0TEST")
