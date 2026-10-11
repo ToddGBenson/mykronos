@@ -237,6 +237,16 @@ anchors:
   slack_params: &slack_params
     SLACK_BOT_TOKEN: ((slack-bot-token))
     SLACK_CHANNEL: ((slack-alert-channel))
+    # Who and where, for the alert text and link. Concourse exposes
+    # BUILD_JOB_NAME / BUILD_NAME / BUILD_TEAM_NAME / BUILD_PIPELINE_NAME to
+    # RESOURCES, not to tasks, so every alert read "job `` failed (build )"
+    # with a link to /teams//pipelines//jobs//builds/ (2026-10-08..10). The
+    # pipeline and team are static per file; each hook passes JOB.
+    PIPELINE: personal-soc
+    TEAM: main
+    # Concourse is bound to 127.0.0.1:8080 on this host and has no public
+    # hostname, so the link opens on this machine only.
+    CONCOURSE_URL: http://localhost:8080
 
   # -- Failure notification -------------------------------------------------
   #
@@ -290,7 +300,11 @@ anchors:
               exit 0
             fi
 
-            BUILD_URL="$ATC_EXTERNAL_URL/teams/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME"
+            # The JOB page, not a build page: no task-visible mechanism carries the
+            # build number (BUILD_NAME is resource-only), and the failing build
+            # is the newest one listed there.
+            BUILD_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-personal-soc}/jobs/${JOB:-}"
+            JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
 
             # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
             # else sets it, so the failure path keeps the wording it had.
@@ -309,11 +323,11 @@ anchors:
             # never reached one, so whatever is on disk is a half-finished
             # thought from a run that died.
             if [ "${OUTCOME:-failed}" = "errored" ]; then
-              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` ERRORED (build $BUILD_NAME) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
+              TEXT="*personal-soc*: job \`$JOB_LABEL\` ERRORED (newest build) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
             elif [ -s notify/message.txt ]; then
               TEXT=$(head -1 notify/message.txt)
             else
-              TEXT="*personal-soc*: job \`$BUILD_JOB_NAME\` failed (build $BUILD_NAME) - it ran and the answer was bad. Re-triggering does not clear this."
+              TEXT="*personal-soc*: job \`$JOB_LABEL\` failed (newest build) - it ran and the answer was bad. Re-triggering does not clear this."
             fi
 
             ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
@@ -417,10 +431,12 @@ jobs:
       - set_pipeline: self
         file: pipelines/deploy/concourse/pipelines/personal-soc.yml
         var_files: [pipelines/deploy/concourse/vars/personal-soc.yml]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: set-pipeline }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: set-pipeline }
 
   # `serial_groups: [worker]` on every job that installs a toolchain before it
   # does any work. One Linux worker runs this pipeline, TheHub's and mykronos';
@@ -448,10 +464,12 @@ jobs:
   - name: guard
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: guard }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: guard }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -566,10 +584,12 @@ jobs:
   - name: secrets
     public: false
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: secrets }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -728,10 +748,12 @@ jobs:
   - name: iac
     public: false
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: iac }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -852,10 +874,12 @@ jobs:
   - name: oracle
     public: false
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: oracle }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: oracle }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -975,10 +999,12 @@ jobs:
   - name: lint
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: lint }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: lint }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1223,10 +1249,12 @@ jobs:
   - name: functional
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: functional }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: functional }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1447,10 +1475,12 @@ jobs:
   - name: skill-integrity
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: skill-integrity }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: skill-integrity }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1682,10 +1712,12 @@ jobs:
   - name: package
     public: true
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: package }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: package }
     plan:
       # Every gate, not just guard. This job puts a bundle on the host and the
       # Scheduled Tasks then run it unattended at 03:00 on a Sunday, which is
@@ -1817,7 +1849,7 @@ jobs:
     serial_groups: [worker]
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: doc-drift }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1913,10 +1945,12 @@ jobs:
     # a private job answers /jobs/<name> fine and returns 401 only on
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: external-exposure }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: external-exposure }
     plan:
       - get: weekly
         attempts: *retry_fetch
@@ -2004,10 +2038,12 @@ jobs:
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
     serial_groups: [worker]
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: netassess-ingest }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: netassess-ingest }
     plan:
       - get: netassess-run
         attempts: *retry_fetch
@@ -2228,10 +2264,12 @@ jobs:
     # a private job answers /jobs/<name> fine and returns 401 only on
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
-    on_failure: *slack_alert
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: netassess-freshness }
     on_error:
       <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored }
+      params: { <<: *slack_params, OUTCOME: errored, JOB: netassess-freshness }
     plan:
       - get: weekly
         attempts: *retry_fetch
