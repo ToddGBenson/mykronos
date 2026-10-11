@@ -1,7 +1,7 @@
 # Spec 35 — The Product Owner Tab: Each Repository's Declared Process, Backlog and Sprint
 
 **Status:** Approved for build, phase 1 (Product Owner decision 2026-10-11)
-**Depends on:** [17 — Grooming](17-grooming-and-dev-ready-stories.md) for "dev-ready", [34 — Independent Approval](34-duties-delegation-and-independent-approval.md) for who may change a process
+**Depends on:** [17 — Harness, Threat Intel and i2i Grooming](17-harness-threat-intel-and-i2i.md) for "dev-ready", [34 — Independent Approval](34-duties-delegation-and-independent-approval.md) for who may change a process
 **I2I record:** TheHub oplan #11537 (problem, options, KPIs). Design canvas: three directions, **C chosen**.
 
 ---

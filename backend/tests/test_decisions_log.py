@@ -186,14 +186,28 @@ def _move_script():
     return module
 
 
+def _next_free_number(root: Path) -> int:
+    """One above every number in the log and the files. Real entries from
+    D-137 on sit in the log until the move runs (#770 put D-137 and D-138
+    there), so a hard-coded number collides with them and the move rightly
+    refuses."""
+    texts = [(root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")]
+    texts += [p.read_text(encoding="utf-8") for p in (root / "docs" / "decisions").glob("D-*.md")]
+    return max(int(n[2:]) for text in texts for n, _ in HEADING.findall(text)) + 1
+
+
 def test_the_move_takes_d137_onward_and_leaves_the_history(copy: Path) -> None:
     log = copy / "docs" / "DECISIONS.md"
     before = log.read_text(encoding="utf-8")
+    first = _next_free_number(copy)
+    second = first + 1
     appended = (
         "\n---\n\n"
-        + entry(137, "The notifier", "See [spec 05](../specs/05-datalake.md) and [D-082](#d-082).")
+        + entry(
+            first, "The notifier", "See [spec 05](../specs/05-datalake.md) and [D-082](#d-082)."
+        )
         + "\n---\n\n"
-        + entry(138, "Migration DDL is schema")
+        + entry(second, "Migration DDL is schema")
     )
     log.write_text(before + appended, encoding="utf-8")
     old_numbers = [n for n, _ in HEADING.findall(before) if int(n[2:]) <= 136]
@@ -202,11 +216,11 @@ def test_the_move_takes_d137_onward_and_leaves_the_history(copy: Path) -> None:
 
     after = log.read_text(encoding="utf-8")
     assert [n for n, _ in HEADING.findall(after)] == old_numbers
-    moved = (copy / "docs" / "decisions" / "D-137-the-notifier.md").read_text("utf-8")
+    moved = (copy / "docs" / "decisions" / f"D-{first:03d}-the-notifier.md").read_text("utf-8")
     assert "](../../specs/05-datalake.md)" in moved
     assert "](../DECISIONS.md#d-082)" in moved
     assert not moved.rstrip().endswith("---")
-    assert (copy / "docs" / "decisions" / "D-138-migration-ddl-is-schema.md").exists()
+    assert (copy / "docs" / "decisions" / f"D-{second:03d}-migration-ddl-is-schema.md").exists()
     assert decisions_index.check(copy) == []
 
 
