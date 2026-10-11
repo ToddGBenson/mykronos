@@ -29,6 +29,8 @@
        descends from the PR head). Not a rebase - see Update-Branch for why.
        A PR that is only behind is left alone: main does not require
        branches to be up to date, and a new head would cost a new request.
+       Then a PR whose decision numbers repeat main's, or those of a PR
+       earlier in the round, is refused: "renumber D-nnn -> D-mmm" (D-158).
     2. waits, polling, for the platform's pending request on each current head
        (job:pull-request-requests opens one ~10 minutes after first seeing it).
     3. decides: reviewer runs first, then your one batch prompt.
@@ -373,6 +375,28 @@ while ($remaining.Count -gt 0 -and $round -lt $MaxRounds) {
     } else {
       Log "  #${n}: merges cleanly into main at $($p.headRefOid.Substring(0, 8))" 'DarkGray'
     }
+  }
+
+  # 1a. Decision numbers (D-158). A PR adding a number main already has, or
+  # one a PR earlier in this round adds, would land a duplicate: refuse it
+  # before anyone is asked to decide it, and say which number to take.
+  $checker = Join-Path $PSScriptRoot 'check_decision_numbers.py'
+  if (-not (Test-Path -LiteralPath $checker)) { $checker = Join-Path $RepoPath 'scripts\check_decision_numbers.py' }
+  if ((Test-Path -LiteralPath $checker) -and $remaining.Count -gt 0) {
+    Sync-Origin @($prs.Values | ForEach-Object { $_.headRefName })
+    $items = @($remaining | ForEach-Object { @{ number = $_; ref = "origin/$($prs[$_].headRefName)" } })
+    $in = New-TemporaryFile
+    try {
+      ConvertTo-Json -InputObject $items -Depth 4 | Set-Content -LiteralPath $in.FullName -Encoding utf8NoBOM
+      $out = & $Python $checker round $RepoPath $in.FullName
+      if ($LASTEXITCODE -ne 0) {
+        Log "  the decision-number check could not run (exit $LASTEXITCODE); numbers NOT checked this round" 'Yellow'
+      } else {
+        foreach ($r in @((($out -join "`n") | ConvertFrom-Json).refused)) { Drop ([int] $r.number) "refused: $($r.message)" }
+      }
+    } finally { Remove-Item -LiteralPath $in.FullName -Force -ErrorAction SilentlyContinue }
+  } elseif (-not (Test-Path -LiteralPath $checker)) {
+    Log '  check_decision_numbers.py not found beside the queue or in the repo; decision numbers NOT checked' 'Yellow'
   }
 
   # 1b. Of those, which can merge this round once the ones before them have.
