@@ -4793,6 +4793,16 @@ whose only notification channel is somebody opening a dashboard has no channel.
 is not a decision to route everything; and routing remains a read-and-notify
 path with no authority to act.
 
+**Amended 2026-10-11: a bot token and a channel, not a webhook (D-137).** The
+Product Owner chose option A on TheHub story #60573. The reason is PS-9: a
+webhook's secret sits in its URL, so whatever holds the URL holds the
+credential, while a bot token travels in an `Authorization:` header Vault can
+hold. The notifier now posts as the host's existing Slack bot
+(`concourse/main/slack-bot-token`) to the channel the Concourse pipeline
+alerts already post to (`concourse/main/slack-alert-channel`), and no second
+Slack identity is minted. "Reaching the backend through Vault" above is now
+literal: `deploy.ps1` reads both at deploy time.
+
 ---
 
 ## D-113 — Coverage is collected on the pull-request lane, and its cost is measured rather than assumed
@@ -6151,3 +6161,72 @@ measurement found neither shape among the live findings.
 the new rule returns as a new id, not a reopen. A lane whose uploader stays
 pinned below this change keeps producing `v2-snippet` ids, which is correct for
 that uploader.
+## D-137 — The notifier posts as the host's Slack bot, read from Vault at deploy time
+
+**2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60573, option A), implemented
+
+**The decision.** `MYKRONOS_SLACK_BOT_TOKEN` and `MYKRONOS_SLACK_CHANNEL` come
+from Vault, from the same team-scope paths the Concourse pipelines resolve
+`((slack-bot-token))` and `((slack-alert-channel))` from:
+`concourse/main/slack-bot-token` and `concourse/main/slack-alert-channel`. So
+the platform's alerts go to the channel the pipeline alerts already go to, as
+the one Slack identity this host already has. This amends D-112, which said to
+configure a webhook.
+
+**Why a bot token.** PS-9: a webhook's secret sits in its URL, so whatever
+holds the URL holds the credential. A bot token is a header, and it is the
+credential the pipelines already moved into Vault for exactly that reason.
+
+**How it reaches the container.** `deploy/mykronos/deploy.ps1` reads both
+values with the read-only Concourse Vault token and sets them in its own
+process environment before `docker compose up`. Compose prefers the shell
+environment over `--env-file`, so nothing is pasted into `backend/.env`. The
+script prints only which names resolved, never a value, and removes them from
+its environment once compose has read them. The compose file already passed
+both names through, and `test_compose_passes_settings.py` pins that.
+
+**It fails open.** A sealed Vault leaves `backend/.env` in charge (normally
+empty). The deploy says which names did not resolve, and the backend's startup
+warning reports a notifier addressed to nobody. A chat service must not be
+able to block a deploy, the same posture as D-126.
+
+**Rejected.**
+- *A webhook as D-112 wrote it.* It works, but it mints a second Slack
+  identity whose secret is in the URL.
+- *Pasting the token into `backend/.env`.* It would be a second copy of a
+  credential Vault already holds, and the copy would go stale on rotation.
+
+## D-138 — Migration DDL is schema; only procedural SQL counts as unread source
+
+**2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60578, option B), implemented
+
+**The decision.** A repository's SQL bytes are split by file before the
+unread-source measure sees them. A `.sql` file that defines a function or a
+procedure, says `LANGUAGE plpgsql`, or runs a `DO` block stays source, reported
+as `PLpgSQL`. Everything else is moved to `SQL schema`, which is in
+`NOT_SOURCE` beside Dockerfile and HCL: declarations owned by something other
+than a static analyser.
+
+**Why by file.** GitHub's language name cannot answer the question. Linguist
+calls a file PLpgSQL on markers as weak as `BEGIN;`, so 711 KB of TheHub's
+migrations read as procedural code nothing could analyse. The file content
+can answer it. Measured on 2026-10-11, 34 of TheHub's 376 `.sql` files are
+procedural (324 KB), and its unread share under codeql + semgrep moves from
+3.05% to 1.81%. The story's estimate of four counted only `LANGUAGE plpgsql`.
+The other thirty are `DO $$` blocks and `CREATE FUNCTION`, and they stay
+reported because they are code.
+
+**What it costs.** One call per `.sql` file, made only when GitHub reports SQL
+for the repository, cached with the language read for six hours. Above
+`MAX_SQL_FILES` (1,000) the split is not attempted.
+
+**Unknown stays counted.** If any file cannot be read, nothing moves and the
+SQL is reported as before. "We could not look" must not read as "it is all
+schema", because that would hide the procedural files this exists to keep.
+
+**Rejected.**
+- *A SQL analyser lane (squawk, sqlfluff) first.* It may still follow for the
+  procedural remainder. Without this split it would be asked to "read"
+  1.4 MB of `CREATE TABLE`, and the number would still say the wrong thing.
+- *Putting PLpgSQL in `NOT_SOURCE` wholesale.* It would hide the 34
+  procedural files along with the DDL.
