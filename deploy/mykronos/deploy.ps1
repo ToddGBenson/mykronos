@@ -668,7 +668,7 @@ try {
     # [D-125] No longer conditional on the tag not being `latest`: every deploy
     # now names a sha, so "healthy" and "running what you asked for" can always
     # be told apart. That is the whole reason the sha is mandatory.
-    # [D-154, TheHub #60722] Read from the container's own stamp, not from
+    # [D-157, TheHub #60722] Read from the container's own stamp, not from
     # /healthz. The public /healthz no longer carries the sha (it told the
     # internet which commit to diff), and the stamp needs no token. It is the
     # same MYKRONOS_BUILD_SHA the backend serves as `build.sha`: the image's

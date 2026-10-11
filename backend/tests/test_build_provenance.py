@@ -24,9 +24,9 @@ WHAT THESE TESTS PIN:
   1. a build-arg SHA reaches `/healthz`               <- the mechanism works
   2. no SHA reports unknown, and reports it as a null <- absence is a state
   3. `__version__` is never used as a substitute      <- the trap above
-  4. only an authorised caller reads it               <- D-154, see the class
+  4. only an authorised caller reads it               <- D-157, see the class
 
-[D-154, TheHub #60722] The SHA used to be public. It is now served only to a
+[D-157, TheHub #60722] The SHA used to be public. It is now served only to a
 caller presenting the perimeter token; deploy.ps1 reads the container stamp.
 `test_healthz_does_not_disclose_build.py` pins the public side.
 """
@@ -109,7 +109,7 @@ class TestAbsenceIsAStateRatherThanAGuess:
 
 
 class TestItIsReadableByAnAuthorisedCaller:
-    """[D-154] Whatever asks "is the fix running yet?" still can, with the
+    """[D-157] Whatever asks "is the fix running yet?" still can, with the
     perimeter token. It used to be public, on the argument that a SHA names a
     public commit; that is exactly what makes it useful to an attacker, who
     can diff it against `main` to see what is not yet patched."""

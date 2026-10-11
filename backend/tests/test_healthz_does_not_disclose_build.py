@@ -1,7 +1,7 @@
 """The public `/healthz` says the process is up, and nothing else (TheHub #60722).
 
 `/healthz` is exempt from the perimeter gate, so every key in its body is
-published to the internet. Until D-154 that body carried `build.sha`, the
+published to the internet. Until D-157 that body carried `build.sha`, the
 commit the running image was built from. A public SHA tells anyone which
 commit to diff against the public repository to find what is unpatched.
 

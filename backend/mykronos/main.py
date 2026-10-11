@@ -779,7 +779,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """For infrastructure only. Deliberately reveals nothing about the
         lake — the authenticated /api/ingest/health is what workflows call.
 
-        [D-154, TheHub #60722] The public body is `{"status": "ok"}` and
+        [D-157, TheHub #60722] The public body is `{"status": "ok"}` and
         nothing else. `/healthz` is exempt from the perimeter gate, so every
         key here is published to the internet, and `build.sha` (#361) told
         anyone which commit to diff to find what is not yet patched.

@@ -30,7 +30,7 @@ THE PROBE CONTRACT is deliberately narrow: a GET returning JSON with a string
 at `build.sha`. Both applications used to serve that shape unauthenticated --
 mykronos at `/healthz` and TheHub at `/health`. Neither does any more: a
 public sha tells anyone which commit to diff for what is unpatched, so both
-now serve it only to an authenticated caller (D-154, TheHub #60709). The probe
+now serve it only to an authenticated caller (D-157, TheHub #60709). The probe
 sends no credential, so against either it reports `unparsed`; no probe was
 configured in production when that changed (measured 2026-10-11).
 

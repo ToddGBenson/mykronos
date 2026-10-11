@@ -31,7 +31,7 @@ this token and must not be asked to:
   shared bearer anyway.
 - **Liveness probes**, which must work before anything is configured. The
   exemption covers the status code only: `/healthz` checks the token itself
-  and shows the build SHA only to a caller that presents it (D-154).
+  and shows the build SHA only to a caller that presents it (D-157).
 
 That is the same reasoning the Hub's own gate uses for its OAuth callbacks and
 webhooks: exempt the paths that carry their own proof, and only those.

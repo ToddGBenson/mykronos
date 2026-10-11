@@ -102,8 +102,8 @@ class TestAuth:
         assert client.get("/api/ingest/health").status_code == 401
 
     def test_unauthenticated_liveness_probe_reveals_nothing(self, client: TestClient) -> None:
-        """[D-154, TheHub #60722] Status and nothing else. `build` (#361) was
-        public until D-154; it is now served only with the perimeter token.
+        """[D-157, TheHub #60722] Status and nothing else. `build` (#361) was
+        public until D-157; it is now served only with the perimeter token.
 
         The assertion stays an equality on purpose: it is the guard that keeps
         the *next* addition from being a lake path or a repository name.

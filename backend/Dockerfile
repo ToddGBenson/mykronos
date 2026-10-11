@@ -115,7 +115,7 @@ WORKDIR /app
 # deployment reports `0.1.0`.
 #
 # Empty is the honest default and `/healthz` reports it as `source: unknown`
-# (to a caller with the perimeter token -- D-154; deploy.ps1 reads this ENV
+# (to a caller with the perimeter token -- D-157; deploy.ps1 reads this ENV
 # from the container with `docker inspect` instead).
 # A local `docker build` genuinely does not know the commit, and inventing one
 # is worse than admitting it -- the whole reason this exists is that a

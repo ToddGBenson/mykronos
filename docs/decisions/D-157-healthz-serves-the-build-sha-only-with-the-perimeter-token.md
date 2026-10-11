@@ -1,4 +1,4 @@
-## D-154 — `/healthz` serves the build SHA only with the perimeter token
+## D-157 — `/healthz` serves the build SHA only with the perimeter token
 
 **2026-10-11.** **Status:** Decided, implemented
 **Story:** TheHub #60722 · reverses the public half of #361 · mirrors TheHub #60709

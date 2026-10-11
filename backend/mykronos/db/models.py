@@ -145,7 +145,7 @@ class RepoOnboarding(Base):
     #: Where to ask this repository's deployment what revision it is running
     #: (#361). An unauthenticated GET returning JSON with a string at
     #: `build.sha`. mykronos's `/healthz` and TheHub's `/health` stopped
-    #: publishing the sha (D-154, TheHub #60709), so neither answers it.
+    #: publishing the sha (D-157, TheHub #60709), so neither answers it.
     #:
     #: Empty is the common state and is not a fault. A repository with no
     #: deployment this platform can reach -- a library, a scanner, a config

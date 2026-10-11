@@ -66,7 +66,7 @@ class Settings(BaseSettings):
         description=(
             "The commit this image was built from, baked in by the Dockerfile "
             "at image build time and read back by `/healthz` for a caller "
-            "presenting the perimeter token (D-154). Empty is a real "
+            "presenting the perimeter token (D-157). Empty is a real "
             "and expected state -- a local `docker build`, an editable "
             "install, or the test suite -- and it must be reported as "
             "unknown rather than filled in with a guess. Nothing here may "
