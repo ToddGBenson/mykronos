@@ -5994,6 +5994,9 @@ export interface components {
             backlog: components["schemas"]["StoryOut"][];
             /** Sprint */
             sprint: components["schemas"]["StoryOut"][];
+            risk_model: components["schemas"]["RiskModelOut"];
+            /** Backlog By Risk */
+            backlog_by_risk: number[];
         };
         /**
          * ProfileProposalOut
@@ -6694,6 +6697,24 @@ export interface components {
             reason: string;
         };
         /**
+         * RiskModelOut
+         * @description What the 'by risk removed' order ranked by (the B-033 rule).
+         */
+        RiskModelOut: {
+            /** Available */
+            available: boolean;
+            /** Decision Id */
+            decision_id: string | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Policy Version */
+            policy_version: string | null;
+            /** Risk Profile Available */
+            risk_profile_available: boolean;
+            /** Statement */
+            statement: string;
+        };
+        /**
          * RiskProfileOut
          * @description What this application is, as an asset (spec 21 §1).
          *
@@ -7176,6 +7197,22 @@ export interface components {
             updated_at: string | null;
             check: components["schemas"]["GateCheckOut"];
             dod?: components["schemas"]["GateCheckOut"] | null;
+            risk?: components["schemas"]["StoryRiskOut"] | null;
+        };
+        /** StoryRiskOut */
+        StoryRiskOut: {
+            /** Linked */
+            linked: boolean;
+            /** Points */
+            points: number | null;
+            /** Findings Linked */
+            findings_linked: number;
+            /** Findings Open */
+            findings_open: number;
+            /** Controls Linked */
+            controls_linked: string[];
+            /** Note */
+            note: string;
         };
         /**
          * SubSignal

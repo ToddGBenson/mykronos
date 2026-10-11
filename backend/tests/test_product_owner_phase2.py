@@ -6,18 +6,23 @@ the same endpoint the same way and differs only in what it declares.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import math
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
 import httpx2
+import pytest
 from fastapi.testclient import TestClient
 
 from mykronos import product_owner as po
 from mykronos.db.models import RepoGovernance
+from mykronos.oracle.service import OracleService
 from mykronos.process_templates import TEMPLATES
 from mykronos.schemas import utcnow
-from tests.conftest import REPO, post_scan
+from tests.conftest import REPO, finding_payload, post_findings, post_scan
 from tests.test_product_owner import (  # noqa: F401 -- `connect` is a fixture
     VALID,
     FakeHub,
@@ -513,3 +518,193 @@ class TestDefinitionOfDoneInTheTab:
 
         assert body["sprint"][0]["dod"]["unavailable"] == 3
         assert not [n for n in body["needs_human"] if n["kind"] == "dod_failed"]
+
+
+# --------------------------------------------------------------------------
+# 7.4 Risk removed
+# --------------------------------------------------------------------------
+
+
+def score_portfolio(client: TestClient) -> None:
+    service = OracleService(
+        client.app.state.catalog,  # type: ignore[attr-defined]
+        client.app.state.buffer,  # type: ignore[attr-defined]
+        client.app.state.oracle_policy,  # type: ignore[attr-defined]
+    )
+    asyncio.run(service.evaluate_and_publish(REPO, decision_type="portfolio"))
+
+
+def seed_findings(client: TestClient, auth: dict[str, str], run_compaction: Any) -> dict[str, str]:
+    """Three criticals and a high; returns finding id -> severity."""
+    post_scan(client, auth, scan_run_id="run-risk")
+    post_findings(
+        client,
+        auth,
+        [
+            finding_payload(rule_id=f"R{i}", severity="critical", symbol=f"c{i}")
+            for i in range(3)
+        ]
+        + [finding_payload(rule_id="H1", severity="high", symbol="h1")],
+        scan_run_id="run-risk",
+    )
+    run_compaction()
+    rows = client.app.state.catalog.query(  # type: ignore[attr-defined]
+        "SELECT finding_id, severity FROM findings WHERE asset_id = ?", [REPO]
+    )
+    return {str(fid): str(sev) for fid, sev in rows}
+
+
+def band(snapshot: dict[str, Any], severity: str) -> tuple[float, float]:
+    (term,) = [t for t in snapshot["terms"] if t["key"] == f"findings.{severity}"]
+    return float(term["inputs"]["weight"]), float(term["inputs"]["effective_count"])
+
+
+class TestRiskModel:
+    def test_links_read_finding_and_control_tags(self) -> None:
+        fids, controls = po.links(
+            story(tags=["repo:x", "finding:abc", "Control:enforced_for_admins", "control:nope"])
+        )
+        assert fids == ["abc"]
+        assert controls == ["enforced_for_admins"]
+
+    def test_band_points_follow_the_curve(self) -> None:
+        model = po.RiskModel(available=True, bands={"critical": (40.0, 3.0)})
+        assert po.band_points(model, {"critical": 1}) == pytest.approx(40 * (2 - math.log2(3)))
+        assert po.band_points(model, {"critical": 3}) == pytest.approx(80.0)
+        assert po.band_points(model, {"low": 5}) == 0.0
+
+    def test_control_points_are_the_fall_in_the_governance_term(self) -> None:
+        model = po.RiskModel(
+            available=True, governance_available=True, governance_contribution=10.0
+        )
+        weights = {"enforced_for_admins": 1.0, "required_status_checks": 1.0}
+        states = {"enforced_for_admins": "off", "required_status_checks": "on"}
+        # Score 50 -> 100 with admins enforced: the term falls from 15 * 30/80 to 0,
+        # capped at the 10 points the decision actually added.
+        points = po.control_points(
+            model, states, ["enforced_for_admins"],
+            weights=weights, good_enough=80, points_at_zero=15.0,
+        )
+        assert points == pytest.approx(min(10.0, 15.0 * 30 / 80))
+        unscored = po.RiskModel(available=True, governance_available=False)
+        assert po.control_points(
+            unscored, states, ["enforced_for_admins"],
+            weights=weights, good_enough=80, points_at_zero=15.0,
+        ) == 0.0
+
+    def test_the_risk_order_puts_linked_stories_first_and_keeps_manual_ties(self) -> None:
+        stories = [story(id=i) for i in (1, 2, 3, 4)]
+        assert po.risk_order(stories, {2: 5.0, 3: 9.0, 4: 0.0}) == [3, 2, 4, 1]
+
+
+class TestRiskInTheBacklog:
+    def test_points_match_the_oracle_terms_for_the_linked_findings(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        auth: dict[str, str],
+        run_compaction: Any,
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        findings = seed_findings(client, auth, run_compaction)
+        criticals = [fid for fid, sev in findings.items() if sev == "critical"]
+        (high,) = [fid for fid, sev in findings.items() if sev == "high"]
+        score_portfolio(client)
+        run_compaction()
+        repo_id, _ = connect(
+            [
+                story(id=1, created_at="2026-01-01"),
+                story(
+                    id=2,
+                    created_at="2026-02-01",
+                    tags=[
+                        "repo:payments-api",
+                        f"finding:{criticals[0]}",
+                        f"finding:{criticals[1]}",
+                    ],
+                ),
+                story(
+                    id=3,
+                    created_at="2026-03-01",
+                    tags=["repo:payments-api", f"finding:{high}", "finding:not-a-finding"],
+                ),
+            ]
+        )
+
+        body = product_owner(client, repo_id, admin_auth)
+
+        (decision,) = client.app.state.catalog.query(  # type: ignore[attr-defined]
+            "SELECT inputs_snapshot FROM risk_decisions WHERE repo_full_name = ?", [REPO]
+        )
+        snapshot = json.loads(decision[0])
+        w, e = band(snapshot, "critical")
+        expected_two = w * (math.log2(1 + e) - math.log2(1 + e - 2))
+        hw, he = band(snapshot, "high")
+        expected_high = hw * (math.log2(1 + he) - math.log2(1 + he - 1))
+
+        risk = {s["id"]: s["risk"] for s in body["backlog"]}
+        assert risk[1]["linked"] is False and risk[1]["note"] == "not linked"
+        assert risk[1]["points"] is None
+        assert risk[2]["points"] == pytest.approx(round(expected_two, 2))
+        assert risk[2]["findings_open"] == 2
+        assert risk[3]["points"] == pytest.approx(round(expected_high, 2))
+        assert "1 linked finding(s) not open" in risk[3]["note"]
+        assert body["backlog_by_risk"] == [2, 3, 1]
+
+        model = body["risk_model"]
+        assert model["available"] is True
+        assert model["policy_version"] == snapshot["policy_version"]
+        assert model["risk_profile_available"] is False
+        assert "no risk profile" in model["statement"] and "B-033" in model["statement"]
+
+    def test_viewing_the_risk_order_leaves_the_manual_rank_unchanged(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        auth: dict[str, str],
+        run_compaction: Any,
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        findings = seed_findings(client, auth, run_compaction)
+        score_portfolio(client)
+        run_compaction()
+        fid = next(f for f, sev in findings.items() if sev == "critical")
+        repo_id, _ = connect(
+            [
+                story(id=1, created_at="2026-01-01"),
+                story(id=2, created_at="2026-02-01", tags=["repo:payments-api", f"finding:{fid}"]),
+            ]
+        )
+        base = f"/api/dashboard/repos/{repo_id}/product-owner"
+        # The bottom story cannot move down; the call still stores the visible order.
+        client.post(f"{base}/rank", json={"story_id": 2, "direction": "down"}, headers=admin_auth)
+        before = product_owner(client, repo_id, admin_auth)
+        after = product_owner(client, repo_id, admin_auth)
+
+        manual = [(s["id"], s["rank"]) for s in after["backlog"]]
+        assert manual == [(s["id"], s["rank"]) for s in before["backlog"]] == [(1, 1), (2, 2)]
+        assert after["backlog_by_risk"] == [2, 1]
+        (entry,) = audit_entries(client, "po.rank")
+        assert entry.detail["story_id"] == 2
+
+    def test_no_portfolio_decision_says_nothing_can_be_ranked(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        repo_id, _ = connect(
+            [story(id=1), story(id=2, tags=["repo:payments-api", "finding:abc"])]
+        )
+        body = product_owner(client, repo_id, admin_auth)
+        assert body["risk_model"]["available"] is False
+        assert "No portfolio decision" in body["risk_model"]["statement"]
+        risk = {s["id"]: s["risk"] for s in body["backlog"]}
+        assert risk[2] == {
+            "linked": True,
+            "points": None,
+            "findings_linked": 1,
+            "findings_open": 0,
+            "controls_linked": [],
+            "note": "no risk model",
+        }

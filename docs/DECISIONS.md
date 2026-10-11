@@ -6162,3 +6162,46 @@ well as deploys), not to a GitHub commit search in MyKronos.
 - *Searching GitHub for commits that mention the story.* It adds a GitHub
   operation per story per render, and a mention is not an attribution:
   "follow-up to #123" names a story it did not deliver.
+
+## D-139 — A story is linked to risk by `finding:` and `control:` tags, and scored from the portfolio decision
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.4)
+
+The Backlog view ordered stories by the Product Owner's rank, then by gate and
+age. Nothing said which story would reduce the most risk. It now shows, beside
+each row, the Oracle risk points the story would remove, and offers a
+"by risk removed" order beside the manual rank.
+
+**The link is a tag.** `finding:<finding_id>` names a MyKronos finding, and
+`control:<control_key>` names a governance control from
+`governance.CONTROL_ORDER`. TheHub stories already carry tags, and `repo:<name>`
+already uses them to give a story a repository (D-133). This is the smallest
+convention that needs no new TheHub field and no new MyKronos table. A story
+with neither tag is "not linked". It is not scored as zero, because zero would
+claim the story removes nothing.
+
+**Scored from the decision the Oracle published, not from a second model.**
+The repository's latest `portfolio` decision carries every term in its
+snapshot. Findings use each band's `weight` and effective count:
+`weight × (log2(1 + e) − log2(1 + max(0, e − k)))` for *k* linked open findings,
+which is the arithmetic `path_to_green` uses. Like the path, it counts the band
+curve only, so a KEV boost or age points on the same finding come off as well
+and the figure under-promises. Controls recompute the governance term from the
+stored control states with the linked controls on, capped at what the decision
+actually added. A linked finding that is no longer open removes nothing, and
+the row says how many there are.
+
+**It says what it ranked by** (the B-033 rule): the decision's date and policy
+version. When the repository has no risk profile it says the ranking carries no
+business context. When there is no portfolio decision it says nothing can be
+ranked by risk, and linked stories show "no model" rather than a number.
+
+**A view, never written.** The order is computed on read. The rank controls
+appear only in the manual order, so viewing the suggestion cannot store it.
+
+**Rejected.**
+- *Re-running the Oracle per story with the linked findings removed.* It is
+  exact, and it costs a full evaluation per backlog row per render. The band
+  arithmetic is the same calculation the Oracle's own path-to-green publishes.
+- *Linking through Patchwork's `remediation_events`.* That covers fixes
+  Patchwork opened, which are not most stories.

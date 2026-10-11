@@ -63,6 +63,19 @@ class GateCheckOut(BaseModel):
     items: list[CheckItemOut]
 
 
+class StoryRiskOut(BaseModel):
+    #: False when the story carries no `finding:` or `control:` tag.
+    linked: bool
+    #: Points removed, or null when not linked or no risk model exists.
+    points: float | None
+    findings_linked: int
+    #: Of the linked findings, how many are open under the decision's scope.
+    #: Only these remove points.
+    findings_open: int
+    controls_linked: list[str]
+    note: str
+
+
 class StoryOut(BaseModel):
     id: int
     title: str
@@ -85,6 +98,9 @@ class StoryOut(BaseModel):
     #: Only for a story at a done-equivalent gate, and only when the manifest
     #: declares one; null otherwise.
     dod: GateCheckOut | None = None
+    #: Oracle risk points this story would remove (spec 35 §7.4). Backlog
+    #: stories only.
+    risk: StoryRiskOut | None = None
 
 
 class ManifestOut(BaseModel):
@@ -143,6 +159,19 @@ class OracleOut(BaseModel):
     commit_sha: str | None
 
 
+class RiskModelOut(BaseModel):
+    """What the 'by risk removed' order ranked by (the B-033 rule)."""
+
+    available: bool
+    decision_id: str | None
+    evaluated_at: str | None
+    policy_version: str | None
+    #: False means the ranking carries no business context.
+    risk_profile_available: bool
+    #: The sentence the view shows, so every surface says the same thing.
+    statement: str
+
+
 class TemplateOut(BaseModel):
     id: str
     label: str
@@ -179,6 +208,10 @@ class ProductOwnerOut(BaseModel):
     oracle: OracleOut | None
     backlog: list[StoryOut]
     sprint: list[StoryOut]
+    risk_model: RiskModelOut
+    #: Backlog story ids in the 'by risk removed' order. A view, never written:
+    #: the manual rank is unchanged by it.
+    backlog_by_risk: list[int]
 
 
 class PoActionOut(BaseModel):
@@ -491,6 +524,118 @@ async def _dod_checks(
     return out
 
 
+def _portfolio_decision(request: Request, repo_full_name: str) -> dict[str, Any] | None:
+    try:
+        from mykronos.api.oracle import _service
+
+        decisions = _service(request).recent_decisions(
+            repo_full_name, decision_type="portfolio", limit=1
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read the portfolio decision for %s", repo_full_name)
+        return None
+    return decisions[0] if decisions else None
+
+
+def _findings(
+    request: Request, repo_full_name: str, finding_ids: list[str]
+) -> dict[str, tuple[str, str]]:
+    """finding id -> (severity, status), the latest row of each."""
+    if not finding_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in finding_ids)
+    try:
+        rows = request.app.state.catalog.query(
+            f"""
+            SELECT finding_id, severity, status FROM findings
+            WHERE asset_id = ? AND finding_id IN ({placeholders})
+            ORDER BY last_seen_at
+            """,
+            [repo_full_name, *finding_ids],
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read linked findings for %s", repo_full_name)
+        return {}
+    return {str(fid): (str(sev or ""), str(state or "")) for fid, sev, state in rows}
+
+
+def _risk_statement(model: po.RiskModel) -> str:
+    if not model.available:
+        return model.reason
+    when = (model.evaluated_at or "")[:10]
+    text = (
+        f"Ranked by the Oracle's portfolio decision of {when} (policy "
+        f"{model.policy_version or 'unknown'}): finding bands and the governance term."
+    )
+    if not model.risk_profile_available:
+        text += (
+            " This repository has no risk profile, so the ranking carries no business "
+            "context: it is finding severity and governance only (B-033)."
+        )
+    return text
+
+
+def _story_risks(
+    request: Request,
+    repo_full_name: str,
+    stories: list[dict[str, Any]],
+    model: po.RiskModel,
+) -> dict[int, StoryRiskOut]:
+    linked = {int(s["id"]): po.links(s) for s in stories}
+    every_finding = sorted({f for fids, _ in linked.values() for f in fids})
+    findings = _findings(request, repo_full_name, every_finding) if model.available else {}
+    states, _ = (
+        _governance_states(request, repo_full_name)
+        if any(controls for _, controls in linked.values())
+        else (None, "")
+    )
+    policy = request.app.state.oracle_policy.governance
+    out: dict[int, StoryRiskOut] = {}
+    for sid, (fids, controls) in linked.items():
+        if not fids and not controls:
+            out[sid] = StoryRiskOut(
+                linked=False, points=None, findings_linked=0, findings_open=0,
+                controls_linked=[], note="not linked",
+            )
+            continue
+        if not model.available:
+            out[sid] = StoryRiskOut(
+                linked=True, points=None, findings_linked=len(fids), findings_open=0,
+                controls_linked=controls, note="no risk model",
+            )
+            continue
+        by_severity: dict[str, int] = {}
+        open_count = 0
+        for fid in fids:
+            found = findings.get(fid)
+            if found is None or found[1] not in model.statuses_considered:
+                continue
+            open_count += 1
+            by_severity[found[0]] = by_severity.get(found[0], 0) + 1
+        points = po.band_points(model, by_severity) + po.control_points(
+            model,
+            states,
+            controls,
+            weights=governance.weights(),
+            good_enough=policy.good_enough,
+            points_at_zero=policy.points_at_zero,
+        )
+        notes = []
+        if len(fids) > open_count:
+            notes.append(f"{len(fids) - open_count} linked finding(s) not open")
+        if controls and not model.governance_available:
+            notes.append("governance was not in the decision")
+        out[sid] = StoryRiskOut(
+            linked=True,
+            points=round(points, 2),
+            findings_linked=len(fids),
+            findings_open=open_count,
+            controls_linked=controls,
+            note="; ".join(notes),
+        )
+    return out
+
+
 async def _repo_stories(
     hub: po.HubClient, tag: str, include_untagged: bool
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -583,10 +728,18 @@ async def product_owner(
         dod = await _dod_checks(request, hub, repo_id, repo_full_name, manifest, done_raw)
 
     ranks = _ranks(request, repo_id)
+    ordered = po.order_backlog(backlog_raw, ranks)
+    model = po.risk_model(_portfolio_decision(request, repo_full_name))
+    risks = _story_risks(request, repo_full_name, ordered, model)
     backlog = [
         _story_out(s, manifest, ranks.get(int(s["id"])), dod.get(int(s["id"])))
-        for s in po.order_backlog(backlog_raw, ranks)
+        for s in ordered
     ]
+    for story_out in backlog:
+        story_out.risk = risks.get(story_out.id)
+    by_risk = po.risk_order(
+        ordered, {sid: risk.points for sid, risk in risks.items() if risk.linked}
+    )
     sprint = [_story_out(s, manifest, None, dod.get(int(s["id"]))) for s in sprint_raw]
     sprint.sort(key=lambda s: (po.SPINE.index(s.spine), s.id))
 
@@ -697,6 +850,15 @@ async def product_owner(
         oracle=_oracle(request, repo_full_name),
         backlog=backlog,
         sprint=sprint,
+        risk_model=RiskModelOut(
+            available=model.available,
+            decision_id=model.decision_id,
+            evaluated_at=model.evaluated_at,
+            policy_version=model.policy_version,
+            risk_profile_available=model.risk_profile_available,
+            statement=_risk_statement(model),
+        ),
+        backlog_by_risk=by_risk,
     )
 
 

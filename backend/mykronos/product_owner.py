@@ -24,6 +24,7 @@ is in the sprint with autonomy armed.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +34,7 @@ import httpx2
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from mykronos import governance
 from mykronos.github.client import FileChange, GitHubClient, PullRequest
 from mykronos.process_templates import Template
 
@@ -530,6 +532,163 @@ def moved(order: list[int], story_id: int, direction: Literal["up", "down"]) -> 
     if 0 <= target < len(result):
         result[index], result[target] = result[target], result[index]
     return result
+
+
+# --------------------------------------------------------------------------
+# Risk removed (spec 35 §7.4, D-139)
+# --------------------------------------------------------------------------
+
+#: The link from a Hub story to what it would close. Tags, because TheHub
+#: stories already carry tags and need no new field for it.
+FINDING_TAG = "finding:"
+CONTROL_TAG = "control:"
+
+
+def links(story: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(finding ids, governance control keys) a story is tagged with. A
+    control key that is not one of governance's is ignored, not guessed at."""
+    findings: list[str] = []
+    controls: list[str] = []
+    for raw in story.get("tags") or []:
+        tag = str(raw).strip()
+        lowered = tag.lower()
+        if lowered.startswith(FINDING_TAG):
+            value = tag[len(FINDING_TAG) :].strip()
+            if value and value not in findings:
+                findings.append(value)
+        elif lowered.startswith(CONTROL_TAG):
+            value = lowered[len(CONTROL_TAG) :].strip()
+            if value in governance.CONTROL_ORDER and value not in controls:
+                controls.append(value)
+    return findings, controls
+
+
+@dataclass
+class RiskModel:
+    """The terms of the repository's latest portfolio decision that a story
+    can move, read from the decision's own snapshot so the points agree with
+    the score the Oracle published."""
+
+    available: bool
+    reason: str = ""
+    decision_id: str | None = None
+    evaluated_at: str | None = None
+    policy_version: str | None = None
+    risk_profile_available: bool = False
+    statuses_considered: tuple[str, ...] = ("open",)
+    #: severity -> (weight, effective count) from each `findings.<severity>` term.
+    bands: dict[str, tuple[float, float]] = field(default_factory=dict)
+    governance_available: bool = False
+    governance_contribution: float = 0.0
+
+
+def risk_model(decision: dict[str, Any] | None) -> RiskModel:
+    if decision is None:
+        return RiskModel(
+            available=False,
+            reason=(
+                "No portfolio decision is recorded for this repository, so nothing "
+                "can be ranked by risk."
+            ),
+        )
+    snapshot = decision.get("inputs_snapshot")
+    if not isinstance(snapshot, dict):
+        return RiskModel(
+            available=False, reason="The latest portfolio decision's snapshot is unreadable."
+        )
+    bands: dict[str, tuple[float, float]] = {}
+    for term in snapshot.get("terms") or []:
+        key = str(term.get("key") or "")
+        inputs = term.get("inputs") or {}
+        if key.startswith("findings.") and "weight" in inputs:
+            effective = inputs.get("effective_count", inputs.get("count", 0))
+            bands[key.split(".", 1)[1]] = (float(inputs["weight"]), float(effective or 0))
+    scope = snapshot.get("decision_scope") or {}
+    gov = snapshot.get("governance") or {}
+    evaluated = decision.get("evaluated_at")
+    return RiskModel(
+        available=True,
+        decision_id=decision.get("decision_id"),
+        evaluated_at=evaluated.isoformat() if isinstance(evaluated, datetime) else evaluated,
+        policy_version=decision.get("policy_version") or snapshot.get("policy_version"),
+        risk_profile_available=bool((snapshot.get("risk_profile") or {}).get("available")),
+        statuses_considered=tuple(scope.get("statuses_considered") or ("open",)),
+        bands=bands,
+        governance_available=bool(gov.get("available")),
+        governance_contribution=float(gov.get("contribution") or 0.0),
+    )
+
+
+def band_points(model: RiskModel, linked_by_severity: dict[str, int]) -> float:
+    """What closing `k` linked open findings per band removes.
+
+    `weight × (log2(1 + e) − log2(1 + max(0, e − k)))`: the band curve the
+    score was built from, evaluated before and after, which is what
+    `path_to_green` sums step by step. A severity with no term in the decision
+    (out of scope, or weighted zero) removes nothing.
+    """
+    total = 0.0
+    for severity, count in linked_by_severity.items():
+        if severity not in model.bands or count <= 0:
+            continue
+        weight, effective = model.bands[severity]
+        total += weight * (math.log2(1 + effective) - math.log2(1 + max(0.0, effective - count)))
+    return total
+
+
+def _governance_term(value: int | None, good_enough: int, points_at_zero: float) -> float:
+    """The `risk_profile.governance` term for a governance score (spec 30 §4)."""
+    if value is None or value >= good_enough or not points_at_zero or good_enough <= 0:
+        return 0.0
+    return points_at_zero * (good_enough - value) / good_enough
+
+
+def control_points(
+    model: RiskModel,
+    control_states: dict[str, str] | None,
+    linked: list[str],
+    *,
+    weights: dict[str, float],
+    good_enough: int,
+    points_at_zero: float,
+) -> float:
+    """How far the governance term falls with the linked controls on.
+
+    Recomputed from the stored control states before and after, so both
+    sides use the same reading, and capped at the term's contribution in the
+    decision: a story cannot remove points the Oracle never added.
+    """
+    if not linked or not model.governance_available or control_states is None:
+        return 0.0
+    before = [governance.Control(key=k, state=s) for k, s in control_states.items()]
+    after = [
+        governance.Control(key=c.key, state="on" if c.key in linked else c.state) for c in before
+    ]
+    score_before = governance.score(
+        governance.Governance(repo_full_name="", controls=before), policy=weights
+    )
+    score_after = governance.score(
+        governance.Governance(repo_full_name="", controls=after), policy=weights
+    )
+    removed = _governance_term(score_before, good_enough, points_at_zero) - _governance_term(
+        score_after, good_enough, points_at_zero
+    )
+    return max(0.0, min(model.governance_contribution, removed))
+
+
+def risk_order(stories: list[dict[str, Any]], points: dict[int, float | None]) -> list[int]:
+    """The 'by risk removed' order: linked stories by points removed, most
+    first, then the unlinked ones. Ties keep the order `stories` came in,
+    which is the manual order -- so viewing this never needs to write one."""
+    position = {int(s["id"]): i for i, s in enumerate(stories)}
+    return sorted(
+        position,
+        key=lambda sid: (
+            points.get(sid) is None,
+            -(points.get(sid) or 0.0),
+            position[sid],
+        ),
+    )
 
 
 # --------------------------------------------------------------------------

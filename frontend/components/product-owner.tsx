@@ -6,6 +6,7 @@ import {
   PullIntoSprint,
   RankControls,
 } from "@/components/product-owner-actions";
+import { BacklogOrder } from "@/components/product-owner-backlog-order";
 import { TemplatePicker } from "@/components/product-owner-template";
 import { EmptyState, Label, Pill, Section, StatTile } from "@/components/primitives";
 import type { PoStory, ProductOwnerView } from "@/lib/api";
@@ -317,30 +318,76 @@ function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
       />
     );
   }
+  const last = data.backlog.length - 1;
+  const manualRows: Record<string, ReactNode> = {};
+  const riskRows: Record<string, ReactNode> = {};
+  data.backlog.forEach((story, index) => {
+    const rank =
+      story.rank === null ? (
+        <span className="font-mono text-[11px] text-ink-3">unranked</span>
+      ) : (
+        <span className="font-mono text-[11px] text-ink-3">rank {story.rank}</span>
+      );
+    manualRows[String(story.id)] = (
+      <StoryRow story={story}>
+        {rank}
+        <RiskLabel story={story} />
+        {data.can_write ? (
+          <>
+            <RankControls
+              repoId={repoId}
+              storyId={story.id}
+              first={index === 0}
+              last={index === last}
+            />
+            <PullIntoSprint repoId={repoId} storyId={story.id} />
+          </>
+        ) : null}
+      </StoryRow>
+    );
+    riskRows[String(story.id)] = (
+      <StoryRow story={story}>
+        {rank}
+        <RiskLabel story={story} />
+        {data.can_write ? <PullIntoSprint repoId={repoId} storyId={story.id} /> : null}
+      </StoryRow>
+    );
+  });
   return (
     <Section
       title="Backlog"
       detail={`${data.backlog.length} · ranked first, then by gate and age`}
     >
-      {data.backlog.map((story, index) => (
-        <StoryRow key={story.id} story={story}>
-          {story.rank === null ? (
-            <span className="font-mono text-[11px] text-ink-3">unranked</span>
-          ) : null}
-          {data.can_write ? (
-            <>
-              <RankControls
-                repoId={repoId}
-                storyId={story.id}
-                first={index === 0}
-                last={index === data.backlog.length - 1}
-              />
-              <PullIntoSprint repoId={repoId} storyId={story.id} />
-            </>
-          ) : null}
-        </StoryRow>
-      ))}
+      <BacklogOrder
+        manual={data.backlog.map((story) => story.id)}
+        byRisk={data.backlog_by_risk}
+        manualRows={manualRows}
+        riskRows={riskRows}
+        statement={data.risk_model.statement}
+      />
     </Section>
+  );
+}
+
+/** "removes N risk points", from the Oracle terms the story is linked to by its
+ *  `finding:` / `control:` tags (spec 35 §7.4). */
+function RiskLabel({ story }: { story: PoStory }) {
+  const risk = story.risk;
+  if (!risk) return null;
+  if (!risk.linked) {
+    return <span className="font-mono text-[11px] text-ink-3">not linked</span>;
+  }
+  const title = [
+    `${risk.findings_open} of ${risk.findings_linked} linked finding(s) open`,
+    risk.controls_linked.length ? `controls: ${risk.controls_linked.join(", ")}` : null,
+    risk.note || null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <Pill tone={risk.points ? "warn" : "muted"} title={title}>
+      {risk.points === null ? "risk: no model" : `removes ${risk.points} risk points`}
+    </Pill>
   );
 }
 
