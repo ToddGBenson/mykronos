@@ -17,6 +17,7 @@ from mykronos.adapters import ScanContext, supported_tools
 from mykronos.adapters.cloud_generic import normalize as cloud_normalize
 from mykronos.adapters.dast_zap import MAX_INSTANCES_PER_ALERT
 from mykronos.adapters.dast_zap import normalize as zap_normalize
+from mykronos.adapters.dast_zap import normalize_edge as zap_edge_normalize
 from mykronos.adapters.registry import get_adapter, normalize_results
 from mykronos.adapters.secrets_gitleaks import REDACTED
 from mykronos.adapters.secrets_gitleaks import normalize as gitleaks_normalize
@@ -1643,3 +1644,79 @@ def _accepted_flags(module: object) -> set[str]:
             for option in action.option_strings
         }
     return set(_re.findall(r"(--[a-z][a-z0-9-]+)", text))
+
+
+# ---------------------------------------------------------------------------
+# ZAP at the public edge (TheHub #60708)
+# ---------------------------------------------------------------------------
+
+
+def _dast_identity(finding: Any) -> str:
+    return compute_finding_id(
+        repo_full_name=REPO,
+        capability="dast",
+        rule_id=finding.rule_id,
+        file_path=finding.file_path,
+        symbol=finding.symbol,
+        code_snippet=finding.code_snippet,
+        line_start=finding.line_start,
+    )[0]
+
+
+def _edge_report(host: str = "https://hub.example.net") -> bytes:
+    return zap_report(instances=[{"uri": f"{host}/frontend/app.js?v=abc", "method": "GET"}])
+
+
+class TestZapEdge:
+    """`zap-edge` is the same scanner pointed at a public hostname.
+
+    The origin lane keys a finding on the route alone, so the edge lane must
+    not: Cloudflare can add or strip a header the origin sends, and the two
+    lanes disagreeing about one route is the very thing the edge lane exists
+    to measure. Sharing an identity would make that disagreement one row that
+    each lane overwrites.
+    """
+
+    def test_it_is_a_registered_dast_tool_beside_zap(self) -> None:
+        assert {"zap", "zap-edge"} <= set(supported_tools("dast"))
+        assert get_adapter("dast", "zap-edge").normalize is zap_edge_normalize
+
+    def test_the_public_origin_is_part_of_the_location(self) -> None:
+        finding = zap_edge_normalize(_edge_report(), context("dast")).findings[0]
+
+        assert finding.file_path == "https://hub.example.net/frontend/app.js"
+        assert finding.code_snippet == "GET https://hub.example.net/frontend/app.js"
+        assert "https://hub.example.net/frontend/app.js" in finding.title
+
+    def test_it_never_shares_an_identity_with_the_origin_lane(self) -> None:
+        report = _edge_report()
+        edge = zap_edge_normalize(report, context("dast")).findings[0]
+        origin = zap_normalize(report, context("dast")).findings[0]
+
+        assert origin.file_path == "/frontend/app.js"
+        assert _dast_identity(edge) != _dast_identity(origin)
+
+    def test_two_public_hostnames_are_two_findings(self) -> None:
+        hub = zap_edge_normalize(_edge_report("https://hub.example.net"), context("dast"))
+        other = zap_edge_normalize(_edge_report("https://other.example.net"), context("dast"))
+
+        assert _dast_identity(hub.findings[0]) != _dast_identity(other.findings[0])
+
+    def test_identity_is_still_stable_across_scans(self) -> None:
+        """The route rules (#274) still apply: query strings and ids drop out."""
+        first = zap_edge_normalize(
+            zap_report(instances=[{"uri": "https://hub.example.net/r/0123456789abcdef?x=1"}]),
+            context("dast"),
+        ).findings[0]
+        second = zap_edge_normalize(
+            zap_report(instances=[{"uri": "https://hub.example.net/r/fedcba9876543210?y=2"}]),
+            context("dast"),
+        ).findings[0]
+
+        assert first.file_path == "https://hub.example.net/r/{id}"
+        assert _dast_identity(first) == _dast_identity(second)
+
+    def test_the_origin_lane_is_unchanged(self) -> None:
+        """Every existing DAST identity must survive this change untouched."""
+        finding = zap_normalize(_edge_report(), context("dast")).findings[0]
+        assert finding.code_snippet == "GET /frontend/app.js"

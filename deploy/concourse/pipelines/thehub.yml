@@ -80,9 +80,10 @@
 # Every job is in at least one group on purpose: Concourse hides any job that
 # is in none, and a hidden lane is a lane nobody notices has gone red.
 #
-# The `demo` group came back with the two demo lanes (#491). `prod` keeps
-# `dast-prod` alone: production is still here and still scanned, it is simply
-# no longer *delivered* from here. `deploy-prod` was the last job in this file
+# The `demo` group came back with the two demo lanes (#491). `prod` holds the
+# two scans of production and nothing else: `dast-prod` at the origin and
+# `dast-edge` through Cloudflare (TheHub #60708). Production is still here and
+# still scanned, it is simply no longer *delivered* from here. `deploy-prod` was the last job in this file
 # that claimed otherwise, and it is retired (#59990/#59999/#60063).
 groups:
   - name: quality
@@ -96,7 +97,7 @@ groups:
   - name: demo
     jobs: [deploy-demo, api-inventory, dast-demo]
   - name: prod
-    jobs: [dast-prod]
+    jobs: [dast-prod, dast-edge]
   - name: remediation
     jobs: [remediate]
 
@@ -4934,6 +4935,433 @@ jobs:
                   exit 1
                 }
                 echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against prod"
+
+  # -- Unauthenticated baseline DAST: Prod, through the public edge ---------
+  #
+  # TheHub #60708. `dast-prod` scans ((thehub-prod-url)), the origin on the
+  # LAN, so nothing ever tested what the internet actually meets: the
+  # Cloudflare edge's headers and TLS, and the tunnel's path allowlist. This
+  # job scans ((thehub-public-url)) -- https://hub.toddbenson.net -- through
+  # Cloudflare, and checks the perimeter of ((mykronos-public-url)) beside it.
+  # The measured map of that perimeter is TheHub's
+  # docs/runbooks/internet-exposure.md (#60652); finding 5 there is this gap.
+  #
+  # **The same profile as `dast-prod`, and no more.** zap-baseline.py, spider
+  # capped at 5 minutes, passive rules only, on the same `daily` clock and in
+  # the same `worker` serial group. Production is not hammered through
+  # Cloudflare: this adds one bounded crawl a day, and the checks below are a
+  # dozen single requests.
+  #
+  # **Its findings are `--tool zap-edge`, not `zap`, and that is the whole of
+  # the separation (D-154).** Every DAST lane in this file uploads as `zap`,
+  # and the `zap` adapter keys a finding on the route alone, so the edge and
+  # the origin reporting on `/` would be one finding that each lane
+  # re-describes. `zap-edge` keeps the scheme and host in the location, so its
+  # findings never share an identity with an origin lane's, and absence
+  # reconciliation partitions on the tool, so an edge scan's silence cannot
+  # close an origin finding.
+  #
+  # **It needs an uploader that knows `zap-edge`.** ((mykronos-ref)) must be a
+  # tag cut after D-154 merged; the task checks for the adapter before it
+  # uploads and names the fix if it is missing, rather than failing on a
+  # LookupError halfway through.
+  #
+  # **Cloudflare's bot protection is a possible blocker, and is checked rather
+  # than assumed.** Measured 2026-10-11 from this host: no request was
+  # challenged (`cf-mitigated` absent on every response). That was curl, not
+  # ZAP's Java client, whose TLS fingerprint is not a browser's. If the edge
+  # challenges this scanner, the task fails and says so. The honest fix is an
+  # operator-side Cloudflare WAF custom rule that skips bot protection for
+  # this worker's egress address. Nothing here creates one, and nothing here
+  # should loosen bot protection for anybody else.
+  #
+  # **It will raise TheHub's own brute-force alert, and that is expected.**
+  # Through the tunnel, TheHub's IPS sees the WAN address in
+  # CF-Connecting-IP, which is not in its trusted prefixes. Five 401s in five
+  # minutes logs a `brute_force` event (critical). The perimeter checks below
+  # stay at four 401s on hub, but the crawl adds more. TheHub's IPS auto-bans
+  # only on a known attack-tool user agent, and ZAP's default user agent is
+  # not one, so the scan does not lock the address out. That was read from
+  # `services/security_monitor.py`, not measured.
+  #
+  # **Every request to hub is signed, so TheHub records the scan as synthetic
+  # (TheHub #60724, commit ffe23ede).** The header is
+  # `X-Hub-Scanner: <ts>.<hmac>`. hmac is lowercase hex HMAC-SHA256, keyed by
+  # ((hub-scanner-token)), over `<ts><path>`. The path is percent-decoded and
+  # has no query string. TheHub checks the header in
+  # `services/scanner_identity.py`: it allows 5 minutes of clock skew either
+  # way and compares in constant time. With a valid signature, TheHub records
+  # the 401 as an auth failure inside `synthetic("dast_edge")`, which never
+  # reaches the brute-force window. A valid signature never authenticates:
+  # the gate still answers 401.
+  #
+  # A static replacer rule cannot do this, because the path is inside the MAC
+  # and the header expires. ZAP signs each request with an HTTP Sender
+  # script, which a zap-baseline `--hook` loads. The perimeter probes sign
+  # with the same formula in python3. Only requests to hub's host are signed.
+  # MyKronos has no use for the header and should not be handed a credential
+  # for TheHub.
+  #
+  # Both signers read the token from the environment. It is never written to
+  # a file, never printed, and never put on a command line. Only the derived
+  # per-request header is. Secret redaction is not enabled in this stack's
+  # compose, so not printing the token is the only masking.
+  #
+  # **An empty token scans unsigned and warns.** The scan is still valid, and
+  # TheHub files its `brute_force` alert as it did before #60724. A missing
+  # Vault entry is different: Concourse cannot resolve an undefined var, so
+  # the job errors. `set-thehub-pipeline.ps1` falls back to
+  # HUB_SCANNER_TOKEN in TheHub's .env, or empty if it is absent. The
+  # self-apply job reads only Vault, though, so the entry must exist there,
+  # even if it is empty.
+  #
+  # **The scanner has no token, on purpose.** On the internet path the gate is
+  # the only control. Cloudflare Access is on no rule. So the checks prove the
+  # gate refuses an anonymous caller, rather than scanning behind it.
+  #
+  # **Only hub's findings are uploaded.** ((mykronos-public-url)) is MyKronos's
+  # own asset. Its ingestion token must never resolve in this pipeline's scope
+  # (Import-EnvSecretsToVault.ps1). So it is checked here (the tunnel's 404
+  # outside the allowlist, PerimeterGate's 401 inside it) and not scanned
+  # into TheHub's findings. A ZAP scan of it belongs in the mykronos pipeline.
+  #
+  # `commit_sha` means what it means for `dast-prod`: the tip of
+  # ((thehub-branch)) at scan time, not what production runs.
+  - name: dast-edge
+    public: true
+    serial_groups: [worker]
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod-edge }
+    on_failure:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: dast-edge }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod-edge }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: dast-edge }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod-edge }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: dast_headers, STATUS: aborted, TARGET_ENV: prod-edge }
+    plan:
+      - get: daily
+        attempts: *retry_fetch
+        trigger: true
+      - get: source
+        attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      - get: zap
+        attempts: *retry_fetch
+      - *preflight
+      # One task, for the reason `dast-prod` gives: this image runs as `zap`
+      # and cannot hand its report across a Concourse output volume.
+      - task: zap-baseline-edge
+        image: zap
+        timeout: 45m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          params:
+            <<: *mykronos_env
+            TARGET_URL: ((thehub-public-url))
+            SIBLING_URL: ((mykronos-public-url))
+            # TheHub #60724. Empty means unsigned, not failed.
+            HUB_SCANNER_TOKEN: ((hub-scanner-token))
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                TARGET_URL="${TARGET_URL%/}"
+                SIBLING_URL="${SIBLING_URL%/}"
+                HDRS=$(mktemp)
+                if [ -z "${HUB_SCANNER_TOKEN:-}" ]; then
+                  echo "::warning::hub-scanner-token is empty, so this scan is UNSIGNED. TheHub will record its"
+                  echo "::warning::401s as real traffic and file a critical brute_force alert (#60724)."
+                fi
+
+                # IPv4, because this host's IPv6 route is dead (#59976) and
+                # because ZAP's JVM prefers IPv4. These checks then measure the
+                # same path the scan takes.
+                #
+                # --retry covers transport errors and 5xx. A 401 or 404 is an
+                # answer, and it is returned as one.
+                # TheHub #60724: `<ts>.<hmac_sha256(token, ts + path)>`, for
+                # hub's host only. Prints nothing when unsigned. The token and
+                # the URL go in by environment, not on the command line.
+                sign_for() {
+                  [ -n "${HUB_SCANNER_TOKEN:-}" ] || return 0
+                  SIGN_URL="$1" python3 -c '
+                import hashlib, hmac, os, time
+                from urllib.parse import unquote, urlsplit
+                url, target = urlsplit(os.environ["SIGN_URL"]), urlsplit(os.environ["TARGET_URL"])
+                if url.hostname == target.hostname:
+                    ts = os.environ.get("SIGN_TS") or str(int(time.time()))
+                    path = unquote(url.path) or "/"
+                    key = os.environ["HUB_SCANNER_TOKEN"].encode("utf-8")
+                    mac = hmac.new(key, (ts + path).encode("utf-8"), hashlib.sha256).hexdigest()
+                    print(ts + "." + mac)
+                '
+                }
+                status_of() {
+                  : > "$HDRS"
+                  local sig
+                  sig=$(sign_for "$1") || sig=""
+                  curl -4 --silent --show-error --max-time 30 \
+                    --retry 3 --retry-delay 5 \
+                    ${sig:+-H "X-Hub-Scanner: $sig"} \
+                    -o /dev/null -D "$HDRS" -w '%{http_code}' "$1"
+                }
+                header() { grep -i "^$1:" "$HDRS" | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+
+                # A Cloudflare challenge answers 403 or 503 and carries
+                # `cf-mitigated: challenge`. A crawl that meets one returns the
+                # challenge page, and reads as a clean scan.
+                refuse_if_challenged() {
+                  if [ -n "$(header cf-mitigated)" ]; then
+                    echo "::error::Cloudflare challenged the scanner at $1 (cf-mitigated: $(header cf-mitigated))."
+                    echo "::error::Bot protection blocks this lane. The fix is operator-side: a Cloudflare WAF"
+                    echo "::error::custom rule that skips bot protection for this worker's egress address only."
+                    echo "::error::Refusing to report a challenged crawl as a scan."
+                    exit 1
+                  fi
+                }
+
+                # 1. Through Cloudflare, or not at all. A hosts entry or a
+                #    resolver that hands back the LAN address would turn this
+                #    into a second `dast-prod` under the edge's name. Every edge
+                #    response carries `server: cloudflare` and a `cf-ray`.
+                code=$(status_of "$TARGET_URL/") || {
+                  echo "::error::$TARGET_URL is not answering after retries (or its certificate does not verify)."
+                  echo "::error::Refusing to report an empty scan as clean."
+                  exit 1
+                }
+                refuse_if_challenged "$TARGET_URL/"
+                if [ "$(header server)" != "cloudflare" ] || [ -z "$(header cf-ray)" ]; then
+                  echo "::error::$TARGET_URL/ answered $code without Cloudflare's headers (server='$(header server)', cf-ray='$(header cf-ray)')."
+                  echo "::error::This request did not traverse the edge, so a scan would not be an edge scan."
+                  exit 1
+                fi
+                echo "Edge verified: $TARGET_URL/ -> $code via Cloudflare (cf-ray $(header cf-ray))."
+
+                # 2. The perimeter, with no token. Each row is what an anonymous
+                #    internet caller must get, measured 2026-10-11 (#60652).
+                #    A gated path answering 200 here is the finding this lane
+                #    exists to catch, and it fails the job rather than waiting
+                #    for a dashboard.
+                #
+                #    Four 401s on hub, deliberately: TheHub's IPS files
+                #    `brute_force` at five in five minutes.
+                wrong=0
+                expect() {
+                  local url="$1" want="$2" why="$3" got
+                  got=$(status_of "$url") || got="unreachable"
+                  refuse_if_challenged "$url"
+                  if [ "$got" = "$want" ]; then
+                    echo "  ok   $got  $url  ($why)"
+                  else
+                    echo "::error::$url answered $got, expected $want: $why"
+                    wrong=$((wrong + 1))
+                  fi
+                }
+                echo "Perimeter, unauthenticated:"
+                expect "$TARGET_URL/api/auth/me"     401 "ApiGateMiddleware refuses the API"
+                expect "$TARGET_URL/api/dev/stories" 401 "ApiGateMiddleware refuses the API"
+                expect "$TARGET_URL/docs"            401 "Swagger is gated"
+                expect "$TARGET_URL/openapi.json"    401 "the schema is gated"
+                expect "$SIBLING_URL/"               404 "the tunnel's path allowlist refuses everything outside it"
+                expect "$SIBLING_URL/api/health"     401 "PerimeterGate refuses inside the allowlist"
+                expect "$SIBLING_URL/docs"           401 "PerimeterGate refuses inside the allowlist"
+                expect "$SIBLING_URL/healthz"        200 "the one open path inside the allowlist"
+                if [ "$wrong" -gt 0 ]; then
+                  echo "::error::$wrong perimeter check(s) failed. Not scanning past an open gate."
+                  exit 1
+                fi
+
+                # 3. TLS at the edge. Certificate verification is curl's
+                #    default, so every request above already proved it. Two
+                #    things are left: a modern protocol must negotiate, and the
+                #    old ones are reported, not gated. Cloudflare's minimum TLS
+                #    version is a zone setting nobody has measured, and this
+                #    image's OpenSSL may refuse to offer TLS 1.0 at all, so a
+                #    refusal here cannot say which end refused.
+                curl -4 -sS --max-time 30 --tlsv1.2 -o /dev/null "$TARGET_URL/" || {
+                  echo "::error::$TARGET_URL does not negotiate TLS 1.2 or later."
+                  exit 1
+                }
+                for v in 1.0 1.1; do
+                  if curl -4 -s --max-time 15 "--tlsv$v" --tls-max "$v" -o /dev/null "$TARGET_URL/" 2>/dev/null; then
+                    echo "::warning::$TARGET_URL accepts TLS $v. Cloudflare's minimum TLS version is an operator setting."
+                  else
+                    echo "TLS $v: not negotiated. The edge refused it, or this client would not offer it."
+                  fi
+                done
+                if [ -z "$(curl -4 -sS --max-time 30 -o /dev/null -D - "$TARGET_URL/" | grep -i '^strict-transport-security:')" ]; then
+                  echo "::warning::$TARGET_URL/ sends no Strict-Transport-Security header at the edge."
+                fi
+
+                # 4. The scan: `dast-prod`'s profile, plus a hook that signs.
+                #
+                # The hook and the sender script go in a private directory,
+                # never in /zap/wrk. That directory is the upload's
+                # --results-path, and every *.json in it is parsed as a report.
+                SIGNER_DIR=$(mktemp -d)
+                export HUB_SCANNER_SCRIPT="$SIGNER_DIR/hub-scanner-sign.js"
+                export HUB_SCANNER_STATUS="$SIGNER_DIR/status"
+                HUB_SCANNER_HOST=$(python3 -c 'import os; from urllib.parse import urlsplit; print(urlsplit(os.environ["TARGET_URL"]).hostname or "")')
+                export HUB_SCANNER_HOST
+                cat > "$HUB_SCANNER_SCRIPT" <<'JS'
+                // TheHub #60724. A ZAP HTTP Sender script that signs every request
+                // to hub's host with X-Hub-Scanner: <ts>.<hmac>. The token comes
+                // from the environment and is never written anywhere.
+                var Mac = Java.type('javax.crypto.Mac');
+                var SecretKeySpec = Java.type('javax.crypto.spec.SecretKeySpec');
+                var JString = Java.type('java.lang.String');
+                var UTF_8 = Java.type('java.nio.charset.StandardCharsets').UTF_8;
+                var System = Java.type('java.lang.System');
+
+                function hubScannerSignature(token, ts, path) {
+                  var mac = Mac.getInstance('HmacSHA256');
+                  mac.init(new SecretKeySpec(new JString(token).getBytes(UTF_8), 'HmacSHA256'));
+                  var digest = mac.doFinal(new JString(ts + path).getBytes(UTF_8));
+                  var hex = '';
+                  for (var i = 0; i < digest.length; i++) {
+                    hex += ('0' + (digest[i] & 0xff).toString(16)).slice(-2);
+                  }
+                  return ts + '.' + hex;
+                }
+
+                function sendingRequest(msg, initiator, helper) {
+                  var token = System.getenv('HUB_SCANNER_TOKEN');
+                  var host = System.getenv('HUB_SCANNER_HOST');
+                  if (!token || !host) { return; }
+                  var uri = msg.getRequestHeader().getURI();
+                  if (String(uri.getHost()).toLowerCase() !== String(host).toLowerCase()) { return; }
+                  // getPath() returns the decoded path without the query, which
+                  // is what TheHub's request.url.path sees.
+                  var path = uri.getPath();
+                  path = (path === null || String(path) === '') ? '/' : String(path);
+                  var ts = String(Math.floor(Date.now() / 1000));
+                  msg.getRequestHeader().setHeader('X-Hub-Scanner', hubScannerSignature(String(token), ts, path));
+                }
+
+                function responseReceived(msg, initiator, helper) {}
+                JS
+                cat > "$SIGNER_DIR/hook.py" <<'PY'
+                # TheHub #60724. Loads and enables the signing script once ZAP is up.
+                import os
+
+                NAME = "hub-scanner-sign"
+
+
+                def _status(text):
+                    with open(os.environ["HUB_SCANNER_STATUS"], "w") as handle:
+                        handle.write(text)
+
+
+                def zap_started(zap, target):
+                    if not os.environ.get("HUB_SCANNER_TOKEN"):
+                        _status("unsigned")
+                        return
+                    engines = list(zap.script.list_engines)
+                    wanted = [
+                        e for e in engines
+                        if any(k in e.lower() for k in ("graal", "ecmascript", "javascript"))
+                    ]
+                    for engine in wanted:
+                        for name in (engine.split(" : ")[-1], engine):
+                            try:
+                                result = zap.script.load(
+                                    NAME, "httpsender", name, os.environ["HUB_SCANNER_SCRIPT"]
+                                )
+                            except Exception:  # a ZAP API refusal: try the next spelling
+                                continue
+                            if result == "OK":
+                                zap.script.enable(NAME)
+                                _status("signed")
+                                return
+                    _status("failed: no JavaScript engine accepted the script; engines: %s" % engines)
+                    raise RuntimeError("could not load the X-Hub-Scanner signing script")
+                PY
+
+                mkdir -p /zap/wrk
+                rc=0
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 --hook="$SIGNER_DIR/hook.py" || rc=$?
+                if [ "$rc" -gt 2 ]; then
+                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                  exit "$rc"
+                fi
+                test -s /zap/wrk/zap.json || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+
+                # With a token set, an unsigned crawl means the signer is
+                # broken; it is not the empty-token case. It would raise the
+                # alert #60724 exists to stop, with nothing saying why.
+                SIGNER=$(cat "$HUB_SCANNER_STATUS" 2>/dev/null || echo "hook never ran")
+                if [ -n "${HUB_SCANNER_TOKEN:-}" ] && [ "$SIGNER" != "signed" ]; then
+                  echo "::error::A scanner token is set but ZAP did not sign its requests ($SIGNER)."
+                  exit 1
+                fi
+                echo "X-Hub-Scanner: $SIGNER."
+
+                # A challenge can start mid-crawl, once the spider's rate is
+                # visible. So look again after the scan.
+                status_of "$TARGET_URL/" >/dev/null || true
+                refuse_if_challenged "$TARGET_URL/ (after the scan)"
+
+                # The login page alone always draws informational alerts. A
+                # report with none is what a crawl answered by a challenge page
+                # looks like, and it is not a clean result.
+                # `|| true`: grep exits 1 on no match, and under pipefail and
+                # -e that would end the task here, silently, with no reason.
+                alerts=$(grep -o '"alert"' /zap/wrk/zap.json | wc -l || true)
+                if [ "${alerts:-0}" -eq 0 ]; then
+                  echo "::error::ZAP reported no alerts at all against $TARGET_URL. A crawl the edge refused"
+                  echo "::error::looks exactly like this. Refusing to report it as clean."
+                  exit 1
+                fi
+
+                # 5. Upload. See `dast-prod` for why each of these lines exists.
+                pip install --quiet --user --break-system-packages \
+                  --no-warn-script-location \
+                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
+                  echo "::error::Could not install the Mykronos uploader."
+                  exit 1
+                }
+                python3 -c "from mykronos.adapters.registry import get_adapter; get_adapter('dast', 'zap-edge')" || {
+                  echo "::error::The uploader at mykronos-ref '${MYKRONOS_REF}' has no zap-edge adapter (D-154)."
+                  echo "::error::Cut a mykronos tag that contains it and bump mykronos-ref."
+                  exit 1
+                }
+                git config --global --add safe.directory "$PWD/source"
+                COMMIT_SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo "")
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::Could not determine the commit under scan."
+                  exit 1
+                }
+                python3 -m mykronos.upload \
+                  --capability dast --tool zap-edge \
+                  --results-path /zap/wrk \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/TheHub \
+                  --commit-sha "$COMMIT_SHA" \
+                  --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
+                  --severity-threshold low --blocking false || {
+                  echo "::error::Uploading the edge DAST findings to Mykronos failed."
+                  exit 1
+                }
+                echo "ZAP reported $alerts alert entries against $TARGET_URL through Cloudflare"
 
   # -- Unauthenticated baseline DAST: Staging -------------------------------
   #

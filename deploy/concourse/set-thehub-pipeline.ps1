@@ -117,6 +117,10 @@ param(
     # its own. Deployed out of band by TheHub's deploy.sh, so `dast-staging`
     # runs on the daily timer rather than after a deploy job.
     [string]$StagingUrl = "http://192.168.0.14:8081",
+    # The public hostnames `dast-edge` scans through Cloudflare (TheHub #60708).
+    # Names, not addresses: the edge and the tunnel are what is under test.
+    [string]$PublicUrl = "https://hub.toddbenson.net",
+    [string]$MykronosPublicUrl = "https://mykronos.toddbenson.net",
     [string]$ReleaseBucket = "thehub-releases",
 
     # TheHub's own API, for reporting pipeline stages into its DevSecOps and
@@ -288,6 +292,13 @@ $hubDeployToken = ""
 if (Test-Path $TheHubEnvPath) {
     $hubDeployToken = Read-EnvValue $TheHubEnvPath "OPS_DEPLOY_TOKEN" -Optional
 }
+# [TheHub #60724] The key dast-edge signs X-Hub-Scanner with, so TheHub records
+# the scan's 401s as synthetic. The same value as TheHub's HUB_SCANNER_TOKEN.
+# Optional: empty means dast-edge scans unsigned and warns.
+$hubScannerToken = ""
+if (Test-Path $TheHubEnvPath) {
+    $hubScannerToken = Read-EnvValue $TheHubEnvPath "HUB_SCANNER_TOKEN" -Optional
+}
 if ($hubDeployToken) {
     Write-Host "Pipeline stages will report to TheHub at $TheHubUrl." -ForegroundColor DarkGray
 } else {
@@ -404,6 +415,7 @@ function Add-Secret {
 Add-Secret -Name "thehub-ingestion-token" -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_THEHUB_CONCOURSE_TOKEN' }
 Add-Secret -Name "mykronos-gate-token"    -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN' }
 Add-Secret -Name "hub-deploy-token"       -Fallback { $hubDeployToken }
+Add-Secret -Name "hub-scanner-token"      -Fallback { $hubScannerToken }
 Add-Secret -Name "anthropic-api-key"      -Fallback { $hubAnthropicKey }
 Add-Secret -Name "minio-access-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_USER' }
 Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD' }
@@ -479,6 +491,8 @@ try {
         "thehub-demo-url: $DemoUrl",
         "thehub-prod-url: $ProdUrl",
         "thehub-staging-url: $StagingUrl",
+        "thehub-public-url: $PublicUrl",
+        "mykronos-public-url: $MykronosPublicUrl",
         "thehub-release-bucket: $ReleaseBucket",
         "deploy-timeout-minutes: $DeployTimeoutMinutes",
         # Where this pipeline reports its stages back to, so TheHub's own
@@ -722,4 +736,5 @@ Write-Host "  This pipeline does not deploy. ADR 0072 chose Path A: production"
 Write-Host "  is shipped by TheHub's own scripts/deploy.sh from 'develop'."
 Write-Host "  prod: $ProdUrl (dast-prod, on the daily timer)"
 Write-Host "  staging: $StagingUrl (dast-staging, on the daily timer)"
+Write-Host "  edge: $PublicUrl via Cloudflare (dast-edge, on the daily timer)"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

@@ -22,6 +22,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-149 — Pull requests go through one approval queue; each decision is its own file](decisions/D-149-approval-queue-and-one-file-per-decision.md)
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
 - [D-153 — The Product Owner's rank is TheHub's `po_rank`](decisions/D-153-the-product-owners-rank-is-thehubs-po-rank.md)
+- [D-154 — The public edge is scanned as its own DAST tool, `zap-edge`](decisions/D-154-the-public-edge-is-its-own-dast-tool.md)
 
 <!-- decisions-index:end -->
 
