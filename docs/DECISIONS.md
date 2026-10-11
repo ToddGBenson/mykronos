@@ -6230,3 +6230,41 @@ schema", because that would hide the procedural files this exists to keep.
   1.4 MB of `CREATE TABLE`, and the number would still say the wrong thing.
 - *Putting PLpgSQL in `NOT_SOURCE` wholesale.* It would hide the 34
   procedural files along with the DDL.
+
+## D-150 — TheHub's pipeline has no insider-risk lane
+
+**2026-10-11.** **Status:** Decided, implemented (TheHub #60653, operator option A)
+**Spec:** [16 §6](../specs/16-thehub-delivery-pipeline.md)
+
+**The rule.** `deploy/concourse/pipelines/thehub.yml` carries no `insider`
+job. Nothing in it gates on one, no group lists one, and
+`test_pipeline_gate_wiring.py::test_a_retired_lane_stays_retired` keeps it
+that way. The deepest job in the chain is `oracle-gate`, still
+`passed: [deploy-demo]`, so every scanning lane still precedes it.
+`mykronos.yml`'s `insider` job is untouched: this is about TheHub only.
+
+**Why.** For a one-user Hub the lane modelled a threat that does not exist:
+there is one insider and it is the operator. It cost ~2.1 minutes a run, and
+#60571 found it blind — its `commits/{sha}/pulls` call 403'd, the
+`|| echo '[]'` fallback read that as "no pull request", and the job exited
+green having assessed nothing. A green light that means nothing is worse than
+no light, because it is read as coverage.
+
+**Options the operator was given.** (A) delete the job — chosen; (B) fix #60571
+and keep it, restoring a signal about a second human the Hub does not have;
+(C) `fly pause-job`, cheap but leaving the YAML and the applied pipeline
+disagreeing about intent. #60571 closes as superseded.
+
+**What follows from it.**
+- `((github-token))` is no longer read by anything in `thehub.yml`.
+  `set-thehub-pipeline.ps1` still mints and passes it; an unused var is
+  harmless, and removing it from the script is a separate change.
+- `TIMEOUT_WAIVERS` loses its only entry and `ACKNOWLEDGED_UNMAPPED_JOBS`
+  drops `thehub/insider`; both are held to "the job must exist".
+- TheHub's `concourse/pipelines/thehub.yml` is a read-only mirror re-exported
+  after set-pipeline, so it keeps `insider` until the operator next applies and
+  exports. `EXPLAINED_DIVERGENCE["insider"]` says so until then.
+
+**What would reverse it.** A second human committing to TheHub. Then
+`mykronos.yml`'s `insider` job is the template, and #60571's 403 must be fixed
+first, or the lane comes back blind.
