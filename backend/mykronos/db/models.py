@@ -1117,29 +1117,6 @@ class ControlDrift(Base):
         )
 
 
-class PoBacklogRank(Base):
-    """The Product Owner's ordering of one repository's backlog (spec 35 §4).
-
-    TheHub owns the stories (D-133) and has no rank field, so the ordering a
-    person chose lives here, keyed by the repository's onboarding id and the
-    Hub's story id. It is an editable statement about the present, corrected by
-    moving a row again, which is why it is operational rather than in the
-    append-only lake. Moving it into TheHub is B-068.
-
-    A row for a story that has since left the backlog is harmless: the tab
-    orders the stories the Hub returns, and a rank with no story is never read.
-    """
-
-    __tablename__ = "po_backlog_rank"
-
-    repo_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    story_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    #: 1 is the top of the backlog.
-    rank: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
-    updated_by: Mapped[str] = mapped_column(String(255), default="")
-
-
 class CiCheckRun(Base):
     """The check run a CI pipeline's verdict on one commit is shown as (D-136).
 
