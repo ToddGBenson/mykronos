@@ -983,6 +983,12 @@ reason. The amendment on D-110 carries the live table and the three choices;
 no setting was changed, because branch protection is outward-facing and this
 is a decision rather than an execution.
 
+**2026-10-11 — 1.1.9 for keel, personal-soc and binnacle is a decision now
+(D-151, TheHub #60580).** keel and personal-soc post `Concourse / <repo>` on
+`main` commits through D-136's endpoint. Neither is required, because no pull
+request can carry a check that only lands after the merge. binnacle has no
+pipeline to report one. The require-check commands are in D-151, not run.
+
 **Three gaps are estate-wide**, and they are the ones that matter most:
 
 - **No repository requires an approving review (1.1.3).** TheHub asks for one,
