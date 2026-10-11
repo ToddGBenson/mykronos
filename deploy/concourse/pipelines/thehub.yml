@@ -3139,7 +3139,12 @@ jobs:
       - task: derive-estate-images
         timeout: 10m
         image: python
-        params: *mykronos_env
+        params:
+          <<: *mykronos_env
+          # TheHub's patched images are `${REGISTRY:-localhost:5000}/thehub-*`.
+          # Without this the default wins and the worker is asked to pull from
+          # its own localhost.
+          REGISTRY: ((registry))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -3239,7 +3244,10 @@ jobs:
                     | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
 
                   echo "Scanning ${estate_image}"
-                  if trivy image "${estate_image}" \
+                  # The estate registry is plain HTTP, as for the backend scan above.
+                  insecure=""
+                  case "${estate_image}" in "${REGISTRY}"/*) insecure="--insecure" ;; esac
+                  if trivy image ${insecure} "${estate_image}" \
                     --scanners vuln \
                     --format sarif --output "results/trivy-estate-${safe}.sarif" \
                     --exit-code 0 --quiet \
