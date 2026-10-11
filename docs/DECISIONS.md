@@ -6085,3 +6085,40 @@ so (§7.1).
 - *Inferring the inception flag from TheHub's behaviour* (whether a sprint pull
   is refused for a missing checklist). That is a guess drawn from one refusal,
   presented as a configuration fact.
+
+## D-137 — A template manifest arrives as a draft pull request on the installer's path
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.2, B-069)
+
+Seven repositories in the estate declare no process. The tab told them so and
+offered nothing to do about it. It now offers three starter manifests
+(keel-style, TheHub-style, lightweight), and an admin can open one as a pull
+request.
+
+**The installer's path, not a new one.** The pull request is opened with the
+same sequence the Workflow Installer uses: reuse an open pull request if there
+is one, otherwise `create_branch` from the default branch, `commit_files`, and
+`create_pull_request`. Its own branch prefix (`mykronos/sdlc-process-`) keeps
+`find_open_pull_request` from confusing it with an install pull request.
+
+**A draft, one file, never the default branch.** The manifest is a declaration
+that a person has to read before it is true (D-132), so the pull request opens
+as a draft. Only `.sdlc/process.yaml` changes. The request is refused unless the
+manifest is `absent`: an invalid manifest is fixed in the repository, and an
+unreadable one may well exist.
+
+**Audited, not recorded as an install.** Each attempt is written to `audit_log`
+as `po.template_pr` with its outcome, including refusals and GitHub failures. It
+is not a `WorkflowInstallEvent`. That table's `pending_pr_number` is the
+installer's bookkeeping for capability changes, and a manifest pull request
+there would be promoted to "capabilities enabled" when it merged.
+
+**Templates claim no controls.** No starter declares `branch_controls` or an
+`enforced_by` switch. A starter that claimed controls nobody had checked would
+be written to fail the drift check (D-136) the first time it rendered.
+
+**Rejected.**
+- *Committing the starter straight to the default branch.* It would skip the
+  independent review D-132 relies on.
+- *Generating the manifest from the repository's existing documents.* That is
+  the parsing D-132 rejected.

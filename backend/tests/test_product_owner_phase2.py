@@ -14,9 +14,15 @@ from fastapi.testclient import TestClient
 
 from mykronos import product_owner as po
 from mykronos.db.models import RepoGovernance
+from mykronos.process_templates import TEMPLATES
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
-from tests.test_product_owner import VALID, connect, story  # noqa: F401 -- `connect` is a fixture
+from tests.test_product_owner import (  # noqa: F401 -- `connect` is a fixture
+    VALID,
+    audit_entries,
+    connect,
+    story,
+)
 
 # --------------------------------------------------------------------------
 # 7.1 Declared versus observed (B-070)
@@ -181,3 +187,141 @@ class TestDriftInTheTab:
         repo_id, _ = connect([story(id=1)])
         store_governance(client, {"approving_reviews_required": "off"})
         assert product_owner(client, repo_id, admin_auth)["observations"] == []
+
+
+# --------------------------------------------------------------------------
+# 7.2 A template pull request (B-069)
+# --------------------------------------------------------------------------
+
+
+class TestTemplates:
+    def test_every_template_is_a_valid_manifest_with_the_repo_tag(self) -> None:
+        assert set(TEMPLATES) == {"keel", "thehub", "lightweight"}
+        for template in TEMPLATES.values():
+            state = po.parse_manifest(template.render("repo:payments-api"))
+            assert state.state == "valid", (template.id, state.error)
+            assert state.manifest is not None
+            assert state.manifest.backlog.tag == "repo:payments-api"
+        keel = po.parse_manifest(TEMPLATES["keel"].render("repo:x")).manifest
+        assert keel is not None and [g.id for g in keel.gates][0] == "G0"
+
+    def test_an_absent_manifest_is_offered_the_three_templates(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        repo_id, _ = connect([story(id=1)], manifest=None)
+        body = product_owner(client, repo_id, admin_auth)
+        assert [t["id"] for t in body["templates"]] == ["keel", "thehub", "lightweight"]
+
+    def test_a_declared_process_is_offered_none(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        repo_id, _ = connect([story(id=1)])
+        assert product_owner(client, repo_id, admin_auth)["templates"] == []
+
+    def test_choosing_one_opens_a_draft_pr_adding_only_the_manifest(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+        github: Any,
+    ) -> None:
+        repo_id, _ = connect([story(id=1)], manifest=None)
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/template",
+            json={"template": "lightweight"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] is True
+        assert body["branch"].startswith(po.TEMPLATE_BRANCH_PREFIX)
+
+        repo = github.repos[REPO]
+        (pr,) = repo.pull_requests
+        assert pr.draft is True
+        assert pr.number == body["pr_number"]
+        # Nothing on the default branch; one new file on the PR branch.
+        assert po.MANIFEST_PATH not in repo.branches["main"]
+        added = set(repo.branches[body["branch"]]) - set(repo.branches["main"])
+        assert added == {po.MANIFEST_PATH}
+        manifest = po.parse_manifest(repo.branches[body["branch"]][po.MANIFEST_PATH])
+        assert manifest.state == "valid" and manifest.manifest is not None
+        assert manifest.manifest.backlog.tag == "repo:payments-api"
+
+        (entry,) = audit_entries(client, "po.template_pr")
+        assert entry.actor == "admin"
+        assert entry.detail["outcome"] == "opened"
+        assert entry.detail["template"] == "lightweight"
+        assert entry.detail["pr_number"] == pr.number
+
+    def test_an_open_template_pr_is_reused_not_duplicated(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+        github: Any,
+    ) -> None:
+        repo_id, _ = connect([story(id=1)], manifest=None)
+        url = f"/api/dashboard/repos/{repo_id}/product-owner/template"
+        first = client.post(url, json={"template": "keel"}, headers=admin_auth).json()
+        second = client.post(url, json={"template": "thehub"}, headers=admin_auth).json()
+        assert second["created"] is False
+        assert second["pr_number"] == first["pr_number"]
+        assert len(github.repos[REPO].pull_requests) == 1
+        outcomes = [e.detail["outcome"] for e in audit_entries(client, "po.template_pr")]
+        assert sorted(outcomes) == ["opened", "reused"]
+
+    def test_a_viewer_is_refused(
+        self,
+        client: TestClient,
+        viewer_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+        github: Any,
+    ) -> None:
+        repo_id, _ = connect([story(id=1)], manifest=None)
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/template",
+            json={"template": "keel"},
+            headers=viewer_auth,
+        )
+        assert response.status_code == 403
+        assert github.repos[REPO].pull_requests == []
+
+    def test_a_repository_with_a_manifest_is_refused_and_audited(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+        github: Any,
+    ) -> None:
+        repo_id, _ = connect([story(id=1)])
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/template",
+            json={"template": "keel"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 409
+        assert "already declares" in response.json()["detail"]
+        assert github.repos[REPO].pull_requests == []
+        (entry,) = audit_entries(client, "po.template_pr")
+        assert entry.detail["outcome"] == "refused_valid"
+
+    def test_an_unknown_template_is_a_validation_error(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],  # noqa: F811
+    ) -> None:
+        repo_id, _ = connect([story(id=1)], manifest=None)
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/template",
+            json={"template": "waterfall"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 422

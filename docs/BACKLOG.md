@@ -1263,7 +1263,7 @@ Control shows a backlog in a different order from this tab.
 
 ### B-069 — A repository with no manifest is told so, and offered nothing
 
-**Size:** S **State:** open **Verified:** 2026-10-11
+**Size:** S **State:** done (spec 35 §7.2, D-137) **Verified:** 2026-10-11
 
 Spec 35 §2.3: when the default branch has no `.sdlc/process.yaml`, the tab says
 "This repository declares no process" and shows the default spine, labelled as

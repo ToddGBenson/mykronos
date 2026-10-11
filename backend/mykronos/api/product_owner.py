@@ -27,6 +27,8 @@ from mykronos import governance
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep
 from mykronos.db.models import PoBacklogRank, RepoGovernance, RepoOnboarding
+from mykronos.github.client import GitHubError, PermissionDeniedError
+from mykronos.process_templates import TEMPLATES
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -136,6 +138,12 @@ class OracleOut(BaseModel):
     commit_sha: str | None
 
 
+class TemplateOut(BaseModel):
+    id: str
+    label: str
+    summary: str
+
+
 class ProductOwnerOut(BaseModel):
     repo_id: str
     repo_full_name: str
@@ -157,6 +165,10 @@ class ProductOwnerOut(BaseModel):
     #: Every declaration the platform can compare with what it observes,
     #: including the consistent and unobserved ones (B-070).
     observations: list[ObservationOut]
+    #: Starter manifests on offer. Only when the repository declares none
+    #: (spec 35 §7.2); empty otherwise, so a declared process is never offered
+    #: a replacement.
+    templates: list[TemplateOut]
     counts: dict[str, int]
     sprint_progress: SprintProgressOut
     oracle: OracleOut | None
@@ -171,6 +183,21 @@ class PoActionOut(BaseModel):
     moved: bool
     autonomy_disabled: bool | None = None
     detail: str | None = None
+
+
+class TemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template: Literal["keel", "thehub", "lightweight"]
+
+
+class TemplatePrOut(BaseModel):
+    template: str
+    #: False when a template pull request was already open and is returned.
+    created: bool
+    pr_number: int
+    pr_url: str
+    branch: str
 
 
 class RankRequest(BaseModel):
@@ -565,6 +592,11 @@ async def product_owner(
             )
             for o in observations
         ],
+        templates=(
+            [TemplateOut(id=t.id, label=t.label, summary=t.summary) for t in TEMPLATES.values()]
+            if state.state == "absent"
+            else []
+        ),
         counts=counts,
         sprint_progress=SprintProgressOut(
             done=sum(1 for s in sprint if s.spine == "done"), committed=len(sprint)
@@ -746,3 +778,89 @@ async def rank_story(
             position=order.index(body.story_id) + 1,
         )
     return PoActionOut(story_id=body.story_id, action="rank", moved=order != current)
+
+
+@router.post("/repos/{repo_id}/product-owner/template", response_model=TemplatePrOut)
+async def open_template_pr(
+    request: Request, repo_id: str, body: TemplateRequest, principal: PrincipalDep
+) -> TemplatePrOut:
+    """Open a draft pull request adding a starter `.sdlc/process.yaml`
+    (spec 35 §7.2, B-069).
+
+    Only for a repository whose default branch has no manifest: an invalid one
+    is fixed in the repository, not replaced from here, and an unreadable one
+    may well exist. Every attempt is audit-logged, including the refusals.
+    """
+    _require_writer(principal, "Opening a template pull request")
+    repo_full_name, branch, installation = _onboarding(request, repo_id)
+    database = request.app.state.db
+
+    def audit(outcome: str, **detail: Any) -> None:
+        with database.session() as session:
+            database.audit(
+                session,
+                actor=principal.actor,
+                action="po.template_pr",
+                entity_type="repo_onboarding",
+                entity_id=repo_id,
+                repo_id=repo_id,
+                repo_full_name=repo_full_name,
+                template=body.template,
+                outcome=outcome,
+                **detail,
+            )
+
+    state = await _read_manifest(request, repo_full_name, branch, installation)
+    if state.state != "absent":
+        audit(f"refused_{state.state}")
+        reason = {
+            "valid": "already declares a process",
+            "invalid": "has a manifest that is invalid; fix it in the repository",
+            "unreadable": "has a manifest MyKronos could not read",
+        }[state.state]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{repo_full_name} {reason}, so no template is offered.",
+        )
+
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:  # pragma: no cover - absent implies readable
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No GitHub installation to open the pull request with.",
+        )
+    template = TEMPLATES[body.template]
+    try:
+        result = await po.open_template_pr(
+            factory.for_installation(installation),
+            repo_full_name,
+            branch,
+            template,
+            now=utcnow(),
+        )
+    except PermissionDeniedError as exc:
+        # Our own sentence, naming the permission the App lacks.
+        audit("failed", reason="permission")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except GitHubError as exc:
+        logger.warning("Template PR failed for %s (HTTP %s)", repo_full_name, exc.status)
+        audit("failed", reason=f"http_{exc.status}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub refused the pull request (HTTP {exc.status}).",
+        ) from exc
+
+    pull_request = result.pull_request
+    audit(
+        "opened" if result.created else "reused",
+        pr_number=pull_request.number,
+        pr_url=pull_request.url,
+        branch=result.branch,
+    )
+    return TemplatePrOut(
+        template=body.template,
+        created=result.created,
+        pr_number=pull_request.number,
+        pr_url=pull_request.url,
+        branch=result.branch,
+    )

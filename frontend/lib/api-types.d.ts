@@ -2479,6 +2479,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Template Pr
+         * @description Open a draft pull request adding a starter `.sdlc/process.yaml`
+         *     (spec 35 §7.2, B-069).
+         *
+         *     Only for a repository whose default branch has no manifest: an invalid one
+         *     is fixed in the repository, not replaced from here, and an unreadable one
+         *     may well exist. Every attempt is audit-logged, including the refusals.
+         */
+        post: operations["open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -5957,6 +5982,8 @@ export interface components {
             needs_human: components["schemas"]["NeedsHumanOut"][];
             /** Observations */
             observations: components["schemas"]["ObservationOut"][];
+            /** Templates */
+            templates: components["schemas"]["TemplateOut"][];
             /** Counts */
             counts: {
                 [key: string]: number;
@@ -7255,6 +7282,36 @@ export interface components {
             unknowns: number;
             /** Complete */
             complete: boolean;
+        };
+        /** TemplateOut */
+        TemplateOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Summary */
+            summary: string;
+        };
+        /** TemplatePrOut */
+        TemplatePrOut: {
+            /** Template */
+            template: string;
+            /** Created */
+            created: boolean;
+            /** Pr Number */
+            pr_number: number;
+            /** Pr Url */
+            pr_url: string;
+            /** Branch */
+            branch: string;
+        };
+        /** TemplateRequest */
+        TemplateRequest: {
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "keel" | "thehub" | "lightweight";
         };
         /**
          * TestEstateOut
@@ -10600,6 +10657,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplatePrOut"];
                 };
             };
             /** @description Validation Error */

@@ -6,6 +6,7 @@ import {
   PullIntoSprint,
   RankControls,
 } from "@/components/product-owner-actions";
+import { TemplatePicker } from "@/components/product-owner-template";
 import { EmptyState, Label, Pill, Section, StatTile } from "@/components/primitives";
 import type { PoStory, ProductOwnerView } from "@/lib/api";
 
@@ -112,7 +113,7 @@ export function ProductOwnerTab({
       ) : view === "sprint" ? (
         <Sprint repoId={repoId} data={data} />
       ) : view === "process" ? (
-        <Process data={data} />
+        <Process repoId={repoId} data={data} />
       ) : (
         <Overview data={data} />
       )}
@@ -355,7 +356,7 @@ function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
   );
 }
 
-function Process({ data }: { data: ProductOwnerView }) {
+function Process({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
   const manifest = data.manifest.manifest as Manifest | null;
   if (!manifest) {
     return (
@@ -367,6 +368,22 @@ function Process({ data }: { data: ProductOwnerView }) {
           Stories are placed on the shared spine by TheHub gate:{" "}
           {data.spine.map((step) => SPINE_LABEL[step] ?? step).join(" · ")}.
         </p>
+        {data.templates.length > 0 ? (
+          data.can_write ? (
+            <>
+              <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-2">
+                Start from a template. Each opens a draft pull request adding{" "}
+                <span className="font-mono">{data.manifest.path}</span>; nothing is committed to{" "}
+                <span className="font-mono">{data.default_branch}</span>.
+              </p>
+              <TemplatePicker repoId={repoId} templates={data.templates} />
+            </>
+          ) : (
+            <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-3">
+              An admin can open a template pull request from here.
+            </p>
+          )
+        ) : null}
       </Section>
     );
   }

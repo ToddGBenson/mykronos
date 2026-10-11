@@ -26,11 +26,15 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 
 import httpx2
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from mykronos.github.client import FileChange, GitHubClient, PullRequest
+from mykronos.process_templates import Template
 
 logger = logging.getLogger(__name__)
 
@@ -632,6 +636,84 @@ def gate_switch_observations(
             )
         )
     return out
+
+
+# --------------------------------------------------------------------------
+# A template pull request (B-069, spec 35 §7.2, D-137)
+# --------------------------------------------------------------------------
+
+#: Its own prefix, so `find_open_pull_request` never mistakes a workflow
+#: install pull request (`mykronos/install-...`) for a manifest one, or the
+#: other way round.
+TEMPLATE_BRANCH_PREFIX = "mykronos/sdlc-process-"
+
+
+@dataclass
+class TemplatePullRequest:
+    pull_request: PullRequest
+    branch: str
+    #: False when an open template pull request was returned instead.
+    created: bool
+
+
+def template_pr_body(template: Template, tag: str) -> str:
+    return "\n".join(
+        [
+            "This pull request was opened by **Mykronos** from the Product Owner tab.",
+            "",
+            f"It adds a starter `{MANIFEST_PATH}` ({template.label}): {template.summary}",
+            "",
+            "### Before you merge",
+            "",
+            "- It is a **draft** and a starting point. Edit the gates, approvers and",
+            "  checklists until they describe how this repository is actually run.",
+            f"- Stories are matched by the tag `{tag}` in TheHub.",
+            "- Nothing is committed to the default branch. Until this merges, the tab",
+            "  keeps saying the repository declares no process.",
+            "",
+            "Spec 35 §2 describes every key; an unknown key makes the manifest invalid.",
+        ]
+    )
+
+
+async def open_template_pr(
+    github: GitHubClient,
+    repo_full_name: str,
+    default_branch: str,
+    template: Template,
+    *,
+    now: datetime,
+) -> TemplatePullRequest:
+    """Open a draft pull request adding the starter manifest.
+
+    The Workflow Installer's path (`installer.apply`): reuse an open pull
+    request rather than opening a second, otherwise branch from the default
+    branch, commit, and open. One file, and never a commit to the default
+    branch itself.
+    """
+    existing = await github.find_open_pull_request(repo_full_name, TEMPLATE_BRANCH_PREFIX)
+    if existing is not None:
+        return TemplatePullRequest(
+            pull_request=existing, branch=existing.head_branch, created=False
+        )
+    tag = default_tag(repo_full_name)
+    branch = f"{TEMPLATE_BRANCH_PREFIX}{now.strftime('%Y%m%dT%H%M%S')}"
+    await github.create_branch(repo_full_name, branch, default_branch)
+    await github.commit_files(
+        repo_full_name,
+        branch,
+        f"Mykronos: add a starter {MANIFEST_PATH} ({template.label})",
+        [FileChange(path=MANIFEST_PATH, content=template.render(tag))],
+    )
+    pull_request = await github.create_pull_request(
+        repo_full_name,
+        head=branch,
+        base=default_branch,
+        title=f"Mykronos: declare a development process ({template.label})",
+        body=template_pr_body(template, tag),
+        draft=True,
+    )
+    return TemplatePullRequest(pull_request=pull_request, branch=branch, created=True)
 
 
 # --------------------------------------------------------------------------
