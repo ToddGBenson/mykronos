@@ -6,6 +6,8 @@ import {
   PullIntoSprint,
   RankControls,
 } from "@/components/product-owner-actions";
+import { BacklogOrder } from "@/components/product-owner-backlog-order";
+import { TemplatePicker } from "@/components/product-owner-template";
 import { EmptyState, Label, Pill, Section, StatTile } from "@/components/primitives";
 import type { PoStory, ProductOwnerView } from "@/lib/api";
 
@@ -56,6 +58,14 @@ type Manifest = {
   delivery: { summary: string; steps: string[] } | null;
   automation_policy: { id: string; text: string; met: boolean }[];
   docs: { label: string; path: string }[];
+};
+
+const NEEDS_LABEL: Record<string, string> = {
+  invalid_manifest: "manifest",
+  sprint_gate_failed: "sprint check",
+  ready_manual_item: "manual item",
+  process_drift: "drift",
+  dod_failed: "not done",
 };
 
 const SPINE_LABEL: Record<string, string> = {
@@ -118,7 +128,7 @@ export function ProductOwnerTab({
       ) : view === "sprint" ? (
         <Sprint repoId={repoId} data={data} />
       ) : view === "process" ? (
-        <Process data={data} />
+        <Process repoId={repoId} data={data} />
       ) : (
         <Overview data={data} />
       )}
@@ -193,8 +203,8 @@ function Overview({ data }: { data: ProductOwnerView }) {
       >
         {data.needs_human.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-ink-3">
-            No sprint story fails a gate check, no Ready story has a manual item, and the
-            manifest is not invalid.
+            No sprint story fails a gate check, no Ready story has a manual item, no
+            declaration is observed to have drifted, and the manifest is not invalid.
           </p>
         ) : (
           <ul className="flex flex-col">
@@ -204,17 +214,16 @@ function Overview({ data }: { data: ProductOwnerView }) {
                 className="flex flex-wrap items-baseline gap-2 border-t border-rule-soft px-3 py-1.5"
               >
                 <Pill tone={item.kind === "ready_manual_item" ? "warn" : "critical"}>
-                  {item.kind === "invalid_manifest"
-                    ? "manifest"
-                    : item.kind === "sprint_gate_failed"
-                      ? "sprint check"
-                      : "manual item"}
+                  {NEEDS_LABEL[item.kind] ?? item.kind}
                 </Pill>
                 {item.story_id ? (
                   <span className="font-mono text-[11px] text-ink-3">#{item.story_id}</span>
                 ) : null}
                 <span className="text-[13px] text-ink">{item.title}</span>
                 <span className="text-[12px] text-ink-3">{item.reason}</span>
+                {item.owner ? (
+                  <span className="font-mono text-[11px] text-ink-2">owner: {item.owner}</span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -280,6 +289,21 @@ function CheckBadge({ story }: { story: PoStory }) {
   );
 }
 
+/** The Definition of Done (spec 35 §7.3), only for a story at a done gate whose
+ *  manifest declares one. Labelled DoD so it is never read as the gate check. */
+function DodBadge({ story }: { story: PoStory }) {
+  const dod = story.dod;
+  if (!dod) return null;
+  const tone = dod.failed > 0 ? "critical" : dod.total > 0 ? "pass" : "muted";
+  const title = dod.items.map((item) => `${item.status.toUpperCase()}: ${item.text}`).join("\n");
+  return (
+    <Pill tone={tone} title={title}>
+      DoD {dod.passed} / {dod.total}
+      {dod.unavailable ? `, ${dod.unavailable} not visible` : ""}
+    </Pill>
+  );
+}
+
 function StoryRow({ story, children }: { story: PoStory; children?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-t border-rule-soft px-3 py-1.5">
@@ -291,6 +315,7 @@ function StoryRow({ story, children }: { story: PoStory; children?: ReactNode })
       </span>
       {story.size ? <span className="font-mono text-[11px] text-ink-3">{story.size}</span> : null}
       <CheckBadge story={story} />
+      <DodBadge story={story} />
       {children ? <span className="ml-auto flex items-baseline gap-2">{children}</span> : null}
     </div>
   );
@@ -306,30 +331,76 @@ function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
       />
     );
   }
+  const last = data.backlog.length - 1;
+  const manualRows: Record<string, ReactNode> = {};
+  const riskRows: Record<string, ReactNode> = {};
+  data.backlog.forEach((story, index) => {
+    const rank =
+      story.rank === null ? (
+        <span className="font-mono text-[11px] text-ink-3">unranked</span>
+      ) : (
+        <span className="font-mono text-[11px] text-ink-3">rank {story.rank}</span>
+      );
+    manualRows[String(story.id)] = (
+      <StoryRow story={story}>
+        {rank}
+        <RiskLabel story={story} />
+        {data.can_write ? (
+          <>
+            <RankControls
+              repoId={repoId}
+              storyId={story.id}
+              first={index === 0}
+              last={index === last}
+            />
+            <PullIntoSprint repoId={repoId} storyId={story.id} />
+          </>
+        ) : null}
+      </StoryRow>
+    );
+    riskRows[String(story.id)] = (
+      <StoryRow story={story}>
+        {rank}
+        <RiskLabel story={story} />
+        {data.can_write ? <PullIntoSprint repoId={repoId} storyId={story.id} /> : null}
+      </StoryRow>
+    );
+  });
   return (
     <Section
       title="Backlog"
       detail={`${data.backlog.length} · ranked first, then by gate and age`}
     >
-      {data.backlog.map((story, index) => (
-        <StoryRow key={story.id} story={story}>
-          {story.rank === null ? (
-            <span className="font-mono text-[11px] text-ink-3">unranked</span>
-          ) : null}
-          {data.can_write ? (
-            <>
-              <RankControls
-                repoId={repoId}
-                storyId={story.id}
-                first={index === 0}
-                last={index === data.backlog.length - 1}
-              />
-              <PullIntoSprint repoId={repoId} storyId={story.id} />
-            </>
-          ) : null}
-        </StoryRow>
-      ))}
+      <BacklogOrder
+        manual={data.backlog.map((story) => story.id)}
+        byRisk={data.backlog_by_risk}
+        manualRows={manualRows}
+        riskRows={riskRows}
+        statement={data.risk_model.statement}
+      />
     </Section>
+  );
+}
+
+/** "removes N risk points", from the Oracle terms the story is linked to by its
+ *  `finding:` / `control:` tags (spec 35 §7.4). */
+function RiskLabel({ story }: { story: PoStory }) {
+  const risk = story.risk;
+  if (!risk) return null;
+  if (!risk.linked) {
+    return <span className="font-mono text-[11px] text-ink-3">not linked</span>;
+  }
+  const title = [
+    `${risk.findings_open} of ${risk.findings_linked} linked finding(s) open`,
+    risk.controls_linked.length ? `controls: ${risk.controls_linked.join(", ")}` : null,
+    risk.note || null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <Pill tone={risk.points ? "warn" : "muted"} title={title}>
+      {risk.points === null ? "risk: no model" : `removes ${risk.points} risk points`}
+    </Pill>
   );
 }
 
@@ -362,7 +433,7 @@ function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
   );
 }
 
-function Process({ data }: { data: ProductOwnerView }) {
+function Process({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
   const manifest = data.manifest.manifest as Manifest | null;
   if (!manifest) {
     return (
@@ -374,6 +445,22 @@ function Process({ data }: { data: ProductOwnerView }) {
           Stories are placed on the shared spine by TheHub gate:{" "}
           {data.spine.map((step) => SPINE_LABEL[step] ?? step).join(" · ")}.
         </p>
+        {data.templates.length > 0 ? (
+          data.can_write ? (
+            <>
+              <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-2">
+                Start from a template. Each opens a draft pull request adding{" "}
+                <span className="font-mono">{data.manifest.path}</span>; nothing is committed to{" "}
+                <span className="font-mono">{data.default_branch}</span>.
+              </p>
+              <TemplatePicker repoId={repoId} templates={data.templates} />
+            </>
+          ) : (
+            <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-3">
+              An admin can open a template pull request from here.
+            </p>
+          )
+        ) : null}
       </Section>
     );
   }
@@ -423,6 +510,8 @@ function Process({ data }: { data: ProductOwnerView }) {
           </div>
         ))}
       </Section>
+
+      <DeclaredVsObserved data={data} />
 
       {manifest.delivery ? <Delivery delivery={manifest.delivery} /> : null}
 
@@ -475,6 +564,44 @@ function Delivery({ delivery }: { delivery: NonNullable<Manifest["delivery"]> })
           </li>
         ))}
       </ol>
+    </Section>
+  );
+}
+
+const OBSERVATION_TONE = {
+  consistent: "pass",
+  drift: "critical",
+  unobserved: "muted",
+} as const;
+
+/** Each declaration beside what the platform observes (spec 35 §7.1). Declared
+ *  and observed are separate columns: one word for both would hide which side
+ *  said what. */
+function DeclaredVsObserved({ data }: { data: ProductOwnerView }) {
+  if (data.observations.length === 0) return null;
+  const drift = data.observations.filter((o) => o.status === "drift").length;
+  return (
+    <Section
+      title="Declared vs observed"
+      detail={drift ? `${drift} drift` : "no drift observed"}
+    >
+      {data.observations.map((o) => (
+        <div
+          key={o.id}
+          className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-t border-rule-soft px-3 py-1.5"
+        >
+          <Pill
+            tone={OBSERVATION_TONE[o.status as keyof typeof OBSERVATION_TONE] ?? "muted"}
+          >
+            {o.status}
+          </Pill>
+          <span className="text-[13px] text-ink">{o.subject}</span>
+          <span className="font-mono text-[11px] text-ink-2">declared: {o.declared}</span>
+          <span className="font-mono text-[11px] text-ink-2">observed: {o.observed}</span>
+          <span className="font-mono text-[11px] text-ink-3">owner: {o.owner}</span>
+          {o.detail ? <span className="w-full text-[12px] text-ink-3">{o.detail}</span> : null}
+        </div>
+      ))}
     </Section>
   );
 }

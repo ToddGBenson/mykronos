@@ -1296,7 +1296,7 @@ Control shows a backlog in a different order from this tab.
 
 ### B-069 — A repository with no manifest is told so, and offered nothing — TheHub #60567
 
-**Size:** S **State:** open **Verified:** 2026-10-11
+**Size:** S **State:** done (spec 35 §7.2, D-141) **Verified:** 2026-10-11
 
 Spec 35 §2.3: when the default branch has no `.sdlc/process.yaml`, the tab says
 "This repository declares no process" and shows the default spine, labelled as
@@ -1315,7 +1315,7 @@ correct, but it leaves the next step to the person reading.
 
 ### B-070 — Declared process versus observed process — TheHub #60568
 
-**Size:** M **State:** open **Verified:** 2026-10-11
+**Size:** M **State:** done (spec 35 §7.1, D-140) **Verified:** 2026-10-11
 
 A manifest is a declaration. Phase 1 shows it and never checks it. The two
 gaps already known are the reason this matters: TheHub's inception gate is

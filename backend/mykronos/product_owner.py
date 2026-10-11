@@ -24,13 +24,19 @@ is in the sprint with autonomy armed.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 
 import httpx2
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from mykronos import governance
+from mykronos.github.client import FileChange, GitHubClient, PullRequest
+from mykronos.process_templates import Template
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +75,14 @@ DEFAULT_SPINE_MAP: dict[str, str] = {
 #: Phase-1 evidence keys (spec 35 §2.2).
 EvidenceKey = Literal["acceptance_criteria", "detail_500", "sized", "threat_model", "sprint"]
 
+#: Definition-of-Done evidence keys (spec 35 §7.3): exit criteria, checked
+#: against commits, scans and deploys rather than against the story text.
+DodEvidenceKey = Literal["commit", "scan_passed", "deployed"]
+
 #: A path inside the repository: relative, no traversal, no scheme. Rendered as
-#: a link, so a `javascript:` or absolute URL must never get through.
-_SAFE_PATH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
+#: a link, so a `javascript:` or absolute URL must never get through. A leading
+#: dot is allowed (`.env.example`, `.github/CODEOWNERS`); a `..` segment is not.
+_SAFE_PATH = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_./-]*$")
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +109,24 @@ class ChecklistItem(_Strict):
     evidence: EvidenceKey | None = None
 
 
+#: A setting name in a dotenv, YAML or JSON file: letters, digits, `_`, and
+#: `.` for a dotted YAML path. Nothing that could be read as a pattern.
+_SWITCH_KEY = r"^[A-Za-z_][A-Za-z0-9_.-]*$"
+
+
+class Switch(_Strict):
+    """The setting that turns a gate on (spec 35 §7.1). Read from the
+    repository at the default branch, never from a running process."""
+
+    file: str = Field(min_length=1, max_length=512)
+    key: str = Field(min_length=1, max_length=128, pattern=_SWITCH_KEY)
+
+    @field_validator("file")
+    @classmethod
+    def _file_in_repo(cls, value: str) -> str:
+        return _repo_path(value) or value
+
+
 class Gate(_Strict):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=128)
@@ -107,6 +136,9 @@ class Gate(_Strict):
     #: TheHub `dev_stories.gate` values this gate covers.
     story_gates: list[str] = Field(default_factory=list)
     checklist: list[ChecklistItem] = Field(default_factory=list)
+    #: What switches this gate on, where the gate is enforced by a flag. Drift
+    #: when the declared gate's switch reads off (B-070).
+    enforced_by: Switch | None = None
 
     @field_validator("doc")
     @classmethod
@@ -152,6 +184,33 @@ class DocLink(_Strict):
         return _repo_path(value) or value
 
 
+class DodItem(_Strict):
+    id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    #: Omitted means manual. An unknown key is a validation error, never
+    #: quietly manual: a typo would otherwise make an exit criterion vanish.
+    evidence: DodEvidenceKey | None = None
+
+
+class BranchControls(_Strict):
+    """What the default branch is declared to enforce (spec 35 §7.1).
+
+    Each is optional: an omitted key declares nothing, so it cannot drift.
+    Only `true` is a declaration worth checking -- `false` says the control is
+    not part of this process, and a branch that enforces more than declared
+    has not drifted in any direction that needs a person.
+    """
+
+    required_review: bool | None = None
+    required_checks: bool | None = None
+    codeowner_review: bool | None = None
+    enforced_for_admins: bool | None = None
+    signed_commits: bool | None = None
+    force_push_blocked: bool | None = None
+    #: Who fixes a branch-control drift: whoever can change branch protection.
+    owner: str = Field(default="Repository admins", min_length=1, max_length=128)
+
+
 class ProcessManifest(_Strict):
     """`.sdlc/process.yaml`, version 1 (spec 35 §2)."""
 
@@ -163,6 +222,8 @@ class ProcessManifest(_Strict):
     delivery: Delivery | None = None
     automation_policy: list[PolicyItem] = Field(default_factory=list)
     docs: list[DocLink] = Field(default_factory=list)
+    branch_controls: BranchControls | None = None
+    definition_of_done: list[DodItem] = Field(default_factory=list)
 
 
 ManifestStateName = Literal["valid", "invalid", "absent", "unreadable"]
@@ -340,6 +401,104 @@ def check_story(story: dict[str, Any], manifest: ProcessManifest | None) -> Gate
     )
 
 
+@dataclass
+class DoneEvidence:
+    """What MyKronos can see of a story's exit (spec 35 §7.3).
+
+    `commits` is None when TheHub could not say, which makes every evidence
+    item unavailable rather than failed. `scanned` is None when the lake could
+    not be read, for the same reason.
+    """
+
+    commits: list[str] | None
+    #: Commits TheHub records a `success` deploy run of.
+    deployed: list[str] = field(default_factory=list)
+    #: Commits with a `success` scan run in the lake.
+    scanned: list[str] | None = None
+    #: The repository's probed running revision (#361), if any.
+    deployed_revision: str | None = None
+
+
+#: The shortest SHA prefix accepted as naming a commit. TheHub sends twelve
+#: characters, scanners send seven or forty.
+MIN_SHA = 7
+
+
+def same_commit(a: str | None, b: str | None) -> bool:
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    if len(a) < MIN_SHA or len(b) < MIN_SHA:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def evidence_from_deploys(
+    deploys: list[dict[str, Any]] | None,
+) -> tuple[list[str] | None, list[str]]:
+    """(commits naming the story, commits deployed) from TheHub's
+    `/api/dev/stories/{id}/deploys`, which it builds from `Stories:` trailers."""
+    if deploys is None:
+        return None, []
+    commits: list[str] = []
+    deployed: list[str] = []
+    for row in deploys:
+        sha = str(row.get("sha") or "")
+        if len(sha) < MIN_SHA:
+            continue
+        if sha not in commits:
+            commits.append(sha)
+        if row.get("final_status") == "success" and sha not in deployed:
+            deployed.append(sha)
+    return commits, deployed
+
+
+def check_dod_evidence(evidence: str | None, done: DoneEvidence) -> CheckStatus:
+    """One Definition-of-Done item against what was seen of the story."""
+    if evidence is None:
+        return "manual"
+    if done.commits is None:
+        return "unavailable"
+    if evidence == "commit":
+        return "passed" if done.commits else "failed"
+    if evidence == "scan_passed":
+        if not done.commits:
+            return "failed"
+        if done.scanned is None:
+            return "unavailable"
+        hit = any(same_commit(c, s) for c in done.commits for s in done.scanned)
+        return "passed" if hit else "failed"
+    if evidence == "deployed":
+        hit = any(same_commit(c, d) for c in done.commits for d in done.deployed) or any(
+            same_commit(c, done.deployed_revision) for c in done.commits
+        )
+        return "passed" if hit else "failed"
+    return "manual"
+
+
+def is_done(story: dict[str, Any], manifest: ProcessManifest | None) -> bool:
+    """A done-equivalent gate: the story sits on the spine's last step."""
+    return spine_step(story, manifest) == "done"
+
+
+def check_dod(manifest: ProcessManifest | None, done: DoneEvidence) -> GateCheck | None:
+    """The manifest's Definition of Done against one story, or None when the
+    manifest declares none."""
+    if manifest is None or not manifest.definition_of_done:
+        return None
+    return GateCheck(
+        gate_id="definition_of_done",
+        gate_name="Definition of Done",
+        items=[
+            CheckItemResult(
+                id=item.id,
+                text=item.text,
+                evidence=item.evidence,
+                status=check_dod_evidence(item.evidence, done),
+            )
+            for item in manifest.definition_of_done
+        ],
+    )
+
+
 def _gate_index(story: dict[str, Any]) -> int:
     gate = str(story.get("gate") or "intake")
     return HUB_GATES.index(gate) if gate in HUB_GATES else -1
@@ -373,6 +532,458 @@ def moved(order: list[int], story_id: int, direction: Literal["up", "down"]) -> 
     if 0 <= target < len(result):
         result[index], result[target] = result[target], result[index]
     return result
+
+
+# --------------------------------------------------------------------------
+# Risk removed (spec 35 §7.4, D-143)
+# --------------------------------------------------------------------------
+
+#: The link from a Hub story to what it would close. Tags, because TheHub
+#: stories already carry tags and need no new field for it.
+FINDING_TAG = "finding:"
+CONTROL_TAG = "control:"
+
+
+def links(story: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(finding ids, governance control keys) a story is tagged with. A
+    control key that is not one of governance's is ignored, not guessed at."""
+    findings: list[str] = []
+    controls: list[str] = []
+    for raw in story.get("tags") or []:
+        tag = str(raw).strip()
+        lowered = tag.lower()
+        if lowered.startswith(FINDING_TAG):
+            value = tag[len(FINDING_TAG) :].strip()
+            if value and value not in findings:
+                findings.append(value)
+        elif lowered.startswith(CONTROL_TAG):
+            value = lowered[len(CONTROL_TAG) :].strip()
+            if value in governance.CONTROL_ORDER and value not in controls:
+                controls.append(value)
+    return findings, controls
+
+
+@dataclass
+class RiskModel:
+    """The terms of the repository's latest portfolio decision that a story
+    can move, read from the decision's own snapshot so the points agree with
+    the score the Oracle published."""
+
+    available: bool
+    reason: str = ""
+    decision_id: str | None = None
+    evaluated_at: str | None = None
+    policy_version: str | None = None
+    risk_profile_available: bool = False
+    statuses_considered: tuple[str, ...] = ("open",)
+    #: severity -> (weight, effective count) from each `findings.<severity>` term.
+    bands: dict[str, tuple[float, float]] = field(default_factory=dict)
+    governance_available: bool = False
+    governance_contribution: float = 0.0
+
+
+def risk_model(decision: dict[str, Any] | None) -> RiskModel:
+    if decision is None:
+        return RiskModel(
+            available=False,
+            reason=(
+                "No portfolio decision is recorded for this repository, so nothing "
+                "can be ranked by risk."
+            ),
+        )
+    snapshot = decision.get("inputs_snapshot")
+    if not isinstance(snapshot, dict):
+        return RiskModel(
+            available=False, reason="The latest portfolio decision's snapshot is unreadable."
+        )
+    bands: dict[str, tuple[float, float]] = {}
+    for term in snapshot.get("terms") or []:
+        key = str(term.get("key") or "")
+        inputs = term.get("inputs") or {}
+        if key.startswith("findings.") and "weight" in inputs:
+            effective = inputs.get("effective_count", inputs.get("count", 0))
+            bands[key.split(".", 1)[1]] = (float(inputs["weight"]), float(effective or 0))
+    scope = snapshot.get("decision_scope") or {}
+    gov = snapshot.get("governance") or {}
+    evaluated = decision.get("evaluated_at")
+    return RiskModel(
+        available=True,
+        decision_id=decision.get("decision_id"),
+        evaluated_at=evaluated.isoformat() if isinstance(evaluated, datetime) else evaluated,
+        policy_version=decision.get("policy_version") or snapshot.get("policy_version"),
+        risk_profile_available=bool((snapshot.get("risk_profile") or {}).get("available")),
+        statuses_considered=tuple(scope.get("statuses_considered") or ("open",)),
+        bands=bands,
+        governance_available=bool(gov.get("available")),
+        governance_contribution=float(gov.get("contribution") or 0.0),
+    )
+
+
+def band_points(model: RiskModel, linked_by_severity: dict[str, int]) -> float:
+    """What closing `k` linked open findings per band removes.
+
+    `weight × (log2(1 + e) − log2(1 + max(0, e − k)))`: the band curve the
+    score was built from, evaluated before and after, which is what
+    `path_to_green` sums step by step. A severity with no term in the decision
+    (out of scope, or weighted zero) removes nothing.
+    """
+    total = 0.0
+    for severity, count in linked_by_severity.items():
+        if severity not in model.bands or count <= 0:
+            continue
+        weight, effective = model.bands[severity]
+        total += weight * (math.log2(1 + effective) - math.log2(1 + max(0.0, effective - count)))
+    return total
+
+
+def _governance_term(value: int | None, good_enough: int, points_at_zero: float) -> float:
+    """The `risk_profile.governance` term for a governance score (spec 30 §4)."""
+    if value is None or value >= good_enough or not points_at_zero or good_enough <= 0:
+        return 0.0
+    return points_at_zero * (good_enough - value) / good_enough
+
+
+def control_points(
+    model: RiskModel,
+    control_states: dict[str, str] | None,
+    linked: list[str],
+    *,
+    weights: dict[str, float],
+    good_enough: int,
+    points_at_zero: float,
+) -> float:
+    """How far the governance term falls with the linked controls on.
+
+    Recomputed from the stored control states before and after, so both
+    sides use the same reading, and capped at the term's contribution in the
+    decision: a story cannot remove points the Oracle never added.
+    """
+    if not linked or not model.governance_available or control_states is None:
+        return 0.0
+    before = [governance.Control(key=k, state=s) for k, s in control_states.items()]
+    after = [
+        governance.Control(key=c.key, state="on" if c.key in linked else c.state) for c in before
+    ]
+    score_before = governance.score(
+        governance.Governance(repo_full_name="", controls=before), policy=weights
+    )
+    score_after = governance.score(
+        governance.Governance(repo_full_name="", controls=after), policy=weights
+    )
+    removed = _governance_term(score_before, good_enough, points_at_zero) - _governance_term(
+        score_after, good_enough, points_at_zero
+    )
+    return max(0.0, min(model.governance_contribution, removed))
+
+
+def risk_order(stories: list[dict[str, Any]], points: dict[int, float | None]) -> list[int]:
+    """The 'by risk removed' order: linked stories by points removed, most
+    first, then the unlinked ones. Ties keep the order `stories` came in,
+    which is the manual order -- so viewing this never needs to write one."""
+    position = {int(s["id"]): i for i, s in enumerate(stories)}
+    return sorted(
+        position,
+        key=lambda sid: (
+            points.get(sid) is None,
+            -(points.get(sid) or 0.0),
+            position[sid],
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Declared versus observed (B-070, spec 35 §7.1, D-140)
+# --------------------------------------------------------------------------
+
+#: A `branch_controls` declaration -> (the governance control that observes
+#: it, the observed states that satisfy it, what the declaration says).
+#: `required_review` is satisfied by one approval (`partial`): the manifest
+#: declares that review is required, not how many reviewers.
+DECLARED_CONTROLS: dict[str, tuple[str, frozenset[str], str]] = {
+    "required_review": (
+        "approving_reviews_required",
+        frozenset({"on", "partial"}),
+        "an approving review is required",
+    ),
+    "required_checks": (
+        "required_status_checks",
+        frozenset({"on"}),
+        "a status check must pass before a merge",
+    ),
+    "codeowner_review": (
+        "codeowner_review_required",
+        frozenset({"on"}),
+        "a CODEOWNERS review is required",
+    ),
+    "enforced_for_admins": (
+        "enforced_for_admins",
+        frozenset({"on"}),
+        "administrators are bound by the rules",
+    ),
+    "signed_commits": (
+        "signed_commits_required",
+        frozenset({"on"}),
+        "commits must be signed",
+    ),
+    "force_push_blocked": (
+        "force_push_blocked",
+        frozenset({"on"}),
+        "force pushes are blocked",
+    ),
+}
+
+ObservationStatus = Literal["consistent", "drift", "unobserved"]
+
+_ON = frozenset({"true", "1", "yes", "on"})
+_OFF = frozenset({"false", "0", "no", "off"})
+
+
+@dataclass
+class Observation:
+    """One declaration beside what MyKronos can see of it.
+
+    `declared` and `observed` are kept as two fields and rendered as two, so
+    "the manifest says required" and "branch protection says none" are never
+    collapsed into a single word that hides which side is which.
+    """
+
+    id: str
+    #: branch_control | gate_switch
+    kind: str
+    subject: str
+    declared: str
+    observed: str
+    status: ObservationStatus
+    owner: str
+    detail: str = ""
+
+
+def branch_control_observations(
+    manifest: ProcessManifest | None,
+    branch: str,
+    control_states: dict[str, str] | None,
+    *,
+    unobserved_reason: str = "",
+) -> list[Observation]:
+    """Each `branch_controls: true` declaration against the stored governance
+    reading. `control_states` is None when there is no current reading, which
+    makes every declaration unobserved rather than consistent."""
+    if manifest is None or manifest.branch_controls is None:
+        return []
+    declared = manifest.branch_controls
+    out: list[Observation] = []
+    for name, (control_key, satisfied, says) in DECLARED_CONTROLS.items():
+        if getattr(declared, name) is not True:
+            continue
+        state = None if control_states is None else control_states.get(control_key)
+        if state is None or state == "unknown":
+            status: ObservationStatus = "unobserved"
+            observed = "not observed"
+            detail = unobserved_reason or f"{control_key} could not be read."
+        elif state in satisfied:
+            status, observed, detail = "consistent", f"{control_key}: {state}", ""
+        else:
+            status = "drift"
+            observed = f"{control_key}: {state}"
+            detail = (
+                f"The manifest declares that {says} on {branch}; branch protection on "
+                f"{branch} reports {control_key} as {state}."
+            )
+        out.append(
+            Observation(
+                id=f"branch:{name}",
+                kind="branch_control",
+                subject=f"{name} on {branch}",
+                declared=f"{name}: true",
+                observed=observed,
+                status=status,
+                owner=declared.owner,
+                detail=detail,
+            )
+        )
+    return out
+
+
+def switch_files(manifest: ProcessManifest | None) -> list[str]:
+    """The distinct files the declared gate switches live in."""
+    if manifest is None:
+        return []
+    return sorted({g.enforced_by.file for g in manifest.gates if g.enforced_by is not None})
+
+
+def read_switch(text: str | None, path: str, key: str) -> str | None:
+    """The raw value of `key` in a file, or None if it is not there.
+
+    `.yaml`, `.yml` and `.json` are read as YAML (JSON is YAML) with `key` as
+    a dotted path. Anything else is read as dotenv: the last `KEY=value` line
+    wins, as it does for every dotenv loader, and a trailing comment or quotes
+    around the value are stripped.
+    """
+    if text is None:
+        return None
+    if path.endswith((".yaml", ".yml", ".json")):
+        try:
+            node: Any = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        if isinstance(node, bool):
+            return "true" if node else "false"
+        return None if node is None or isinstance(node, dict | list) else str(node)
+    value: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, rest = line.partition("=")
+        if name.strip() != key:
+            continue
+        rest = rest.strip()
+        if len(rest) >= 2 and rest[0] in "'\"" and rest[-1] == rest[0]:
+            rest = rest[1:-1]
+        else:
+            rest = rest.split(" #", 1)[0].strip()
+        value = rest
+    return value
+
+
+def gate_switch_observations(
+    manifest: ProcessManifest | None, files: dict[str, str | None]
+) -> list[Observation]:
+    """Each declared gate against the switch that is meant to enforce it.
+
+    `files` maps a path to its text, or to None when it is absent or could
+    not be read -- either way the switch is unobserved, never "off".
+    """
+    if manifest is None:
+        return []
+    fallback_owner = (
+        manifest.branch_controls.owner if manifest.branch_controls else "Repository admins"
+    )
+    out: list[Observation] = []
+    for gate in manifest.gates:
+        switch = gate.enforced_by
+        if switch is None:
+            continue
+        raw = read_switch(files.get(switch.file), switch.file, switch.key)
+        where = f"{switch.key} in {switch.file}"
+        value = (raw or "").strip().lower()
+        status: ObservationStatus
+        if raw is None:
+            status, observed = "unobserved", "not observed"
+            detail = (
+                f"{switch.file} is not on the default branch."
+                if files.get(switch.file) is None
+                else f"{switch.key} is not set in {switch.file}."
+            )
+        elif value in _ON:
+            status, observed, detail = "consistent", f"{where} = {raw}", ""
+        elif value in _OFF or value == "":
+            status = "drift"
+            observed = f"{where} = {raw or '(empty)'}"
+            detail = (
+                f"The manifest declares gate {gate.id} ({gate.name}); its switch "
+                f"{switch.key} is off in {switch.file}."
+            )
+        else:
+            status, observed = "unobserved", f"{where} = {raw}"
+            detail = f"{raw!r} is neither on nor off."
+        out.append(
+            Observation(
+                id=f"gate:{gate.id}",
+                kind="gate_switch",
+                subject=f"gate {gate.id} ({gate.name})",
+                declared=f"gate {gate.id} enforced by {switch.key}",
+                observed=observed,
+                status=status,
+                owner=gate.approves or fallback_owner,
+                detail=detail,
+            )
+        )
+    return out
+
+
+# --------------------------------------------------------------------------
+# A template pull request (B-069, spec 35 §7.2, D-141)
+# --------------------------------------------------------------------------
+
+#: Its own prefix, so `find_open_pull_request` never mistakes a workflow
+#: install pull request (`mykronos/install-...`) for a manifest one, or the
+#: other way round.
+TEMPLATE_BRANCH_PREFIX = "mykronos/sdlc-process-"
+
+
+@dataclass
+class TemplatePullRequest:
+    pull_request: PullRequest
+    branch: str
+    #: False when an open template pull request was returned instead.
+    created: bool
+
+
+def template_pr_body(template: Template, tag: str) -> str:
+    return "\n".join(
+        [
+            "This pull request was opened by **Mykronos** from the Product Owner tab.",
+            "",
+            f"It adds a starter `{MANIFEST_PATH}` ({template.label}): {template.summary}",
+            "",
+            "### Before you merge",
+            "",
+            "- It is a **draft** and a starting point. Edit the gates, approvers and",
+            "  checklists until they describe how this repository is actually run.",
+            f"- Stories are matched by the tag `{tag}` in TheHub.",
+            "- Nothing is committed to the default branch. Until this merges, the tab",
+            "  keeps saying the repository declares no process.",
+            "",
+            "Spec 35 §2 describes every key; an unknown key makes the manifest invalid.",
+        ]
+    )
+
+
+async def open_template_pr(
+    github: GitHubClient,
+    repo_full_name: str,
+    default_branch: str,
+    template: Template,
+    *,
+    now: datetime,
+) -> TemplatePullRequest:
+    """Open a draft pull request adding the starter manifest.
+
+    The Workflow Installer's path (`installer.apply`): reuse an open pull
+    request rather than opening a second, otherwise branch from the default
+    branch, commit, and open. One file, and never a commit to the default
+    branch itself.
+    """
+    existing = await github.find_open_pull_request(repo_full_name, TEMPLATE_BRANCH_PREFIX)
+    if existing is not None:
+        return TemplatePullRequest(
+            pull_request=existing, branch=existing.head_branch, created=False
+        )
+    tag = default_tag(repo_full_name)
+    branch = f"{TEMPLATE_BRANCH_PREFIX}{now.strftime('%Y%m%dT%H%M%S')}"
+    await github.create_branch(repo_full_name, branch, default_branch)
+    await github.commit_files(
+        repo_full_name,
+        branch,
+        f"Mykronos: add a starter {MANIFEST_PATH} ({template.label})",
+        [FileChange(path=MANIFEST_PATH, content=template.render(tag))],
+    )
+    pull_request = await github.create_pull_request(
+        repo_full_name,
+        head=branch,
+        base=default_branch,
+        title=f"Mykronos: declare a development process ({template.label})",
+        body=template_pr_body(template, tag),
+        draft=True,
+    )
+    return TemplatePullRequest(pull_request=pull_request, branch=branch, created=True)
 
 
 # --------------------------------------------------------------------------
@@ -485,6 +1096,22 @@ class HubClient:
             )
         body = self._body(response)
         return body if isinstance(body, dict) else None
+
+    async def story_deploys(self, story_id: int) -> list[dict[str, Any]] | None:
+        """The deploy runs TheHub attributes to a story by its commits'
+        `Stories:` trailers. None when TheHub could not answer: "could not
+        see" is never reported as "has none"."""
+        try:
+            response = await self._request("GET", f"/api/dev/stories/{story_id}/deploys")
+        except HubUnavailableError:
+            return None
+        if response.status_code != 200:
+            return None
+        body = self._body(response)
+        deploys = body.get("deploys") if isinstance(body, dict) else None
+        if not isinstance(deploys, list):
+            return None
+        return [row for row in deploys if isinstance(row, dict)]
 
     async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """One of the console's supplementary reads (spec 35 §8). None for a

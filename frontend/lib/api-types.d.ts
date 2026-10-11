@@ -2479,6 +2479,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Template Pr
+         * @description Open a draft pull request adding a starter `.sdlc/process.yaml`
+         *     (spec 35 §7.2, B-069).
+         *
+         *     Only for a repository whose default branch has no manifest: an invalid one
+         *     is fixed in the repository, not replaced from here, and an unreadable one
+         *     may well exist. Every attempt is audit-logged, including the refusals.
+         */
+        post: operations["open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/product-owner/delivery": {
         parameters: {
             query?: never;
@@ -5659,6 +5684,8 @@ export interface components {
             title: string;
             /** Reason */
             reason: string;
+            /** Owner */
+            owner?: string | null;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -5727,6 +5754,29 @@ export interface components {
             input: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * ObservationOut
+         * @description One declaration beside its observation (spec 35 §7.1). The two are
+         *     separate fields so the view never merges them into one word.
+         */
+        ObservationOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Declared */
+            declared: string;
+            /** Observed */
+            observed: string;
+            /** Status */
+            status: string;
+            /** Owner */
+            owner: string;
+            /** Detail */
+            detail: string;
         };
         /** OnboardRequest */
         OnboardRequest: {
@@ -6688,6 +6738,10 @@ export interface components {
             hub: components["schemas"]["HubOut"];
             /** Needs Human */
             needs_human: components["schemas"]["NeedsHumanOut"][];
+            /** Observations */
+            observations: components["schemas"]["ObservationOut"][];
+            /** Templates */
+            templates: components["schemas"]["TemplateOut"][];
             /** Counts */
             counts: {
                 [key: string]: number;
@@ -6698,6 +6752,9 @@ export interface components {
             backlog: components["schemas"]["StoryOut"][];
             /** Sprint */
             sprint: components["schemas"]["StoryOut"][];
+            risk_model: components["schemas"]["RiskModelOut"];
+            /** Backlog By Risk */
+            backlog_by_risk: number[];
         };
         /**
          * ProfileProposalOut
@@ -7398,6 +7455,24 @@ export interface components {
             reason: string;
         };
         /**
+         * RiskModelOut
+         * @description What the 'by risk removed' order ranked by (the B-033 rule).
+         */
+        RiskModelOut: {
+            /** Available */
+            available: boolean;
+            /** Decision Id */
+            decision_id: string | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Policy Version */
+            policy_version: string | null;
+            /** Risk Profile Available */
+            risk_profile_available: boolean;
+            /** Statement */
+            statement: string;
+        };
+        /**
          * RiskProfileOut
          * @description What this application is, as an asset (spec 21 §1).
          *
@@ -7879,6 +7954,23 @@ export interface components {
             /** Updated At */
             updated_at: string | null;
             check: components["schemas"]["GateCheckOut"];
+            dod?: components["schemas"]["GateCheckOut"] | null;
+            risk?: components["schemas"]["StoryRiskOut"] | null;
+        };
+        /** StoryRiskOut */
+        StoryRiskOut: {
+            /** Linked */
+            linked: boolean;
+            /** Points */
+            points: number | null;
+            /** Findings Linked */
+            findings_linked: number;
+            /** Findings Open */
+            findings_open: number;
+            /** Controls Linked */
+            controls_linked: string[];
+            /** Note */
+            note: string;
         };
         /**
          * SubSignal
@@ -7986,6 +8078,36 @@ export interface components {
             unknowns: number;
             /** Complete */
             complete: boolean;
+        };
+        /** TemplateOut */
+        TemplateOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Summary */
+            summary: string;
+        };
+        /** TemplatePrOut */
+        TemplatePrOut: {
+            /** Template */
+            template: string;
+            /** Created */
+            created: boolean;
+            /** Pr Number */
+            pr_number: number;
+            /** Pr Url */
+            pr_url: string;
+            /** Branch */
+            branch: string;
+        };
+        /** TemplateRequest */
+        TemplateRequest: {
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "keel" | "thehub" | "lightweight";
         };
         /**
          * TestEstateOut
@@ -11331,6 +11453,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplatePrOut"];
                 };
             };
             /** @description Validation Error */
