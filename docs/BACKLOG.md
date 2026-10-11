@@ -1116,9 +1116,32 @@ enforced" including the ones that were on.
 
 ---
 
-### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done**
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **done**
 
-**Size:** S **State:** open **Verified:** 2026-09-05
+**Size:** S **State:** done **Verified:** 2026-10-11
+
+**Closed 2026-10-11 (TheHub #59082, which mirrors this entry).** Every criterion
+below is met; each was checked by presence and form only, never by value:
+
+- `thehub` / `anthropic-api-key` — **resolved on the 2026-09-10 17:44 re-apply**,
+  which picked the key up from Vault at `concourse/main/anthropic-api-key`
+  exactly as this entry predicted (zero `sk-ant-` occurrences in the applied
+  config afterwards). The empty-string reading of 2026-09-09 was the stale
+  Vault value, not an inline literal: the operator rewrote the Vault key on
+  2026-10-11 and `thehub/ai-models` build 165 then validated models against the
+  live API, so `((anthropic-api-key))` resolves from Vault, non-empty.
+- `personal-soc` / `personal-soc-ingestion-token` — rotated on 2026-10-11 by
+  `repair-personal-soc-token.ps1` (GitHub Actions secret + `.env`), stored at
+  `concourse/main/personal-soc-ingestion-token`, and re-applied: the applied
+  config now holds **5× `((personal-soc-ingestion-token))` and no 43-character
+  literal** (previously 3× literal).
+- Rotation: the ingestion token above is new; the Anthropic key that sat inline
+  until 2026-09-10 was the one the API was rejecting as `invalid x-api-key` by
+  2026-10, i.e. already dead, and Vault now holds a different, working key.
+- `github-token` stays inline on purpose (below), named so the next reader does
+  not "fix" it.
+
+The historical text below is kept as the record of how it was found.
 
 PS-9 says a credential belongs in the credential manager rather than in a
 `((vars))` file, because Concourse stores pipeline configuration verbatim and
@@ -1214,19 +1237,18 @@ answer.
 
 **Acceptance criteria**
 
-- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied
-  config. **Half:** the literal is gone, and it resolves to an empty string
-  rather than from Vault.
-- `personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
-  three `MYKRONOS_TOKEN` assignments reading as placeholders. **Not done**, and
-  it is now the estate's only inline credential with a value in it.
+- ~~`thehub` re-applied, and `((anthropic-api-key))` intact in the applied
+  config.~~ Done: resolved on the 2026-09-10 re-apply; resolves from Vault,
+  non-empty, since the 2026-10-11 key rewrite (ai-models build 165 green).
+- ~~`personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
+  three `MYKRONOS_TOKEN` assignments reading as placeholders.~~ Done 2026-10-11:
+  5 placeholders, no literal.
 - ~~`check_applied_pipelines.py` distinguishes an inline credential with a
   value from an inline empty string, and says which.~~
 - ~~`github-token`'s exclusion is recorded where the check reports it.~~
-- The two keys that were inline are treated as exposed and rotated. **Not
-  done.** Every apply between 2026-09-05 and whenever `thehub` was re-applied
-  stored the Anthropic key somewhere readable, and the ingestion token is
-  still there now.
+- ~~The two keys that were inline are treated as exposed and rotated.~~ Done
+  2026-10-11: the ingestion token was rotated; the formerly inline Anthropic key
+  was already rejected by the API and Vault holds a different, working key.
 
 **Provenance:** found on 2026-09-05 while verifying that D-113's coverage flag
 had reached the running `mykronos` pipeline. `check_applied_pipelines.py`
