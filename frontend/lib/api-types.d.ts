@@ -2628,6 +2628,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/product-owner/estate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estate
+         * @description Every active repository's Product Owner read, one row each, summed.
+         */
+        get: operations["estate_api_dashboard_product_owner_estate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -6029,6 +6049,60 @@ export interface components {
             agent_now: string;
             /** Delegations */
             delegations: components["schemas"]["PoDelegationRefOut"][];
+        };
+        /** PoEstateOut */
+        PoEstateOut: {
+            /** Rows */
+            rows: components["schemas"]["PoEstateRowOut"][];
+            totals: components["schemas"]["PoEstateTotalsOut"];
+        };
+        /** PoEstateRowOut */
+        PoEstateRowOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Manifest State */
+            manifest_state: string;
+            /** Process */
+            process: string;
+            /** Manifest Name */
+            manifest_name: string | null;
+            /** Sprint Done */
+            sprint_done: number | null;
+            /** Sprint Committed */
+            sprint_committed: number | null;
+            /** Needs Human */
+            needs_human: number | null;
+            /** Oracle Recommendation */
+            oracle_recommendation: string | null;
+            /** Oracle Score */
+            oracle_score: number | null;
+            /** Hub Connected */
+            hub_connected: boolean;
+            /** Link */
+            link: string;
+            /** Error */
+            error: string | null;
+        };
+        /** PoEstateTotalsOut */
+        PoEstateTotalsOut: {
+            /** Repos */
+            repos: number;
+            /** Declared */
+            declared: number;
+            /** Declares No Process */
+            declares_no_process: number;
+            /** Invalid Or Unreadable */
+            invalid_or_unreadable: number;
+            /** Sprint Done */
+            sprint_done: number;
+            /** Sprint Committed */
+            sprint_committed: number;
+            /** Needs Human */
+            needs_human: number;
+            /** Rows Without Hub */
+            rows_without_hub: number;
         };
         /**
          * PoFleetEstateOut
@@ -11496,6 +11570,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    estate_api_dashboard_product_owner_estate_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoEstateOut"];
                 };
             };
         };

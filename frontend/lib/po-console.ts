@@ -146,3 +146,18 @@ export async function getPoFleet(repoId: string, days: number): Promise<Result<P
     return failure(error, "Could not load the agent fleet");
   }
 }
+
+export type PoEstate = Json<"/api/dashboard/product-owner/estate">;
+
+export async function getPoEstate(): Promise<Result<PoEstate>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/product-owner/estate", {
+      cache: "no-store",
+    });
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the estate roll-up") };
+  } catch (error) {
+    return failure(error, "Could not load the estate roll-up");
+  }
+}
