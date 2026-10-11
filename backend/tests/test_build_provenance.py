@@ -24,7 +24,11 @@ WHAT THESE TESTS PIN:
   1. a build-arg SHA reaches `/healthz`               <- the mechanism works
   2. no SHA reports unknown, and reports it as a null <- absence is a state
   3. `__version__` is never used as a substitute      <- the trap above
-  4. the probe stays unauthenticated                  <- see the class docstring
+  4. only an authorised caller reads it               <- D-154, see the class
+
+[D-154, TheHub #60722] The SHA used to be public. It is now served only to a
+caller presenting the perimeter token; deploy.ps1 reads the container stamp.
+`test_healthz_does_not_disclose_build.py` pins the public side.
 """
 
 from __future__ import annotations
@@ -33,16 +37,18 @@ from fastapi.testclient import TestClient
 
 from mykronos import __version__
 from mykronos.config import Settings
+from mykronos.gate import TOKEN_HEADER
 from mykronos.main import create_app
 
 SHA = "63714b61df3743b16ff72b4d1dc7f2c2011b4aed"
+GATE = "gate-token-for-provenance"
 
 
 def _build(settings: Settings, sha: str) -> dict:
     """A client over an app configured exactly as an image would be."""
-    configured = settings.model_copy(update={"build_sha": sha})
+    configured = settings.model_copy(update={"build_sha": sha, "gate_token": GATE})
     with TestClient(create_app(configured)) as client:
-        response = client.get("/healthz")
+        response = client.get("/healthz", headers={TOKEN_HEADER: GATE})
     assert response.status_code == 200
     return response.json()["build"]
 
@@ -102,23 +108,26 @@ class TestAbsenceIsAStateRatherThanAGuess:
         assert __version__ not in str(build["sha"])
 
 
-class TestItIsReadableFromOutside:
-    def test_the_probe_needs_no_credential(self, client: TestClient) -> None:
-        """Whatever asks "is the fix running yet?" asks from outside the
-        container, of the process actually serving traffic. A commit SHA names
-        a public commit in a public repository; TheHub has served its own from
-        `/health` throughout, and that is what made TheHub's deployment state
-        checkable on 2026-09-13 when mykronos's was not."""
-        response = client.get("/healthz")
+class TestItIsReadableByAnAuthorisedCaller:
+    """[D-154] Whatever asks "is the fix running yet?" still can, with the
+    perimeter token. It used to be public, on the argument that a SHA names a
+    public commit; that is exactly what makes it useful to an attacker, who
+    can diff it against `main` to see what is not yet patched."""
+
+    def test_an_anonymous_probe_gets_no_build(self, settings: Settings) -> None:
+        configured = settings.model_copy(update={"build_sha": SHA, "gate_token": GATE})
+        with TestClient(create_app(configured)) as client:
+            response = client.get("/healthz")
 
         assert response.status_code == 200
-        assert "build" in response.json()
+        assert "build" not in response.json()
 
-    def test_it_still_reveals_nothing_else(self, client: TestClient) -> None:
-        """The endpoint's existing contract. `build` is additive -- it must
-        not become the reason an unauthenticated caller learns about the
-        lake, the repositories, or the findings."""
-        body = client.get("/healthz").json()
+    def test_it_still_reveals_nothing_else(self, settings: Settings) -> None:
+        """`build` must not become the reason a caller learns about the lake,
+        the repositories, or the findings."""
+        configured = settings.model_copy(update={"build_sha": SHA, "gate_token": GATE})
+        with TestClient(create_app(configured)) as client:
+            body = client.get("/healthz", headers={TOKEN_HEADER: GATE}).json()
 
         assert set(body) == {"status", "version", "build"}
         assert set(body["build"]) == {"sha", "source"}

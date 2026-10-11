@@ -114,7 +114,9 @@ WORKDIR /app
 # above. The stamped artifact never reaches the image, which is why every
 # deployment reports `0.1.0`.
 #
-# Empty is the honest default and `/healthz` reports it as `source: unknown`.
+# Empty is the honest default and `/healthz` reports it as `source: unknown`
+# (to a caller with the perimeter token -- D-154; deploy.ps1 reads this ENV
+# from the container with `docker inspect` instead).
 # A local `docker build` genuinely does not know the commit, and inventing one
 # is worse than admitting it -- the whole reason this exists is that a
 # confident wrong answer about what is deployed went unnoticed for eight days.

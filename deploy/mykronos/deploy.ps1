@@ -89,13 +89,13 @@
     REQUIRED. The commit sha to deploy - 7 to 40 hex characters, validated.
 
     Rollback is the same command with the previous sha. The deploy reads
-    `/healthz` afterwards and says whether the running commit is the one
-    requested, because "healthy" and "running what you asked for" are different
+    the running container's `MYKRONOS_BUILD_SHA` afterwards and says whether
+    the running commit is the one requested, because "healthy" and "running what you asked for" are different
     facts and only the second one is the deploy's job.
 
 .PARAMETER PlatformUrl
     Where to ask for the sha's risk decision. The local backend by default -
-    the same address this script already reads `/healthz` from, so it adds no
+    the same address this script already polls for health, so it adds no
     new host, no new port and no new credential store.
 
 .PARAMETER GateWaitMinutes
@@ -147,7 +147,7 @@ param(
     [ValidatePattern('^[0-9a-f]{7,40}$')]
     [string]$Tag,
     # Where to ask what the risk gate decided about $Tag (#60487). The same
-    # backend this script already reads /healthz from, so the new dependency
+    # backend this script already deploys and checks, so the new dependency
     # is a route, not a machine.
     [string]$PlatformUrl = "http://127.0.0.1:8100",
     # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
@@ -668,11 +668,20 @@ try {
     # [D-125] No longer conditional on the tag not being `latest`: every deploy
     # now names a sha, so "healthy" and "running what you asked for" can always
     # be told apart. That is the whole reason the sha is mandatory.
+    # [D-154, TheHub #60722] Read from the container's own stamp, not from
+    # /healthz. The public /healthz no longer carries the sha (it told the
+    # internet which commit to diff), and the stamp needs no token. It is the
+    # same MYKRONOS_BUILD_SHA the backend serves as `build.sha`: the image's
+    # ENV, which compose does not override.
     $running = $null
     try {
-        $running = (Invoke-RestMethod -Uri "http://127.0.0.1:8100/healthz" -TimeoutSec 15).build.sha
+        $stamp = docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mykronos-backend 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "docker inspect failed" }
+        foreach ($line in $stamp) {
+            if ($line -match '^MYKRONOS_BUILD_SHA=(.*)$') { $running = $Matches[1].Trim() }
+        }
     } catch {
-        Write-Host "Could not read /healthz to confirm the running commit." -ForegroundColor Yellow
+        Write-Host "Could not read MYKRONOS_BUILD_SHA from mykronos-backend to confirm the running commit." -ForegroundColor Yellow
     }
     if (-not $running) {
         Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
@@ -681,7 +690,7 @@ try {
     } else {
         # Not a throw. The stack is up and healthy; what failed is the
         # deploy's intent, and the operator needs both facts.
-        Write-Host "MISMATCH: asked for $Tag, /healthz reports $running." -ForegroundColor Red
+        Write-Host "MISMATCH: asked for $Tag, the container reports $running." -ForegroundColor Red
         Write-Host "          The stack is healthy but it is not the artifact you asked for." -ForegroundColor Red
     }
 

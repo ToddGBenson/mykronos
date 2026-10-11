@@ -98,8 +98,8 @@ for one day the Oracle gate was advisory at deploy time.
 
 **That is closed as of D-126 (#60487), and the phrase above is history.**
 `deploy.ps1` asks the platform what the gate decided about the sha — `GET
-/api/oracle/decisions/by-commit/{sha}`, on the backend it already reads
-`/healthz` from — before it pulls anything, and **refuses a `no_go`** unless
+/api/oracle/decisions/by-commit/{sha}`, on the local backend it deploys
+— before it pulls anything, and **refuses a `no_go`** unless
 `-Force` is passed with a reason that is recorded. A machine says no again.
 
 **It fails open, deliberately.** If the platform cannot be reached the deploy

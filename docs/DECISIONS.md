@@ -21,6 +21,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 
 - [D-149 — Pull requests go through one approval queue; each decision is its own file](decisions/D-149-approval-queue-and-one-file-per-decision.md)
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
+- [D-154 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-154-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
 
 <!-- decisions-index:end -->
 

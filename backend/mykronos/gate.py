@@ -29,7 +29,9 @@ this token and must not be asked to:
 - **GitHub's webhook sender** cannot be given a custom header at all. That
   endpoint is authenticated by HMAC over the body, which is stronger than a
   shared bearer anyway.
-- **Liveness probes**, which must work before anything is configured.
+- **Liveness probes**, which must work before anything is configured. The
+  exemption covers the status code only: `/healthz` checks the token itself
+  and shows the build SHA only to a caller that presents it (D-154).
 
 That is the same reasoning the Hub's own gate uses for its OAuth callbacks and
 webhooks: exempt the paths that carry their own proof, and only those.
@@ -87,6 +89,23 @@ EXEMPT = re.compile(
 )
 
 
+def presented_token(request: Request) -> str:
+    """The token this request carries, from whichever carrier has one."""
+    return (
+        request.headers.get(TOKEN_HEADER, "")
+        or request.cookies.get(TOKEN_COOKIE, "")
+        or request.query_params.get(TOKEN_QUERY, "")
+    )
+
+
+def presents_token(request: Request, token: str) -> bool:
+    """Whether this request carries `token`. Always False when no token is
+    configured: an unset gate has no credential to present, which is not the
+    same as every caller presenting it."""
+    presented = presented_token(request)
+    return bool(token) and bool(presented) and hmac.compare_digest(presented, token)
+
+
 def is_exempt(path: str) -> bool:
     """Whether this path authenticates itself.
 
@@ -132,13 +151,9 @@ class PerimeterGate(BaseHTTPMiddleware):
         if is_exempt(path) or request.method == "OPTIONS":
             return await call_next(request)
 
-        presented = (
-            request.headers.get(TOKEN_HEADER, "")
-            or request.cookies.get(TOKEN_COOKIE, "")
-            or request.query_params.get(TOKEN_QUERY, "")
-        )
+        presented = presented_token(request)
 
-        if not presented or not hmac.compare_digest(presented, self.token):
+        if not presents_token(request, self.token):
             # Deliberately terse, and identical whether the token was absent,
             # wrong, or malformed. A gate that explains itself to an
             # unauthenticated caller is a gate that helps them.

@@ -27,11 +27,15 @@ follow-up work rather than approximated here. A proxy presented as the real
 measurement is the defect class this module exists because of.
 
 THE PROBE CONTRACT is deliberately narrow: a GET returning JSON with a string
-at `build.sha`. Both applications already serve exactly that shape --
-mykronos at `/healthz` and TheHub at `/health`, unauthenticated, because the
-question "is the fix running yet?" has to be answerable from outside the
-process being asked. A response in any other shape is reported `unparsed`
-rather than pattern-matched for something commit-like: guessing which field
+at `build.sha`. Both applications used to serve that shape unauthenticated --
+mykronos at `/healthz` and TheHub at `/health`. Neither does any more: a
+public sha tells anyone which commit to diff for what is unpatched, so both
+now serve it only to an authenticated caller (D-154, TheHub #60709). The probe
+sends no credential, so against either it reports `unparsed`; no probe was
+configured in production when that changed (measured 2026-10-11).
+
+A response in any other shape is reported `unparsed` rather than
+pattern-matched for something commit-like: guessing which field
 holds the revision is how a confident wrong answer gets made, and a confident
 wrong answer about what is deployed is the thing being fixed.
 """
