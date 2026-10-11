@@ -115,6 +115,14 @@ resources:
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
 
+  # PSScriptAnalyzer's runtime, for `sast` (B-051). The same image and tag
+  # personal-soc.yml runs its analyser on, so the two PowerShell lanes in the
+  # estate read code the same way.
+  - name: pwsh
+    type: registry-image
+    icon: powershell
+    source: { repository: mcr.microsoft.com/powershell, tag: "7.5-debian-12" }
+
   # The frontend half of what `ci.yml` used to guard (spec 16 §4). Same major
   # as the workflow pinned, because the generated API client and the build both
   # depend on it.
@@ -1601,6 +1609,8 @@ jobs:
         passed: [unit, lint-and-types, qa-spec-links, frontend]
       - get: python
         attempts: *retry_fetch
+      - get: pwsh
+        attempts: *retry_fetch
       - *preflight
       - task: semgrep
         timeout: 90m
@@ -1707,6 +1717,121 @@ jobs:
                     && echo "Reported to Mykronos." \
                     || echo "Could not report it; reachability stays unavailable."
                 ) || true
+
+        # -- PowerShell, which semgrep does not read (B-051) -----------------
+        #
+        # semgrep's rule packs here cover no PowerShell, and this repository
+        # carries ~197 KB of it (deploy/concourse/*.ps1, the host scripts that
+        # set every pipeline, unseal Vault and repair tokens). MyKronos's
+        # unread-source section counted all of it as read by nothing, while
+        # the repository that reports that gap for everybody else had it
+        # itself.
+        #
+        # A second analyser on `sast`, not a new lane: absence reconciliation
+        # reads `tool_name`, so semgrep's silence cannot close a
+        # PSScriptAnalyzer finding or the reverse (test_stranded_analysers).
+        #
+        # Hung off semgrep's `ensure:` so neither analyser can cost the other
+        # its run: semgrep goes first exactly as before, and this runs whatever
+        # semgrep did. Either failing still turns the job red.
+        #
+        # Reporting, not gating. Nothing gated on PowerShell here before, and
+        # the step fails only when the analyser itself does: no files found,
+        # or the module would not install or run.
+        ensure:
+          task: psscriptanalyzer
+          # PS-7. 10m against personal-soc's measured median of 35s over a
+          # tree this size; most of it is Install-Module.
+          timeout: 10m
+          image: pwsh
+          config:
+            platform: linux
+            inputs: [{ name: source }]
+            outputs: [{ name: results }]
+            run:
+              path: pwsh
+              args:
+                - -NonInteractive
+                - -NoProfile
+                - -Command
+                - |
+                  $ErrorActionPreference = 'Stop'
+                  Set-PSRepository PSGallery -InstallationPolicy Trusted
+                  # Pinned (PS-8's spirit): an unpinned analyser changes its
+                  # rules under a lane that has not changed.
+                  Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -AcceptLicense
+                  Import-Module PSScriptAnalyzer
+
+                  $files = @(Get-ChildItem source -Recurse -File -Include *.ps1,*.psm1,*.psd1)
+                  Write-Host ("scripts analysed: {0}" -f $files.Count)
+                  if ($files.Count -eq 0) {
+                    Write-Host "::error:: no PowerShell found in the repository."
+                    Write-Host "          A check that examined nothing has not passed - it has"
+                    Write-Host "          lost track of what it was pointed at."
+                    exit 1
+                  }
+
+                  $all = @(Invoke-ScriptAnalyzer -Path source -Recurse)
+
+                  # The same two style rules personal-soc.yml leaves out of its
+                  # upload, for the same reason. Measured 2026-10-11 over this
+                  # tree: 374 findings, 350 of them PSAvoidUsingWriteHost and 5
+                  # PSUseBOMForUnicodeEncodedFile. Uploading them would move
+                  # mykronos by 355 LOW findings with no defect in any of them.
+                  # Every security-category rule still reports.
+                  $styleOnly = @("PSAvoidUsingWriteHost", "PSUseBOMForUnicodeEncodedFile")
+                  $uploadable = @($all | Where-Object { $styleOnly -notcontains $_.RuleName })
+
+                  # -Depth: the default of 2 truncates ScriptPath and Extent to
+                  # "System.Object[]". The leading comma forces an array for a
+                  # single finding, which ConvertTo-Json would emit bare.
+                  ,$uploadable | ConvertTo-Json -Depth 6 |
+                    Set-Content -Path results/psscriptanalyzer.json -Encoding utf8
+                  Write-Host "Uploading $($uploadable.Count) of $($all.Count) finding(s); $($all.Count - $uploadable.Count) style-only excluded."
+                  foreach ($d in $uploadable) {
+                    $rel = $d.ScriptPath -replace '.*[/\\]source[/\\]', ''
+                    Write-Host ("  {0,-11} {1,-44} {2}:{3}" -f $d.Severity, $d.RuleName, $rel, $d.Line)
+                  }
+
+          # PS-3. Under `ensure:` so an analyser that broke still reports.
+          ensure:
+            task: upload-psscriptanalyzer
+            timeout: 10m
+            image: python
+            params: *mykronos_env
+            config:
+              platform: linux
+              inputs: [{ name: source }, { name: results }]
+              run:
+                path: bash
+                args:
+                  - -ec
+                  - |
+                    set -euo pipefail
+                    # Running under `ensure:` means this also fires when the
+                    # analyser died before writing anything. An empty upload
+                    # would read in the lake as a clean scan rather than as one
+                    # that never happened, so it is refused; the analyser's own
+                    # failure has already turned the job red.
+                    if [ ! -s results/psscriptanalyzer.json ]; then
+                      echo "::error:: the analyser produced no results file - it failed before writing one."
+                      echo "          Not uploading: an empty upload would report this as a clean scan."
+                      exit 0
+                    fi
+                    # #59976: see the note at the top of `anchors:`.
+                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                    apt-get update -qq && apt-get install -y -qq git >/dev/null
+                    pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                    python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                    cd source
+                    python -m mykronos.upload \
+                      --capability sast --tool psscriptanalyzer \
+                      --results-path ../results \
+                      --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                      --repo ToddGBenson/mykronos \
+                      --commit-sha "$(git rev-parse HEAD)" \
+                      --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                      --severity-threshold low --blocking false
 
   # Replaces `mykronos-aegis.yml`. That workflow ran on `pull_request` and
   # `pull_request_review`; Concourse sees a branch, so the pull request that

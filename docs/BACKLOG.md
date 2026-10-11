@@ -4,6 +4,10 @@ Open work that is not a decision and not a retro. Decisions that settle *how*
 something is built belong in [`DECISIONS.md`](DECISIONS.md); what happened on a
 bad day belongs in [`retros/`](retros/). This file is what is *not done yet*.
 
+**Open and icebox entries now live in TheHub `dev_stories` (D-133, 2026-10-11).**
+Each storied entry's heading carries its TheHub story id; that story, not this
+file, is the record of its state from here on.
+
 Format: `B-nnn` / size / state / the problem / acceptance criteria / provenance.
 Entries move to the Closed section when they land, with the closing commit or
 decision noted, rather than being deleted outright.
@@ -172,9 +176,9 @@ downstream: a notification about an unowned finding has nowhere to go, and a
 finding record with an empty owner field is a record of an unmade decision. Do
 this before B-035 or the alerts will be broadcasts.
 
-**3 · B-035 — the notifier.** One environment variable once somebody supplies
-the URL, and it converts the whole platform from pull to push. Held only because
-the credential cannot live in this repository.
+**3 · B-035 — the notifier.** Converts the whole platform from pull to push.
+Since D-137 the deploy reads the host's Slack bot token and channel from Vault,
+so it is held only on a deploy and one visible test message.
 
 **4 · B-033 — say what the ranking is.** The honest half is small: the ranking
 degrades to severity when no risk profile exists, and every surface that ranks
@@ -204,7 +208,7 @@ the consequence of a blocked release, not to this file.
 inert, which the entry itself called the one indefensible state; that hold
 lasted four days and is in Closed.
 
-### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal
+### B-067 — The symbol in a finding's identity is positional, and sometimes read out of a string literal — TheHub #60572
 
 **Size:** M **State:** fixed in review (D-139, TheHub #60572) **Verified:** 2026-10-11
 
@@ -266,7 +270,7 @@ other.
 an edit inside the matched snippet — but the same class, and the one that
 makes "inserting code above a finding" literally true.
 
-### B-035 — The notifier is configured and addressed to nobody
+### B-035 — The notifier is configured and addressed to nobody — TheHub #60573
 
 **Size:** S **State:** open **Verified:** 2026-09-03
 
@@ -283,6 +287,14 @@ every other secret. B-034 closing is what unblocked it — before ownership was
 real these would have been broadcasts. Three separate multi-day scanning outages
 in two weeks (B-024, B-055, B-057), none of which announced itself, are the
 argument.
+
+**Amended 2026-10-11 — D-137: the host's Slack bot, not a webhook.** PS-9: a
+webhook's secret sits in its URL. `deploy.ps1` now reads the bot token and the
+alert channel from Vault (`concourse/main/slack-bot-token`,
+`concourse/main/slack-alert-channel`), the pair the Concourse pipeline alerts
+already post with, and passes them to compose. Nothing goes into
+`backend/.env`. What is left is the operator's: deploy a sha carrying it, and
+see one test message arrive (OPERATOR-TASKS task 2).
 
 **And the weekly digest would not have arrived even with one.** Found
 2026-09-09 while reading this entry. `SlackNotifier.send` is a coroutine;
@@ -432,7 +444,7 @@ and "recorded nothing".
 
 ---
 
-### B-050 — Eight live TheHub findings, verified against `develop`
+### B-050 — Eight live TheHub findings, verified against `develop` — TheHub #60574, #60575, #60576
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -603,7 +615,7 @@ for it.
 
 ---
 
-### B-051 — SAST is language-blind, and two repositories are green because nothing can read them — **half done**
+### B-051 — SAST is language-blind, and two repositories are green because nothing can read them — **half done** — TheHub #60577, #60578
 
 **Size:** M **State:** open **Verified:** 2026-09-03
 
@@ -733,6 +745,15 @@ PLpgSQL. That is a bigger unread surface than anything the entry started
 with — keel's 219 KB of shell was the headline — and it was invisible until
 something measured it. It needs its own answer and is not covered by either
 analyser added today; `SAST_LANGUAGES` has no tool for it to name.
+
+**Corrected 2026-10-11 — D-138: most of it was never stored procedures.** It
+is DDL migrations, which linguist names PLpgSQL on markers as weak as `BEGIN;`.
+The language read now splits a repository's SQL by file. Declarations go to
+`SQL schema` in `NOT_SOURCE`, and only files with a function, a procedure,
+`LANGUAGE plpgsql` or a `DO` block stay unread source. For TheHub that is 34
+of 376 files (324 KB of the 711 KB GitHub counts). The share under codeql +
+semgrep goes from 3.05% to 1.81%. A SQL analyser lane for the procedural
+remainder is still open.
 
 `mykronos`'s 197 KB of PowerShell is its own operations scripts, and the
 `sast-powershell` lane built today closes it the moment it is enabled here.
@@ -943,7 +964,7 @@ answer because it only knows the ones it was told about.
 
 ---
 
-### B-060 — Branch protection, read for the first time, against CIS §1.1
+### B-060 — Branch protection, read for the first time, against CIS §1.1 — TheHub #60579, #60580
 
 **Size:** M **State:** open **Verified:** 2026-09-04
 
@@ -982,6 +1003,12 @@ hours after D-110 named it as the safe early case for exactly the opposite
 reason. The amendment on D-110 carries the live table and the three choices;
 no setting was changed, because branch protection is outward-facing and this
 is a decision rather than an execution.
+
+**2026-10-11 — 1.1.9 for keel, personal-soc and binnacle is a decision now
+(D-151, TheHub #60580).** keel and personal-soc post `Concourse / <repo>` on
+`main` commits through D-136's endpoint. Neither is required, because no pull
+request can carry a check that only lands after the merge. binnacle has no
+pipeline to report one. The require-check commands are in D-151, not run.
 
 **Three gaps are estate-wide**, and they are the ones that matter most:
 
@@ -1127,7 +1154,7 @@ enforced" including the ones that were on.
 
 ---
 
-### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done**
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done** — TheHub #60581 (and #59082)
 
 **Size:** S **State:** open **Verified:** 2026-09-05
 
@@ -1246,7 +1273,7 @@ nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
 
-### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub
+### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — TheHub #60566
 
 **Size:** S **State:** open **Verified:** 2026-10-11
 
@@ -1267,7 +1294,7 @@ Control shows a backlog in a different order from this tab.
 
 **Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
 
-### B-069 — A repository with no manifest is told so, and offered nothing
+### B-069 — A repository with no manifest is told so, and offered nothing — TheHub #60567
 
 **Size:** S **State:** done (spec 35 §7.2, D-141) **Verified:** 2026-10-11
 
@@ -1286,7 +1313,7 @@ correct, but it leaves the next step to the person reading.
 
 **Provenance:** spec 35 §2.3 and §5.
 
-### B-070 — Declared process versus observed process
+### B-070 — Declared process versus observed process — TheHub #60568
 
 **Size:** M **State:** done (spec 35 §7.1, D-140) **Verified:** 2026-10-11
 
@@ -1309,28 +1336,7 @@ declaration without the drift reads as reassurance.
 
 **Provenance:** spec 35 §5.
 
-### B-071 — The rest of the Product Owner console
-
-**Size:** L **State:** open **Verified:** 2026-10-11
-
-D-135 chose a console over a single page so that later views have somewhere to
-go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
-deliberately left out are listed here.
-
-**Acceptance criteria**
-
-- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
-  deploy ledger.
-- **Approvals inbox:** this repository's pending approval requests from
-  spec 34, read-only from here, decided in the approvals engine.
-- **Roles & agents:** who recommends and approves each gate, against the
-  delegations that actually exist.
-- **Retro:** a generated sprint retrospective from the stories that closed
-  and the gates they failed on the way.
-
-**Provenance:** spec 35 §5, D-135.
-
-### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only
+### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — TheHub #60570
 
 **Size:** M **State:** open **Verified:** 2026-10-11
 
@@ -1390,6 +1396,36 @@ into entries here:
 ---
 
 ## Closed
+
+### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-144, D-145)
+
+**Size:** L **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60569)
+
+Delivery, the Approvals inbox, Roles & agents and the computed retro are
+sub-views of the console (`view=delivery|approvals|roles|retro`), each with its
+own read. Two of the criteria below changed while being built, and the changes
+are recorded rather than absorbed. The inbox decides in place, as the Hub
+story asks, where this entry said "read-only from here", and it decides only
+through `approvals.engine.decide` (D-144). The deploy ledger MyKronos holds is
+the probe's running revision, so Delivery says "not recorded" for every other
+commit (D-145).
+
+D-135 chose a console over a single page so that later views have somewhere to
+go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
+deliberately left out are listed here.
+
+**Acceptance criteria**
+
+- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
+  deploy ledger.
+- **Approvals inbox:** this repository's pending approval requests from
+  spec 34, read-only from here, decided in the approvals engine.
+- **Roles & agents:** who recommends and approves each gate, against the
+  delegations that actually exist.
+- **Retro:** a generated sprint retrospective from the stories that closed
+  and the gates they failed on the way.
+
+**Provenance:** spec 35 §5, D-135.
 
 **2026-09-14 — two, both of which had been finished for days and were still
 filed under Open.** B-054, where the image registry the deploy path pulls from

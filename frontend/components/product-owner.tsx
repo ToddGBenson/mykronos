@@ -26,6 +26,14 @@ export const PO_VIEWS = [
   { id: "backlog", label: "Backlog" },
   { id: "sprint", label: "Sprint" },
   { id: "process", label: "Process" },
+  // Phase 2 (spec 35 §8). Each reads its own endpoint, and the page passes the
+  // rendered view in as `children`.
+  { id: "delivery", label: "Delivery" },
+  { id: "approvals", label: "Approvals" },
+  { id: "roles", label: "Roles & agents" },
+  { id: "retro", label: "Retro" },
+  { id: "trace", label: "Trace" },
+  { id: "fleet", label: "Agent fleet" },
 ] as const;
 
 export type PoViewId = (typeof PO_VIEWS)[number]["id"];
@@ -82,10 +90,13 @@ export function ProductOwnerTab({
   repoId,
   view,
   data,
+  children,
 }: {
   repoId: string;
   view: PoViewId;
   data: ProductOwnerView;
+  /** A phase 2 view, rendered under the same header and navigation. */
+  children?: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -110,7 +121,9 @@ export function ProductOwnerTab({
           </span>
         ) : null}
       </nav>
-      {view === "backlog" ? (
+      {children ? (
+        children
+      ) : view === "backlog" ? (
         <Backlog repoId={repoId} data={data} />
       ) : view === "sprint" ? (
         <Sprint repoId={repoId} data={data} />

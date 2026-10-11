@@ -1113,6 +1113,18 @@ class HubClient:
             return None
         return [row for row in deploys if isinstance(row, dict)]
 
+    async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """One of the console's supplementary reads (spec 35 §8). None for a
+        404; anything else that is not a 200 is TheHub being unavailable."""
+        response = await self._request("GET", path, params=params)
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise HubUnavailableError(
+                f"TheHub did not answer {path} (HTTP {response.status_code})."
+            )
+        return self._body(response)
+
     async def _write(self, path: str, payload: dict[str, Any]) -> HubResult:
         response = await self._request("POST", path, json=payload)
         body = self._body(response)

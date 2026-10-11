@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 from mykronos import briefing as briefing_report
 from mykronos import ci_repeat, grants
 from mykronos import host_controls as host_controls_module
+from mykronos.analysers import read_languages
 from mykronos.auth import TokenRegistry
 from mykronos.backfill_superseded_source import backfill_superseded_source
 from mykronos.ci import (
@@ -1419,7 +1420,7 @@ def main(argv: list[str] | None = None) -> int:
                     sast_tools[repo_name] = sorted(names | seen)
                 for name, installation_id in installs:
                     counts = asyncio.run(
-                        factory.for_installation(installation_id).languages(name)
+                        read_languages(factory.for_installation(installation_id), name)
                     )
                     if counts is not None:
                         languages[name] = counts

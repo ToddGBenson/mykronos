@@ -1,0 +1,9 @@
+# docs/DECISIONS.md is append-only and every pull request appends to its end,
+# so any two open PRs conflict there. `union` keeps both sides' lines.
+#
+# GitHub's merge button runs no merge drivers: this applies to local git
+# merges only - which is what scripts/approval-queue.ps1 makes, from main's
+# side so main's entries stay first (D-149). Union never refuses, so the
+# queue reads the result back (scripts/approval_queue.py check-decisions)
+# before it pushes anything.
+docs/DECISIONS.md merge=union

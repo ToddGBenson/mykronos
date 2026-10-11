@@ -21,6 +21,7 @@ import { AgeForecast } from "@/components/forecast";
 import { GovernancePanel, MergeCounts } from "@/components/governance";
 import { PathToGreen } from "@/components/path-to-green";
 import { PO_VIEWS, ProductOwnerTab, type PoViewId } from "@/components/product-owner";
+import { poConsoleView, type PoConsoleQuery } from "@/components/po-console-panel";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
@@ -113,7 +114,7 @@ export default async function RepoPage({
   searchParams,
 }: {
   params: Promise<{ repoId: string }>;
-  searchParams: Promise<FindingsQuery & { view?: string }>;
+  searchParams: Promise<FindingsQuery & PoConsoleQuery & { view?: string }>;
 }) {
   const { repoId } = await params;
   const query = await searchParams;
@@ -239,7 +240,7 @@ export default async function RepoPage({
       ) : tab === "adherence" ? (
         <AdherenceTab repoId={repoId} />
       ) : tab === "product-owner" ? (
-        <ProductOwnerTabPanel repoId={repoId} view={query.view} />
+        <ProductOwnerTabPanel repoId={repoId} view={query.view} query={query} />
       ) : tab === "harness" ? (
         <TestHarnessTab repoId={repoId} enabled={[...enabledSet].sort()} />
       ) : (
@@ -867,9 +868,11 @@ async function AdherenceTab({ repoId }: { repoId: string }) {
 async function ProductOwnerTabPanel({
   repoId,
   view,
+  query,
 }: {
   repoId: string;
   view: string | undefined;
+  query: PoConsoleQuery;
 }) {
   // An unknown view is said to be one, for the reason an unknown tab is: a
   // wrong link that renders the default looks like a working one.
@@ -884,11 +887,18 @@ async function ProductOwnerTabPanel({
       />
     );
   }
-  const result = await getProductOwner(repoId);
+  const [result, phase2] = await Promise.all([
+    getProductOwner(repoId),
+    poConsoleView(repoId, chosen, query),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Product Owner view unavailable" detail={result.error} />;
   }
-  return <ProductOwnerTab repoId={repoId} view={chosen as PoViewId} data={result.data} />;
+  return (
+    <ProductOwnerTab repoId={repoId} view={chosen as PoViewId} data={result.data}>
+      {phase2}
+    </ProductOwnerTab>
+  );
 }
 
 async function PatchworkTab({ repoId }: { repoId: string }) {

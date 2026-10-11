@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from mykronos.guidance import message_text
 from mykronos.lake.catalog import Catalog
 
 #: Worst first. Matches the ordering every other surface here uses.
@@ -113,7 +114,7 @@ def _fixed_version(raw_json: str | None) -> str:
     if explicit:
         return explicit
 
-    text = str((raw.get("message") or {}).get("text", ""))
+    text = message_text(raw)
     match = _FIXED.search(text)
     if not match:
         return ""

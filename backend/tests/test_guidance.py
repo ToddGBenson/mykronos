@@ -10,7 +10,11 @@ only reading the scan could say so.
 
 from __future__ import annotations
 
+import json
+
 from mykronos import guidance
+from mykronos.adapters.base import ScanContext
+from mykronos.adapters.sast_shellcheck import normalize
 from mykronos.auth import TokenRegistry
 from tests.conftest import REPO, finding_payload, post_findings, post_scan
 
@@ -216,6 +220,65 @@ class TestHonesty:
         fix, source, effort = guidance._for("dast", {}, "Anything")
 
         assert fix and source == "standing" and effort == "judgement"
+
+    def test_a_sast_message_is_a_string_or_a_sarif_object(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """SARIF writes `message` as `{"text": ...}`; ShellCheck's JSON writes a
+        plain string, and its adapter stores the comment as the raw. The first
+        ShellCheck findings to stay open (keel, 2026-10-11) took `mykronos
+        briefing` down with `'str' object has no attribute 'get'`."""
+        shellcheck = {
+            "file": "scripts/sprint.sh",
+            "line": 507,
+            "endLine": 507,
+            "column": 22,
+            "endColumn": 836,
+            "level": "info",
+            "code": 2016,
+            "message": "Expressions don't expand in single quotes, use double quotes for that.",
+            "fix": None,
+        }
+        produced = normalize(
+            json.dumps({"comments": [shellcheck]}).encode(),
+            ScanContext(
+                repo_full_name=REPO,
+                capability="sast",
+                tool_name="shellcheck",
+                tool_version="0.10.0",
+                commit_sha="abc1234",
+                branch="main",
+            ),
+        ).findings[0]
+        assert isinstance(produced.raw_finding_json["message"], str)
+
+        _ingest(
+            client,
+            auth,
+            [
+                finding_payload(
+                    rule_id=produced.rule_id,
+                    title=produced.title,
+                    raw_finding_json=produced.raw_finding_json,
+                ),
+                finding_payload(
+                    rule_id="py/sql-injection",
+                    title="SQL query built from user-controlled sources",
+                    raw_finding_json={
+                        "ruleId": "py/sql-injection",
+                        "message": {"text": "This query depends on a user-provided value."},
+                    },
+                ),
+            ],
+        )
+        run_compaction()
+
+        fixes = {r.rule_id: r for g in guidance.by_rule(catalog) for r in g.rules}
+
+        assert fixes[produced.rule_id].fix.startswith("Expressions don't expand")
+        assert fixes[produced.rule_id].source == "scanner"
+        assert fixes["py/sql-injection"].fix.startswith("This query depends")
+        assert fixes["py/sql-injection"].source == "scanner"
 
     def test_scoping_to_one_repository(self, client, auth, catalog, run_compaction) -> None:
         _ingest(client, auth, [finding_payload()])

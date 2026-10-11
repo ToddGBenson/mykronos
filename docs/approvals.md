@@ -74,7 +74,99 @@ account.
    `MYKRONOS_REVIEWER_API_KEY`; without one it answers 503 and the request
    waits for a person.
 
+Nothing starts that reviewer on its own in `live` mode: the shadow sweep runs
+only in `shadow`, and the live reviewer runs when something calls step 3. The
+approval queue below is what calls it. Starting a review is not choosing the
+reviewer, so the queue may: the platform picks the model, the instructions and
+the evidence.
+
+`scripts/enable-agent-reviewer.ps1` does all three steps for
+`pull_request_merge`, production and routine only (D-149):
+
+- it stops first unless `MYKRONOS_REVIEWER_API_KEY` is set in `backend/.env`
+  and compose passes it. `ANTHROPIC_API_KEY` in `backend/.env` does not reach
+  the container;
+- it proposes the delegation for the reviewer's model family
+  (`MYKRONOS_REVIEWER_MODEL`, default `claude-opus-5`) with sampling 0.2 and a
+  30-day expiry. Run it again after the one-hour cooling-off and it shows you
+  the proposal and approves it with your decision;
+- it sets `MYKRONOS_REVIEWER_MODE=live`, recreates the backend on the image it
+  already runs, and checks that the backend reports `live`.
+
+Fresh-context independence is not something a caller can assert: the
+reviewer's credential is minted by the platform with `platform_started` set,
+and `fresh_context` refuses every agent approver without that flag.
+
 A share of delegated decisions is sampled for you to review afterwards
 (`GET /api/approvals/samples`, `POST /api/approvals/samples/{decision_id}`).
 A delegation is suspended when your agreement drops below 90% of recent
 samples, or when samples sit unreviewed past 14 days.
+
+Review samples with `scripts/approval-queue.ps1 -SamplesOnly`, which shows each
+sampled decision and its rationale and records your agree or disagree. The
+queue also offers them at the end of every run.
+
+## The approval queue
+
+`scripts/approval-queue.ps1` (operator-run, PowerShell 7) replaces approving
+one PR at a time. Name the PRs in the order to merge, or pass `-All` for every
+open PR, oldest first:
+
+```
+.\scripts\approval-queue.ps1 770 773 774
+.\scripts\approval-queue.ps1 -All -DryRun     # the plan and the routing; nothing changes
+```
+
+It works in rounds. Each round:
+
+1. **Brings every PR up to date, but only where it conflicts.** `main` does not
+   require branches to be current, and a new head costs a new request, so a PR
+   that is only behind is left alone. A conflicting PR is merged with
+   `origin/main` in a temporary worktree, from main's side, with
+   `docs/DECISIONS.md` merged by `merge=union` (`.gitattributes`). The merged
+   log is read back (main's entries intact and first, no number taken twice,
+   the branch's own entries ascending), the generated decision index is
+   regenerated rather than trusted to union, `test_decisions_log.py` runs, and
+   the result is pushed with `--force-with-lease`. It descends from the PR head, so
+   the push is a fast-forward. Branches named `main`, forks and drafts are
+   refused.
+2. **Waits for the platform's request** on each current head, polling.
+   `job:pull-request-requests` opens one about ten minutes after it first sees
+   a head.
+3. **Decides.** Governance requests come to you. So do production and routine
+   requests unless the reviewer is `live` and a delegation covers the tier, in
+   which case the queue asks the platform to start its reviewer. All of yours
+   arrive in one batch: each PR's evidence summary first, then one y or n per
+   PR, with a default rationale built from the evidence that you accept with
+   Enter or replace.
+4. **Merges** each approved PR in order once `independent-review` is green on
+   its head (`gh pr merge --squash --match-head-commit`), and fast-forwards
+   local `main`. A PR that the previous merge made conflict goes to the next
+   round.
+
+A failure skips that PR, with the engine's own message, and the queue carries
+on: a conflict outside the decision log, a wrong union result, a red check, or
+a refusal. Tokens come from `backend/.env` and are never printed. Every step is
+logged to `~/approval-queue-logs/`.
+
+**What still conflicts on GitHub.** GitHub's merge button runs no merge
+drivers. Decisions are now one file each (`docs/decisions/`, D-149), and two new
+files never conflict, but the generated index in `docs/DECISIONS.md` gains a
+line for each. So two open PRs that both add a decision still conflict there,
+and the merge of one re-heads the other: one more request cycle (about ten
+minutes) and one more decision, unattended when the reviewer decides it. The
+queue's round simulation sees this coming and leaves the second PR for the next
+round instead of asking you twice. PRs that do not add a decision merge in the
+same round. Until `scripts/move-decisions-to-files.py` has run, PRs opened
+before D-149 still append to the log itself and conflict with each other the
+old way; the union merge covers them.
+
+## Recording a decision
+
+Write `docs/decisions/D-nnn-<slug>.md` (next free number across the log and the
+directory, one `## D-nnn — Title` heading, the usual entry format), then run
+`python scripts/decisions_index.py` and commit both. Do not append to
+`docs/DECISIONS.md`. `test_decisions_log.py` fails on a duplicate number, a
+file whose heading is not its filename's number, a stale index, or an entry
+with no reasoning.
+
