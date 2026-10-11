@@ -461,9 +461,9 @@ UNRESOLVED_AFTER_SELF_APPLY = {
     # this set records vars a self-apply CANNOT resolve, so a name that no
     # pipeline references any more is a claim about nothing.
     "personal-soc": frozenset(),
+    # [#60653] `github-token` went with `insider`, the only job that read it.
     "thehub": frozenset(
         {
-            "github-token",
             "azure-client-id",
             "azure-client-secret",
             "azure-tenant-id",
