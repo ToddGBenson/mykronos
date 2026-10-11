@@ -4734,6 +4734,13 @@ down deserves the same explanation as one that moved up.
 **`required_status_checks` was not part of this** and stays open. It is
 executable on `keel` and `binnacle` only, for the reasons above.
 
+**Amended 2026-10-11 (D-151): `required_status_checks` stays off on keel,
+personal-soc and binnacle, as a decision.** keel and personal-soc now report
+`Concourse / keel` and `Concourse / personal-soc` on their `main` commits. No
+pull request carries either check, so requiring one would block every pull
+request. binnacle has no pipeline to report one. D-151 has the per-repository
+choice and the commands, which were not run.
+
 ---
 
 ## D-111 — binnacle is scanned with the tools that can read it, and its green is qualified
@@ -6372,3 +6379,131 @@ schema", because that would hide the procedural files this exists to keep.
   1.4 MB of `CREATE TABLE`, and the number would still say the wrong thing.
 - *Putting PLpgSQL in `NOT_SOURCE` wholesale.* It would hide the 34
   procedural files along with the DDL.
+
+## D-151 — `Concourse / <repo>` for keel and personal-soc; binnacle has nothing to report it; none of them is required
+
+**2026-10-11.** **Status:** Decided by the operator on 2026-10-11 (option B
+of TheHub #60580, B-060); wired for keel and personal-soc. Not required
+anywhere. Amends D-110.
+
+**The decision, per repository.**
+
+| repository | option | check name | where it is wired | required? |
+|---|---|---|---|---|
+| `personal-soc` | B | `Concourse / personal-soc` | `deploy/concourse/pipelines/personal-soc.yml`, this repository | no |
+| `keel` | B | `Concourse / keel` | `ci/pipeline.yml` in keel (keel #107, PR #108) | no |
+| `binnacle` | B, **cannot apply** | — | binnacle has no Concourse pipeline (binnacle #17) | no |
+
+B is D-136's pattern, reused unchanged. A pipeline reports a job's start or
+end to `POST /api/ingest/check-runs` with the repository's own ingestion
+token, and MyKronos posts one check run per commit through the
+`mykronos-platform` App (app_id 4551328). Both pipelines already hold that
+token for their scanning lanes: `((personal-soc-ingestion-token))` and keel's
+`((mykronos_ingestion_token))`. Both repositories are onboarded on
+installation 152755402, so the endpoint has an installation to post through.
+No new credential, permission or resource type is involved.
+
+**personal-soc: why a new job, `all-lanes`.** D-136 took `oracle-gate` because
+it already sat downstream of every TheHub lane. No personal-soc job does.
+`oracle` waits on `secrets` and `iac`. `package` waits on the quality lanes,
+but not on `iac` or `oracle`. `all-lanes` is a gather:
+`passed: [oracle, lint, functional, skill-integrity]`, then a preflight and
+the success report. A version reaches it only after it has passed every job
+listed, and `oracle`'s own `passed:` brings `secrets`, `iac` and `guard`
+with it. `guard` reports the start, after its preflight, because every other
+verifying lane waits on it. All eight jobs report failure from `on_failure:`
+and `on_error:`, last in each hook, after the Slack alert.
+
+`package`, `doc-drift` and the three `exposure` jobs are not wired.
+`package` is delivery: whether the host's Scheduled Task acknowledged an
+install says nothing about the commit. `doc-drift` reports drift as a result
+and exits 0. The exposure jobs run on a clock, against the network.
+
+The hooks made seven jobs talk to MyKronos, so PS-2 required each to probe
+it first. `lint`'s preflight, the only one in the file, became a shared
+`preflight` anchor, and the six other jobs use it. That closed the three
+`personal-soc` PS-2 gaps that `check_pipeline_conformance.py` had recorded
+(`secrets`, `iac`, `oracle`).
+
+**keel: the commit chain, and nothing else.** `build` reports the start.
+`verify-artifact`, the end of `build`/`lint`/`test` → `full-suite` →
+`build-and-attest` → `verify-artifact`, reports success as its last step.
+The six chain jobs report failure. keel's scanning lanes (`sast`, `secrets`,
+`sca`, `iac`, `suppression-audit`) are left out, because the chain does not
+wait on them. Wiring their failures in would make the colour depend on which
+job finished last. keel's conventions apply: a task file
+(`ci/tasks/check-run.yml`) and a script (`ci/scripts/check-run.sh`) rather
+than an inline config.
+
+**The trade, the same one D-136 recorded for TheHub, and the reason nothing is
+required.**
+- *Main commits only.* Both pipelines track `main` and never see a pull
+  request's head, so no pull request ever carries either check. keel's
+  verification runs only after the merge (POAM-014), and personal-soc's does
+  too.
+- *Requiring the check on `main` blocks every pull request.* With
+  `enforce_admins` off on both repositories, the owner's merges would bypass
+  it. Dependabot and anyone else could never merge. That is a deadlock for
+  everyone except the one account the rule cannot bind. D-110's own warning,
+  that a required context which never arrives deadlocks merges, applies
+  exactly.
+- *So this is detection on GitHub, not prevention.* A red `main` commit is
+  now red on the commit, not only in Concourse. CIS 1.1.9 stays off for all
+  three, and that is now a stated posture rather than an omission.
+- *MyKronos is on both commit paths.* A start that cannot be reported fails
+  `guard` or `build`. For personal-soc, every verifying lane now fails when
+  MyKronos is unreachable, because each runs a preflight.
+- *Versions Concourse skips stay `in_progress`*, the same as TheHub.
+
+**Not yet live.** On 2026-10-11 the running `mykronos-backend` container
+predates #768 (it was created 2026-10-08), and its database has no
+`ci_check_runs` table. Until MyKronos is redeployed with D-136, every report
+fails. So `guard` (personal-soc) and `build` (keel) go red on their first
+run after these changes are applied. Deploy MyKronos first.
+
+**Requiring a check (not run; the operator's decision).**
+`required_status_checks` is off on `main` in keel, personal-soc and binnacle
+(read 2026-10-11). So the sub-resource `PATCH` D-136 gives for TheHub returns
+`404 Required status checks not enabled` here. Enabling it means a `PUT` of
+the whole protection. Each body below restates every other setting exactly as
+read on 2026-10-11. Re-read first, and change the body if anything has moved:
+`gh api repos/ToddGBenson/<repo>/branches/main/protection`. Pinning `app_id`
+means a status of the same name from anything else cannot satisfy it.
+
+```bash
+for pair in "keel:Concourse / keel" "personal-soc:Concourse / personal-soc"; do
+  repo=${pair%%:*}; check=${pair#*:}
+  gh api -X PUT "repos/ToddGBenson/$repo/branches/main/protection" --input - <<JSON
+{"required_status_checks": {"strict": false,
+   "checks": [{"context": "$check", "app_id": 4551328}]},
+ "enforce_admins": false,
+ "required_pull_request_reviews": {"dismiss_stale_reviews": true,
+   "require_code_owner_reviews": false, "require_last_push_approval": false,
+   "required_approving_review_count": 1},
+ "restrictions": null, "required_linear_history": true,
+ "allow_force_pushes": false, "allow_deletions": false, "block_creations": false,
+ "required_conversation_resolution": true, "lock_branch": false,
+ "allow_fork_syncing": false}
+JSON
+done
+```
+
+Undo with
+`gh api -X DELETE repos/ToddGBenson/<repo>/branches/main/protection/required_status_checks`.
+
+**binnacle.** It has no Concourse pipeline, so nothing can report
+`Concourse / binnacle`, and #60580 cannot apply to it until it has one.
+Recorded as uncovered on 2026-10-11 (binnacle #17). Requiring the context
+there now would block every merge on a check that has no producer.
+
+**Rejected.**
+- *Report success from personal-soc's `oracle`, or make `oracle` wait on the
+  quality lanes.* The first would turn the check green without `lint`,
+  `functional` or `skill-integrity`. The second changes what the risk gate
+  waits for in order to fix a reporting problem.
+- *Report success from `package`.* `package` does not wait on `iac` or
+  `oracle`, and a host-install timeout is not a verdict on the commit.
+- *Wire keel's scanning lanes into the verdict.* Without a gather job the
+  check's colour would depend on which job finished last. With one, that job
+  would wait on the heaviest, `serial` CodeQL lane. If that is wanted, it is a
+  later change to keel's chain, not to this report.

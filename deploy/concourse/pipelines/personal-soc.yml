@@ -53,7 +53,7 @@ groups:
 
   # Scanning that reports to Mykronos, plus the one gate.
   - name: security
-    jobs: [secrets, iac, oracle]
+    jobs: [secrets, iac, oracle, all-lanes]
 
   # The world outside this repository. These run on a clock rather than on a
   # commit, which is why they are worth their own tab: after an outage or a
@@ -355,6 +355,171 @@ anchors:
             esac
             exit 0
 
+  # -- PS-2: probe Mykronos before anything talks to it ------------------
+  #
+  # Hoisted out of `lint`, where it was the only preflight in this file, when
+  # the `Concourse / personal-soc` check run (D-151) made every commit lane
+  # talk to Mykronos. Same probe, same budget; the reasoning that follows is
+  # lint's, unchanged.
+  #
+  # PS-2. Ask whether the results have anywhere to land before spending the
+  # analyser run finding out. A failure here is a real failure, not a skip:
+  # a scan whose results cannot be ingested produces the `never_reported`
+  # state rather than a finding, and producing one deliberately is worse
+  # than not starting.
+  #
+  # curlimages/curl rather than the `python` resource above: python:slim
+  # ships no curl, so probing on it would mean apt-get first, and the probe
+  # would cost more than the ten-minute scan it protects.
+  preflight: &preflight
+    task: preflight
+    # 4m, not 2m, and the arithmetic is the reason (#417).
+    #
+    # The curl below is allowed 5 attempts x 20s plus 4 x 5s of delay = exactly
+    # 120 seconds. The step timeout was also 120 seconds, so a probe that used
+    # its whole retry budget -- which is precisely what an unreachable platform
+    # makes it do -- was killed at the same instant it would have failed, and
+    # Concourse reported `timeout exceeded` instead of curl reporting why.
+    #
+    # Latent rather than observed: no build has been traced to this yet. I
+    # thought thehub/cloud-posture had been, and it had not -- that failure
+    # was `get: prowler` hanging, confirmed from the build plan, and its
+    # preflight finished normally. Fixing it anyway because a step whose
+    # work is allowed exactly as long as the step itself will eventually be
+    # killed mid-sentence, and the sentence is the only diagnostic a probe
+    # produces.
+    #
+    # The retries are right and stay: they are what distinguishes "could
+    # not ask" from "asked and was refused", which is the distinction PS-2
+    # exists for. So the timeout moves instead, to twice the budget.
+    timeout: 4m
+    params:
+      MYKRONOS_URL: ((mykronos-url))
+      MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+              echo "No ingestion token configured; this job still runs and still gates."
+              exit 0
+            fi
+            # PS-12, in-task rather than `attempts:`. This probe CAN fail —
+            # a rejected token is an answer — so it must not sit behind a
+            # step-level retry that cannot tell "could not ask" from
+            # "asked and was refused". curl can: --retry covers a refused
+            # connection and a 5xx, and never re-tries the 401.
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+              --retry 4 --retry-delay 5 --retry-connrefused \
+              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+              "$MYKRONOS_URL/api/ingest/health" > /dev/null
+            echo "Mykronos is reachable and this token is accepted."
+
+  # -- `Concourse / personal-soc`: this commit's verdict, on GitHub (D-151) --
+  #
+  # The pattern D-136 built for TheHub, reused. A job reports its start or end
+  # to Mykronos with this repository's ingestion token, and Mykronos posts the
+  # check run through its GitHub App (`checks: write`, an installation token
+  # Mykronos mints itself). Concourse never calls GitHub for this, and this
+  # pipeline holds no GitHub credential at all: `source` checks out a public
+  # repository anonymously.
+  #
+  # `guard` reports the start, after its preflight: it is the first lane on a
+  # commit and every other verifying lane waits on it. `all-lanes` reports
+  # success as its last step, because it is the one job whose success means
+  # every verifying lane passed on this commit: it waits on `oracle` (which
+  # waits on `secrets` and `iac`) and on `lint`, `functional` and
+  # `skill-integrity`, all of which wait on `guard`. No existing job sat
+  # downstream of all of them, which is why `all-lanes` exists.
+  #
+  # Every one of those jobs reports failure from `on_failure:` and
+  # `on_error:`, LAST in each hook, so a red lane is a red check and not a check
+  # left in progress, and a refused report cannot stop the Slack alert ahead of
+  # it.
+  #
+  # NOT wired, and the reason for each: `package` is delivery to the host, and
+  # whether a Scheduled Task acknowledged an install is not a verdict on the
+  # commit. `doc-drift` reports drift as a result and exits 0. The `exposure`
+  # jobs run on a clock against the network, not on a commit.
+  #
+  # This step can fail, on purpose. `--fail-with-body` turns a refused report
+  # into a red step with Mykronos's reason in the log. So no `attempts:`
+  # (PS-12): the retry is inside curl, on connection failures and 5xx only.
+  # Mykronos keeps one check run per commit, so a retried POST updates that run
+  # rather than adding another.
+  #
+  # Main commits only. `source` tracks main and Concourse never sees a pull
+  # request's head, so a pull request never carries this check. D-151 says what
+  # that means for requiring it.
+  check_params: &check_params
+    MYKRONOS_URL: ((mykronos-url))
+    MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+    REPO_FULL_NAME: ToddGBenson/personal-soc
+
+  check_run: &check_run
+    task: report-check-run
+    # PS-7. Three attempts of 45s plus two 5s delays is 145s; 5m is twice that.
+    timeout: 5m
+    config:
+      platform: linux
+      # The notifier's image: already on the worker, and needs no checkout,
+      # pip or apt. It has no git and no jq, which is why the script reads
+      # .git/HEAD and builds the body with printf.
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      # Optional, so a hook in a job that died before its checkout still
+      # runs and says why it could not report.
+      inputs:
+        - { name: source, optional: true }
+      params: *check_params
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            set -eu
+            # The git resource leaves a detached HEAD, so .git/HEAD holds the
+            # sha itself. Anything else (no checkout, a branch ref) is refused,
+            # not guessed: a check on the wrong commit is worse than none.
+            SHA=""
+            if [ -f source/.git/HEAD ]; then
+              SHA=$(tr -d ' \n\r\t' < source/.git/HEAD)
+            fi
+            case "$SHA" in
+              *[!0-9a-f]*) SHA="" ;;
+            esac
+            if [ "${#SHA}" -ne 40 ]; then
+              echo "No checked-out commit to report on, so ${JOB:-this job} posted nothing."
+              echo "The check stays as it was, and one still in progress blocks."
+              exit 1
+            fi
+
+            if [ "${PHASE:-}" = "start" ]; then
+              CONCLUSION_JSON=null
+            else
+              CONCLUSION_JSON="\"${CONCLUSION:-}\""
+            fi
+            # Every value is fixed by this file or is the hex sha checked
+            # above, so nothing here needs escaping.
+            BODY=$(printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
+              "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON")
+
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
+              --retry 2 --retry-delay 5 --retry-connrefused \
+              -X POST \
+              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$BODY" "$MYKRONOS_URL/api/ingest/check-runs"
+            echo
+            echo "Reported ${PHASE} for ${JOB} on ${SHA}."
+
 jobs:
 
   # -- THE PIPELINE UPDATES ITSELF ----------------------------------------
@@ -465,17 +630,28 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: guard }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: guard }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: guard }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: guard }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
         trigger: true
       - get: pwsh
         attempts: *retry_fetch
+      # PS-2, and D-151: this job reports to Mykronos.
+      - *preflight
+      # D-151: `Concourse / personal-soc` goes in_progress on this commit.
+      - <<: *check_run
+        params: { <<: *check_params, JOB: guard, PHASE: start }
       - task: no-personal-data
         # PS-7. 10m from 6 observed run(s): median 101s, slowest 146s.
         timeout: 10m
@@ -585,11 +761,17 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: secrets }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: secrets }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -597,6 +779,8 @@ jobs:
         passed: [guard]
       - get: python
         attempts: *retry_fetch
+      # PS-2, and D-151: this job's hooks report to Mykronos.
+      - *preflight
       - task: gitleaks
         # PS-7. 10m from 6 observed run(s): median 78s, slowest 169s.
         timeout: 10m
@@ -749,11 +933,17 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: iac }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: iac }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -761,6 +951,8 @@ jobs:
         passed: [guard]
       - get: python
         attempts: *retry_fetch
+      # PS-2, and D-151: this job's hooks report to Mykronos.
+      - *preflight
       - task: checkov
         image: python
         # PS-7, and this pipeline is the only one in the estate whose tasks
@@ -875,11 +1067,17 @@ jobs:
     public: false
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: oracle }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: oracle }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: oracle }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: oracle }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -887,6 +1085,8 @@ jobs:
         passed: [secrets, iac]
       - get: python
         attempts: *retry_fetch
+      # PS-2, and D-151: this job's hooks report to Mykronos.
+      - *preflight
       - task: evaluate
         timeout: 10m
         image: python
@@ -1000,11 +1200,17 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: lint }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: lint }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: lint }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: lint }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1016,63 +1222,8 @@ jobs:
       # tasks, one job.
       - get: python
         attempts: *retry_fetch
-      # PS-2. Ask whether the results have anywhere to land before spending the
-      # analyser run finding out. A failure here is a real failure, not a skip:
-      # a scan whose results cannot be ingested produces the `never_reported`
-      # state rather than a finding, and producing one deliberately is worse
-      # than not starting.
-      #
-      # curlimages/curl rather than the `python` resource above: python:slim
-      # ships no curl, so probing on it would mean apt-get first, and the probe
-      # would cost more than the ten-minute scan it protects.
-      - task: preflight
-        # 4m, not 2m, and the arithmetic is the reason (#417).
-        #
-        # The curl below is allowed 5 attempts x 20s plus 4 x 5s of delay = exactly
-        # 120 seconds. The step timeout was also 120 seconds, so a probe that used
-        # its whole retry budget -- which is precisely what an unreachable platform
-        # makes it do -- was killed at the same instant it would have failed, and
-        # Concourse reported `timeout exceeded` instead of curl reporting why.
-        #
-        # Latent rather than observed: no build has been traced to this yet. I
-        # thought thehub/cloud-posture had been, and it had not -- that failure
-        # was `get: prowler` hanging, confirmed from the build plan, and its
-        # preflight finished normally. Fixing it anyway because a step whose
-        # work is allowed exactly as long as the step itself will eventually be
-        # killed mid-sentence, and the sentence is the only diagnostic a probe
-        # produces.
-        #
-        # The retries are right and stay: they are what distinguishes "could
-        # not ask" from "asked and was refused", which is the distinction PS-2
-        # exists for. So the timeout moves instead, to twice the budget.
-        timeout: 4m
-        params:
-          MYKRONOS_URL: ((mykronos-url))
-          MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
-        config:
-          platform: linux
-          image_resource:
-            type: registry-image
-            source: { repository: curlimages/curl, tag: "8.11.1" }
-          run:
-            path: sh
-            args:
-              - -ec
-              - |
-                if [ -z "${MYKRONOS_TOKEN:-}" ]; then
-                  echo "No ingestion token configured; the analyser still runs and still gates."
-                  exit 0
-                fi
-                # PS-12, in-task rather than `attempts:`. This probe CAN fail —
-                # a rejected token is an answer — so it must not sit behind a
-                # step-level retry that cannot tell "could not ask" from
-                # "asked and was refused". curl can: --retry covers a refused
-                # connection and a 5xx, and never re-tries the 401.
-                curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
-                  --retry 4 --retry-delay 5 --retry-connrefused \
-                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
-                  "$MYKRONOS_URL/api/ingest/health" > /dev/null
-                echo "Mykronos is reachable and this token is accepted."
+      # PS-2. The probe is the `preflight` anchor; its reasoning is there.
+      - *preflight
       - task: psscriptanalyzer
         # PS-7. 10m from 5 observed run(s): median 35s, slowest 48s.
         timeout: 10m
@@ -1250,11 +1401,17 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: functional }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: functional }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: functional }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: functional }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1262,6 +1419,8 @@ jobs:
         passed: [guard]
       - get: pwsh
         attempts: *retry_fetch
+      # PS-2, and D-151: this job's hooks report to Mykronos.
+      - *preflight
       - task: run-tests
         # PS-7. 10m from 5 observed run(s): median 69s, slowest 86s.
         timeout: 10m
@@ -1476,11 +1635,17 @@ jobs:
     public: true
     serial_groups: [worker]
     on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: skill-integrity }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: skill-integrity }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: failure }
     on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: skill-integrity }
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: skill-integrity }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: failure }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1488,6 +1653,8 @@ jobs:
         passed: [guard]
       - get: python
         attempts: *retry_fetch
+      # PS-2, and D-151: this job's hooks report to Mykronos.
+      - *preflight
       - task: check-skills
         # PS-7. 10m from 6 observed run(s): median 36s, slowest 56s.
         timeout: 10m
@@ -1690,6 +1857,42 @@ jobs:
                     > notify/message.txt
                 fi
                 exit $rc
+
+  # -- The commit's verdict (D-151) ----------------------------------------
+  #
+  # Nothing but the gather and the report. No existing job waited on every
+  # verifying lane: `oracle` waits on `secrets` and `iac`, `package` on the
+  # quality lanes but not on `iac` or `oracle`. Concourse's `passed:` takes a
+  # version only once it has passed every job listed, and `oracle`'s own
+  # `passed:` carries `secrets`, `iac` and `guard` with it, so this job's
+  # success means the commit cleared all seven.
+  #
+  # `public: true`: its log is a probe, one curl line and a sha.
+  - name: all-lanes
+    public: true
+    serial_groups: [worker]
+    on_failure:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: all-lanes }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: failure }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: all-lanes }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: failure }
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        trigger: true
+        passed: [oracle, lint, functional, skill-integrity]
+      - *preflight
+      # Last, so it runs only once every lane above has passed: this is the
+      # step that turns `Concourse / personal-soc` green on this commit.
+      - <<: *check_run
+        params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: success }
 
   # == Stage 2: delivery ====================================================
   #
