@@ -5496,7 +5496,7 @@ export interface components {
         };
         /**
          * IssuesSourceOut
-         * @description How a `github_issues` backlog was read (spec 35 §9, D-153).
+         * @description How a `github_issues` backlog was read (spec 35 §9, D-156).
          */
         IssuesSourceOut: {
             /** Labels */

@@ -1377,7 +1377,7 @@ into entries here:
 
 ## Closed
 
-### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — **done** (spec 35 §9, D-153)
+### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — **done** (spec 35 §9, D-156)
 
 **Size:** M **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60570)
 
@@ -1391,7 +1391,7 @@ from `gate:G<n>` labels, and the header says which and why. Size comes from a
 Two things changed from the criteria below, and are recorded rather than
 absorbed. Gate comes from the board first, as the Hub story asks, and from
 labels only as the fallback. And "until somebody decides what a sprint pull
-means for an issue" is decided: nothing, from this tab (D-153). keel's sprint
+means for an issue" is decided: nothing, from this tab (D-156). keel's sprint
 stays its own.
 
 The App permission check found the installation holds **no `issues`

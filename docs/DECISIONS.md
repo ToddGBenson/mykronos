@@ -21,7 +21,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 
 - [D-149 — Pull requests go through one approval queue; each decision is its own file](decisions/D-149-approval-queue-and-one-file-per-decision.md)
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
-- [D-153 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels](decisions/D-153-a-github-issues-backlog-is-read-only-and-its-sprint-is-its-label.md)
+- [D-156 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels](decisions/D-156-a-github-issues-backlog-is-read-only-and-its-sprint-is-its-label.md)
 
 <!-- decisions-index:end -->
 

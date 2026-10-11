@@ -1,4 +1,4 @@
-## D-153 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels
+## D-156 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels
 
 **2026-10-11.** **Status:** Decided in the build (B-072, TheHub #60570), implemented
 **Spec:** [35 §9](../../specs/35-product-owner-tab.md#9-a-github-issues-backlog-b-072) ·

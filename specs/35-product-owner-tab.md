@@ -144,7 +144,7 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 - B-070: **declared-vs-observed drift findings** (built in phase 2, §7.1). For example, the manifest declares required review but
   branch protection is off, or it declares the inception gate but the flag is off.
 - B-071: sub-views for Delivery, Approvals inbox, Roles & agents, and a generated retro. Built in phase 2 (§8).
-- B-072: a keel GitHub-Issues adapter (`backlog.source: github_issues`). Built, read only (§9, D-153).
+- B-072: a keel GitHub-Issues adapter (`backlog.source: github_issues`). Built, read only (§9, D-156).
 
 ## 6. Tests
 
@@ -416,7 +416,7 @@ other phase 2 view is read-only, and a viewer sees all of them without the decid
 
 ## 9. A GitHub-Issues backlog (B-072)
 
-**Status:** Built 2026-10-11 (TheHub #60570). Recorded as D-153. It amends §2: `backlog.source` is `thehub` or
+**Status:** Built 2026-10-11 (TheHub #60570). Recorded as D-156. It amends §2: `backlog.source` is `thehub` or
 `github_issues`, and nothing else.
 
 A repository whose work items are GitHub issues, as keel's are (keel `docs/15-tracking.md`), declares:

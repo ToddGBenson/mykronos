@@ -1,5 +1,5 @@
 """The Product Owner tab over a repository's GitHub Issues (spec 35 §9, B-072,
-D-153).
+D-156).
 
 A repository whose manifest says `backlog.source: github_issues` keeps its
 work items in GitHub, not in TheHub. keel does: its stories are issues, its

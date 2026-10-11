@@ -164,7 +164,7 @@ class Backlog(_Strict):
 
 
 class GithubIssuesBacklog(_Strict):
-    """The repository's own GitHub Issues, read only (B-072, D-153).
+    """The repository's own GitHub Issues, read only (B-072, D-156).
 
     Read by `mykronos.po_issues`. A label selector takes the place of the tag:
     an issue is this repository's backlog when it carries every label named.

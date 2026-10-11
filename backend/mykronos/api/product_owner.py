@@ -154,7 +154,7 @@ class ObservationOut(BaseModel):
 
 
 class IssuesSourceOut(BaseModel):
-    """How a `github_issues` backlog was read (spec 35 §9, D-153)."""
+    """How a `github_issues` backlog was read (spec 35 §9, D-156)."""
 
     labels: list[str]
     project: int | None
@@ -763,7 +763,7 @@ async def _refuse_read_only_source(
     request: Request, principal: Any, repo_id: str, story_id: int, action: str
 ) -> None:
     """Refuse a write to a GitHub-Issues backlog, and record that it was tried
-    (D-153). Checked before TheHub is asked anything."""
+    (D-156). Checked before TheHub is asked anything."""
     repo_full_name, branch, installation = _onboarding(request, repo_id)
     state = await _read_manifest(request, repo_full_name, branch, installation)
     if not po_issues.is_issues(state.manifest):

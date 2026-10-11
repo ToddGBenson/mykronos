@@ -1,4 +1,4 @@
-"""The Product Owner tab over GitHub Issues (spec 35 §9, B-072, D-153).
+"""The Product Owner tab over GitHub Issues (spec 35 §9, B-072, D-156).
 
 GitHub is the in-memory `FakeGitHubClient`, which enforces the App's
 permissions: narrowing them is how these tests prove the tab says why it fell
