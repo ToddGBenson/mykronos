@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from mykronos import po_console as pc
-from mykronos import po_trace
+from mykronos import po_fleet, po_trace
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep, Role
 from mykronos.api import product_owner as phase1
@@ -524,6 +524,12 @@ class PoGateFailureOut(BaseModel):
     gate_name: str | None
     detail: str
     at: str | None
+    #: The RACI activity the gate belongs to, and its Accountable role; None
+    #: for the activities TheHub's table gives no agent owner (D-140).
+    activity: str | None
+    accountable: str | None
+    #: "blocked at <activity>, Accountable: <role>", or "... no agent owner".
+    owner: str
 
 
 class PoRetroStoryOut(BaseModel):
@@ -560,6 +566,7 @@ class PoRetroOut(BaseModel):
 
 
 def failure_out(failure: pc.GateFailure, manifest: po.ProcessManifest | None) -> PoGateFailureOut:
+    owner = po_fleet.owned(failure)
     return PoGateFailureOut(
         story_id=failure.story_id,
         title=failure.title,
@@ -568,6 +575,9 @@ def failure_out(failure: pc.GateFailure, manifest: po.ProcessManifest | None) ->
         gate_name=gate_name(failure.hub_gate, manifest),
         detail=failure.detail,
         at=failure.at,
+        activity=owner["activity"],
+        accountable=owner["accountable"],
+        owner=owner["message"],
     )
 
 
@@ -864,4 +874,171 @@ async def trace(
             github_error=built["github_error"],
             deploys_error=deploys_error,
         ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Agent fleet (§8.6)
+# --------------------------------------------------------------------------
+
+
+class PoFleetRunOut(BaseModel):
+    story_id: int
+    title: str
+    run_id: int | str | None
+    #: TheHub's corrected status: a mislabelled dry run reads `dry_run`.
+    status: str | None
+    #: What the row says, when TheHub's correction changed it.
+    status_as_written: str | None
+    dry_run: bool
+    #: A live run that shipped. Never true for a dry run (D-140).
+    shipped: bool
+    cost_usd: float | None
+    started_at: str | None
+
+
+class PoFleetVerdictOut(BaseModel):
+    story_id: int
+    title: str
+    #: pending | approved | rejected
+    status: str
+    implementer_agent: str | None
+    verifier_agent: str | None
+    reason: str | None
+    decided_at: str | None
+
+
+class PoFleetInFlightOut(BaseModel):
+    run_id: int | None
+    story_id: int | None
+    story_title: str | None
+    elapsed_seconds: int | None
+    cost_usd: float | None
+
+
+class PoFleetEstateOut(BaseModel):
+    """TheHub's estate-wide autonomy state, from its dashboard."""
+
+    kill_switch_active: bool | None
+    dry_run_default: bool | None
+    daily_cost_used_usd: float | None
+    daily_cost_cap_usd: float | None
+    #: Runs in flight now, for this repository's stories only.
+    in_flight: list[PoFleetInFlightOut]
+
+
+class PoFleetOut(BaseModel):
+    repo_full_name: str
+    hub: PoHubStateOut
+    days: int
+    #: None when TheHub's dashboard could not be read.
+    estate: PoFleetEstateOut | None
+    estate_error: str | None
+    runs: list[PoFleetRunOut]
+    #: By outcome. Absent, not zero, when TheHub is not connected.
+    outcomes: dict[str, int] | None
+    #: Model cost of the runs in the window, in US dollars.
+    cost_usd: float | None
+    verdicts: list[PoFleetVerdictOut]
+    #: Every one names its Accountable role, or says it has no agent owner.
+    failures: list[PoGateFailureOut]
+    stories_read: int
+    unread: list[int]
+    not_read: int
+
+
+@router.get("/repos/{repo_id}/product-owner/fleet", response_model=PoFleetOut)
+async def fleet(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    days: int = Query(7, ge=1, le=90),
+) -> PoFleetOut:
+    """What the agents did for this repository: autonomy runs, verification
+    verdicts, cost, and the RACI owner of each gate failure (spec 35 §8.6)."""
+    repo_full_name, _, state, tag, include_untagged = await repo_context(request, repo_id)
+    hub, hub_out = hub_state(request)
+
+    def absent(out: PoHubStateOut) -> PoFleetOut:
+        return PoFleetOut(
+            repo_full_name=repo_full_name,
+            hub=out,
+            days=days,
+            estate=None,
+            estate_error=None,
+            runs=[],
+            outcomes=None,
+            cost_usd=None,
+            verdicts=[],
+            failures=[],
+            stories_read=0,
+            unread=[],
+            not_read=0,
+        )
+
+    if hub is None:
+        return absent(hub_out)
+    since = pc.window_start(days)
+    try:
+        buckets = await member_stories(hub, ("sprint", "done", "backlog"), tag, include_untagged)
+    except po.HubUnavailableError as exc:
+        return absent(PoHubStateOut(connected=False, error=str(exc)))
+
+    recent_done = [s for s in buckets["done"] if (at := pc.closed_at(s)) and at >= since]
+    recent_backlog = [
+        s for s in buckets["backlog"] if (at := pc.parse_time(s.get("updated_at"))) and at >= since
+    ]
+    considered = buckets["sprint"] + recent_done + recent_backlog
+    member_ids = {int(s["id"]) for s in buckets["sprint"] + buckets["done"] + buckets["backlog"]}
+
+    async def read_dashboard(client: po.HubClient) -> tuple[Any, str | None]:
+        try:
+            return await client.get_json("/api/devops/autonomy/dashboard"), None
+        except po.HubUnavailableError as exc:
+            return None, str(exc)
+
+    (dashboard, estate_error), (evidence, not_read) = await asyncio.gather(
+        read_dashboard(hub), pc.evidence_for(hub, considered, ("runs", "notes"))
+    )
+    estate: PoFleetEstateOut | None = None
+    if isinstance(dashboard, dict):
+        estate = PoFleetEstateOut(
+            kill_switch_active=dashboard.get("kill_switch_active"),
+            dry_run_default=dashboard.get("dry_run_default"),
+            daily_cost_used_usd=dashboard.get("daily_cost_used_usd"),
+            daily_cost_cap_usd=dashboard.get("daily_cost_cap_usd"),
+            in_flight=[
+                PoFleetInFlightOut(
+                    run_id=run.get("run_id"),
+                    story_id=run.get("story_id"),
+                    story_title=run.get("story_title"),
+                    elapsed_seconds=run.get("elapsed_seconds"),
+                    cost_usd=run.get("cost_usd"),
+                )
+                for run in dashboard.get("in_flight") or []
+                if isinstance(run, dict) and run.get("story_id") in member_ids
+            ],
+        )
+    elif estate_error is None:
+        estate_error = "TheHub's autonomy dashboard was not in the expected shape."
+
+    runs = po_fleet.run_rows(evidence, since)
+    failures = [
+        f for e in evidence for f in pc.failures_of(e, since=since)
+    ] + po_fleet.gate_check_failures(buckets["sprint"], state.manifest)
+    costs = [r["cost_usd"] for r in runs if r["cost_usd"] is not None]
+    return PoFleetOut(
+        repo_full_name=repo_full_name,
+        hub=hub_out,
+        days=days,
+        estate=estate,
+        estate_error=estate_error,
+        runs=[PoFleetRunOut(**r) for r in runs],
+        outcomes=po_fleet.outcome_counts(runs),
+        cost_usd=round(sum(costs), 4),
+        verdicts=[PoFleetVerdictOut(**v) for v in po_fleet.verdicts(evidence)],
+        failures=[failure_out(f, state.manifest) for f in failures],
+        stories_read=len(evidence),
+        unread=[int(e.story["id"]) for e in evidence if e.unread],
+        not_read=not_read,
     )

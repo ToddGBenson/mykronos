@@ -130,3 +130,19 @@ export async function getPoTrace(
     return failure(error, "Could not load the delivery trace");
   }
 }
+
+export type PoFleet = Json<"/api/dashboard/repos/{repo_id}/product-owner/fleet">;
+
+export async function getPoFleet(repoId: string, days: number): Promise<Result<PoFleet>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/product-owner/fleet",
+      { params: { path: { repo_id: repoId }, query: { days } }, cache: "no-store" },
+    );
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the agent fleet") };
+  } catch (error) {
+    return failure(error, "Could not load the agent fleet");
+  }
+}

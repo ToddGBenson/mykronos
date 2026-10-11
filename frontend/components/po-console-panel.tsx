@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 
 import { ApprovalsView, DeliveryView, RetroView, RolesView } from "@/components/po-console";
+import { FleetView } from "@/components/po-fleet";
 import { TraceView } from "@/components/po-trace";
 import { ErrorPanel } from "@/components/primitives";
 import {
   getPoApprovals,
   getPoDelivery,
+  getPoFleet,
   getPoRetro,
   getPoRoles,
   getPoTrace,
@@ -64,6 +66,14 @@ export async function poConsoleView(
       <TraceView repoId={repoId} data={result.data} />
     ) : (
       <ErrorPanel title="Delivery trace unavailable" detail={result.error} />
+    );
+  }
+  if (view === "fleet") {
+    const result = await getPoFleet(repoId, windowDays(query.days, 7, 90));
+    return result.ok ? (
+      <FleetView repoId={repoId} data={result.data} />
+    ) : (
+      <ErrorPanel title="Agent fleet unavailable" detail={result.error} />
     );
   }
   return undefined;

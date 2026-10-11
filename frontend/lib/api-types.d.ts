@@ -2607,6 +2607,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/fleet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fleet
+         * @description What the agents did for this repository: autonomy runs, verification
+         *     verdicts, cost, and the RACI owner of each gate failure (spec 35 §8.6).
+         */
+        get: operations["fleet_api_dashboard_repos__repo_id__product_owner_fleet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -6009,6 +6030,102 @@ export interface components {
             /** Delegations */
             delegations: components["schemas"]["PoDelegationRefOut"][];
         };
+        /**
+         * PoFleetEstateOut
+         * @description TheHub's estate-wide autonomy state, from its dashboard.
+         */
+        PoFleetEstateOut: {
+            /** Kill Switch Active */
+            kill_switch_active: boolean | null;
+            /** Dry Run Default */
+            dry_run_default: boolean | null;
+            /** Daily Cost Used Usd */
+            daily_cost_used_usd: number | null;
+            /** Daily Cost Cap Usd */
+            daily_cost_cap_usd: number | null;
+            /** In Flight */
+            in_flight: components["schemas"]["PoFleetInFlightOut"][];
+        };
+        /** PoFleetInFlightOut */
+        PoFleetInFlightOut: {
+            /** Run Id */
+            run_id: number | null;
+            /** Story Id */
+            story_id: number | null;
+            /** Story Title */
+            story_title: string | null;
+            /** Elapsed Seconds */
+            elapsed_seconds: number | null;
+            /** Cost Usd */
+            cost_usd: number | null;
+        };
+        /** PoFleetOut */
+        PoFleetOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Days */
+            days: number;
+            estate: components["schemas"]["PoFleetEstateOut"] | null;
+            /** Estate Error */
+            estate_error: string | null;
+            /** Runs */
+            runs: components["schemas"]["PoFleetRunOut"][];
+            /** Outcomes */
+            outcomes: {
+                [key: string]: number;
+            } | null;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Verdicts */
+            verdicts: components["schemas"]["PoFleetVerdictOut"][];
+            /** Failures */
+            failures: components["schemas"]["PoGateFailureOut"][];
+            /** Stories Read */
+            stories_read: number;
+            /** Unread */
+            unread: number[];
+            /** Not Read */
+            not_read: number;
+        };
+        /** PoFleetRunOut */
+        PoFleetRunOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Run Id */
+            run_id: number | string | null;
+            /** Status */
+            status: string | null;
+            /** Status As Written */
+            status_as_written: string | null;
+            /** Dry Run */
+            dry_run: boolean;
+            /** Shipped */
+            shipped: boolean;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Started At */
+            started_at: string | null;
+        };
+        /** PoFleetVerdictOut */
+        PoFleetVerdictOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Implementer Agent */
+            implementer_agent: string | null;
+            /** Verifier Agent */
+            verifier_agent: string | null;
+            /** Reason */
+            reason: string | null;
+            /** Decided At */
+            decided_at: string | null;
+        };
         /** PoGateFailureOut */
         PoGateFailureOut: {
             /** Story Id */
@@ -6025,6 +6142,12 @@ export interface components {
             detail: string;
             /** At */
             at: string | null;
+            /** Activity */
+            activity: string | null;
+            /** Accountable */
+            accountable: string | null;
+            /** Owner */
+            owner: string;
         };
         /** PoHubStateOut */
         PoHubStateOut: {
@@ -11331,6 +11454,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoTraceViewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_api_dashboard_repos__repo_id__product_owner_fleet_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoFleetOut"];
                 };
             };
             /** @description Validation Error */

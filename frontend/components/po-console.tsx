@@ -25,7 +25,7 @@ function day(value: string | null | undefined): string {
   return value ? value.slice(0, 10) : "—";
 }
 
-function Windows({
+export function Windows({
   repoId,
   view,
   days,
@@ -355,6 +355,12 @@ export function FailureLine({ failure }: { failure: PoGateFailure }) {
         at {failure.gate_name ? `${failure.gate_name} (${failure.hub_gate})` : failure.hub_gate}
       </span>
       <span className="text-[12px] text-ink-2">{failure.detail}</span>
+      <span
+        className={`font-mono text-[11px] ${failure.accountable ? "text-ink" : "text-high"}`}
+        title={failure.activity ?? undefined}
+      >
+        {failure.owner}
+      </span>
     </>
   );
 }
