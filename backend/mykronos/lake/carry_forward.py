@@ -48,6 +48,20 @@ similarity matcher must refuse. `inherit_decisions` applies the same link at
 ingestion, so a re-keyed finding lands already carrying its decision and is
 never counted by a gate as introduced; this module then withdraws the
 predecessor once its lane has scanned without it.
+
+**A lane that was renamed (D-155).** TheHub's three DAST lanes moved from one
+tool, `zap`, to one tool each (`fingerprint.LANE_SUCCESSORS`). The old lane
+never scans again, so "its lane has scanned without it" can never become true
+for a finding left in it, and its successors sit in other lanes, which the
+matcher above never looks across. So a finding in a renamed lane is withdrawn
+once *every* successor lane on its branch has completed a run after it was
+last seen -- each of those runs has had its chance to claim it, and claiming
+it at ingestion is what moved the decision -- and it is paired with every
+claimant, one per successor lane. One route that demo, staging and production
+all served was one finding, and the decision about it was about all three, so
+it goes to all three; `superseded_by` names the first. Two claimants in one
+lane would be two findings the old identity collapsed, and are refused as
+above.
 """
 
 from __future__ import annotations
@@ -58,7 +72,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from mykronos.fingerprint import snippet_similarity, v2_predecessor_id
+from mykronos.fingerprint import LANE_SUCCESSORS, snippet_similarity, v2_predecessor_id
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.lake.reconcile import CONFIRMING_STATUSES
@@ -153,7 +167,7 @@ class Carried:
     def describe(self) -> str:
         moved = self.disposition or "first seen"
         basis = (
-            "same finding, re-keyed under v3-snippet"
+            "same finding, re-keyed (exact link)"
             if self.exact
             else f"similarity {self.similarity:.2f}, next best {self.runner_up:.2f}"
         )
@@ -238,9 +252,9 @@ def _rows(catalog: Catalog) -> list[Any]:
                f.resolved_at, f.accepted_until, f.accepted_reason_code,
                f.last_seen_scan_run_id = n.scan_run_id AS reported_now,
                f.repo_full_name, f.symbol, f.line_start,
-               -- Only a v3-snippet row can name a predecessor; reading the
+               -- Only a re-keyed row can name a predecessor; reading the
                -- raw record of every other row would be wasted I/O.
-               CASE WHEN f.fingerprint_version = 'v3-snippet'
+               CASE WHEN f.fingerprint_version IN ('v3-snippet', 'v3-route-env')
                     THEN f.raw_finding_json END AS raw_finding_json
         FROM findings f
         JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
@@ -259,9 +273,83 @@ def _rows(catalog: Catalog) -> list[Any]:
           -- noise this mechanism exists to avoid generating.
           AND f.package_name IS NULL
           AND f.address IS NULL
-          AND coalesce(f.fingerprint_version, '') IN ('v3-snippet', 'v2-snippet', 'v1-line')
+          AND coalesce(f.fingerprint_version, '')
+              IN ('v3-snippet', 'v3-route-env', 'v2-snippet', 'v1-line')
         """
     )
+
+
+def _newest_runs(catalog: Catalog) -> dict[tuple[str, str, str, str], Any]:
+    """When each lane last completed a qualifying run, keyed as `_rows` keys a
+    lane: (repo, capability, branch, tool)."""
+    statuses = ", ".join(f"'{s}'" for s in CONFIRMING_STATUSES)
+    return {
+        (str(repo), str(capability), str(branch), str(tool)): newest
+        for repo, capability, branch, tool, newest in catalog.query(
+            f"""
+            SELECT repo_full_name, capability, coalesce(branch, ''),
+                   coalesce(tool_name, ''), max(coalesce(completed_at, started_at))
+            FROM scan_runs
+            WHERE scan_status IN ({statuses})
+            GROUP BY 1, 2, 3, 4
+            """
+        )
+    }
+
+
+def _succession(
+    findings: list[_Finding], newest: dict[tuple[str, str, str, str], Any]
+) -> tuple[
+    list[tuple[_Finding, _Finding, float, float]], list[tuple[_Finding, str]], set[str]
+]:
+    """Pair findings left in a renamed lane with their claimants (D-155).
+
+    Returns the pairs, the refusals, and every id either decided, so the
+    ordinary matcher does not see them again.
+    """
+    pairs: list[tuple[_Finding, _Finding, float, float]] = []
+    refusals: list[tuple[_Finding, str]] = []
+    handled: set[str] = set()
+
+    claims: dict[str, list[_Finding]] = {}
+    for finding in findings:
+        if finding.predecessor_id:
+            claims.setdefault(finding.predecessor_id, []).append(finding)
+
+    for predecessor in sorted(findings, key=lambda f: f.finding_id):
+        successors = LANE_SUCCESSORS.get(predecessor.tool_name)
+        if not successors or predecessor.last_seen_at is None:
+            continue
+        lane = (predecessor.asset_id, predecessor.capability, predecessor.branch)
+        if not all(
+            newest.get((*lane, tool)) is not None
+            and newest[(*lane, tool)] > predecessor.last_seen_at
+            for tool in successors
+        ):
+            # A successor lane that has not scanned since may still claim
+            # it, and it can only inherit from a predecessor that is live.
+            continue
+        claimants = sorted(
+            (
+                claimant
+                for claimant in claims.get(predecessor.finding_id, [])
+                if claimant.tool_name in successors
+                and (claimant.asset_id, claimant.capability, claimant.branch) == lane
+            ),
+            key=lambda f: (f.tool_name, f.finding_id),
+        )
+        if not claimants:
+            continue
+        handled.add(predecessor.finding_id)
+        if len({c.tool_name for c in claimants}) != len(claimants):
+            if predecessor.status in HUMAN_DISPOSITIONS:
+                refusals.append((predecessor, _COLLAPSED.format(len(claimants))))
+            continue
+        for claimant in claimants:
+            pairs.append((predecessor, claimant, 1.0, 0.0))
+            handled.add(claimant.finding_id)
+
+    return pairs, refusals, handled
 
 
 def _split(rows: list[Any]) -> tuple[list[_Finding], list[_Finding]]:
@@ -478,10 +566,17 @@ def carry_forward(catalog: Catalog, *, dry_run: bool = False) -> CarryForwardRes
         return result
 
     gone, present = _split(_rows(catalog))
-    if not gone:
+    renamed, renamed_refusals, handled = _succession(
+        [*gone, *present], _newest_runs(catalog)
+    )
+    gone = [f for f in gone if f.finding_id not in handled]
+    present = [f for f in present if f.finding_id not in handled]
+    if not gone and not renamed and not renamed_refusals:
         return result
 
     pairs, refusals = match(gone, present)
+    pairs = [*renamed, *pairs]
+    refusals = [*renamed_refusals, *refusals]
 
     for predecessor, reason in refusals:
         result.stranded.append(
