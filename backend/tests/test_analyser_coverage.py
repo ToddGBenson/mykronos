@@ -14,8 +14,18 @@ no scan health, and no gap anywhere.
 
 from __future__ import annotations
 
+import pytest
+
 from mykronos import briefing
-from mykronos.analysers import NOT_SOURCE, SAST_LANGUAGES, describe, readability
+from mykronos.analysers import (
+    NOT_SOURCE,
+    SAST_LANGUAGES,
+    SCHEMA,
+    classify_sql,
+    describe,
+    is_procedural_sql,
+    readability,
+)
 
 #: GitHub's byte counts for the estate, read 2026-09-09.
 KEEL = {"Shell": 219000, "Python": 66000, "JavaScript": 28000}
@@ -60,6 +70,70 @@ class TestWhatTheAnalyserCanRead:
 
         assert reading.blind is False
         assert {"Dockerfile", "HCL"} <= NOT_SOURCE
+
+    def test_a_create_table_migration_is_not_unread_source(self) -> None:
+        """D-137. TheHub's migrations are DDL that linguist names PLpgSQL;
+        declaring a table is schema, like HCL declaring infrastructure."""
+        migration = "BEGIN;\nCREATE TABLE songs (id serial PRIMARY KEY);\nCOMMIT;\n"
+        counts = classify_sql(
+            {"Python": 1000, "PLpgSQL": len(migration)},
+            {"backend/db/migrations/001_songs.sql": migration},
+        )
+
+        reading = readability("thehub", counts, "codeql")
+
+        assert reading.blind is False
+        assert counts[SCHEMA] == len(migration)
+        assert SCHEMA in NOT_SOURCE
+
+    def test_a_file_with_language_plpgsql_still_is(self) -> None:
+        """Only the procedural files stay reported, at their own size."""
+        ddl = "CREATE INDEX ix ON songs (id);\n"
+        function = (
+            "CREATE OR REPLACE FUNCTION touch() RETURNS trigger AS $$\n"
+            "BEGIN NEW.updated_at = now(); RETURN NEW; END;\n"
+            "$$ LANGUAGE plpgsql;\n"
+        )
+        counts = classify_sql(
+            {"Python": 1000, "PLpgSQL": len(ddl) + len(function)},
+            {"a.sql": ddl, "b.sql": function},
+        )
+
+        reading = readability("thehub", counts, "codeql")
+
+        assert reading.blind is True
+        assert reading.unread == [("PLpgSQL", len(function))]
+
+    @pytest.mark.parametrize(
+        ("text", "procedural"),
+        [
+            ("CREATE TABLE t (id int);", False),
+            ("ALTER TABLE t ADD COLUMN x int; CREATE INDEX i ON t (x);", False),
+            # Linguist's PLpgSQL markers, which are not code.
+            ("BEGIN;\nCREATE TABLE t (id int);\nCOMMIT;", False),
+            ("$$ LANGUAGE plpgsql;", True),
+            ("create function f() returns int as 'select 1' language sql;", True),
+            ("CREATE OR REPLACE PROCEDURE p() AS $$ BEGIN END $$;", True),
+            ("DO $$\nBEGIN\n  PERFORM 1;\nEND $$;", True),
+            ("DO $body$ BEGIN END $body$;", True),
+        ],
+    )
+    def test_procedural_markers(self, text: str, procedural: bool) -> None:
+        assert is_procedural_sql(text) is procedural
+
+    def test_sql_that_could_not_be_read_is_still_counted(self) -> None:
+        """"We could not look" must not read as "it is all schema"."""
+        counts = classify_sql({"Python": 100, "PLpgSQL": 900}, None)
+
+        assert counts == {"Python": 100, "PLpgSQL": 900}
+        assert readability("x", counts, "codeql").blind is True
+
+    def test_the_split_never_exceeds_what_github_measured(self) -> None:
+        function = "DO $$ BEGIN END $$;" * 100
+
+        counts = classify_sql({"PLpgSQL": 10}, {"a.sql": function})
+
+        assert counts == {"PLpgSQL": 10}
 
     def test_a_broader_analyser_closes_the_gap(self) -> None:
         """Semgrep covers bash, so pointing keel at it is a real answer rather

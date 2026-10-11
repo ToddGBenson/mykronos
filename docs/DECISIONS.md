@@ -6090,3 +6090,38 @@ able to block a deploy, the same posture as D-126.
   identity whose secret is in the URL.
 - *Pasting the token into `backend/.env`.* It would be a second copy of a
   credential Vault already holds, and the copy would go stale on rotation.
+
+## D-137 — Migration DDL is schema; only procedural SQL counts as unread source
+
+**2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60578, option B), implemented
+
+**The decision.** A repository's SQL bytes are split by file before the
+unread-source measure sees them. A `.sql` file that defines a function or a
+procedure, says `LANGUAGE plpgsql`, or runs a `DO` block stays source, reported
+as `PLpgSQL`. Everything else is moved to `SQL schema`, which is in
+`NOT_SOURCE` beside Dockerfile and HCL: declarations owned by something other
+than a static analyser.
+
+**Why by file.** GitHub's language name cannot answer the question. Linguist
+calls a file PLpgSQL on markers as weak as `BEGIN;`, so 711 KB of TheHub's
+migrations read as procedural code nothing could analyse. The file content
+can answer it. Measured on 2026-10-11, 34 of TheHub's 376 `.sql` files are
+procedural (324 KB), and its unread share under codeql + semgrep moves from
+3.05% to 1.81%. The story's estimate of four counted only `LANGUAGE plpgsql`.
+The other thirty are `DO $$` blocks and `CREATE FUNCTION`, and they stay
+reported because they are code.
+
+**What it costs.** One call per `.sql` file, made only when GitHub reports SQL
+for the repository, cached with the language read for six hours. Above
+`MAX_SQL_FILES` (1,000) the split is not attempted.
+
+**Unknown stays counted.** If any file cannot be read, nothing moves and the
+SQL is reported as before. "We could not look" must not read as "it is all
+schema", because that would hide the procedural files this exists to keep.
+
+**Rejected.**
+- *A SQL analyser lane (squawk, sqlfluff) first.* It may still follow for the
+  procedural remainder. Without this split it would be asked to "read"
+  1.4 MB of `CREATE TABLE`, and the number would still say the wrong thing.
+- *Putting PLpgSQL in `NOT_SOURCE` wholesale.* It would hide the 34
+  procedural files along with the DDL.

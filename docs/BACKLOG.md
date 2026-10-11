@@ -736,6 +736,15 @@ with — keel's 219 KB of shell was the headline — and it was invisible until
 something measured it. It needs its own answer and is not covered by either
 analyser added today; `SAST_LANGUAGES` has no tool for it to name.
 
+**Corrected 2026-10-11 — D-137: most of it was never stored procedures.** It
+is DDL migrations, which linguist names PLpgSQL on markers as weak as `BEGIN;`.
+The language read now splits a repository's SQL by file. Declarations go to
+`SQL schema` in `NOT_SOURCE`, and only files with a function, a procedure,
+`LANGUAGE plpgsql` or a `DO` block stay unread source. For TheHub that is 34
+of 376 files (324 KB of the 711 KB GitHub counts). The share under codeql +
+semgrep goes from 3.05% to 1.81%. A SQL analyser lane for the procedural
+remainder is still open.
+
 `mykronos`'s 197 KB of PowerShell is its own operations scripts, and the
 `sast-powershell` lane built today closes it the moment it is enabled here.
 

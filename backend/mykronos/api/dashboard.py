@@ -46,6 +46,7 @@ from mykronos import (
 from mykronos import threat_intel as threat_intel_feed
 from mykronos.adapters.registry import default_tool
 from mykronos.adminauth import PrincipalDep
+from mykronos.analysers import read_languages
 from mykronos.api.ingest import (
     installation_client_for_repo,
     profile_owner_for_repo,
@@ -3467,9 +3468,11 @@ async def _languages(
         if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
             return name, hit[1]
         try:
-            counts = await request.app.state.github_factory.for_installation(
-                installation_id
-            ).languages(name)
+            # Migration DDL moves to `SCHEMA` here (D-137), before the cache,
+            # so the SQL files are read once per TTL rather than per load.
+            counts = await read_languages(
+                request.app.state.github_factory.for_installation(installation_id), name
+            )
         except Exception:  # noqa: BLE001
             logger.warning("Could not read languages for %s", scrub(name))
             return name, None

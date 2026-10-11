@@ -1189,3 +1189,47 @@ class TestTheBriefingDoesNotReadGitHubOnEveryLoad:
             ("languages", REPO),
             ("languages", REPO),
         ]
+
+
+class TestMigrationDdlIsSchema:
+    """D-137 through the endpoint: the dashboard's language read splits a
+    repository's SQL by file before the briefing sees it, so DDL migrations
+    stop counting as unread source and procedural files keep counting."""
+
+    DDL = "BEGIN;\nCREATE TABLE songs (id serial PRIMARY KEY);\nCOMMIT;\n"
+    FUNCTION = "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE plpgsql;\n"
+
+    def _repo_with_sql(self, client, admin_auth, github, files):
+        from tests.test_onboarding import onboard
+
+        onboard(client, admin_auth)
+        repo = github.repos[REPO]
+        repo.languages = {"Python": 1000, "PLpgSQL": sum(len(t) for t in files.values())}
+        for path, text in files.items():
+            repo.files[path] = text
+            repo.branches[repo.default_branch][path] = text
+
+    def test_ddl_alone_is_not_reported(self, client, admin_auth, github) -> None:
+        self._repo_with_sql(
+            client, admin_auth, github, {"backend/db/migrations/001.sql": self.DDL}
+        )
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+
+        assert body["unread"] == []
+
+    def test_a_procedural_file_is_reported_at_its_own_size(
+        self, client, admin_auth, github
+    ) -> None:
+        self._repo_with_sql(
+            client,
+            admin_auth,
+            github,
+            {"backend/db/migrations/001.sql": self.DDL, "db/functions.sql": self.FUNCTION},
+        )
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+
+        assert [row["unread"] for row in body["unread"]] == [
+            [["PLpgSQL", len(self.FUNCTION)]]
+        ]
