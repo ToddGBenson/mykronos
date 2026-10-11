@@ -110,6 +110,9 @@ duties:
         - "backend/mykronos/approvals/**"   # the engine that enforces all of this
         - "backend/mykronos/adminauth.py"
         - "backend/mykronos/agents.py"
+        - "scripts/approval-queue.ps1"        # the operator's approval queue (D-149)
+        - "scripts/approval_queue.py"         # ...and the logic it routes and checks with
+        - "scripts/enable-agent-reviewer.ps1" # grants the reviewer its delegation
       routine:
         - "docs/**"
         - "specs/**"

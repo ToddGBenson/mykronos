@@ -6129,3 +6129,78 @@ measurement found neither shape among the live findings.
 the new rule returns as a new id, not a reopen. A lane whose uploader stays
 pinned below this change keeps producing `v2-snippet` ids, which is correct for
 that uploader.
+
+## D-149 — Pull requests go through one approval queue; the decision log merges by union
+
+**2026-10-11.** **Status:** Decided by the operator, implemented
+**Spec:** [34 §4.3, §5, §6.1](../specs/34-duties-delegation-and-independent-approval.md) ·
+runbook: [approvals.md](approvals.md#the-approval-queue)
+
+**The operator's decision.** "Queue script + agent reviewer: a one-command
+queue does the waiting, rebasing and merging. A delegated, fresh-context
+reviewer agent, never the author, approves production and routine PRs, with
+sampled spot-checks for you. Governance PRs still come to you, batched into a
+single prompt."
+
+**What shipped.**
+- `scripts/approval-queue.ps1` takes an ordered list of PRs (or `-All`, oldest
+  first) through rounds: bring each conflicting PR up to date, wait for the
+  platform's request on its head, decide, squash-merge on a green
+  `independent-review`. Governance, and anything the reviewer cannot take,
+  comes to the operator in one batch per round. The queue never approves as an
+  agent. For a delegable tier it calls `POST /api/approvals/{id}/independent-review`,
+  and the platform starts the reviewer, mints its `platform_started` credential
+  and records its decision through `engine.decide`. Its pure decisions
+  (order, routing, the union check, the evidence summary) are in
+  `scripts/approval_queue.py`, under `test_approval_queue.py`.
+- `.gitattributes`: `docs/DECISIONS.md merge=union`.
+- `scripts/enable-agent-reviewer.ps1` proposes, and after the cooling-off
+  approves, a delegation for `pull_request_merge` tiers production and routine
+  (never governance), sampling 0.2, 30 days. It then switches
+  `MYKRONOS_REVIEWER_MODE` to `live`.
+- Compose now passes `MYKRONOS_REVIEWER_MODE`, `_MODEL` and `_API_KEY`. None
+  of them was listed, so the reviewer could not be given a key or switched live
+  in the deployed stack. `ANTHROPIC_API_KEY`, the fallback `reviewer.api_key`
+  reads, is still not passed. The reviewer's key is its own.
+- The three scripts are `governance` in `change_classes`. They are the
+  operator's approval tooling, and one of them grants delegations. Without
+  this, the PR that adds them would have computed as `production`, approvable
+  by the reviewer it enables.
+
+**Why the queue merges main in rather than rebasing.** Measured on #770 and
+#773 before writing it: a rebase replays the branch one commit at a time. #770
+appended `D-136`, later renamed it `D-137`, and union kept both headings. The
+check caught it. One merge of the final trees applies union once. Made from
+main's side ("ours" = main), union writes main's entries first and the
+branch's after them, and the merge descends from the PR head, so the push is a
+fast-forward. The squash merge discards it.
+
+**What the union check requires, and what it does not.** Main's headings
+intact and first. The branch's new numbers unused on main, none twice, and
+ascending among themselves. *Not* global numeric order: numbers are taken when
+a PR is written and land in merge order, so D-139 already precedes D-137 on
+main.
+
+**Found on the way.**
+- In `live` mode nothing starts the reviewer by itself. `shadow_sweep` runs
+  only in `shadow`, and live reviews happen when the endpoint is called. The
+  queue is now that caller.
+- A delegation's `constraints` (`max_per_day`, `exclude_paths` in spec 34 §5)
+  are stored and never read: `_active_delegation` ignores them. The enable
+  script sets none rather than imply a limit that is not enforced.
+
+**Follow-up, not done here: one file per decision.** Union only helps a
+local merge. GitHub's merge button runs no driver, so two open PRs that both
+append to this file still conflict on GitHub. Each merge re-heads the next
+one, which costs a request cycle and a second decision. New decisions as
+`docs/decisions/D-nnn.md`, with this file closed to appends and the numbering
+test reading both, would end the conflict and let a whole batch approved at
+once merge at once. It changes how every session records a decision, so it is
+the operator's call, not this PR's.
+
+**Rejected.**
+- *The queue opening its own requests to skip the ten-minute grace.* A request
+  opened under the admin identity cannot be approved by the admin, and its
+  existence stops the job opening one that can be.
+- *Rebasing, as first specified.* It garbles a branch that edits its own entry
+  (above).

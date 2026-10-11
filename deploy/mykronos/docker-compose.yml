@@ -50,6 +50,14 @@ services:
       # the Hub's own HUB_API_TOKEN value (D-133); empty = "TheHub is not connected".
       MYKRONOS_HUB_API_URL: ${MYKRONOS_HUB_API_URL:-http://host.docker.internal:8000}
       MYKRONOS_HUB_API_TOKEN: ${MYKRONOS_HUB_API_TOKEN:-}
+      # The platform-started independent reviewer (spec 34 sec. 4.3, D-149).
+      # Not listed, `MYKRONOS_REVIEWER_MODE=live` in backend/.env read as the
+      # code default `shadow` in the container and the key as empty: the
+      # routing lesson again. Defaults are the code's, so this is inert until
+      # the operator sets them (scripts/enable-agent-reviewer.ps1).
+      MYKRONOS_REVIEWER_MODE: ${MYKRONOS_REVIEWER_MODE:-shadow}
+      MYKRONOS_REVIEWER_MODEL: ${MYKRONOS_REVIEWER_MODEL:-claude-opus-5}
+      MYKRONOS_REVIEWER_API_KEY: ${MYKRONOS_REVIEWER_API_KEY:-}
       MYKRONOS_GITHUB_APP_ID: ${MYKRONOS_GITHUB_APP_ID:-}
       # Mounted read-only below. The container never holds a copy.
       MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
