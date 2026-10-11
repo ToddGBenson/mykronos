@@ -2349,6 +2349,98 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Product Owner
+         * @description A repository's declared process, backlog and sprint (spec 35 §3).
+         */
+        get: operations["product_owner_api_dashboard_repos__repo_id__product_owner_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/stories/{story_id}/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pull Into Sprint
+         * @description Pull a story into the sprint: autonomy off first, then the move.
+         *
+         *     The order is the safety property (spec 35 §4). A sprint move arms
+         *     autonomous dispatch in TheHub, so a failure between the two calls must
+         *     leave the story in the backlog with autonomy off, never in the sprint with
+         *     autonomy armed. TheHub's refusal is shown verbatim and never retried.
+         */
+        post: operations["pull_into_sprint_api_dashboard_repos__repo_id__product_owner_stories__story_id__pull_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/stories/{story_id}/return": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return To Backlog
+         * @description Move a sprint story back to the backlog. Autonomy is left as it is: a
+         *     backlog story is not dispatched, and switching it back on is a decision
+         *     this tab does not make.
+         */
+        post: operations["return_to_backlog_api_dashboard_repos__repo_id__product_owner_stories__story_id__return_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/rank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rank Story
+         * @description Move one backlog story up or down a place.
+         *
+         *     The order is computed from what TheHub returns now, so a story that left
+         *     the backlog since the page loaded cannot hold a place. The whole visible
+         *     order is written, which ranks every story on the page once one has been
+         *     moved -- the ordering a person sees is the one stored.
+         */
+        post: operations["rank_story_api_dashboard_repos__repo_id__product_owner_rank_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -3534,6 +3626,17 @@ export interface components {
             events: {
                 [key: string]: unknown;
             }[];
+        };
+        /** CheckItemOut */
+        CheckItemOut: {
+            /** Id */
+            id: string;
+            /** Text */
+            text: string;
+            /** Evidence */
+            evidence: string | null;
+            /** Status */
+            status: string;
         };
         /** ChecksOut */
         ChecksOut: {
@@ -4855,6 +4958,25 @@ export interface components {
             /** Rules */
             rules: string[];
         };
+        /** GateCheckOut */
+        GateCheckOut: {
+            /** Gate Id */
+            gate_id: string | null;
+            /** Gate Name */
+            gate_name: string | null;
+            /** Passed */
+            passed: number;
+            /** Failed */
+            failed: number;
+            /** Manual */
+            manual: number;
+            /** Unavailable */
+            unavailable: number;
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["CheckItemOut"][];
+        };
         /**
          * GovernanceOut
          * @description A repository's change-governance posture (spec 30).
@@ -4956,6 +5078,13 @@ export interface components {
             repo_full_name: string;
             /** Granted Capabilities */
             granted_capabilities?: string[];
+        };
+        /** HubOut */
+        HubOut: {
+            /** Connected */
+            connected: boolean;
+            /** Error */
+            error: string | null;
         };
         /**
          * IncidentOut
@@ -5205,6 +5334,21 @@ export interface components {
             /** Direct Anywhere */
             direct_anywhere: boolean;
         };
+        /** ManifestOut */
+        ManifestOut: {
+            /** State */
+            state: string;
+            /** Path */
+            path: string;
+            /** Url */
+            url: string | null;
+            /** Error */
+            error: string | null;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            } | null;
+        };
         /** MigrateIn */
         MigrateIn: {
             /** Risk Owner */
@@ -5261,6 +5405,17 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
+        };
+        /** NeedsHumanOut */
+        NeedsHumanOut: {
+            /** Kind */
+            kind: string;
+            /** Story Id */
+            story_id: number | null;
+            /** Title */
+            title: string;
+            /** Reason */
+            reason: string;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -5403,6 +5558,19 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** OracleOut */
+        OracleOut: {
+            /** Decision Type */
+            decision_type: string | null;
+            /** Recommendation */
+            recommendation: string | null;
+            /** Overall Risk Score */
+            overall_risk_score: number | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Commit Sha */
+            commit_sha: string | null;
+        };
         /** OverrideRequest */
         OverrideRequest: {
             /**
@@ -5485,6 +5653,19 @@ export interface components {
             dependencies: components["schemas"]["DependencyHealthOut"][];
             /** Note */
             note: string;
+        };
+        /** PoActionOut */
+        PoActionOut: {
+            /** Story Id */
+            story_id: number;
+            /** Action */
+            action: string;
+            /** Moved */
+            moved: boolean;
+            /** Autonomy Disabled */
+            autonomy_disabled?: boolean | null;
+            /** Detail */
+            detail?: string | null;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -5650,6 +5831,41 @@ export interface components {
              * @description One sentence naming the earlier decision, for somebody deciding whether to look further.
              */
             summary: string;
+        };
+        /** ProductOwnerOut */
+        ProductOwnerOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Default Branch */
+            default_branch: string;
+            /** Can Write */
+            can_write: boolean;
+            manifest: components["schemas"]["ManifestOut"];
+            /** Spine */
+            spine: string[];
+            /** Spine Is Default */
+            spine_is_default: boolean;
+            /** Backlog Tag */
+            backlog_tag: string;
+            /** Include Untagged */
+            include_untagged: boolean;
+            /** Membership Source */
+            membership_source: string;
+            hub: components["schemas"]["HubOut"];
+            /** Needs Human */
+            needs_human: components["schemas"]["NeedsHumanOut"][];
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            sprint_progress: components["schemas"]["SprintProgressOut"];
+            oracle: components["schemas"]["OracleOut"] | null;
+            /** Backlog */
+            backlog: components["schemas"]["StoryOut"][];
+            /** Sprint */
+            sprint: components["schemas"]["StoryOut"][];
         };
         /**
          * ProfileProposalOut
@@ -5840,6 +6056,16 @@ export interface components {
             pull_requests: components["schemas"]["PullRequestOut"][];
             /** Unreachable */
             unreachable: components["schemas"]["UnreachableRepoOut"][];
+        };
+        /** RankRequest */
+        RankRequest: {
+            /** Story Id */
+            story_id: number;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "up" | "down";
         };
         /**
          * RankTermOut
@@ -6586,6 +6812,13 @@ export interface components {
              */
             reason: string;
         };
+        /** SprintProgressOut */
+        SprintProgressOut: {
+            /** Done */
+            done: number;
+            /** Committed */
+            committed: number;
+        };
         /** SscsEvidenceOut */
         SscsEvidenceOut: {
             /** Evidence Id */
@@ -6784,6 +7017,36 @@ export interface components {
             reason_supplied: boolean;
             /** Retro Signal */
             retro_signal: string;
+        };
+        /** StoryOut */
+        StoryOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Bucket */
+            bucket: string;
+            /** Gate */
+            gate: string;
+            /** Gate Name */
+            gate_name: string | null;
+            /** Spine */
+            spine: string;
+            /** Size */
+            size: string | null;
+            /** Tags */
+            tags: string[];
+            /** Acceptance Criteria */
+            acceptance_criteria: number;
+            /** Detail Length */
+            detail_length: number;
+            /** Rank */
+            rank: number | null;
+            /** Created At */
+            created_at: string | null;
+            /** Updated At */
+            updated_at: string | null;
+            check: components["schemas"]["GateCheckOut"];
         };
         /**
          * SubSignal
@@ -10073,6 +10336,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RemediationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    product_owner_api_dashboard_repos__repo_id__product_owner_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOwnerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_into_sprint_api_dashboard_repos__repo_id__product_owner_stories__story_id__pull_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                story_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    return_to_backlog_api_dashboard_repos__repo_id__product_owner_stories__story_id__return_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                story_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rank_story_api_dashboard_repos__repo_id__product_owner_rank_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RankRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoActionOut"];
                 };
             };
             /** @description Validation Error */
