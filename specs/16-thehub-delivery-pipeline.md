@@ -251,6 +251,12 @@ the code's security.
 
 ## 6. Insider risk without a pull-request event
 
+> **Superseded 2026-10-11 by [D-150](../docs/DECISIONS.md).** The `insider`
+> lane is deleted from `thehub.yml`: a one-user Hub has no second human for it
+> to model, and #60571 found it reporting green while its GitHub call 403'd.
+> This section and the `insider` rows elsewhere in this spec are kept as the
+> record of what the lane did, and as the template if it is ever rebuilt.
+
 Aegis (spec 06) is built around a `pull_request` event: `aegis_signals`
 requires a PR number, an author login, and a base ref, and the review-integrity
 signals of §2a need the review list. Concourse sees a branch, not an event.
