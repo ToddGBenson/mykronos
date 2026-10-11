@@ -2479,6 +2479,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Delivery
+         * @description What shipped, by sha, joined to the Oracle decision and the running
+         *     revision (spec 35 §8.1).
+         */
+        get: operations["delivery_api_dashboard_repos__repo_id__product_owner_delivery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Approvals
+         * @description This repository's pending spec 34 requests (spec 35 §8.2).
+         */
+        get: operations["approvals_api_dashboard_repos__repo_id__product_owner_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/approvals/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide In Place
+         * @description Decide one of this repository's requests through the approvals engine.
+         *
+         *     `approvals.engine.decide` runs every rule the duty's tier names, exactly as
+         *     `/api/approvals/{id}/decisions` does (D-137). Its refusal is returned
+         *     verbatim, and is audited like a decision that stood.
+         */
+        post: operations["decide_in_place_api_dashboard_repos__repo_id__product_owner_approvals__request_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Roles
+         * @description Who the manifest says recommends and approves each gate, beside what
+         *     the platform enforces and the delegations that exist (spec 35 §8.3).
+         */
+        get: operations["roles_api_dashboard_repos__repo_id__product_owner_roles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/retro": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retro
+         * @description A computed retrospective of the stories closed in the window, and the
+         *     gates they failed on the way (spec 35 §8.4, D-138).
+         */
+        get: operations["retro_api_dashboard_repos__repo_id__product_owner_retro_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -5740,6 +5847,322 @@ export interface components {
             autonomy_disabled?: boolean | null;
             /** Detail */
             detail?: string | null;
+        };
+        /** PoApproverNeedOut */
+        PoApproverNeedOut: {
+            /** Kind */
+            kind: string;
+            /** Delegation Required */
+            delegation_required: boolean;
+        };
+        /** PoDecideIn */
+        PoDecideIn: {
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+        };
+        /** PoDecideOut */
+        PoDecideOut: {
+            /** Request Id */
+            request_id: string;
+            /** State */
+            state: string;
+            /** Decision Id */
+            decision_id: string;
+            /** Same Person */
+            same_person: boolean;
+            /** Sampled */
+            sampled: boolean;
+        };
+        /** PoDeclaredGateOut */
+        PoDeclaredGateOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Recommends */
+            recommends: string;
+            /** Approves */
+            approves: string;
+            /** Story Gates */
+            story_gates: string[];
+            /** Doc */
+            doc: string | null;
+        };
+        /** PoDelegationRefOut */
+        PoDelegationRefOut: {
+            /** Id */
+            id: string;
+            /** Families */
+            families: string[];
+            /** Expires At */
+            expires_at: string | null;
+            /** Sampling */
+            sampling: number;
+        };
+        /** PoDeliveryDecisionOut */
+        PoDeliveryDecisionOut: {
+            /** Decision Type */
+            decision_type: string | null;
+            /** Recommendation */
+            recommendation: string | null;
+            /** Score */
+            score: number | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Gate Outcome */
+            gate_outcome: string | null;
+            /** Human Override */
+            human_override: string | null;
+        };
+        /** PoDeliveryOut */
+        PoDeliveryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Default Branch */
+            default_branch: string;
+            /** Days */
+            days: number;
+            deployment: components["schemas"]["PoDeploymentOut"];
+            /** Shipped */
+            shipped: components["schemas"]["PoDeliveryRowOut"][];
+            /** Not Shipped */
+            not_shipped: components["schemas"]["PoDeliveryRowOut"][];
+            /** Error */
+            error: string | null;
+        };
+        /** PoDeliveryRowOut */
+        PoDeliveryRowOut: {
+            /** Sha */
+            sha: string;
+            /** Commit Url */
+            commit_url: string;
+            /** Shipped */
+            shipped: boolean;
+            /** Shipped Reason */
+            shipped_reason: string | null;
+            /** Branches */
+            branches: string[];
+            /** Pr Numbers */
+            pr_numbers: number[];
+            /** First Seen */
+            first_seen: string | null;
+            /** Last Seen */
+            last_seen: string | null;
+            /** Scans */
+            scans: components["schemas"]["PoScanOut"][];
+            /** Scan Failures */
+            scan_failures: number;
+            decision: components["schemas"]["PoDeliveryDecisionOut"] | null;
+            /** Deployed */
+            deployed: string;
+        };
+        /** PoDeploymentOut */
+        PoDeploymentOut: {
+            /** Probe Status */
+            probe_status: string;
+            /** Running Revision */
+            running_revision: string | null;
+            /** Observed At */
+            observed_at: string | null;
+        };
+        /** PoEnforcedTierOut */
+        PoEnforcedTierOut: {
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Approvers */
+            approvers: string[];
+            /** Quorum */
+            quorum: number;
+            /** Independence */
+            independence: string[];
+            /** Cooling Off Hours */
+            cooling_off_hours: number;
+            /** Agent Now */
+            agent_now: string;
+            /** Delegations */
+            delegations: components["schemas"]["PoDelegationRefOut"][];
+        };
+        /** PoGateFailureOut */
+        PoGateFailureOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Kind */
+            kind: string;
+            /** Hub Gate */
+            hub_gate: string;
+            /** Gate Name */
+            gate_name: string | null;
+            /** Detail */
+            detail: string;
+            /** At */
+            at: string | null;
+        };
+        /** PoHubStateOut */
+        PoHubStateOut: {
+            /** Connected */
+            connected: boolean;
+            /** Error */
+            error: string | null;
+        };
+        /** PoInboxDecisionOut */
+        PoInboxDecisionOut: {
+            /** Approver */
+            approver: string;
+            /** Approver Kind */
+            approver_kind: string;
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Created At */
+            created_at: string | null;
+        };
+        /** PoInboxItemOut */
+        PoInboxItemOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Summary */
+            summary: string;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Kind */
+            requester_kind: string;
+            /** Requester Statement */
+            requester_statement: string;
+            /** Created At */
+            created_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Overdue */
+            overdue: boolean;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Decisions */
+            decisions: components["schemas"]["PoInboxDecisionOut"][];
+            needs: components["schemas"]["PoTierNeedsOut"] | null;
+        };
+        /** PoInboxOut */
+        PoInboxOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Can Decide */
+            can_decide: boolean;
+            /** Pending */
+            pending: components["schemas"]["PoInboxItemOut"][];
+            /** Estate Wide Pending */
+            estate_wide_pending: number;
+            /** Policy Version */
+            policy_version: string | null;
+        };
+        /** PoRetroOut */
+        PoRetroOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Days */
+            days: number;
+            /** Closed */
+            closed: number | null;
+            /** Sizes */
+            sizes: {
+                [key: string]: number;
+            };
+            /** Median Cycle Days */
+            median_cycle_days: number | null;
+            /** Failed Stories */
+            failed_stories: number | null;
+            /** Failures */
+            failures: components["schemas"]["PoGateFailureOut"][];
+            /** No Acceptance Criteria */
+            no_acceptance_criteria: number[];
+            /** No Retrospective Note */
+            no_retrospective_note: number[];
+            /** Carried Over */
+            carried_over: number[];
+            /** Dry Runs */
+            dry_runs: number | null;
+            /** Shipped Runs */
+            shipped_runs: number | null;
+            /** Unread */
+            unread: number[];
+            /** Not Read */
+            not_read: number;
+            /** Summary */
+            summary: string[];
+            /** Limitation */
+            limitation: string;
+            /** Stories */
+            stories: components["schemas"]["PoRetroStoryOut"][];
+        };
+        /** PoRetroStoryOut */
+        PoRetroStoryOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Size */
+            size: string | null;
+            /** Closed At */
+            closed_at: string | null;
+            /** Unread */
+            unread: string[];
+            /** Failed Gates */
+            failed_gates: string[];
+        };
+        /** PoRolesOut */
+        PoRolesOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Manifest State */
+            manifest_state: string;
+            /** Declared */
+            declared: components["schemas"]["PoDeclaredGateOut"][];
+            /** Enforced */
+            enforced: components["schemas"]["PoEnforcedTierOut"][];
+            /** Policy Version */
+            policy_version: string | null;
+            /** Single Operator */
+            single_operator: boolean | null;
+            /** Active Delegations */
+            active_delegations: number;
+            /** Error */
+            error: string | null;
+        };
+        /** PoScanOut */
+        PoScanOut: {
+            /** Capability */
+            capability: string | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Run Url */
+            run_url: string | null;
+        };
+        /** PoTierNeedsOut */
+        PoTierNeedsOut: {
+            /** Approvers */
+            approvers: components["schemas"]["PoApproverNeedOut"][];
+            /** Quorum */
+            quorum: number;
+            /** Independence */
+            independence: string[];
+            /** Cooling Off Hours */
+            cooling_off_hours: number;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -10573,6 +10996,170 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delivery_api_dashboard_repos__repo_id__product_owner_delivery_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approvals_api_dashboard_repos__repo_id__product_owner_approvals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoInboxOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_in_place_api_dashboard_repos__repo_id__product_owner_approvals__request_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoDecideIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDecideOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    roles_api_dashboard_repos__repo_id__product_owner_roles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoRolesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retro_api_dashboard_repos__repo_id__product_owner_retro_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoRetroOut"];
                 };
             };
             /** @description Validation Error */

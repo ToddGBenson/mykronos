@@ -33,6 +33,7 @@ from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
+from mykronos.api.po_console import router as po_console_router
 from mykronos.api.product_owner import router as product_owner_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
@@ -735,6 +736,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(oracle_router)
     app.include_router(patchwork_router)
     app.include_router(product_owner_router)
+    app.include_router(po_console_router)
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(webhooks_router)
