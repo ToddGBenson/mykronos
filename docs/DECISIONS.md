@@ -4771,6 +4771,16 @@ whose only notification channel is somebody opening a dashboard has no channel.
 is not a decision to route everything; and routing remains a read-and-notify
 path with no authority to act.
 
+**Amended 2026-10-11: a bot token and a channel, not a webhook (D-136).** The
+Product Owner chose option A on TheHub story #60573. The reason is PS-9: a
+webhook's secret sits in its URL, so whatever holds the URL holds the
+credential, while a bot token travels in an `Authorization:` header Vault can
+hold. The notifier now posts as the host's existing Slack bot
+(`concourse/main/slack-bot-token`) to the channel the Concourse pipeline
+alerts already post to (`concourse/main/slack-alert-channel`), and no second
+Slack identity is minted. "Reaching the backend through Vault" above is now
+literal: `deploy.ps1` reads both at deploy time.
+
 ---
 
 ## D-113 — Coverage is collected on the pull-request lane, and its cost is measured rather than assumed
@@ -6045,3 +6055,38 @@ JSON
   a permission means re-approving the installation.
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
+
+## D-136 — The notifier posts as the host's Slack bot, read from Vault at deploy time
+
+**2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60573, option A), implemented
+
+**The decision.** `MYKRONOS_SLACK_BOT_TOKEN` and `MYKRONOS_SLACK_CHANNEL` come
+from Vault, from the same team-scope paths the Concourse pipelines resolve
+`((slack-bot-token))` and `((slack-alert-channel))` from:
+`concourse/main/slack-bot-token` and `concourse/main/slack-alert-channel`. So
+the platform's alerts go to the channel the pipeline alerts already go to, as
+the one Slack identity this host already has. This amends D-112, which said to
+configure a webhook.
+
+**Why a bot token.** PS-9: a webhook's secret sits in its URL, so whatever
+holds the URL holds the credential. A bot token is a header, and it is the
+credential the pipelines already moved into Vault for exactly that reason.
+
+**How it reaches the container.** `deploy/mykronos/deploy.ps1` reads both
+values with the read-only Concourse Vault token and sets them in its own
+process environment before `docker compose up`. Compose prefers the shell
+environment over `--env-file`, so nothing is pasted into `backend/.env`. The
+script prints only which names resolved, never a value, and removes them from
+its environment once compose has read them. The compose file already passed
+both names through, and `test_compose_passes_settings.py` pins that.
+
+**It fails open.** A sealed Vault leaves `backend/.env` in charge (normally
+empty). The deploy says which names did not resolve, and the backend's startup
+warning reports a notifier addressed to nobody. A chat service must not be
+able to block a deploy, the same posture as D-126.
+
+**Rejected.**
+- *A webhook as D-112 wrote it.* It works, but it mints a second Slack
+  identity whose secret is in the URL.
+- *Pasting the token into `backend/.env`.* It would be a second copy of a
+  credential Vault already holds, and the copy would go stale on rotation.

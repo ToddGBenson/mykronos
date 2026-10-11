@@ -430,6 +430,51 @@ class TestFindingAlerts:
             assert len(recorder.sent) == 1
 
 
+class TestTheDeployedConfigurationIsAddressed:
+    """B-035 / D-136: the two names `deploy.ps1` reads from Vault are enough.
+
+    Everything above swaps a recorder into `app.state`. This builds the app
+    the way the container does, from the environment alone, and keeps the real
+    `SlackNotifier` - only the HTTP client under it is the fake transport. So
+    it pins the whole path the deployed stack takes: two environment variables,
+    a high finding, one `chat.postMessage` addressed to the channel.
+    """
+
+    def test_a_high_finding_is_posted_to_the_channel(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MYKRONOS_SLACK_BOT_TOKEN", "xoxb-from-vault")
+        monkeypatch.setenv("MYKRONOS_SLACK_CHANNEL", "C0ALERTS")
+        monkeypatch.delenv("MYKRONOS_SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.setenv("MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY", "high")
+        settings = Settings(
+            datalake_dir=tmp_path / "lake",
+            database_url=f"sqlite:///{(tmp_path / 'm.db').as_posix()}",
+            run_compaction_in_background=False,
+            run_jobs_in_background=False,
+            gate_token="",
+            github_app_id="",
+            github_app_private_key_path=None,
+        )
+        stub = TestTheBotTransport._answering(httpx2.Response(200, json={"ok": True}))
+
+        with TestClient(create_app(settings)) as client:
+            assert client.app.state.notifier.transport == "bot"  # type: ignore[attr-defined]
+            token = issue_token(client, REPO, "sast")
+            monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+            post_findings(
+                client, {"Authorization": f"Bearer {token}"}, [_finding(severity="high")]
+            )
+
+        assert len(stub.calls) == 1
+        call = stub.calls[0]
+        assert call["url"] == CHAT_POST_MESSAGE
+        assert call["headers"]["Authorization"] == "Bearer xoxb-from-vault"
+        assert call["json"]["channel"] == "C0ALERTS"
+        assert "1 high" in call["json"]["text"]
+
+
 class TestOracleGateAlerts:
     """`no_go` is the one decision that stops a deploy, and the pipeline that
     asked has already exited by the time anybody looks at the build."""

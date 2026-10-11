@@ -74,32 +74,49 @@ nothing (D-105).
 
 ---
 
-## 2 · B-035 — the Slack webhook
+## 2 · B-035 — the Slack bot (D-112 as amended, D-136)
 
-**Effort:** ~10 minutes. **Unblocks:** every notification path.
+**Effort:** ~5 minutes. **Unblocks:** every notification path.
 
 The notifier is built, configured and addressed to nobody. There is deliberately
 no default endpoint — a deployment that changed no configuration must not be
 posting its findings to a chat service.
 
+Nothing is pasted any more. `deploy/mykronos/deploy.ps1` reads the host's Slack
+bot token and alert channel from Vault (`concourse/main/slack-bot-token`,
+`concourse/main/slack-alert-channel`) — the same two values the Concourse
+pipeline alerts post with — and hands them to compose. Leave
+`MYKRONOS_SLACK_WEBHOOK_URL`, `MYKRONOS_SLACK_BOT_TOKEN` and
+`MYKRONOS_SLACK_CHANNEL` empty in `backend/.env`.
+
 ### Steps
 
-1. Create an incoming webhook: <https://api.slack.com/apps> → your app →
-   **Incoming Webhooks** → **Add New Webhook to Workspace**. Pick a channel,
-   copy the URL.
+1. Make sure Vault is unsealed: `deploy\concourse\vault-unseal.ps1`.
 
-2. Add to `backend/.env`:
+2. Deploy a sha that carries this change:
 
-       MYKRONOS_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-       MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY=high
+       .\deploy\mykronos\deploy.ps1 -Tag <sha>
 
-3. Optionally enable the weekly digest, which is off by default because it
+   It prints `Slack bot token and channel resolve from Vault (concourse/main).`
+   A yellow line naming a variable means Vault could not be read for it.
+
+3. Confirm the backend picked the transport up:
+
+       docker logs mykronos-backend 2>&1 | Select-String "Slack notification"
+
+   Expect `Slack notification is enabled (bot).`
+
+4. Post one test message from the running backend and check the channel:
+
+       docker exec mykronos-backend python -c "import asyncio; from mykronos.config import Settings; from mykronos.notify import Notification, SlackNotifier; s = Settings(); print(asyncio.run(SlackNotifier(s.slack_webhook_url, bot_token=s.slack_bot_token, channel=s.slack_channel).send(Notification(title='Mykronos notifier test', detail='B-035: posted by the running backend.', repo_full_name='ToddGBenson/mykronos', level='info'))))"
+
+   `True` means Slack accepted it. `False` is followed by a warning carrying
+   Slack's own error, for example `not_in_channel` (invite the bot).
+
+5. Optionally enable the weekly digest, which is off by default because it
    messages people:
 
        MYKRONOS_DIGEST_ENABLED=true
-
-4. Restart the stack. Use the sha-tag deploy, not `deploy.ps1` — that pulls a
-   GHCR `:latest` promote has never moved.
 
 ### Choosing the threshold
 
