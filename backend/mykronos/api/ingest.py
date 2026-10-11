@@ -48,6 +48,8 @@ from mykronos.atlas import evidence_id as atlas_evidence_id
 from mykronos.atlas import score as trust_score
 from mykronos.atlas import to_row as atlas_row
 from mykronos.auth import Resolution, TokenRegistry
+from mykronos.ci_check_run import CheckRunNotPostedError
+from mykronos.ci_check_run import report as report_check_run
 from mykronos.db.models import (
     NetassessRun,
     ReachabilityReport,
@@ -64,6 +66,8 @@ from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
     Capability,
+    CheckRunAccepted,
+    CheckRunReport,
     FindingBatch,
     FindingStatus,
     HealthResponse,
@@ -994,6 +998,58 @@ async def ingest_reachability(
         accepted=1,
         orphaned=len(body.orphaned_paths),
         files_analysed=body.files_analysed,
+    )
+
+
+@router.post("/check-runs", response_model=CheckRunAccepted)
+async def ingest_check_run(
+    request: Request, body: CheckRunReport, token: TokenDep
+) -> CheckRunAccepted:
+    """A CI job's start or end, shown on GitHub as one check run (D-136).
+
+    Concourse calls this because it cannot call GitHub: its only GitHub
+    credential dies an hour after set-pipeline. The platform posts through the
+    App with an installation token it mints itself, and keeps one check run per
+    (repository, commit, name), so every later report updates the same run.
+
+    **The repository must be the token's own.** No capability grant is needed:
+    a build's verdict is not a capability, the same reasoning as
+    `/lane-failure`.
+
+    **A check run that could not be posted is an error, not a 200.** The
+    pipeline sends this with `curl --fail-with-body`, so a 409 (no
+    installation) or a 502 (GitHub refused or timed out) is a red step with a
+    reason in the build log. Neither carries GitHub's own error text; that is
+    in the platform log and the audit log.
+
+    Registered before the `/{capability}` catch-all below, which would
+    otherwise answer this path with a 422.
+    """
+    _require_repo(token, body.repo_full_name)
+    app_state = request.app.state
+    lock = getattr(app_state, "ci_check_run_lock", None)
+    if lock is None:
+        lock = app_state.ci_check_run_lock = asyncio.Lock()
+    try:
+        posted = await report_check_run(
+            app_state.db,
+            installation_client_for_repo(request, token.repo_full_name),
+            lock,
+            repo_full_name=token.repo_full_name,
+            commit_sha=body.commit_sha,
+            job=body.job,
+            phase=body.phase,
+            conclusion=body.conclusion,
+            timeout=CHECK_RUN_TIMEOUT,
+        )
+    except CheckRunNotPostedError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+    return CheckRunAccepted(
+        name=posted.name,
+        check_run_id=posted.check_run_id,
+        status=posted.status,
+        conclusion=posted.conclusion,
+        outcome=posted.outcome,
     )
 
 

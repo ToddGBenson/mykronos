@@ -271,6 +271,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/check-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Check Run
+         * @description A CI job's start or end, shown on GitHub as one check run (D-136).
+         *
+         *     Concourse calls this because it cannot call GitHub: its only GitHub
+         *     credential dies an hour after set-pipeline. The platform posts through the
+         *     App with an installation token it mints itself, and keeps one check run per
+         *     (repository, commit, name), so every later report updates the same run.
+         *
+         *     **The repository must be the token's own.** No capability grant is needed:
+         *     a build's verdict is not a capability, the same reasoning as
+         *     `/lane-failure`.
+         *
+         *     **A check run that could not be posted is an error, not a 200.** The
+         *     pipeline sends this with `curl --fail-with-body`, so a 409 (no
+         *     installation) or a 502 (GitHub refused or timed out) is a red step with a
+         *     reason in the build log. Neither carries GitHub's own error text; that is
+         *     in the platform log and the audit log.
+         *
+         *     Registered before the `/{capability}` catch-all below, which would
+         *     otherwise answer this path with a 422.
+         */
+        post: operations["ingest_check_run_api_ingest_check_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/{capability}": {
         parameters: {
             query?: never;
@@ -3637,6 +3675,42 @@ export interface components {
             evidence: string | null;
             /** Status */
             status: string;
+        };
+        /** CheckRunAccepted */
+        CheckRunAccepted: {
+            /** Name */
+            name: string;
+            /** Check Run Id */
+            check_run_id: string;
+            /** Status */
+            status: string;
+            /** Conclusion */
+            conclusion: string | null;
+            /** Outcome */
+            outcome: string;
+        };
+        /**
+         * CheckRunReport
+         * @description A CI job's start or end, to be shown as one check run per commit (D-136).
+         *
+         *     Concourse sends this; the platform posts the check run, because Concourse
+         *     holds no GitHub credential that outlives the hour after set-pipeline.
+         *     `repo_full_name` must match the token's own repository.
+         */
+        CheckRunReport: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /** Job */
+            job: string;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "start" | "end";
+            /** Conclusion */
+            conclusion?: ("success" | "failure") | null;
         };
         /** ChecksOut */
         ChecksOut: {
@@ -7894,6 +7968,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReachabilityAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_check_run_api_ingest_check_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckRunReport"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckRunAccepted"];
                 };
             };
             /** @description Validation Error */
