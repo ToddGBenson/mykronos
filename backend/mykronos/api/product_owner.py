@@ -973,7 +973,7 @@ async def rank_story(
     story that left the backlog since the page loaded cannot hold a place. The
     whole visible order is written to TheHub's `po_rank`, which ranks every
     story on the page once one has been moved -- the ordering a person sees is
-    the one stored. A press that moves nothing writes nothing.
+    the one stored.
     """
     _require_writer(principal, "Ranking the backlog")
     repo_full_name, branch, installation = _onboarding(request, repo_id)
@@ -1002,22 +1002,20 @@ async def rank_story(
     # new rank, the audit row lists them, and the page re-reads TheHub, so it
     # shows the order that was actually stored rather than the one intended.
     written: list[int] = []
-    outcome = "unchanged"
+    outcome = "ranked"
     refusal: str | None = None
-    if order != current:
-        outcome = "ranked"
-        for position, story_id in enumerate(order, start=1):
-            if ranks.get(story_id) == position:
-                continue
-            try:
-                result = await hub.set_rank(story_id, position)
-            except po.HubUnavailableError as exc:
-                outcome, refusal = "unreachable", str(exc)
-                break
-            if not result.ok:
-                outcome, refusal = "refused", result.detail
-                break
-            written.append(story_id)
+    for position, story_id in enumerate(order, start=1):
+        if ranks.get(story_id) == position:
+            continue
+        try:
+            result = await hub.set_rank(story_id, position)
+        except po.HubUnavailableError as exc:
+            outcome, refusal = "unreachable", str(exc)
+            break
+        if not result.ok:
+            outcome, refusal = "refused", result.detail
+            break
+        written.append(story_id)
 
     _audit(
         request,

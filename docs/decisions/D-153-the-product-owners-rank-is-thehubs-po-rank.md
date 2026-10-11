@@ -24,9 +24,10 @@ the whole visible order is stored. Only the positions that differ from TheHub's
 are sent. A refusal is shown in TheHub's words and not retried (a 5xx is
 reported as "TheHub failed", and its body is not passed on). Stories written
 before the refusal keep their new rank. The `po.rank` audit row records the
-outcome (`ranked`, `unchanged`, `refused`, `unreachable`) and the story ids
-written, so a half-applied move can be read back. A press that moves nothing,
-such as "up" on the top story, writes nothing. Before, it wrote the whole order.
+outcome (`ranked`, `refused`, `unreachable`) and the story ids written, so a
+half-applied move can be read back. A press that moves nothing, such as "up" on
+the top story, still stores the visible order, as before; with ranks already
+in place that is no PATCH at all.
 
 **One rank per story, not per repository.** `po_backlog_rank` was keyed by
 (repository, story) and `po_rank` is keyed by story. A story belongs to two

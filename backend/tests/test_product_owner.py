@@ -679,18 +679,18 @@ class TestRank:
         assert "Traceback" not in response.text
         assert "TheHub failed (HTTP 500)." in response.json()["detail"]
 
-    def test_a_press_that_moves_nothing_writes_nothing(
+    def test_a_press_that_moves_nothing_writes_only_what_was_unranked(
         self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
     ) -> None:
-        repo_id, hub = connect([story(id=1, created_at="2026-01-01"), story(id=2)])
+        repo_id, hub = connect(
+            [story(id=1, created_at="2026-01-01", po_rank=1), story(id=2)]
+        )
         client.post(
             f"/api/dashboard/repos/{repo_id}/product-owner/rank",
             json={"story_id": 1, "direction": "up"},
             headers=admin_auth,
         )
-        assert hub.patches() == []
-        (entry,) = audit_entries(client, "po.rank")
-        assert entry.detail["outcome"] == "unchanged"
+        assert hub.patches() == [("/api/dev/stories/2", {"po_rank": 2})]
 
     def test_the_top_story_cannot_move_up(
         self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
