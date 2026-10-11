@@ -5847,3 +5847,117 @@ opened both. It did not: the values differ. Corrected in the docstring.
 - *Cloudflare Access in front.* Stronger than a shared static token, and it
   needs no code. It is an operator setting outside this repository, and it
   remains the recommended next step.
+
+## D-132 — A repository's process is a manifest in that repository
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 phase 1)
+
+Every repository has a development process and almost none of them can be
+seen. TheHub's is spread over four overlapping files, keel's lives in
+`process/gates/*.md`, and MyKronos had none written down at all (spec 35 §0).
+
+**The decision.** A repository's process is `.sdlc/process.yaml` on its default
+branch (spec 35 §2). It changes by pull request, so its history is in git and
+a change to it gets the independent review spec 34 gives any other change.
+MyKronos reads it on every render of the Product Owner tab and never stores a
+second copy, because a copy is a second source of truth that drifts.
+
+**Strict, and never defaulted silently.** The manifest is parsed with a strict
+model: an unknown key is an error, so a typo is reported instead of being
+ignored. An invalid manifest is shown as invalid with the reason, and the tab
+never falls back to a default and presents it as the repository's declared
+process. A repository with no manifest is shown as declaring none.
+
+**MyKronos's own manifest ships with this decision**, and claims only gates that
+exist: independent review is recorded as advisory, because branch protection
+does not require it (D-110).
+
+**Rejected.**
+- *A process stored in MyKronos's database.* It would have no review and no
+  history, and would describe the repository from outside it.
+- *Parsing each repository's existing prose.* Four overlapping documents in
+  TheHub alone; a parser would be guessing which one is current.
+
+## D-133 — TheHub's `dev_stories` is the system of record for work items
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 phase 1)
+
+**The decision.** Stories live in TheHub for every repository. MyKronos reads
+them and moves them through the Hub API, and never edits their content: title,
+acceptance criteria and gates stay with TheHub, which owns them. A story
+belongs to a repository by a `repo:<name>` tag. The manifest says whether
+untagged stories also count, which is true for TheHub's own and false for
+everyone else's.
+
+**Rank is the exception, and it is ours for now.** TheHub has no rank field, so
+the Product Owner's ordering is MyKronos's `po_backlog_rank` table, keyed by
+repository and story id. Moving it into TheHub needs a migration there, which
+ships alone, so it is B-068.
+
+**A sprint pull switches autonomy off first.** A sprint move arms autonomous
+dispatch in TheHub. The pull calls `toggle-autonomy` first and moves the
+story only if that succeeded, so a failure between the two calls leaves the
+story in the backlog with autonomy off, never in the sprint with autonomy armed.
+A Hub refusal is shown in TheHub's own words and never retried.
+
+**Amended during the build: the Hub credential is its own setting.** Spec 35
+§4.1 said `gate_token` already holds the Hub's `HUB_API_TOKEN`. D-131 records
+that it does not: the values differ (checked 2026-10-08). Reusing it would be
+refused by the Hub, and would send MyKronos's perimeter secret to another
+service. The client therefore reads `hub_api_token`, the Hub's own token,
+beside `hub_api_url`. Either one empty disables the integration, and the tab
+says TheHub is not connected.
+
+**Rejected.**
+- *Backlogs in each repository* (markdown, GitHub Issues). That is the state
+  spec 35 starts from: three backlogs in three formats and no single answer.
+- *A MyKronos copy of the stories.* Two writers for one story, and a sync job
+  to decide which one is right.
+
+## D-134 — Each repository's own gates, mapped onto a shared spine
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 phase 1)
+
+**The decision.** The tab shows each repository's real gate names. Its manifest
+maps each gate onto a shared spine: Idea · Ready · Building · Verifying ·
+Shipping · Done. The spine makes two repositories comparable without forcing
+them to rename anything, and gives a repository with no manifest a default,
+labelled as one.
+
+**Checks are evidence, or they are manual.** A checklist item that names an
+evidence key (acceptance criteria, detail of 500 characters, a size, a threat
+model, being in the sprint) is checked against the Hub story. An item with no
+key is shown as manual, neither passed nor failed, because nothing here can see
+whether a person did it. `threat_model` reads as "not visible" today, because
+TheHub's story response does not carry `inception_draft`. That is reported as
+unavailable, not failed: absent evidence is not evidence of a gap.
+
+**Rejected.**
+- *One state model for every repository.* keel's six gates and TheHub's eight
+  are both real. Either would misdescribe the other.
+- *No shared model at all.* Then nothing compares across repositories, and a
+  repository with no manifest shows nothing.
+
+## D-135 — The Product Owner tab is a console with sub-views
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 phase 1)
+
+Three directions were drawn. A was a process-map page and B a board-first page.
+**C was chosen**: one `product-owner` tab on the repository page, with Overview,
+Backlog, Sprint and Process sub-views (`?tab=product-owner&view=…`).
+
+**Why C.** It is the only one of the three that takes the later phases (B-071:
+Delivery, an Approvals inbox, Roles & agents, a generated retro) without
+crowding one screen. Overview leads with what needs a human, as keel's
+`dashboard.py` does, because that is the question a single operator opens the
+tab to answer.
+
+**Writes are admin-only and audited.** Pull into sprint, back to backlog and
+rank each need the admin role. Every attempt is written to `audit_log` with the
+actor, repository, story id and outcome, including the ones TheHub refused. A
+viewer sees the tab read-only.
+
+**Rejected.**
+- *A (process map).* It shows the process well and gives the work nowhere to go.
+- *B (board first).* It is good for a sprint and leaves no room for the process
+  it is supposedly following.

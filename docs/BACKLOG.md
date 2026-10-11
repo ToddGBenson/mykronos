@@ -51,6 +51,11 @@ building the fix for the 2026-09-09 gate block. Every entry here was reproduced 
 was written; the evidence is in each entry rather than a link to a dashboard
 that will have moved on.
 
+**B-068 to B-072 are not from a sweep.** They are what spec 35 (the Product
+Owner tab) left out of phase 1 on purpose, filed when phase 1 was built so the
+exclusions are tracked rather than remembered. They are at the end of this
+section.
+
 **The nine that needed the operator rather than code were decided on
 2026-09-05, as D-108 to D-116.** Three stay open as execution and each carries
 its decision inline: the registry is closed by network scope rather than by
@@ -1234,6 +1239,110 @@ reported no drift and, in the same output, three `CREDENTIALS INLINE` lines that
 nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
+
+### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub
+
+**Size:** S **State:** open **Verified:** 2026-10-11
+
+TheHub's `dev_stories` has no rank field, so spec 35 phase 1 stores the
+Product Owner's backlog ordering in MyKronos's `po_backlog_rank` table, keyed
+by repository and story id (D-133). That is a second place a fact about a story
+lives, which is the thing D-133 exists to avoid. It is acceptable for one
+operator and one reader. It stops being acceptable the day TheHub's own Mission
+Control shows a backlog in a different order from this tab.
+
+**Acceptance criteria**
+
+- TheHub's `dev_stories` carries a rank, added by a migration that ships alone
+  (TheHub's commit rules).
+- The Product Owner tab reads and writes that field through the Hub API, and
+  `po_backlog_rank` is migrated across and then retired.
+- Mission Control and this tab show one backlog in one order.
+
+**Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
+
+### B-069 — A repository with no manifest is told so, and offered nothing
+
+**Size:** S **State:** open **Verified:** 2026-10-11
+
+Spec 35 §2.3: when the default branch has no `.sdlc/process.yaml`, the tab says
+"This repository declares no process" and shows the default spine, labelled as
+a default. Seven of the estate's repositories are in that state. Saying so is
+correct, but it leaves the next step to the person reading.
+
+**Acceptance criteria**
+
+- An admin can ask for a template pull request that adds a starter
+  `.sdlc/process.yaml`, built from the default spine and marked as a draft.
+- The pull request goes through the installer's existing branch-and-PR path,
+  and through independent review like any other change (D-132).
+- Nothing is committed to a default branch directly.
+
+**Provenance:** spec 35 §2.3 and §5.
+
+### B-070 — Declared process versus observed process
+
+**Size:** M **State:** open **Verified:** 2026-10-11
+
+A manifest is a declaration. Phase 1 shows it and never checks it. The two
+gaps already known are the reason this matters: TheHub's inception gate is
+declared in code and switched off in its running `.env` (spec 35 §0), and
+MyKronos's own manifest has to record independent review as advisory because
+branch protection does not require it (D-110). A process page that shows the
+declaration without the drift reads as reassurance.
+
+**Acceptance criteria**
+
+- A finding is raised when a manifest declares a control the platform can
+  observe to be off. At least: required review declared while branch protection
+  requires none, and a declared gate whose enforcing flag is off.
+- The findings use the existing governance reads (`governance.read`) rather
+  than a second GitHub client.
+- The Process view shows each declared gate with its observed state beside it,
+  and never merges the two into one word.
+
+**Provenance:** spec 35 §5.
+
+### B-071 — The rest of the Product Owner console
+
+**Size:** L **State:** open **Verified:** 2026-10-11
+
+D-135 chose a console over a single page so that later views have somewhere to
+go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
+deliberately left out are listed here.
+
+**Acceptance criteria**
+
+- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
+  deploy ledger.
+- **Approvals inbox:** this repository's pending approval requests from
+  spec 34, read-only from here, decided in the approvals engine.
+- **Roles & agents:** who recommends and approves each gate, against the
+  delegations that actually exist.
+- **Retro:** a generated sprint retrospective from the stories that closed
+  and the gates they failed on the way.
+
+**Provenance:** spec 35 §5, D-135.
+
+### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only
+
+**Size:** M **State:** open **Verified:** 2026-10-11
+
+Phase 1 accepts `backlog.source: thehub` and refuses anything else. keel's work
+items live in GitHub Issues, so keel's tab can show its process (keel has the
+clearest model in the estate) and no backlog until this lands, or until keel's
+work moves into TheHub under D-133.
+
+**Acceptance criteria**
+
+- `backlog.source: github_issues` is accepted, with a label selector in place
+  of the tag.
+- Issues are read through the existing GitHub client; gate and size come from
+  labels the manifest names.
+- Writes are refused for this source until somebody decides what a sprint pull
+  means for an issue. It is read-only until then.
+
+**Provenance:** spec 35 §5.
 
 ---
 

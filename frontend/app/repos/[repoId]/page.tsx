@@ -20,6 +20,7 @@ import { RemediateToday } from "@/app/remediate/page";
 import { AgeForecast } from "@/components/forecast";
 import { GovernancePanel, MergeCounts } from "@/components/governance";
 import { PathToGreen } from "@/components/path-to-green";
+import { PO_VIEWS, ProductOwnerTab, type PoViewId } from "@/components/product-owner";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
@@ -45,6 +46,7 @@ import {
   getFinding,
   getInsiderRisk,
   getOpenFindings,
+  getProductOwner,
   getRemediation,
   getRepoGuidance,
   getRepo,
@@ -67,7 +69,7 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Eleven tabs, in this order (spec 18 §2).
+ * Twelve tabs, in this order (spec 18 §2; the twelfth, Product Owner, is spec 35).
  *
  * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
  * scan health, enabled jobs — promoted to the default landing tab rather than
@@ -99,6 +101,11 @@ const TABS = [
   // merged what, and adherence is a different question with a different
   // reader.
   { id: "adherence", label: "Adherence" },
+  // The one tab about the work rather than the code (spec 35, D-135): this
+  // repository's declared process, its backlog and its sprint, read from its
+  // own `.sdlc/process.yaml` and from TheHub. After Adherence because both
+  // answer "how is this repository run", and this one is the operator's.
+  { id: "product-owner", label: "Product Owner" },
 ] as const;
 
 export default async function RepoPage({
@@ -106,7 +113,7 @@ export default async function RepoPage({
   searchParams,
 }: {
   params: Promise<{ repoId: string }>;
-  searchParams: Promise<FindingsQuery>;
+  searchParams: Promise<FindingsQuery & { view?: string }>;
 }) {
   const { repoId } = await params;
   const query = await searchParams;
@@ -231,6 +238,8 @@ export default async function RepoPage({
         <RemediateToday repoId={repoId} />
       ) : tab === "adherence" ? (
         <AdherenceTab repoId={repoId} />
+      ) : tab === "product-owner" ? (
+        <ProductOwnerTabPanel repoId={repoId} view={query.view} />
       ) : tab === "harness" ? (
         <TestHarnessTab repoId={repoId} enabled={[...enabledSet].sort()} />
       ) : (
@@ -853,6 +862,33 @@ async function AdherenceTab({ repoId }: { repoId: string }) {
     return <ErrorPanel title="Adherence unavailable" detail={result.error} />;
   }
   return <SsdfTab data={result.data} />;
+}
+
+async function ProductOwnerTabPanel({
+  repoId,
+  view,
+}: {
+  repoId: string;
+  view: string | undefined;
+}) {
+  // An unknown view is said to be one, for the reason an unknown tab is: a
+  // wrong link that renders the default looks like a working one.
+  const chosen = view ?? "overview";
+  if (!PO_VIEWS.some((entry) => entry.id === chosen)) {
+    return (
+      <ErrorPanel
+        title="No such view"
+        detail={`'${chosen}' is not a Product Owner view. Valid ids: ${PO_VIEWS.map(
+          (entry) => entry.id,
+        ).join(", ")}.`}
+      />
+    );
+  }
+  const result = await getProductOwner(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Product Owner view unavailable" detail={result.error} />;
+  }
+  return <ProductOwnerTab repoId={repoId} view={chosen as PoViewId} data={result.data} />;
 }
 
 async function PatchworkTab({ repoId }: { repoId: string }) {

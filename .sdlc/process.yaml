@@ -1,0 +1,139 @@
+# MyKronos's own development process, as it is actually run (spec 35, D-132).
+#
+# Read by the Product Owner tab from the default branch, and changed only by
+# pull request, so its history is in git. Every gate below names something
+# that exists today. Where a step is advisory rather than enforced it says so:
+# the tab shows this file as the repository's declared process, and a
+# declaration that claims more than the estate enforces is the gap B-070
+# (declared-vs-observed drift) exists to find, not one to start with.
+#
+# Single operator: the person who recommends and the person who approves are
+# the same, which is why independent review (spec 34) is the one approval
+# that is genuinely separate -- and why it is recorded as advisory here.
+version: 1
+name: spec-first, PR to main, gated deploy by sha
+spine_map:
+  G0: idea
+  G1: ready
+  G2: building
+  G3: verifying
+  G4: shipping
+  G5: done
+gates:
+  - id: G0
+    name: Idea
+    recommends: Operator
+    approves: Operator
+    doc: docs/BACKLOG.md
+    story_gates: [intake]
+    checklist:
+      - id: problem-named
+        text: The problem is written down, with evidence, as a backlog entry or a spec section
+  - id: G1
+    name: Specified
+    recommends: Operator
+    approves: Operator
+    doc: README.md
+    story_gates: [clarified, designed, ready]
+    checklist:
+      - id: spec-first
+        text: The behaviour is in a spec under specs/ (or an amendment) before the code
+      - id: decision-logged
+        text: Any decision the spec does not settle is logged in docs/DECISIONS.md
+      - id: ac
+        text: Acceptance criteria exist
+        evidence: acceptance_criteria
+      - id: sized
+        text: Sized
+        evidence: sized
+  - id: G2
+    name: Pull request
+    recommends: Operator
+    approves: Operator
+    doc: docs/approvals.md
+    story_gates: [in_progress]
+    checklist:
+      - id: pr-to-main
+        text: The change is on a branch with a pull request to main; nothing is pushed to main directly
+      - id: tests
+        text: Tests for the change are in backend/tests and the backend suite passes
+      - id: frontend-pr
+        text: The frontend-pr workflow (npm ci, lint, build) passes on the pull request
+  - id: G3
+    name: Reviewed and scanned
+    recommends: Operator
+    approves: Independent reviewer (approvals engine)
+    doc: docs/approvals.md
+    story_gates: [tested]
+    checklist:
+      - id: independent-review
+        text: >-
+          The pull request has an approved pull_request_merge request in the approvals engine,
+          posted as the independent-review check run (advisory: branch protection does not
+          require it, D-110)
+      - id: concourse-lanes
+        text: >-
+          After merge, the Concourse mykronos pipeline's lanes for the commit are green:
+          unit, lint-and-types, frontend, secrets, dependencies, sast, insider, iac, containers
+      - id: oracle-gate
+        text: The oracle-gate job has scored the commit
+  - id: G4
+    name: Deployed by sha
+    recommends: Operator
+    approves: Operator
+    doc: deploy/mykronos/deploy.ps1
+    story_gates: [deployed]
+    checklist:
+      - id: delivery-published
+        text: The Delivery workflow published the :<sha> images for the merge commit (D-125)
+      - id: deploy-by-sha
+        text: >-
+          deploy.ps1 -Tag <sha> was run on the host; it asks the risk gate first and refuses a
+          no_go or an introduced critical/high unless -Force -ForceReason is given (D-126)
+  - id: G5
+    name: Verified
+    recommends: Operator
+    approves: Operator
+    story_gates: [verified]
+    checklist:
+      - id: verified-live
+        text: The change was checked against the running deployment, not only the tests
+backlog:
+  source: thehub
+  tag: repo:mykronos
+  include_untagged: false
+delivery:
+  summary: >-
+    Spec first; pull request to main with independent review (advisory); Concourse lanes and
+    the oracle gate after merge; Delivery publishes :<sha>; the operator deploys with
+    deploy.ps1 -Tag <sha>, which refuses a no_go.
+  steps:
+    - spec
+    - pull-request
+    - frontend-pr-check
+    - independent-review
+    - human-merge
+    - concourse-lanes
+    - oracle-gate
+    - delivery-publish-sha
+    - deploy-ps1-by-sha
+automation_policy:
+  - id: P1
+    text: No image is tagged :latest; a deploy names a sha (D-125)
+    met: true
+  - id: P2
+    text: The deploy asks the risk gate and refuses a no_go without a recorded reason (D-126)
+    met: true
+  - id: P3
+    text: Nothing in CI can deploy; the host pulls (spec 15 §3, D-038)
+    met: true
+  - id: P4
+    text: Independent review is required by branch protection before merge
+    met: false
+docs:
+  - {label: Specs index, path: README.md}
+  - {label: Decisions, path: docs/DECISIONS.md}
+  - {label: Backlog, path: docs/BACKLOG.md}
+  - {label: Approvals runbook, path: docs/approvals.md}
+  - {label: Concourse pipeline, path: deploy/concourse/pipelines/mykronos.yml}
+  - {label: Deploy script, path: deploy/mykronos/deploy.ps1}

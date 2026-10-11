@@ -38,6 +38,7 @@ import {
   type TriageQueue,
   type Briefing,
   type RepoGuidance,
+  type ProductOwnerView,
   type RepoSurfaces,
   type SupplyChainPackages,
   type VulnerabilityManagement,
@@ -901,6 +902,22 @@ export type SsdfView =
  * reported as met on the strength of a branch rule that was removed last week
  * is the one wrong answer that matters here.
  */
+/** The Product Owner tab (spec 35): manifest, backlog and sprint. */
+export async function getProductOwner(repoId: string): Promise<Result<ProductOwnerView>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/product-owner",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the Product Owner view") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getSsdf(repoId: string): Promise<Result<SsdfView>> {
   try {
     const { data, response } = await backendClient().GET(
