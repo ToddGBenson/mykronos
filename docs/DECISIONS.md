@@ -6161,6 +6161,148 @@ measurement found neither shape among the live findings.
 the new rule returns as a new id, not a reopen. A lane whose uploader stays
 pinned below this change keeps producing `v2-snippet` ids, which is correct for
 that uploader.
+## D-144 — The Product Owner console decides approvals through the engine, never around it
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.2)
+
+**The decision.** The Approvals inbox lists this repository's pending spec 34
+requests and lets an admin decide them in place. The decision goes to
+`approvals.engine.decide` with the caller's principal and the evidence digest
+the row was rendered with. That is the function `/api/approvals/{id}/decisions`
+calls, so every independence rule, delegation requirement, cooling-off,
+quorum and expiry check applies unchanged. When the engine refuses, its
+sentence is shown verbatim and nothing is retried.
+
+**Why the digest comes from the page.** An approval is of a digest, not of a
+name (spec 34 §4.1). If the console looked the digest up again at decision
+time, a request whose evidence changed after the page loaded would be
+approved without anyone having seen the new evidence. The engine refuses a
+mismatched digest, and the console passes that refusal on.
+
+**Scoping.** A request belongs to a repository through its frozen evidence
+(`repo`, or `finding.repo_full_name`), not through anything the caller says.
+A request that names no repository, such as a delegation grant, is counted
+in the tab and cannot be decided from it, because the audit entry would
+attach it to the wrong repository.
+
+**Admin only, not `agent`.** The `agent` role may write elsewhere. The console
+is the operator's, and an agent that wants to decide uses the approvals API,
+where its credential identifies it.
+
+B-071 said "read-only from here, decided in the approvals engine". The Hub
+story (#60569) asks for a decision in place under spec 34. Both hold: the
+decision is made in place, and it is the engine that makes it.
+
+**Rejected.**
+- *A link to the approvals API and no control.* This leaves the inbox as a list
+  of chores to do somewhere else.
+- *The console checks independence first and calls the engine only when it
+  would pass.* That is a second copy of the rules, and it drifts from the
+  first one.
+
+## D-145 — Delivery reports what was deployed only where MyKronos recorded it
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.1)
+
+**The decision.** The Delivery view joins each commit the lake has seen to the
+newest Oracle decision for it. MyKronos's deployment ledger is the probe's
+running revision (#361): one value per repository, overwritten on each sweep.
+A commit that matches it reads **running**. Every other commit reads **not
+recorded**, never "not deployed", because the probe keeps no history that
+could show a past deploy.
+
+**The retro is computed.** Spec 35 §8.4's retrospective counts and lists what
+TheHub recorded: closed stories, their aborted runs, verification rejections
+and failed deploys. No model writes it. A computed retro can be checked
+against the record line by line. A written one would add a second account of
+the sprint that nothing checks.
+
+**Rejected.**
+- *"Not deployed" for everything but the running sha.* That claims a gap the
+  evidence does not show (the D-134 rule: absent evidence is not evidence of
+  a gap).
+- *A deploy history table in MyKronos.* It is worth having, but it is a
+  migration and ships alone. It is not part of a view.
+
+## D-146 — A story's commits are the ones whose `Stories:` trailer names it
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.5)
+
+**The decision.** The delivery trace reads the default branch's commits from
+GitHub, since the story was created, and credits a commit to a story only
+when the story's id is in that commit's `Stories:` trailer. A commit whose
+prose mentions `#id` is counted as "named in prose, not credited" and never
+shown as delivering the story.
+
+**Why GitHub, and not TheHub's attribution.** TheHub's deploy attribution
+falls back to a loose `#id` scan for commits with no trailer
+(`parse_stories_trailer`), and its per-story deploy list carries only the
+subject line, so the trailer cannot be checked from it. The story's own
+acceptance criteria forbid that fallback. MyKronos does not ingest commit
+messages, so the trailer is read at request time. TheHub's deploy runs are
+still used for the deploy link, matched by sha.
+
+**The first missing link is named.** In chain order: "no commit names this
+story", "committed, no pull request recorded", "committed, never scanned",
+"scanned, never deployed". An empty trace reads as "nothing to see", which
+is the one reading that is never true.
+
+**Rejected.**
+- *TheHub's `/deploys` list as the commit list.* It includes commits that only
+  mention the story, and it leaves out commits that were never deployed. Those
+  are exactly the trace's first missing link.
+- *Ingesting push webhooks' commit messages.* Better in the long run, but a
+  new lake table is a schema change and ships alone.
+
+## D-147 — Every gate failure in the fleet view names its RACI owner
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.6)
+
+**The decision.** TheHub's RACI table (root CLAUDE.md, AGENT-3 #48555) is
+copied into `po_fleet.RACI`, with the activity, the Accountable role, and
+whether the table marks it as operator-only. A test pins the copy to the
+rows of the source. A gate failure is mapped to an activity by the TheHub
+gate it happened at:
+
+- an aborted autonomy run, at `in_progress`: Implementation, no agent owner;
+- a verification rejection, at `tested`: automated testing, Atlas;
+- a failed deploy, at `deployed`: deploy and smoke test, Atlas;
+- a sprint story failing its gate check, at its own gate.
+
+The view names the Accountable role, or says **no agent owner** for the three
+activities the table marks as the operator's.
+
+**Dry runs are never shipped.** TheHub corrects the 333 mislabelled rows on
+read (`autonomy_run_view`). This view uses the corrected status and also
+re-derives "did anything" from `dry_run` itself. Without the second check,
+a TheHub endpoint that did not correct the label would bring the error back.
+
+**Not connected is said, not zeroed.** With no Hub, the counts are absent and
+the view says TheHub is not connected. A zero would read as "the agents did
+nothing", which is a claim.
+
+**Rejected.**
+- *Reading the RACI table from TheHub's repository at request time.* It is
+  prose in a markdown table, and parsing prose at request time is how a
+  formatting change becomes a wrong owner.
+- *Inventing an owner for the operator-only activities.* TheHub's table
+  declines to, on purpose.
+
+## D-148 — The estate roll-up is the per-repository read, summed
+
+**2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.7)
+
+**The decision.** `/api/dashboard/product-owner/estate` calls the Product Owner
+read once for each active repository and sums the rows. It does not
+recompute sprint progress or "needs a human". Recomputing would give the
+estate page its own definition of each number, and the first change to the
+per-repository rules would make the two pages disagree. A repository with no
+manifest is listed as "declares no process", never omitted. A test checks
+that the totals row equals the sum of the rows.
+
+**Rejected.**
+- *An estate query of its own over TheHub's stories.* It is cheaper, and it is
+  a second definition of the same numbers.
 ## D-137 — The notifier posts as the host's Slack bot, read from Vault at deploy time
 
 **2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60573, option A), implemented
