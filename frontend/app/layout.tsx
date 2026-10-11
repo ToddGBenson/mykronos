@@ -62,6 +62,9 @@ const NAV: {
       { label: "Remediation library", href: "/remediation" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
+      // The work rather than the code (spec 35 §8.7): every repository's
+      // declared process and sprint, one row each, linking to its tab.
+      { label: "Product Owner", href: "/product-owner" },
       // Last, and the only item about this platform rather than the estate it
       // watches. It reports on four repositories and had no page reporting on
       // itself; a job that stopped here is invisible in exactly the way a

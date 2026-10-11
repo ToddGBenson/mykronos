@@ -1309,27 +1309,6 @@ declaration without the drift reads as reassurance.
 
 **Provenance:** spec 35 §5.
 
-### B-071 — The rest of the Product Owner console
-
-**Size:** L **State:** open **Verified:** 2026-10-11
-
-D-135 chose a console over a single page so that later views have somewhere to
-go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
-deliberately left out are listed here.
-
-**Acceptance criteria**
-
-- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
-  deploy ledger.
-- **Approvals inbox:** this repository's pending approval requests from
-  spec 34, read-only from here, decided in the approvals engine.
-- **Roles & agents:** who recommends and approves each gate, against the
-  delegations that actually exist.
-- **Retro:** a generated sprint retrospective from the stories that closed
-  and the gates they failed on the way.
-
-**Provenance:** spec 35 §5, D-135.
-
 ### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only
 
 **Size:** M **State:** open **Verified:** 2026-10-11
@@ -1390,6 +1369,36 @@ into entries here:
 ---
 
 ## Closed
+
+### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-144, D-145)
+
+**Size:** L **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60569)
+
+Delivery, the Approvals inbox, Roles & agents and the computed retro are
+sub-views of the console (`view=delivery|approvals|roles|retro`), each with its
+own read. Two of the criteria below changed while being built, and the changes
+are recorded rather than absorbed. The inbox decides in place, as the Hub
+story asks, where this entry said "read-only from here", and it decides only
+through `approvals.engine.decide` (D-144). The deploy ledger MyKronos holds is
+the probe's running revision, so Delivery says "not recorded" for every other
+commit (D-145).
+
+D-135 chose a console over a single page so that later views have somewhere to
+go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
+deliberately left out are listed here.
+
+**Acceptance criteria**
+
+- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
+  deploy ledger.
+- **Approvals inbox:** this repository's pending approval requests from
+  spec 34, read-only from here, decided in the approvals engine.
+- **Roles & agents:** who recommends and approves each gate, against the
+  delegations that actually exist.
+- **Retro:** a generated sprint retrospective from the stories that closed
+  and the gates they failed on the way.
+
+**Provenance:** spec 35 §5, D-135.
 
 **2026-09-14 — two, both of which had been finished for days and were still
 filed under Open.** B-054, where the image registry the deploy path pulls from
