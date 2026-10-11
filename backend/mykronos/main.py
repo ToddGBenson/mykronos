@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from mykronos import __version__, finding_disposition, logsafe, platform_health, risk_acceptance
 from mykronos.adminauth import (
@@ -51,7 +51,7 @@ from mykronos.db import Database
 from mykronos.db.models import JobRun
 from mykronos.deployments import run_probe_sweep
 from mykronos.digest import send_all as send_digests
-from mykronos.gate import PerimeterGate
+from mykronos.gate import PerimeterGate, presents_token
 from mykronos.github.auth import AppCredentials
 from mykronos.github.factory import (
     FakeGitHubClientFactory,
@@ -775,33 +775,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(PrincipalContextReset)
 
     @app.get("/healthz", tags=["ops"], summary="Unauthenticated liveness probe")
-    async def healthz() -> dict[str, Any]:
+    async def healthz(request: Request) -> dict[str, Any]:
         """For infrastructure only. Deliberately reveals nothing about the
         lake — the authenticated /api/ingest/health is what workflows call.
 
-        `build.sha` is the one thing here that is not liveness. It is the
-        commit this *image* was built from, and it is unauthenticated on
-        purpose: whatever asks "is the fix running yet?" has to be able to
-        ask it from outside, of the process actually serving traffic. On
-        2026-09-13 twenty-six merged PRs sat undeployed for eight days with
-        every indicator green, because the platform compared scans to `main`
-        and nothing compared the running artifact to anything (#361). A
-        commit SHA is not a secret — it names a public commit in a public
-        repository, and TheHub has served its own from `/health` throughout.
+        [D-157, TheHub #60722] The public body is `{"status": "ok"}` and
+        nothing else. `/healthz` is exempt from the perimeter gate, so every
+        key here is published to the internet, and `build.sha` (#361) told
+        anyone which commit to diff to find what is not yet patched.
+
+        `build` is still served to a caller that presents the perimeter token
+        (`X-Hub-Token`, `hub_token` cookie, `?_token=`). deploy.ps1 does not
+        need it: it reads `MYKRONOS_BUILD_SHA` from the container itself. The
+        status code is 200 for every caller.
 
         `build.source` exists so the absent case cannot be misread. An image
         built without the build-arg reports `sha: null, source: "unknown"`
         rather than a version string that looks like an answer.
         """
-        sha = resolved.build_sha.strip()
-        return {
-            "status": "ok",
-            "version": __version__,
-            "build": {
+        body: dict[str, Any] = {"status": "ok"}
+        if presents_token(request, resolved.gate_token):
+            sha = resolved.build_sha.strip()
+            body["version"] = __version__
+            body["build"] = {
                 "sha": sha or None,
                 "source": "image" if sha else "unknown",
-            },
-        }
+            }
+        return body
 
     return app
 
