@@ -6129,3 +6129,162 @@ measurement found neither shape among the live findings.
 the new rule returns as a new id, not a reopen. A lane whose uploader stays
 pinned below this change keeps producing `v2-snippet` ids, which is correct for
 that uploader.
+## D-140 — Process drift is computed on read from the stored governance reading
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.1, B-070)
+
+A manifest is a declaration, and phase 1 only displayed it. B-070 compares two
+kinds of declaration with what MyKronos can observe: `branch_controls` (what the
+default branch is declared to enforce) and a gate's `enforced_by` switch.
+
+**Observed from data MyKronos already holds.** Branch controls are compared with
+`repo_governance.control_states`, the per-control reading the governance sweep
+and the Insider Threat panel already store (spec 30). No GitHub operation is
+added. A reading older than `governance.STALE_AFTER_DAYS`, or none at all, makes
+the declaration **unobserved**, never consistent: "no reading" is not evidence
+that the control is on. A gate switch is a file and key in the repository, read
+at the default branch with the client and `get_file` call that already read the
+manifest.
+
+**Three states, kept apart.** `consistent`, `drift` and `unobserved`, each with
+the declared side and the observed side as separate fields. Only `drift` is a
+finding. Each finding names an owner: `branch_controls.owner` for branch
+controls (default "Repository admins"), and the gate's approver for a switch.
+
+**Not a lake finding.** The governance reading is already an Oracle term
+(`risk_profile.governance`). Writing drift into `findings` would score the same
+weak control twice, once as posture and once as a finding.
+
+**What it cannot see.** A running process's environment. TheHub's inception gate
+is off in its live `.env` and on in `.env.example`, so a manifest that points
+`enforced_by` at `.env.example` reports it as consistent. That is the truth
+about what the repository says. It is not the running state, and the spec says
+so (§7.1).
+
+**Rejected.**
+- *A live `governance.read` on every render.* It works, and it is a second GitHub
+  read of the same data per page view. The stored row is current enough to
+  score Oracle with, so it is current enough to compare against.
+- *Inferring the inception flag from TheHub's behaviour* (whether a sprint pull
+  is refused for a missing checklist). That is a guess drawn from one refusal,
+  presented as a configuration fact.
+
+## D-141 — A template manifest arrives as a draft pull request on the installer's path
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.2, B-069)
+
+Seven repositories in the estate declare no process. The tab told them so and
+offered nothing to do about it. It now offers three starter manifests
+(keel-style, TheHub-style, lightweight), and an admin can open one as a pull
+request.
+
+**The installer's path, not a new one.** The pull request is opened with the
+same sequence the Workflow Installer uses: reuse an open pull request if there
+is one, otherwise `create_branch` from the default branch, `commit_files`, and
+`create_pull_request`. Its own branch prefix (`mykronos/sdlc-process-`) keeps
+`find_open_pull_request` from confusing it with an install pull request.
+
+**A draft, one file, never the default branch.** The manifest is a declaration
+that a person has to read before it is true (D-132), so the pull request opens
+as a draft. Only `.sdlc/process.yaml` changes. The request is refused unless the
+manifest is `absent`: an invalid manifest is fixed in the repository, and an
+unreadable one may well exist.
+
+**Audited, not recorded as an install.** Each attempt is written to `audit_log`
+as `po.template_pr` with its outcome, including refusals and GitHub failures. It
+is not a `WorkflowInstallEvent`. That table's `pending_pr_number` is the
+installer's bookkeeping for capability changes, and a manifest pull request
+there would be promoted to "capabilities enabled" when it merged.
+
+**Templates claim no controls.** No starter declares `branch_controls` or an
+`enforced_by` switch. A starter that claimed controls nobody had checked would
+be written to fail the drift check (D-140) the first time it rendered.
+
+**Rejected.**
+- *Committing the starter straight to the default branch.* It would skip the
+  independent review D-132 relies on.
+- *Generating the manifest from the repository's existing documents.* That is
+  the parsing D-132 rejected.
+
+## D-142 — Definition-of-Done evidence comes from TheHub's trailer attribution and the lake
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.3)
+
+Phase 1 checks entry criteria: a gate checklist against the story text. Nothing
+checked exit criteria, so a story could read done with no commit, scan or
+deploy behind it. A manifest can now declare a `definition_of_done`, with three
+evidence keys: `commit`, `scan_passed` and `deployed`.
+
+**Where each fact comes from.** MyKronos holds no record of which commit
+belongs to which story. TheHub does: it parses each commit's `Stories:` trailer
+into its deploy runs, and serves them at `GET /api/dev/stories/{id}/deploys`.
+That read, through the Hub client the tab already uses, gives the commits that
+name a story and which of them deployed successfully. The lake's `scan_runs`
+gives whether one of those commits passed a scan. The repository's probed
+`deployed_revision` (#361) is a second source for `deployed`. SHAs are matched
+by prefix, at least seven characters, because TheHub sends twelve and scanners
+send seven or forty.
+
+**Unknown keys fail.** An unknown DoD evidence key is a validation error and is
+never treated as manual. A typo would otherwise make an exit criterion vanish
+from the check without anyone noticing.
+
+**Unavailable is not failed.** When TheHub cannot answer the deploys read, every
+evidence item is `unavailable`, as for `threat_model` in phase 1.
+
+**Checked only at a done-equivalent gate** (spine step `done`), with one Hub
+read per such story. A story whose DoD fails is listed under Needs a human.
+
+**What it cannot see.** TheHub attributes a commit to a story only when a
+deploy run carried it. A commit that names the story and never went through a
+deploy run is invisible here, so `commit` can fail for a story whose commit
+exists. Spec 35 §7.3 says so. The fix belongs to TheHub (attributing commits as
+well as deploys), not to a GitHub commit search in MyKronos.
+
+**Rejected.**
+- *Searching GitHub for commits that mention the story.* It adds a GitHub
+  operation per story per render, and a mention is not an attribution:
+  "follow-up to #123" names a story it did not deliver.
+
+## D-143 — A story is linked to risk by `finding:` and `control:` tags, and scored from the portfolio decision
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.4)
+
+The Backlog view ordered stories by the Product Owner's rank, then by gate and
+age. Nothing said which story would reduce the most risk. It now shows, beside
+each row, the Oracle risk points the story would remove, and offers a
+"by risk removed" order beside the manual rank.
+
+**The link is a tag.** `finding:<finding_id>` names a MyKronos finding, and
+`control:<control_key>` names a governance control from
+`governance.CONTROL_ORDER`. TheHub stories already carry tags, and `repo:<name>`
+already uses them to give a story a repository (D-133). This is the smallest
+convention that needs no new TheHub field and no new MyKronos table. A story
+with neither tag is "not linked". It is not scored as zero, because zero would
+claim the story removes nothing.
+
+**Scored from the decision the Oracle published, not from a second model.**
+The repository's latest `portfolio` decision carries every term in its
+snapshot. Findings use each band's `weight` and effective count:
+`weight × (log2(1 + e) − log2(1 + max(0, e − k)))` for *k* linked open findings,
+which is the arithmetic `path_to_green` uses. Like the path, it counts the band
+curve only, so a KEV boost or age points on the same finding come off as well
+and the figure under-promises. Controls recompute the governance term from the
+stored control states with the linked controls on, capped at what the decision
+actually added. A linked finding that is no longer open removes nothing, and
+the row says how many there are.
+
+**It says what it ranked by** (the B-033 rule): the decision's date and policy
+version. When the repository has no risk profile it says the ranking carries no
+business context. When there is no portfolio decision it says nothing can be
+ranked by risk, and linked stories show "no model" rather than a number.
+
+**A view, never written.** The order is computed on read. The rank controls
+appear only in the manual order, so viewing the suggestion cannot store it.
+
+**Rejected.**
+- *Re-running the Oracle per story with the linked findings removed.* It is
+  exact, and it costs a full evaluation per backlog row per render. The band
+  arithmetic is the same calculation the Oracle's own path-to-green publishes.
+- *Linking through Patchwork's `remediation_events`.* That covers fixes
+  Patchwork opened, which are not most stories.
