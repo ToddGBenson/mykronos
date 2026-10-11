@@ -92,6 +92,19 @@ class CapabilityGuidance:
         return self.count - self.actionable
 
 
+def message_text(raw: dict[str, Any]) -> str:
+    """A raw finding's message, in either shape a scanner writes it.
+
+    SARIF makes `message` an object, `{"text": ...}`. ShellCheck's JSON makes it
+    a plain string, and its adapter stores the comment as the raw, so reading
+    `.get("text")` off it took the briefing down (2026-10-11).
+    """
+    message = raw.get("message")
+    if isinstance(message, dict):
+        return str(message.get("text") or "")
+    return str(message or "")
+
+
 def _clean(text: str, limit: int = 160) -> str:
     # Unescape before stripping tags, and twice: Trivy double-encodes, so a
     # CVE title arrives as `EUC_JISX0213 -&amp;gt; UCS4` and one pass leaves
@@ -137,7 +150,7 @@ def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
     estate have no published fix, so "upgrade" is advice for three of them and
     misdirection for the rest.
     """
-    text = str((raw.get("message") or {}).get("text", ""))
+    text = message_text(raw)
     package = (_PACKAGE.search(text) or [None, ""])[1] if _PACKAGE.search(text) else ""
     installed = _INSTALLED.search(text)
 
@@ -166,7 +179,7 @@ def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _sast(raw: dict[str, Any]) -> tuple[str, str, str]:
-    text = str((raw.get("message") or {}).get("text", ""))
+    text = message_text(raw)
     if not text:
         return ("Read the finding and disposition it.", "standing", "judgement")
     return (
@@ -177,7 +190,7 @@ def _sast(raw: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _iac(raw: dict[str, Any]) -> tuple[str, str, str]:
-    text = str((raw.get("message") or {}).get("text", ""))
+    text = message_text(raw)
     return (
         _clean(text) or "Read the control before changing infrastructure that works.",
         "scanner" if text else "standing",
@@ -372,7 +385,7 @@ def _fix_key(capability: str, rule: RuleGuidance, raw: dict[str, Any]) -> tuple[
                 f"Set the {header} response header",
             )
     if capability in ("containers", "atlas"):
-        text = str((raw.get("message") or {}).get("text", ""))
+        text = message_text(raw)
         package = _PACKAGE.search(text)
         fixed = _FIXED.search(text)
         version = fixed.group(1) if fixed else ""
@@ -481,7 +494,7 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
         )
         entry["findings"] += 1
         if fix_id.startswith("upgrade:"):
-            fixed = _FIXED.search(str((raw.get("message") or {}).get("text", "")))
+            fixed = _FIXED.search(message_text(raw))
             if fixed and not fixed.group(1).startswith("Link"):
                 entry["versions"].add(fixed.group(1))
         entry["rules"].add(rule.rule_id)

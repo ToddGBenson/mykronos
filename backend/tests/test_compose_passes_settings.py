@@ -37,6 +37,11 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_CONCOURSE_URL",
     "MYKRONOS_HUB_API_URL",
     "MYKRONOS_HUB_API_TOKEN",
+    # D-149: the reviewer could not be switched live, or given a key, in the
+    # deployed stack - none of the three was listed.
+    "MYKRONOS_REVIEWER_MODE",
+    "MYKRONOS_REVIEWER_MODEL",
+    "MYKRONOS_REVIEWER_API_KEY",
 )
 
 
@@ -72,6 +77,16 @@ def test_routing_defaults_to_off_in_compose() -> None:
     value = str(document["services"]["backend"]["environment"]["MYKRONOS_ROUTING_ENABLED"])
 
     assert value.endswith(":-false}"), value
+
+
+def test_the_reviewer_defaults_to_shadow_in_compose() -> None:
+    """Live is the operator's decision, made with a delegation in place
+    (D-149). A compose default of `live` would make it on every recreate; an
+    empty default would fail the setting's own pattern and stop the backend."""
+    document = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    value = str(document["services"]["backend"]["environment"]["MYKRONOS_REVIEWER_MODE"])
+
+    assert value.endswith(":-shadow}"), value
 
 
 def test_every_name_here_is_a_real_setting() -> None:
@@ -167,3 +182,28 @@ def test_every_variable_compose_interpolates_is_documented() -> None:
         "mention them, so an operator has no way to know they exist: "
         + ", ".join(undocumented)
     )
+
+
+def test_the_deploy_reads_the_slack_pair_from_the_pipelines_vault_paths() -> None:
+    """D-137: passing the names through compose is half of it. The deploy has
+    to supply them, and from the same Vault paths the Concourse pipelines
+    resolve `((slack-bot-token))` and `((slack-alert-channel))` from - so the
+    platform posts as the host's one Slack bot, to the channel the pipeline
+    alerts already go to, and nothing is pasted into `backend/.env`.
+
+    A text check, because no test here runs PowerShell. It pins the
+    name-to-path pairing, which is the part a rename would break silently.
+    """
+    deploy = (COMPOSE.parent / "deploy.ps1").read_text(encoding="utf-8")
+    pipeline = (
+        COMPOSE.parents[1] / "concourse" / "pipelines" / "thehub.yml"
+    ).read_text(encoding="utf-8")
+
+    for name, var in (
+        ("MYKRONOS_SLACK_BOT_TOKEN", "slack-bot-token"),
+        ("MYKRONOS_SLACK_CHANNEL", "slack-alert-channel"),
+    ):
+        assert f"(({var}))" in pipeline, f"the pipeline no longer resolves (({var}))"
+        assert re.search(
+            rf'"{name}"\s*=\s*"concourse/main/{var}"', deploy
+        ), f"deploy.ps1 does not read {name} from concourse/main/{var}"

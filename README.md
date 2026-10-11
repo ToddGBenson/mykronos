@@ -108,7 +108,8 @@ two for standing it up, onboarding a repository, and teaching a scanner to
 report into it.
 
 Implementation decisions the specs do not settle — and the ones that became
-spec changes — are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+spec changes — are recorded one file each in [`docs/decisions/`](docs/decisions/),
+indexed with the historical log in [`docs/DECISIONS.md`](docs/DECISIONS.md) (D-149).
 Operational lessons worth carrying between projects are promoted to
 [`docs/lessons/`](docs/lessons/), incident-scale days get a retro in
 [`docs/retros/`](docs/retros/), and work that is known and not yet done —

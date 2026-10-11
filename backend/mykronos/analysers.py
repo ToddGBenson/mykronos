@@ -25,8 +25,14 @@ of gaps nobody should act on, which is how a real one stops being read.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import asyncio
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mykronos.github.client import GitHubClient
 
 #: What each static analyser implements, in GitHub's own language names.
 #:
@@ -96,12 +102,21 @@ SAST_LANGUAGES: dict[str, frozenset[str]] = {
 #: run over the estate counted 7 KB of it against TheHub as unread source,
 #: which is the page-of-gaps failure the module docstring warns about arriving
 #: on the first day.
+#:
+#: **Schema.** Migration DDL - `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX` -
+#: declares a database the way HCL declares infrastructure. It is not the
+#: language GitHub names it by, so it arrives here under `SCHEMA` after
+#: `classify_sql` has split the SQL bytes by file, and only the files that
+#: define procedural code stay counted as source (B-051, D-138).
 NOT_SOURCE: frozenset[str] = frozenset(
     {
         # Covered by another capability.
         "Dockerfile",
         "HCL",
         "Jinja",
+        # Declarations, not code. Never a GitHub language name: only
+        # `classify_sql` produces it.
+        "SQL schema",
         # Markup and documents, which no analyser reads and none should.
         "CSS",
         "SCSS",
@@ -115,6 +130,114 @@ NOT_SOURCE: frozenset[str] = frozenset(
         "Markdown",
     }
 )
+
+#: The name the DDL share of a repository's SQL is reported under. In
+#: `NOT_SOURCE`, so it is never counted as unread.
+SCHEMA = "SQL schema"
+
+#: The languages GitHub gives a `.sql` file. Linguist calls a file `PLpgSQL`
+#: on markers as weak as a `BEGIN;`, so the language name cannot answer the
+#: question and the file content has to. Measured 2026-10-11: GitHub counts
+#: 711 KB of TheHub as PLpgSQL, and 34 of its 376 `.sql` files (324 KB)
+#: define a function, a procedure or a `DO` block; the rest is DDL.
+#: PL/SQL and T-SQL are deliberately absent: their procedural markers are
+#: different, and no repository here has either.
+SQL_LANGUAGES: frozenset[str] = frozenset({"SQL", "PLpgSQL"})
+
+#: What makes a SQL file code rather than a declaration: a function or
+#: procedure body, or an anonymous `DO` block. `CREATE TRIGGER` alone is not
+#: here, because a trigger runs a function that one of these defines.
+_PROCEDURAL_SQL = re.compile(
+    r"\bLANGUAGE\s+'?plpgsql\b"
+    r"|\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b"
+    r"|\bDO\s+(?:LANGUAGE\s+'?\w+'?\s+)?\$",
+    re.IGNORECASE,
+)
+
+#: Above this many `.sql` files the split is not attempted and the SQL bytes
+#: stay counted as before. One API call per file, cached for six hours, is
+#: fine for TheHub's 376; a repository with ten times that is a different cost
+#: question, and the safe direction is to keep reporting it.
+MAX_SQL_FILES = 1_000
+
+
+def is_procedural_sql(text: str) -> bool:
+    """Whether a SQL file defines code an analyser would need to read."""
+    return bool(_PROCEDURAL_SQL.search(text))
+
+
+def classify_sql(
+    languages: Mapping[str, int], sql_files: Mapping[str, str] | None
+) -> dict[str, int]:
+    """Move the DDL share of a repository's SQL bytes to `SCHEMA`.
+
+    `sql_files` is every `.sql` file's text by path. The procedural files'
+    bytes stay source, under `PLpgSQL`; the rest becomes `SCHEMA`. Capped at
+    GitHub's own SQL total, so the split can never report more SQL than
+    GitHub measured.
+
+    `None` means the files could not be read, and then nothing moves: "we
+    could not look" must not read as "it is all schema", which would hide the
+    procedural files this exists to keep reporting.
+    """
+    sql_bytes = sum(languages.get(name, 0) for name in SQL_LANGUAGES)
+    if sql_files is None or not sql_bytes:
+        return dict(languages)
+
+    procedural = sum(
+        len(text.encode("utf-8")) for text in sql_files.values() if is_procedural_sql(text)
+    )
+    procedural = min(procedural, sql_bytes)
+
+    split = {name: count for name, count in languages.items() if name not in SQL_LANGUAGES}
+    if procedural:
+        split["PLpgSQL"] = procedural
+    if sql_bytes - procedural:
+        split[SCHEMA] = sql_bytes - procedural
+    return split
+
+
+async def read_sql_files(
+    client: GitHubClient, repo_full_name: str, *, concurrency: int = 8
+) -> dict[str, str] | None:
+    """Every `.sql` file on the default branch, or None if any could not be read.
+
+    All or nothing, for the reason `list_tree` gives: a partial read would
+    classify the unread files as schema by omission.
+    """
+    try:
+        ref = str((await client.get_repo(repo_full_name)).get("default_branch") or "main")
+        paths = await client.list_tree(repo_full_name, ref)
+        if paths is None:
+            return None
+        wanted = [path for path in paths if path.lower().endswith(".sql")]
+        if len(wanted) > MAX_SQL_FILES:
+            return None
+        gate = asyncio.Semaphore(concurrency)
+
+        async def one(path: str) -> tuple[str, str | None]:
+            async with gate:
+                return path, await client.get_file(repo_full_name, path, ref)
+
+        results = await asyncio.gather(*(one(path) for path in wanted))
+    except Exception:  # noqa: BLE001 - unknown, never a partial answer
+        return None
+    if any(text is None for _, text in results):
+        return None
+    return {path: text for path, text in results if text is not None}
+
+
+async def read_languages(client: GitHubClient, repo_full_name: str) -> dict[str, int] | None:
+    """GitHub's bytes per language, with migration DDL moved to `SCHEMA`.
+
+    The SQL files are read only when GitHub reports SQL at all, so a
+    repository with none costs the one call it always did.
+    """
+    counts = await client.languages(repo_full_name)
+    if counts and SQL_LANGUAGES & counts.keys():
+        counts = classify_sql(counts, await read_sql_files(client, repo_full_name))
+    return counts
+
 
 #: GitHub's name for a language, where it differs from the analyser's.
 _ALIASES: dict[str, str] = {

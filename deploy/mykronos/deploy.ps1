@@ -597,10 +597,53 @@ if ($NoStart) {
     return
 }
 
+# Slack (B-035, D-112 as amended, D-137). The notifier posts as this host's one
+# Slack bot - the identity the Concourse pipelines already post as - to the
+# channel their alerts go to. Both are read from Vault at team scope with the
+# read-only Concourse token, the same two paths the pipelines resolve
+# `((slack-bot-token))` and `((slack-alert-channel))` from, and are handed to
+# compose through this process's environment, which compose prefers over
+# --env-file. So the token is never pasted into backend/.env and never
+# printed: only which names resolved is said.
+#
+# Fails open, like the risk gate. A sealed Vault leaves whatever backend/.env
+# says (normally empty), and the backend's own startup warning then reports a
+# notifier addressed to nobody - a deploy is not blocked by a chat service.
+$slackFromVault = [ordered]@{
+    "MYKRONOS_SLACK_BOT_TOKEN" = "concourse/main/slack-bot-token"
+    "MYKRONOS_SLACK_CHANNEL"   = "concourse/main/slack-alert-channel"
+}
+$concourseEnv = Join-Path $here "..\concourse\.env"
+$vaultToken = if (Test-Path $concourseEnv) { Read-EnvValue $concourseEnv "CONCOURSE_VAULT_TOKEN" } else { $null }
+$slackResolved = @()
+if ($vaultToken) {
+    foreach ($name in $slackFromVault.Keys) {
+        try {
+            $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+                mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
+            if ($LASTEXITCODE -eq 0 -and $value) {
+                Set-Item -Path "env:$name" -Value (($value -join "").Trim())
+                $slackResolved += $name
+            }
+        } catch { }
+        $value = $null
+    }
+}
+if ($slackResolved.Count -eq $slackFromVault.Count) {
+    Write-Host "Slack bot token and channel resolve from Vault (concourse/main)." -ForegroundColor DarkGray
+} else {
+    $missing = @($slackFromVault.Keys | Where-Object { $slackResolved -notcontains $_ }) -join ", "
+    Write-Host "Slack: $missing not readable from Vault; backend/.env decides, and is normally empty." -ForegroundColor Yellow
+    Write-Host "  Is Vault sealed? ..\concourse\vault-unseal.ps1" -ForegroundColor DarkGray
+}
+
 Push-Location $here
 try {
     docker compose --env-file $backendEnv up -d
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
+    # Out of this session's environment as soon as compose has read them, so
+    # a deploy run from an interactive shell does not leave the token behind.
+    foreach ($name in $slackResolved) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
 
     Write-Host "`nWaiting for health..." -ForegroundColor Cyan
     $deadline = (Get-Date).AddMinutes(3)
@@ -663,5 +706,6 @@ try {
     Write-Host ""
     Write-RiskSummaryLine
 } finally {
+    foreach ($name in $slackResolved) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
     Pop-Location
 }
