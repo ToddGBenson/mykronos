@@ -6,7 +6,7 @@ import { getPoEstate, type PoEstate } from "@/lib/po-console";
 export const dynamic = "force-dynamic";
 
 /**
- * The estate roll-up of the Product Owner tab (spec 35 §8.7, D-141).
+ * The estate roll-up of the Product Owner tab (spec 35 §8.7, D-148).
  *
  * One row per repository, and each row is that repository's own tab read,
  * so the two pages cannot disagree. A repository with no manifest is listed

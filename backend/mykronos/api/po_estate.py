@@ -1,4 +1,4 @@
-"""The Product Owner estate roll-up (spec 35 §8.7, D-141).
+"""The Product Owner estate roll-up (spec 35 §8.7, D-148).
 
 One row per active repository, built by calling the per-repository Product
 Owner read itself. Nothing is recomputed here: sprint progress, "needs a

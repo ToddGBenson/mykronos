@@ -1,6 +1,6 @@
 /**
  * Proxy for deciding an approval request from the Product Owner console
- * (spec 35 §8.2, D-137). The backend hands the decision to the spec 34
+ * (spec 35 §8.2, D-144). The backend hands the decision to the spec 34
  * approvals engine; this only forwards, so the admin token stays on this
  * server. A refusal is passed through as the engine wrote it.
  */

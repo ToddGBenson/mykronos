@@ -1,14 +1,14 @@
-"""The Product Owner console's phase 2 views (spec 35 §8, D-137 - D-138).
+"""The Product Owner console's phase 2 views (spec 35 §8, D-144 - D-145).
 
 Four views, each read from data MyKronos or TheHub already holds:
 
 - **Delivery**: each commit the lake has seen, joined to the newest Oracle
   decision for it and to the deployment probe's running revision. MyKronos
   records only the running revision, so every other commit reads "not
-  recorded", never "not deployed" (D-138).
+  recorded", never "not deployed" (D-145).
 - **Approvals inbox**: this repository's pending spec 34 requests. A request
   belongs to a repository through its frozen evidence, never through anything
-  a caller says. The decision itself is the engine's (D-137); nothing here
+  a caller says. The decision itself is the engine's (D-144); nothing here
   re-implements a rule.
 - **Roles & agents**: the gates the manifest declares, beside the duties the
   platform enforces and the delegations that exist. Never merged into one
@@ -175,7 +175,7 @@ class DeliveryRow:
     scans: list[dict[str, Any]]
     scan_failures: int
     decision: dict[str, Any] | None
-    #: running | not_recorded (D-138). Never "not deployed".
+    #: running | not_recorded (D-145). Never "not deployed".
     deployed: str
 
 
@@ -448,7 +448,7 @@ async def evidence_for(
 def did_anything(run: dict[str, Any]) -> bool:
     """A live run that shipped. Re-derived from `dry_run` as well as read from
     TheHub's corrected status, so an endpoint that forgot the correction
-    cannot bring the mislabelled dry runs back (D-140)."""
+    cannot bring the mislabelled dry runs back (D-147)."""
     return run.get("status") == "shipped" and not run.get("dry_run")
 
 
@@ -542,7 +542,7 @@ def build_retro(
     days: int,
     not_read: int,
 ) -> dict[str, Any]:
-    """The computed retrospective (D-138). Every line is a count or a list a
+    """The computed retrospective (D-145). Every line is a count or a list a
     person can check against TheHub."""
     closed = [e.story for e in evidence]
     sizes: dict[str, int] = {}

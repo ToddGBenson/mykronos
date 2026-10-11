@@ -1,4 +1,4 @@
-"""The delivery trace for one story (spec 35 §8.5, D-139).
+"""The delivery trace for one story (spec 35 §8.5, D-146).
 
 Commits come from the fake GitHub's default branch, scans and decisions from
 the lake, deploys from the fake TheHub, and the running revision from the

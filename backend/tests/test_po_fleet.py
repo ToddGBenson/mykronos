@@ -1,4 +1,4 @@
-"""The agent fleet view (spec 35 §8.6, D-140).
+"""The agent fleet view (spec 35 §8.6, D-147).
 
 Runs, verification verdicts and cost are read through the fake TheHub; every
 gate failure must name its Accountable role from TheHub's RACI table, or say

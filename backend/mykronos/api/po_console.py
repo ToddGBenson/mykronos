@@ -1,7 +1,7 @@
 """The Product Owner console's phase 2 API (spec 35 §8).
 
 Read-only views, plus one write: deciding an approval request in place, which
-is the approvals engine's decision and not this module's (D-137). That write
+is the approvals engine's decision and not this module's (D-144). That write
 needs the admin role and is audit-logged with its outcome, refusals included.
 
 The repository, its manifest and its TheHub membership are resolved by the
@@ -117,7 +117,7 @@ class PoDeliveryRowOut(BaseModel):
     scan_failures: int
     decision: PoDeliveryDecisionOut | None
     #: running | not_recorded. MyKronos keeps only the running revision, so
-    #: anything else is "not recorded", never "not deployed" (D-138).
+    #: anything else is "not recorded", never "not deployed" (D-145).
     deployed: str
 
 
@@ -253,7 +253,7 @@ class PoInboxOut(BaseModel):
     can_decide: bool
     pending: list[PoInboxItemOut]
     #: Pending requests that name no repository, such as a delegation grant.
-    #: Not decidable from a repository's tab (D-137).
+    #: Not decidable from a repository's tab (D-144).
     estate_wide_pending: int
     policy_version: str | None
 
@@ -357,7 +357,7 @@ async def decide_in_place(
     """Decide one of this repository's requests through the approvals engine.
 
     `approvals.engine.decide` runs every rule the duty's tier names, exactly as
-    `/api/approvals/{id}/decisions` does (D-137). Its refusal is returned
+    `/api/approvals/{id}/decisions` does (D-144). Its refusal is returned
     verbatim, and is audited like a decision that stood.
     """
     require_admin(principal, "Deciding an approval request")
@@ -525,7 +525,7 @@ class PoGateFailureOut(BaseModel):
     detail: str
     at: str | None
     #: The RACI activity the gate belongs to, and its Accountable role; None
-    #: for the activities TheHub's table gives no agent owner (D-140).
+    #: for the activities TheHub's table gives no agent owner (D-147).
     activity: str | None
     accountable: str | None
     #: "blocked at <activity>, Accountable: <role>", or "... no agent owner".
@@ -589,7 +589,7 @@ async def retro(
     days: int = Query(14, ge=1, le=90),
 ) -> PoRetroOut:
     """A computed retrospective of the stories closed in the window, and the
-    gates they failed on the way (spec 35 §8.4, D-138)."""
+    gates they failed on the way (spec 35 §8.4, D-145)."""
     repo_full_name, _, state, tag, include_untagged = await repo_context(request, repo_id)
     hub, hub_out = hub_state(request)
 
@@ -718,7 +718,7 @@ class PoTraceOut(BaseModel):
     story: PoTraceStoryOut
     commits: list[PoTraceCommitOut]
     #: Commits that name `#id` in prose without crediting it in a trailer.
-    #: Never shown as delivering the story (D-139).
+    #: Never shown as delivering the story (D-146).
     prose_mentions: int
     commits_read: int | None
     links: PoTraceLinksOut
@@ -756,7 +756,7 @@ async def trace(
     story_id: int | None = Query(None, ge=1),
 ) -> PoTraceViewOut:
     """One story's chain: commit, pull request, scan, deploy (spec 35 §8.5).
-    Commits are the ones whose `Stories:` trailer names the story (D-139)."""
+    Commits are the ones whose `Stories:` trailer names the story (D-146)."""
     repo_full_name, branch, installation = phase1._onboarding(request, repo_id)
     _, _, _, tag, include_untagged = await repo_context(request, repo_id)
     hub, hub_out = hub_state(request)
@@ -891,7 +891,7 @@ class PoFleetRunOut(BaseModel):
     #: What the row says, when TheHub's correction changed it.
     status_as_written: str | None
     dry_run: bool
-    #: A live run that shipped. Never true for a dry run (D-140).
+    #: A live run that shipped. Never true for a dry run (D-147).
     shipped: bool
     cost_usd: float | None
     started_at: str | None

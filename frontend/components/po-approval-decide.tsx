@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 /**
- * Decide one approval request in place (spec 35 §8.2, D-137).
+ * Decide one approval request in place (spec 35 §8.2, D-144).
  *
  * The digest sent is the one this row was rendered with, so a request whose
  * evidence changed after the page loaded is refused by the engine rather than

@@ -3,7 +3,7 @@ import { EmptyState, Pill, Section, StatTile } from "@/components/primitives";
 import type { PoFleet } from "@/lib/po-console";
 
 /**
- * What the agents did for this repository (spec 35 §8.6, D-140): autonomy
+ * What the agents did for this repository (spec 35 §8.6, D-147): autonomy
  * runs, verification verdicts, cost, and the RACI owner of every gate failure.
  * A dry run is labelled as one and never counted as shipped. With TheHub not
  * connected the view says so, rather than showing zeros that would read as

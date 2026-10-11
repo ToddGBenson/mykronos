@@ -1,4 +1,4 @@
-"""The agent fleet view for one repository (spec 35 §8.6, D-140).
+"""The agent fleet view for one repository (spec 35 §8.6, D-147).
 
 What the agents did: autonomy runs, the verdict each story got from
 verification, model cost, and for every gate failure the role TheHub's RACI

@@ -1,4 +1,4 @@
-"""The Product Owner estate roll-up (spec 35 §8.7, D-141)."""
+"""The Product Owner estate roll-up (spec 35 §8.7, D-148)."""
 
 from __future__ import annotations
 

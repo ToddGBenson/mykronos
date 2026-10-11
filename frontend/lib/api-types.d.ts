@@ -2534,7 +2534,7 @@ export interface paths {
          * @description Decide one of this repository's requests through the approvals engine.
          *
          *     `approvals.engine.decide` runs every rule the duty's tier names, exactly as
-         *     `/api/approvals/{id}/decisions` does (D-137). Its refusal is returned
+         *     `/api/approvals/{id}/decisions` does (D-144). Its refusal is returned
          *     verbatim, and is audited like a decision that stood.
          */
         post: operations["decide_in_place_api_dashboard_repos__repo_id__product_owner_approvals__request_id__decision_post"];
@@ -2575,7 +2575,7 @@ export interface paths {
         /**
          * Retro
          * @description A computed retrospective of the stories closed in the window, and the
-         *     gates they failed on the way (spec 35 §8.4, D-138).
+         *     gates they failed on the way (spec 35 §8.4, D-145).
          */
         get: operations["retro_api_dashboard_repos__repo_id__product_owner_retro_get"];
         put?: never;
@@ -2596,7 +2596,7 @@ export interface paths {
         /**
          * Trace
          * @description One story's chain: commit, pull request, scan, deploy (spec 35 §8.5).
-         *     Commits are the ones whose `Stories:` trailer names the story (D-139).
+         *     Commits are the ones whose `Stories:` trailer names the story (D-146).
          */
         get: operations["trace_api_dashboard_repos__repo_id__product_owner_trace_get"];
         put?: never;

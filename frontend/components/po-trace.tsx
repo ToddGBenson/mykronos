@@ -6,7 +6,7 @@ import type { PoTrace, PoTraceView } from "@/lib/po-console";
 /**
  * One story's delivery chain: commit, pull request, scan, deploy (spec 35
  * §8.5). A commit is shown only when its `Stories:` trailer credits the story
- * (D-139), and the first missing link is always named.
+ * (D-146), and the first missing link is always named.
  */
 
 const LINKS = [

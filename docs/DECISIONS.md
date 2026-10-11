@@ -6046,7 +6046,7 @@ JSON
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
 
-## D-137 — The Product Owner console decides approvals through the engine, never around it
+## D-144 — The Product Owner console decides approvals through the engine, never around it
 
 **2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.2)
 
@@ -6085,7 +6085,7 @@ decision is made in place, and it is the engine that makes it.
   would pass.* That is a second copy of the rules, and it drifts from the
   first one.
 
-## D-138 — Delivery reports what was deployed only where MyKronos recorded it
+## D-145 — Delivery reports what was deployed only where MyKronos recorded it
 
 **2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.1)
 
@@ -6109,7 +6109,7 @@ the sprint that nothing checks.
 - *A deploy history table in MyKronos.* It is worth having, but it is a
   migration and ships alone. It is not part of a view.
 
-## D-139 — A story's commits are the ones whose `Stories:` trailer names it
+## D-146 — A story's commits are the ones whose `Stories:` trailer names it
 
 **2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.5)
 
@@ -6139,7 +6139,7 @@ is the one reading that is never true.
 - *Ingesting push webhooks' commit messages.* Better in the long run, but a
   new lake table is a schema change and ships alone.
 
-## D-140 — Every gate failure in the fleet view names its RACI owner
+## D-147 — Every gate failure in the fleet view names its RACI owner
 
 **2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.6)
 
@@ -6173,7 +6173,7 @@ nothing", which is a claim.
 - *Inventing an owner for the operator-only activities.* TheHub's table
   declines to, on purpose.
 
-## D-141 — The estate roll-up is the per-repository read, summed
+## D-148 — The estate roll-up is the per-repository read, summed
 
 **2026-10-11.** **Status:** Decided by the Product Owner, implemented (spec 35 §8.7)
 

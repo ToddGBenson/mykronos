@@ -1364,7 +1364,7 @@ into entries here:
 
 ## Closed
 
-### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-137, D-138)
+### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-144, D-145)
 
 **Size:** L **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60569)
 
@@ -1373,9 +1373,9 @@ sub-views of the console (`view=delivery|approvals|roles|retro`), each with its
 own read. Two of the criteria below changed while being built, and the changes
 are recorded rather than absorbed. The inbox decides in place, as the Hub
 story asks, where this entry said "read-only from here", and it decides only
-through `approvals.engine.decide` (D-137). The deploy ledger MyKronos holds is
+through `approvals.engine.decide` (D-144). The deploy ledger MyKronos holds is
 the probe's running revision, so Delivery says "not recorded" for every other
-commit (D-138).
+commit (D-145).
 
 D-135 chose a console over a single page so that later views have somewhere to
 go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it

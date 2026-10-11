@@ -1,5 +1,5 @@
 """The delivery trace for one story: story -> commits -> pull requests -> scans
--> deploys (spec 35 §8.5, D-139).
+-> deploys (spec 35 §8.5, D-146).
 
 The other direction from Delivery. Delivery lists commits; this opens one
 story and shows the chain that delivered it, with the first missing link

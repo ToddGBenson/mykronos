@@ -162,7 +162,7 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 
 ## 8. Phase 2 views
 
-**Status:** Approved for build (Product Owner, 2026-10-11). Recorded as D-137 – D-141. These are B-071 and three
+**Status:** Approved for build (Product Owner, 2026-10-11). Recorded as D-144 – D-148. These are B-071 and three
 stories filed under D-133: the delivery trace, the agent fleet and the estate roll-up.
 
 Each view is a new sub-view of the same console (`?tab=product-owner&view=<id>`), with its own read endpoint, so the
@@ -189,7 +189,7 @@ listed separately, so they are not presented as delivered.
 
 MyKronos records only the **running** revision (the deployment probe, #361), not a history of deploys. A commit that
 matches it reads **running**. Every other commit reads **not recorded**, never "not deployed", because the probe
-keeps no history that could show it (D-138).
+keeps no history that could show it (D-145).
 
 ### 8.2 Approvals inbox
 
@@ -199,7 +199,7 @@ the duty, tier, subject, requester, expiry, the decisions so far, the evidence d
 approver kinds, quorum, independence rules and cooling-off. Requests that name no repository, such as a delegation
 grant, are counted and are not decidable from a repository's tab.
 
-**Decide in place (D-137).** An admin may approve, reject or ask for more information from the row. The call goes
+**Decide in place (D-144).** An admin may approve, reject or ask for more information from the row. The call goes
 to `approvals.engine.decide` with the caller's principal and the evidence digest the row was rendered with, which
 is the same function `/api/approvals/{id}/decisions` calls. Every independence rule, delegation requirement,
 cooling-off, quorum and expiry check runs unchanged. When the engine refuses, its sentence is shown verbatim, and
@@ -238,7 +238,7 @@ Story → commits → pull requests → scans → deploys, each linked to its so
 - the scan's Actions run;
 - TheHub's `deploy_runs` id, or the probe's running revision.
 
-**Commits are attributed by the `Stories:` trailer only (D-139).** They are read from the default branch on
+**Commits are attributed by the `Stories:` trailer only (D-146).** They are read from the default branch on
 GitHub, since the story was created, and parsed strictly. A commit whose prose names `#id` without crediting it in
 a trailer is counted as "named in prose, not credited" and never shown as delivering the story. The **first missing
 link** is named: "no commit names this story", "committed, no pull request recorded", "committed, never scanned"
@@ -257,7 +257,7 @@ Outcomes use TheHub's corrected status. A run is counted as shipped only when it
 re-derived from `dry_run` here as well. **Every gate failure names the Accountable role** from TheHub's RACI table
 (CLAUDE.md, AGENT-3 #48555), mapped by the Hub gate it failed at, for example "blocked at Technical design,
 Accountable: Warden". The activities the table marks as operator-only (implementation, UX review, manual prod
-approval) say **no agent owner**. With TheHub not connected, the view says so and shows no counts (D-140).
+approval) say **no agent owner**. With TheHub not connected, the view says so and shows no counts (D-147).
 
 ### 8.7 Estate roll-up
 
@@ -269,7 +269,7 @@ Every active onboarded repository, one row each, with:
 - the Oracle decision.
 
 Each row links to that repository's tab. The row is the per-repository read itself, called once per repository, so
-the two cannot disagree. The totals row is the sum of the rows, and a test checks it (D-141).
+the two cannot disagree. The totals row is the sum of the rows, and a test checks it (D-148).
 
 ### 8.8 Writes
 
