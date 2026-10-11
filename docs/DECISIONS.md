@@ -6046,7 +6046,7 @@ JSON
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
 
-## D-136 — Process drift is computed on read from the stored governance reading
+## D-140 — Process drift is computed on read from the stored governance reading
 
 **2026-10-11.** **Status:** Decided, implemented (spec 35 §7.1, B-070)
 
@@ -6086,7 +6086,7 @@ so (§7.1).
   is refused for a missing checklist). That is a guess drawn from one refusal,
   presented as a configuration fact.
 
-## D-137 — A template manifest arrives as a draft pull request on the installer's path
+## D-141 — A template manifest arrives as a draft pull request on the installer's path
 
 **2026-10-11.** **Status:** Decided, implemented (spec 35 §7.2, B-069)
 
@@ -6115,7 +6115,7 @@ there would be promoted to "capabilities enabled" when it merged.
 
 **Templates claim no controls.** No starter declares `branch_controls` or an
 `enforced_by` switch. A starter that claimed controls nobody had checked would
-be written to fail the drift check (D-136) the first time it rendered.
+be written to fail the drift check (D-140) the first time it rendered.
 
 **Rejected.**
 - *Committing the starter straight to the default branch.* It would skip the
@@ -6123,7 +6123,7 @@ be written to fail the drift check (D-136) the first time it rendered.
 - *Generating the manifest from the repository's existing documents.* That is
   the parsing D-132 rejected.
 
-## D-138 — Definition-of-Done evidence comes from TheHub's trailer attribution and the lake
+## D-142 — Definition-of-Done evidence comes from TheHub's trailer attribution and the lake
 
 **2026-10-11.** **Status:** Decided, implemented (spec 35 §7.3)
 
@@ -6163,7 +6163,7 @@ well as deploys), not to a GitHub commit search in MyKronos.
   operation per story per render, and a mention is not an attribution:
   "follow-up to #123" names a story it did not deliver.
 
-## D-139 — A story is linked to risk by `finding:` and `control:` tags, and scored from the portfolio decision
+## D-143 — A story is linked to risk by `finding:` and `control:` tags, and scored from the portfolio decision
 
 **2026-10-11.** **Status:** Decided, implemented (spec 35 §7.4)
 

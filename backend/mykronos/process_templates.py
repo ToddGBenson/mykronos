@@ -1,5 +1,5 @@
 """Starter `.sdlc/process.yaml` manifests for a repository that declares none
-(spec 35 §7.2, B-069, D-137).
+(spec 35 §7.2, B-069, D-141).
 
 Three shapes the estate already runs: keel's six gates, TheHub's eight story
 gates, and a lightweight four-step process. Each is a valid version-1 manifest

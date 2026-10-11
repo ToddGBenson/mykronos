@@ -535,7 +535,7 @@ def moved(order: list[int], story_id: int, direction: Literal["up", "down"]) -> 
 
 
 # --------------------------------------------------------------------------
-# Risk removed (spec 35 §7.4, D-139)
+# Risk removed (spec 35 §7.4, D-143)
 # --------------------------------------------------------------------------
 
 #: The link from a Hub story to what it would close. Tags, because TheHub
@@ -692,7 +692,7 @@ def risk_order(stories: list[dict[str, Any]], points: dict[int, float | None]) -
 
 
 # --------------------------------------------------------------------------
-# Declared versus observed (B-070, spec 35 §7.1, D-136)
+# Declared versus observed (B-070, spec 35 §7.1, D-140)
 # --------------------------------------------------------------------------
 
 #: A `branch_controls` declaration -> (the governance control that observes
@@ -909,7 +909,7 @@ def gate_switch_observations(
 
 
 # --------------------------------------------------------------------------
-# A template pull request (B-069, spec 35 §7.2, D-137)
+# A template pull request (B-069, spec 35 §7.2, D-141)
 # --------------------------------------------------------------------------
 
 #: Its own prefix, so `find_open_pull_request` never mistakes a workflow

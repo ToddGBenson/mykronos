@@ -163,9 +163,9 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 ## 7. Phase 2 (B-069, B-070, Definition of Done, risk-ranked backlog)
 
 **Status:** Approved for build, phase 2a (Product Owner, 2026-10-11). Four additions, built in this order and
-recorded as D-136 – D-139. None of them changes the navigation: they extend Overview, Backlog and Process.
+recorded as D-140 – D-143. None of them changes the navigation: they extend Overview, Backlog and Process.
 
-### 7.1 Declared versus observed — drift findings (B-070, D-136)
+### 7.1 Declared versus observed — drift findings (B-070, D-140)
 
 The manifest gains two optional declarations, both strict like the rest of it:
 
@@ -205,7 +205,7 @@ gates:
   consistent. The finding fires for TheHub only once the Hub's effective flag is committed or served somewhere
   MyKronos can read. Saying so is better than inferring it.
 
-### 7.2 A template pull request for a repository with no manifest (B-069, D-137)
+### 7.2 A template pull request for a repository with no manifest (B-069, D-141)
 
 - When the manifest is `absent`, the Process view offers three starter templates: **keel-style** (six gates, G0–G5),
   **TheHub-style** (TheHub's eight story gates) and **lightweight** (Idea, Ready, Building, Done). Each template is a
@@ -219,7 +219,7 @@ gates:
 - **Audit-logged** as `po.template_pr`, including refusals and GitHub failures. It is not a `WorkflowInstallEvent`:
   that table's open-PR bookkeeping (`pending_pr_number`) belongs to capability installs.
 
-### 7.3 Definition of Done evidence (D-138)
+### 7.3 Definition of Done evidence (D-142)
 
 The gate checklists of §2.2 are entry criteria. The manifest can now declare exit criteria:
 
@@ -251,7 +251,7 @@ definition_of_done:
   the story and never went through a deploy run is not visible here, so `commit` can fail for a story whose commit
   exists. The item says where it looked.
 
-### 7.4 Rank the backlog by the risk each story removes (D-139)
+### 7.4 Rank the backlog by the risk each story removes (D-143)
 
 - **The link.** A Hub story is linked to MyKronos findings by tags `finding:<finding_id>` and to governance
   controls by tags `control:<control_key>` (a key from `governance.CONTROL_ORDER`). This is the smallest convention
