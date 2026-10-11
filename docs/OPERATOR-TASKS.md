@@ -74,7 +74,7 @@ nothing (D-105).
 
 ---
 
-## 2 · B-035 — the Slack bot (D-112 as amended, D-136)
+## 2 · B-035 — the Slack bot (D-112 as amended, D-137)
 
 **Effort:** ~5 minutes. **Unblocks:** every notification path.
 

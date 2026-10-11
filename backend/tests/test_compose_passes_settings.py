@@ -170,7 +170,7 @@ def test_every_variable_compose_interpolates_is_documented() -> None:
 
 
 def test_the_deploy_reads_the_slack_pair_from_the_pipelines_vault_paths() -> None:
-    """D-136: passing the names through compose is half of it. The deploy has
+    """D-137: passing the names through compose is half of it. The deploy has
     to supply them, and from the same Vault paths the Concourse pipelines
     resolve `((slack-bot-token))` and `((slack-alert-channel))` from - so the
     platform posts as the host's one Slack bot, to the channel the pipeline

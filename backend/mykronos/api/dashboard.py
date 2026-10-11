@@ -3468,7 +3468,7 @@ async def _languages(
         if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
             return name, hit[1]
         try:
-            # Migration DDL moves to `SCHEMA` here (D-137), before the cache,
+            # Migration DDL moves to `SCHEMA` here (D-138), before the cache,
             # so the SQL files are read once per TTL rather than per load.
             counts = await read_languages(
                 request.app.state.github_factory.for_installation(installation_id), name

@@ -173,7 +173,7 @@ finding record with an empty owner field is a record of an unmade decision. Do
 this before B-035 or the alerts will be broadcasts.
 
 **3 · B-035 — the notifier.** Converts the whole platform from pull to push.
-Since D-136 the deploy reads the host's Slack bot token and channel from Vault,
+Since D-137 the deploy reads the host's Slack bot token and channel from Vault,
 so it is held only on a deploy and one visible test message.
 
 **4 · B-033 — say what the ranking is.** The honest half is small: the ranking
@@ -278,7 +278,7 @@ real these would have been broadcasts. Three separate multi-day scanning outages
 in two weeks (B-024, B-055, B-057), none of which announced itself, are the
 argument.
 
-**Amended 2026-10-11 — D-136: the host's Slack bot, not a webhook.** PS-9: a
+**Amended 2026-10-11 — D-137: the host's Slack bot, not a webhook.** PS-9: a
 webhook's secret sits in its URL. `deploy.ps1` now reads the bot token and the
 alert channel from Vault (`concourse/main/slack-bot-token`,
 `concourse/main/slack-alert-channel`), the pair the Concourse pipeline alerts
@@ -736,7 +736,7 @@ with — keel's 219 KB of shell was the headline — and it was invisible until
 something measured it. It needs its own answer and is not covered by either
 analyser added today; `SAST_LANGUAGES` has no tool for it to name.
 
-**Corrected 2026-10-11 — D-137: most of it was never stored procedures.** It
+**Corrected 2026-10-11 — D-138: most of it was never stored procedures.** It
 is DDL migrations, which linguist names PLpgSQL on markers as weak as `BEGIN;`.
 The language read now splits a repository's SQL by file. Declarations go to
 `SQL schema` in `NOT_SOURCE`, and only files with a function, a procedure,

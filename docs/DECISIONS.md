@@ -4771,7 +4771,7 @@ whose only notification channel is somebody opening a dashboard has no channel.
 is not a decision to route everything; and routing remains a read-and-notify
 path with no authority to act.
 
-**Amended 2026-10-11: a bot token and a channel, not a webhook (D-136).** The
+**Amended 2026-10-11: a bot token and a channel, not a webhook (D-137).** The
 Product Owner chose option A on TheHub story #60573. The reason is PS-9: a
 webhook's secret sits in its URL, so whatever holds the URL holds the
 credential, while a bot token travels in an `Authorization:` header Vault can
@@ -6056,7 +6056,7 @@ JSON
 - *Posting a new check run per report.* GitHub would show a red and a green
   under one name until somebody worked out which one was newer.
 
-## D-136 — The notifier posts as the host's Slack bot, read from Vault at deploy time
+## D-137 — The notifier posts as the host's Slack bot, read from Vault at deploy time
 
 **2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60573, option A), implemented
 
@@ -6091,7 +6091,7 @@ able to block a deploy, the same posture as D-126.
 - *Pasting the token into `backend/.env`.* It would be a second copy of a
   credential Vault already holds, and the copy would go stale on rotation.
 
-## D-137 — Migration DDL is schema; only procedural SQL counts as unread source
+## D-138 — Migration DDL is schema; only procedural SQL counts as unread source
 
 **2026-10-11.** **Status:** Decided by the Product Owner (TheHub story #60578, option B), implemented
 

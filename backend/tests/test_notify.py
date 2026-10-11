@@ -431,7 +431,7 @@ class TestFindingAlerts:
 
 
 class TestTheDeployedConfigurationIsAddressed:
-    """B-035 / D-136: the two names `deploy.ps1` reads from Vault are enough.
+    """B-035 / D-137: the two names `deploy.ps1` reads from Vault are enough.
 
     Everything above swaps a recorder into `app.state`. This builds the app
     the way the container does, from the environment alone, and keeps the real

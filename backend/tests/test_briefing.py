@@ -1192,7 +1192,7 @@ class TestTheBriefingDoesNotReadGitHubOnEveryLoad:
 
 
 class TestMigrationDdlIsSchema:
-    """D-137 through the endpoint: the dashboard's language read splits a
+    """D-138 through the endpoint: the dashboard's language read splits a
     repository's SQL by file before the briefing sees it, so DDL migrations
     stop counting as unread source and procedural files keep counting."""
 

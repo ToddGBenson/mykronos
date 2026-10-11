@@ -72,7 +72,7 @@ class TestWhatTheAnalyserCanRead:
         assert {"Dockerfile", "HCL"} <= NOT_SOURCE
 
     def test_a_create_table_migration_is_not_unread_source(self) -> None:
-        """D-137. TheHub's migrations are DDL that linguist names PLpgSQL;
+        """D-138. TheHub's migrations are DDL that linguist names PLpgSQL;
         declaring a table is schema, like HCL declaring infrastructure."""
         migration = "BEGIN;\nCREATE TABLE songs (id serial PRIMARY KEY);\nCOMMIT;\n"
         counts = classify_sql(

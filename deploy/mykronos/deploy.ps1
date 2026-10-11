@@ -597,7 +597,7 @@ if ($NoStart) {
     return
 }
 
-# Slack (B-035, D-112 as amended, D-136). The notifier posts as this host's one
+# Slack (B-035, D-112 as amended, D-137). The notifier posts as this host's one
 # Slack bot - the identity the Concourse pipelines already post as - to the
 # channel their alerts go to. Both are read from Vault at team scope with the
 # read-only Concourse token, the same two paths the pipelines resolve

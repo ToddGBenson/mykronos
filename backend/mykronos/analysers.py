@@ -107,7 +107,7 @@ SAST_LANGUAGES: dict[str, frozenset[str]] = {
 #: declares a database the way HCL declares infrastructure. It is not the
 #: language GitHub names it by, so it arrives here under `SCHEMA` after
 #: `classify_sql` has split the SQL bytes by file, and only the files that
-#: define procedural code stay counted as source (B-051, D-137).
+#: define procedural code stay counted as source (B-051, D-138).
 NOT_SOURCE: frozenset[str] = frozenset(
     {
         # Covered by another capability.
