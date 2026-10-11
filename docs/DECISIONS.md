@@ -6122,3 +6122,43 @@ be written to fail the drift check (D-136) the first time it rendered.
   independent review D-132 relies on.
 - *Generating the manifest from the repository's existing documents.* That is
   the parsing D-132 rejected.
+
+## D-138 — Definition-of-Done evidence comes from TheHub's trailer attribution and the lake
+
+**2026-10-11.** **Status:** Decided, implemented (spec 35 §7.3)
+
+Phase 1 checks entry criteria: a gate checklist against the story text. Nothing
+checked exit criteria, so a story could read done with no commit, scan or
+deploy behind it. A manifest can now declare a `definition_of_done`, with three
+evidence keys: `commit`, `scan_passed` and `deployed`.
+
+**Where each fact comes from.** MyKronos holds no record of which commit
+belongs to which story. TheHub does: it parses each commit's `Stories:` trailer
+into its deploy runs, and serves them at `GET /api/dev/stories/{id}/deploys`.
+That read, through the Hub client the tab already uses, gives the commits that
+name a story and which of them deployed successfully. The lake's `scan_runs`
+gives whether one of those commits passed a scan. The repository's probed
+`deployed_revision` (#361) is a second source for `deployed`. SHAs are matched
+by prefix, at least seven characters, because TheHub sends twelve and scanners
+send seven or forty.
+
+**Unknown keys fail.** An unknown DoD evidence key is a validation error and is
+never treated as manual. A typo would otherwise make an exit criterion vanish
+from the check without anyone noticing.
+
+**Unavailable is not failed.** When TheHub cannot answer the deploys read, every
+evidence item is `unavailable`, as for `threat_model` in phase 1.
+
+**Checked only at a done-equivalent gate** (spine step `done`), with one Hub
+read per such story. A story whose DoD fails is listed under Needs a human.
+
+**What it cannot see.** TheHub attributes a commit to a story only when a
+deploy run carried it. A commit that names the story and never went through a
+deploy run is invisible here, so `commit` can fail for a story whose commit
+exists. Spec 35 §7.3 says so. The fix belongs to TheHub (attributing commits as
+well as deploys), not to a GitHub commit search in MyKronos.
+
+**Rejected.**
+- *Searching GitHub for commits that mention the story.* It adds a GitHub
+  operation per story per render, and a mention is not an attribution:
+  "follow-up to #123" names a story it did not deliver.

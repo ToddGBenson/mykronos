@@ -73,6 +73,10 @@ DEFAULT_SPINE_MAP: dict[str, str] = {
 #: Phase-1 evidence keys (spec 35 §2.2).
 EvidenceKey = Literal["acceptance_criteria", "detail_500", "sized", "threat_model", "sprint"]
 
+#: Definition-of-Done evidence keys (spec 35 §7.3): exit criteria, checked
+#: against commits, scans and deploys rather than against the story text.
+DodEvidenceKey = Literal["commit", "scan_passed", "deployed"]
+
 #: A path inside the repository: relative, no traversal, no scheme. Rendered as
 #: a link, so a `javascript:` or absolute URL must never get through. A leading
 #: dot is allowed (`.env.example`, `.github/CODEOWNERS`); a `..` segment is not.
@@ -178,6 +182,14 @@ class DocLink(_Strict):
         return _repo_path(value) or value
 
 
+class DodItem(_Strict):
+    id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    #: Omitted means manual. An unknown key is a validation error, never
+    #: quietly manual: a typo would otherwise make an exit criterion vanish.
+    evidence: DodEvidenceKey | None = None
+
+
 class BranchControls(_Strict):
     """What the default branch is declared to enforce (spec 35 §7.1).
 
@@ -209,6 +221,7 @@ class ProcessManifest(_Strict):
     automation_policy: list[PolicyItem] = Field(default_factory=list)
     docs: list[DocLink] = Field(default_factory=list)
     branch_controls: BranchControls | None = None
+    definition_of_done: list[DodItem] = Field(default_factory=list)
 
 
 ManifestStateName = Literal["valid", "invalid", "absent", "unreadable"]
@@ -382,6 +395,104 @@ def check_story(story: dict[str, Any], manifest: ProcessManifest | None) -> Gate
                 status=check_evidence(item.evidence, story),
             )
             for item in gate.checklist
+        ],
+    )
+
+
+@dataclass
+class DoneEvidence:
+    """What MyKronos can see of a story's exit (spec 35 §7.3).
+
+    `commits` is None when TheHub could not say, which makes every evidence
+    item unavailable rather than failed. `scanned` is None when the lake could
+    not be read, for the same reason.
+    """
+
+    commits: list[str] | None
+    #: Commits TheHub records a `success` deploy run of.
+    deployed: list[str] = field(default_factory=list)
+    #: Commits with a `success` scan run in the lake.
+    scanned: list[str] | None = None
+    #: The repository's probed running revision (#361), if any.
+    deployed_revision: str | None = None
+
+
+#: The shortest SHA prefix accepted as naming a commit. TheHub sends twelve
+#: characters, scanners send seven or forty.
+MIN_SHA = 7
+
+
+def same_commit(a: str | None, b: str | None) -> bool:
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    if len(a) < MIN_SHA or len(b) < MIN_SHA:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def evidence_from_deploys(
+    deploys: list[dict[str, Any]] | None,
+) -> tuple[list[str] | None, list[str]]:
+    """(commits naming the story, commits deployed) from TheHub's
+    `/api/dev/stories/{id}/deploys`, which it builds from `Stories:` trailers."""
+    if deploys is None:
+        return None, []
+    commits: list[str] = []
+    deployed: list[str] = []
+    for row in deploys:
+        sha = str(row.get("sha") or "")
+        if len(sha) < MIN_SHA:
+            continue
+        if sha not in commits:
+            commits.append(sha)
+        if row.get("final_status") == "success" and sha not in deployed:
+            deployed.append(sha)
+    return commits, deployed
+
+
+def check_dod_evidence(evidence: str | None, done: DoneEvidence) -> CheckStatus:
+    """One Definition-of-Done item against what was seen of the story."""
+    if evidence is None:
+        return "manual"
+    if done.commits is None:
+        return "unavailable"
+    if evidence == "commit":
+        return "passed" if done.commits else "failed"
+    if evidence == "scan_passed":
+        if not done.commits:
+            return "failed"
+        if done.scanned is None:
+            return "unavailable"
+        hit = any(same_commit(c, s) for c in done.commits for s in done.scanned)
+        return "passed" if hit else "failed"
+    if evidence == "deployed":
+        hit = any(same_commit(c, d) for c in done.commits for d in done.deployed) or any(
+            same_commit(c, done.deployed_revision) for c in done.commits
+        )
+        return "passed" if hit else "failed"
+    return "manual"
+
+
+def is_done(story: dict[str, Any], manifest: ProcessManifest | None) -> bool:
+    """A done-equivalent gate: the story sits on the spine's last step."""
+    return spine_step(story, manifest) == "done"
+
+
+def check_dod(manifest: ProcessManifest | None, done: DoneEvidence) -> GateCheck | None:
+    """The manifest's Definition of Done against one story, or None when the
+    manifest declares none."""
+    if manifest is None or not manifest.definition_of_done:
+        return None
+    return GateCheck(
+        gate_id="definition_of_done",
+        gate_name="Definition of Done",
+        items=[
+            CheckItemResult(
+                id=item.id,
+                text=item.text,
+                evidence=item.evidence,
+                status=check_dod_evidence(item.evidence, done),
+            )
+            for item in manifest.definition_of_done
         ],
     )
 
@@ -826,6 +937,22 @@ class HubClient:
             )
         body = self._body(response)
         return body if isinstance(body, dict) else None
+
+    async def story_deploys(self, story_id: int) -> list[dict[str, Any]] | None:
+        """The deploy runs TheHub attributes to a story by its commits'
+        `Stories:` trailers. None when TheHub could not answer: "could not
+        see" is never reported as "has none"."""
+        try:
+            response = await self._request("GET", f"/api/dev/stories/{story_id}/deploys")
+        except HubUnavailableError:
+            return None
+        if response.status_code != 200:
+            return None
+        body = self._body(response)
+        deploys = body.get("deploys") if isinstance(body, dict) else None
+        if not isinstance(deploys, list):
+            return None
+        return [row for row in deploys if isinstance(row, dict)]
 
     async def _write(self, path: str, payload: dict[str, Any]) -> HubResult:
         response = await self._request("POST", path, json=payload)

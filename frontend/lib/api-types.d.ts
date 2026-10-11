@@ -7175,6 +7175,7 @@ export interface components {
             /** Updated At */
             updated_at: string | null;
             check: components["schemas"]["GateCheckOut"];
+            dod?: components["schemas"]["GateCheckOut"] | null;
         };
         /**
          * SubSignal

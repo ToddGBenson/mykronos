@@ -81,6 +81,10 @@ class StoryOut(BaseModel):
     created_at: str | None
     updated_at: str | None
     check: GateCheckOut
+    #: The manifest's Definition of Done against this story (spec 35 §7.3).
+    #: Only for a story at a done-equivalent gate, and only when the manifest
+    #: declares one; null otherwise.
+    dod: GateCheckOut | None = None
 
 
 class ManifestOut(BaseModel):
@@ -101,6 +105,7 @@ class HubOut(BaseModel):
 
 class NeedsHumanOut(BaseModel):
     #: invalid_manifest | sprint_gate_failed | ready_manual_item | process_drift
+    #: | dod_failed
     kind: str
     story_id: int | None
     title: str
@@ -358,8 +363,27 @@ def _ranks(request: Request, repo_id: str) -> dict[int, int]:
         return {row.story_id: row.rank for row in rows}
 
 
+def _check_out(check: po.GateCheck) -> GateCheckOut:
+    return GateCheckOut(
+        gate_id=check.gate_id,
+        gate_name=check.gate_name,
+        passed=check.passed,
+        failed=check.failed,
+        manual=check.manual,
+        unavailable=check.unavailable,
+        total=check.total,
+        items=[
+            CheckItemOut(id=i.id, text=i.text, evidence=i.evidence, status=i.status)
+            for i in check.items
+        ],
+    )
+
+
 def _story_out(
-    story: dict[str, Any], manifest: po.ProcessManifest | None, rank: int | None
+    story: dict[str, Any],
+    manifest: po.ProcessManifest | None,
+    rank: int | None,
+    dod: po.GateCheck | None = None,
 ) -> StoryOut:
     check = po.check_story(story, manifest)
     return StoryOut(
@@ -376,19 +400,8 @@ def _story_out(
         rank=rank,
         created_at=story.get("created_at"),
         updated_at=story.get("updated_at"),
-        check=GateCheckOut(
-            gate_id=check.gate_id,
-            gate_name=check.gate_name,
-            passed=check.passed,
-            failed=check.failed,
-            manual=check.manual,
-            unavailable=check.unavailable,
-            total=check.total,
-            items=[
-                CheckItemOut(id=i.id, text=i.text, evidence=i.evidence, status=i.status)
-                for i in check.items
-            ],
-        ),
+        check=_check_out(check),
+        dod=_check_out(dod) if dod is not None else None,
     )
 
 
@@ -414,6 +427,68 @@ def _oracle(request: Request, repo_full_name: str) -> OracleOut | None:
         evaluated_at=evaluated.isoformat() if isinstance(evaluated, datetime) else evaluated,
         commit_sha=latest.get("commit_sha"),
     )
+
+
+def _scanned_commits(request: Request, repo_full_name: str, commits: list[str]) -> list[str] | None:
+    """Which of `commits` have a successful scan run in the lake, as the lake
+    spells them. None when the lake could not be read."""
+    candidates = [c for c in commits if len(c) >= po.MIN_SHA]
+    if not candidates:
+        return []
+    clause = " OR ".join(
+        "starts_with(lower(commit_sha), ?) OR starts_with(?, lower(commit_sha))"
+        for _ in candidates
+    )
+    params: list[Any] = [repo_full_name]
+    for sha in candidates:
+        params += [sha.lower(), sha.lower()]
+    try:
+        rows = request.app.state.catalog.query(
+            f"""
+            SELECT DISTINCT commit_sha FROM scan_runs
+            WHERE repo_full_name = ? AND scan_status = 'success'
+              AND length(commit_sha) >= {po.MIN_SHA} AND ({clause})
+            """,
+            params,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read scan runs for %s", repo_full_name)
+        return None
+    return [str(row[0]) for row in rows]
+
+
+def _deployed_revision(request: Request, repo_id: str) -> str | None:
+    with request.app.state.db.session() as session:
+        row = session.get(RepoOnboarding, repo_id)
+        return row.deployed_revision if row is not None else None
+
+
+async def _dod_checks(
+    request: Request,
+    hub: po.HubClient,
+    repo_id: str,
+    repo_full_name: str,
+    manifest: po.ProcessManifest,
+    stories: list[dict[str, Any]],
+) -> dict[int, po.GateCheck]:
+    """The Definition of Done for each done-equivalent story (spec 35 §7.3)."""
+    ids = [int(s["id"]) for s in stories]
+    deploys = await asyncio.gather(*(hub.story_deploys(sid) for sid in ids))
+    evidence = {sid: po.evidence_from_deploys(rows) for sid, rows in zip(ids, deploys, strict=True)}
+    every_commit = sorted({c for commits, _ in evidence.values() for c in commits or []})
+    scanned = _scanned_commits(request, repo_full_name, every_commit)
+    revision = _deployed_revision(request, repo_id)
+    out: dict[int, po.GateCheck] = {}
+    for sid, (commits, deployed) in evidence.items():
+        check = po.check_dod(
+            manifest,
+            po.DoneEvidence(
+                commits=commits, deployed=deployed, scanned=scanned, deployed_revision=revision
+            ),
+        )
+        if check is not None:
+            out[sid] = check
+    return out
 
 
 async def _repo_stories(
@@ -501,12 +576,18 @@ async def product_owner(
         except po.HubUnavailableError as exc:
             hub_out = HubOut(connected=False, error=str(exc))
 
+    dod: dict[int, po.GateCheck] = {}
+    done_raw = [s for s in backlog_raw + sprint_raw if po.is_done(s, manifest)]
+    wants_dod = manifest is not None and bool(manifest.definition_of_done) and bool(done_raw)
+    if hub is not None and hub_out.connected and manifest is not None and wants_dod:
+        dod = await _dod_checks(request, hub, repo_id, repo_full_name, manifest, done_raw)
+
     ranks = _ranks(request, repo_id)
     backlog = [
-        _story_out(s, manifest, ranks.get(int(s["id"])))
+        _story_out(s, manifest, ranks.get(int(s["id"])), dod.get(int(s["id"])))
         for s in po.order_backlog(backlog_raw, ranks)
     ]
-    sprint = [_story_out(s, manifest, None) for s in sprint_raw]
+    sprint = [_story_out(s, manifest, None, dod.get(int(s["id"]))) for s in sprint_raw]
     sprint.sort(key=lambda s: (po.SPINE.index(s.spine), s.id))
 
     observations = await _observations(request, repo_full_name, branch, installation, manifest)
@@ -541,6 +622,18 @@ async def product_owner(
                     title=story.title,
                     reason=f"{story.check.failed} of {story.check.total} checks fail "
                     f"at {story.check.gate_name}.",
+                )
+            )
+    for story in backlog + sprint:
+        if story.dod is not None and story.dod.failed:
+            failing = [i.text for i in story.dod.items if i.status == "failed"]
+            needs.append(
+                NeedsHumanOut(
+                    kind="dod_failed",
+                    story_id=story.id,
+                    title=story.title,
+                    reason=f"Done, but {story.dod.failed} of {story.dod.total} "
+                    f"Definition-of-Done checks fail: {'; '.join(failing)}.",
                 )
             )
     for story in backlog + sprint:

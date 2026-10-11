@@ -56,6 +56,7 @@ const NEEDS_LABEL: Record<string, string> = {
   sprint_gate_failed: "sprint check",
   ready_manual_item: "manual item",
   process_drift: "drift",
+  dod_failed: "not done",
 };
 
 const SPINE_LABEL: Record<string, string> = {
@@ -274,6 +275,21 @@ function CheckBadge({ story }: { story: PoStory }) {
   );
 }
 
+/** The Definition of Done (spec 35 §7.3), only for a story at a done gate whose
+ *  manifest declares one. Labelled DoD so it is never read as the gate check. */
+function DodBadge({ story }: { story: PoStory }) {
+  const dod = story.dod;
+  if (!dod) return null;
+  const tone = dod.failed > 0 ? "critical" : dod.total > 0 ? "pass" : "muted";
+  const title = dod.items.map((item) => `${item.status.toUpperCase()}: ${item.text}`).join("\n");
+  return (
+    <Pill tone={tone} title={title}>
+      DoD {dod.passed} / {dod.total}
+      {dod.unavailable ? `, ${dod.unavailable} not visible` : ""}
+    </Pill>
+  );
+}
+
 function StoryRow({ story, children }: { story: PoStory; children?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-t border-rule-soft px-3 py-1.5">
@@ -285,6 +301,7 @@ function StoryRow({ story, children }: { story: PoStory; children?: ReactNode })
       </span>
       {story.size ? <span className="font-mono text-[11px] text-ink-3">{story.size}</span> : null}
       <CheckBadge story={story} />
+      <DodBadge story={story} />
       {children ? <span className="ml-auto flex items-baseline gap-2">{children}</span> : null}
     </div>
   );
