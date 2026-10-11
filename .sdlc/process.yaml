@@ -39,7 +39,7 @@ gates:
       - id: spec-first
         text: The behaviour is in a spec under specs/ (or an amendment) before the code
       - id: decision-logged
-        text: Any decision the spec does not settle is logged in docs/DECISIONS.md
+        text: Any decision the spec does not settle is a file in docs/decisions/, indexed by scripts/decisions_index.py (D-149)
       - id: ac
         text: Acceptance criteria exist
         evidence: acceptance_criteria

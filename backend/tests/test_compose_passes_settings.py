@@ -37,6 +37,11 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_CONCOURSE_URL",
     "MYKRONOS_HUB_API_URL",
     "MYKRONOS_HUB_API_TOKEN",
+    # D-149: the reviewer could not be switched live, or given a key, in the
+    # deployed stack - none of the three was listed.
+    "MYKRONOS_REVIEWER_MODE",
+    "MYKRONOS_REVIEWER_MODEL",
+    "MYKRONOS_REVIEWER_API_KEY",
 )
 
 
@@ -72,6 +77,16 @@ def test_routing_defaults_to_off_in_compose() -> None:
     value = str(document["services"]["backend"]["environment"]["MYKRONOS_ROUTING_ENABLED"])
 
     assert value.endswith(":-false}"), value
+
+
+def test_the_reviewer_defaults_to_shadow_in_compose() -> None:
+    """Live is the operator's decision, made with a delegation in place
+    (D-149). A compose default of `live` would make it on every recreate; an
+    empty default would fail the setting's own pattern and stop the backend."""
+    document = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    value = str(document["services"]["backend"]["environment"]["MYKRONOS_REVIEWER_MODE"])
+
+    assert value.endswith(":-shadow}"), value
 
 
 def test_every_name_here_is_a_real_setting() -> None:
