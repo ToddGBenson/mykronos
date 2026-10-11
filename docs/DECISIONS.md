@@ -21,6 +21,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 
 - [D-149 — Pull requests go through one approval queue; each decision is its own file](decisions/D-149-approval-queue-and-one-file-per-decision.md)
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
+- [D-153 — The Product Owner's rank is TheHub's `po_rank`](decisions/D-153-the-product-owners-rank-is-thehubs-po-rank.md)
 
 <!-- decisions-index:end -->
 
@@ -5933,6 +5934,9 @@ everyone else's.
 the Product Owner's ordering is MyKronos's `po_backlog_rank` table, keyed by
 repository and story id. Moving it into TheHub needs a migration there, which
 ships alone, so it is B-068.
+
+> **Superseded by D-153 (2026-10-11):** rank is now TheHub's `po_rank`, and
+> `po_backlog_rank` is backfilled and dropped.
 
 **A sprint pull switches autonomy off first.** A sprint move arms autonomous
 dispatch in TheHub. The pull calls `toggle-autonomy` first and moves the

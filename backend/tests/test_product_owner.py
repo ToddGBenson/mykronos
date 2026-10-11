@@ -221,6 +221,8 @@ class FakeHub:
         self.toggle_status = 200
         self.move_status = 200
         self.move_detail: Any = None
+        self.rank_status = 200
+        self.rank_detail: Any = None
         self.tokens: list[str | None] = []
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
@@ -238,6 +240,13 @@ class FakeHub:
             if sid not in self.stories:
                 return httpx2.Response(404, json={"detail": "Story not found"})
             return httpx2.Response(200, json=self.stories[sid])
+        if request.method == "PATCH" and path.startswith("/api/dev/stories/"):
+            # TheHub's `po_rank` (migration 329): the only field the tab sends.
+            sid = int(path.rsplit("/", 1)[-1])
+            if self.rank_status != 200:
+                return httpx2.Response(self.rank_status, json={"detail": self.rank_detail})
+            self.stories[sid].update(body)
+            return httpx2.Response(200, json=self.stories[sid])
         if path.endswith("/toggle-autonomy"):
             sid = int(path.split("/")[-2])
             if self.toggle_status != 200:
@@ -254,6 +263,9 @@ class FakeHub:
 
     def writes(self) -> list[tuple[str, Any]]:
         return [(path, body) for method, path, body in self.calls if method == "POST"]
+
+    def patches(self) -> list[tuple[str, Any]]:
+        return [(path, body) for method, path, body in self.calls if method == "PATCH"]
 
 
 def onboard(client: TestClient) -> str:
@@ -559,10 +571,10 @@ class TestRank:
         assert [s["id"] for s in po.order_backlog(stories, {})] == [3, 2, 1]
         assert [s["id"] for s in po.order_backlog(stories, {1: 1})] == [1, 3, 2]
 
-    def test_rank_persists_and_orders_the_backlog(
+    def test_rank_is_stored_in_the_hub_and_orders_the_backlog(
         self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
     ) -> None:
-        repo_id, _ = connect(
+        repo_id, hub = connect(
             [
                 story(id=1, created_at="2026-01-01"),
                 story(id=2, created_at="2026-02-01"),
@@ -586,6 +598,99 @@ class TestRank:
             s["id"]: s["rank"] for s in client.get(base, headers=admin_auth).json()["backlog"]
         }
         assert ranks == {3: 1, 1: 2, 2: 3}
+        # The Hub holds it, not MyKronos.
+        assert {sid: s["po_rank"] for sid, s in hub.stories.items()} == {3: 1, 1: 2, 2: 3}
+
+    def test_the_rank_is_read_from_the_hub(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, _ = connect(
+            [
+                story(id=1, created_at="2026-01-01", po_rank=None),
+                story(id=2, created_at="2026-02-01", po_rank=2),
+                story(id=3, created_at="2026-03-01", po_rank=1),
+            ]
+        )
+        backlog = client.get(
+            f"/api/dashboard/repos/{repo_id}/product-owner", headers=admin_auth
+        ).json()["backlog"]
+        assert [(s["id"], s["rank"]) for s in backlog] == [(3, 1), (2, 2), (1, None)]
+
+    def test_only_changed_positions_are_patched_and_only_po_rank_is_sent(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, hub = connect(
+            [
+                story(id=1, created_at="2026-01-01", po_rank=1),
+                story(id=2, created_at="2026-02-01", po_rank=2),
+                story(id=3, created_at="2026-03-01", po_rank=3),
+                story(id=4, created_at="2026-04-01", po_rank=4),
+            ]
+        )
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/rank",
+            json={"story_id": 3, "direction": "up"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+        assert hub.patches() == [
+            ("/api/dev/stories/3", {"po_rank": 2}),
+            ("/api/dev/stories/2", {"po_rank": 3}),
+        ]
+        assert hub.writes() == []
+
+    def test_a_refused_rank_is_shown_verbatim_and_not_retried(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, hub = connect(
+            [story(id=1, created_at="2026-01-01"), story(id=2, created_at="2026-02-01")]
+        )
+        hub.rank_status = 422
+        hub.rank_detail = "po_rank must be at most 2147483647"
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/rank",
+            json={"story_id": 2, "direction": "up"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "TheHub refused the rank: po_rank must be at most 2147483647"
+        )
+        assert len(hub.patches()) == 1
+        (entry,) = audit_entries(client, "po.rank")
+        assert entry.detail["outcome"] == "refused"
+        assert entry.detail["written"] == []
+        assert entry.detail["hub_detail"] == "po_rank must be at most 2147483647"
+
+    def test_a_hub_failure_on_rank_is_not_passed_on(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, hub = connect(
+            [story(id=1, created_at="2026-01-01"), story(id=2, created_at="2026-02-01")]
+        )
+        hub.rank_status = 500
+        hub.rank_detail = "Traceback (most recent call last): psycopg.errors..."
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/rank",
+            json={"story_id": 2, "direction": "up"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 409
+        assert "Traceback" not in response.text
+        assert "TheHub failed (HTTP 500)." in response.json()["detail"]
+
+    def test_a_press_that_moves_nothing_writes_nothing(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, hub = connect([story(id=1, created_at="2026-01-01"), story(id=2)])
+        client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/rank",
+            json={"story_id": 1, "direction": "up"},
+            headers=admin_auth,
+        )
+        assert hub.patches() == []
+        (entry,) = audit_entries(client, "po.rank")
+        assert entry.detail["outcome"] == "unchanged"
 
     def test_the_top_story_cannot_move_up(
         self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
