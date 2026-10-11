@@ -527,6 +527,93 @@ anchors:
               "$MYKRONOS_URL/api/ingest/health" > /dev/null
             echo "Mykronos is reachable and this token is accepted."
 
+  # -- `Concourse / thehub`: this commit's verdict, on GitHub (D-136) -----
+  #
+  # A job reports its start or end here, and Mykronos posts the check run
+  # through its GitHub App (`checks: write`, an installation token Mykronos
+  # mints itself). Concourse never calls GitHub for this: `((github-token))`
+  # dies an hour after set-pipeline, so a check posted with it would stop
+  # working the same afternoon.
+  #
+  # `unit` reports the start. `oracle-gate` reports success as its LAST step,
+  # because it is the job whose success means every lane passed on this
+  # commit: `passed: [deploy-demo]`, which waits on the six scanning lanes,
+  # which wait on `unit` and `build`. Every job up to and including the gate
+  # reports failure from `on_failure:` and `on_error:`, LAST in each hook, so
+  # a red lane is a red check and not a check left in progress, and a refused
+  # report cannot stop the Slack alert or Hub report ahead of it.
+  #
+  # This step can fail, on purpose. `--fail-with-body` turns a refused report
+  # into a red step with Mykronos's reason in the log. So no `attempts:`
+  # (PS-12): the retry is inside curl, on connection failures and 5xx only,
+  # the same shape as `preflight`. Mykronos keeps one check run per commit, so
+  # a retried POST updates that run rather than adding another.
+  #
+  # Develop commits only. Concourse never sees a pull request's head, so a
+  # pull request never carries this check.
+  check_params: &check_params
+    MYKRONOS_URL: ((mykronos-url))
+    MYKRONOS_TOKEN: ((thehub-ingestion-token))
+    REPO_FULL_NAME: ToddGBenson/TheHub
+
+  check_run: &check_run
+    task: report-check-run
+    # PS-7. Three attempts of 45s plus two 5s delays is 145s; 5m is twice that.
+    timeout: 5m
+    config:
+      platform: linux
+      # The notifier's image: already on the worker, and needs no checkout,
+      # pip or apt. It has no git and no jq, which is why the script reads
+      # .git/HEAD and builds the body with printf.
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      # Optional, so a hook in a job that died before its checkout still
+      # runs and says why it could not report.
+      inputs:
+        - { name: source, optional: true }
+      params: *check_params
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            set -eu
+            # The git resource leaves a detached HEAD, so .git/HEAD holds the
+            # sha itself. Anything else (no checkout, a branch ref) is refused,
+            # not guessed: a check on the wrong commit is worse than none.
+            SHA=""
+            if [ -f source/.git/HEAD ]; then
+              SHA=$(tr -d ' \n\r\t' < source/.git/HEAD)
+            fi
+            case "$SHA" in
+              *[!0-9a-f]*) SHA="" ;;
+            esac
+            if [ "${#SHA}" -ne 40 ]; then
+              echo "No checked-out commit to report on, so ${JOB:-this job} posted nothing."
+              echo "The check stays as it was, and one still in progress blocks."
+              exit 1
+            fi
+
+            if [ "${PHASE:-}" = "start" ]; then
+              CONCLUSION_JSON=null
+            else
+              CONCLUSION_JSON="\"${CONCLUSION:-}\""
+            fi
+            # Every value is fixed by this file or is the hex sha checked
+            # above, so nothing here needs escaping.
+            BODY=$(printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
+              "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON")
+
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
+              --retry 2 --retry-delay 5 --retry-connrefused \
+              -X POST \
+              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$BODY" "$MYKRONOS_URL/api/ingest/check-runs"
+            echo
+            echo "Reported ${PHASE} for ${JOB} on ${SHA}."
+
   # -- Reporting back into TheHub (spec 16 section 13) --------------------
   #
   # TheHub is not just a repository this pipeline scans; it runs a DevSecOps
@@ -1751,12 +1838,16 @@ jobs:
           params: { <<: *slack_params, JOB: unit }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: unit, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: unit }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: unit, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -1768,6 +1859,9 @@ jobs:
       - get: python
         attempts: *retry_fetch
       - *preflight
+      # D-136: `Concourse / thehub` goes in_progress on this commit.
+      - <<: *check_run
+        params: { <<: *check_params, JOB: unit, PHASE: start }
       - task: pytest
         image: python
         # 45 minutes was not a slow test suite; it was a full reinstall of
@@ -2463,12 +2557,16 @@ jobs:
           params: { <<: *slack_params, JOB: build }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: build, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: build }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: build, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -2480,6 +2578,7 @@ jobs:
         passed: [unit]
       - get: python
         attempts: *retry_fetch
+      - *preflight
       - get: kaniko
         attempts: *retry_fetch
 
@@ -2596,12 +2695,16 @@ jobs:
           params: { <<: *slack_params, JOB: secrets }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -2693,12 +2796,16 @@ jobs:
           params: { <<: *slack_params, JOB: sast }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: sast, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: sast }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: sast, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -2801,12 +2908,16 @@ jobs:
           params: { <<: *slack_params, JOB: dependencies }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: dependencies, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dependencies }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: dependencies, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -3101,12 +3212,16 @@ jobs:
           params: { <<: *slack_params, JOB: containers }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: containers, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: containers }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: containers, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -3659,12 +3774,16 @@ jobs:
           params: { <<: *slack_params, JOB: oracle-gate }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: oracle-gate }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -3822,6 +3941,11 @@ jobs:
                   exit 1
                 fi
 
+      # D-136. Last, so it runs only once the gate has passed: this is the
+      # step that turns `Concourse / thehub` green on this commit.
+      - <<: *check_run
+        params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: success }
+
   # == Stage 5: deliver to demo =============================================
   - name: deploy-demo
     public: true
@@ -3835,12 +3959,16 @@ jobs:
           params: { <<: *slack_params, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: deploy-demo, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: deploy-demo, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -3852,6 +3980,7 @@ jobs:
         passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
         attempts: *retry_fetch
+      - *preflight
       - task: request-deploy
         timeout: 45m
         image: python
@@ -4333,12 +4462,16 @@ jobs:
           params: { <<: *slack_params, JOB: iac }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report
@@ -4457,12 +4590,16 @@ jobs:
           params: { <<: *slack_params, JOB: prompt-evals }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: prompt-evals, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: prompt-evals }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
+        - <<: *check_run
+          params: { <<: *check_params, JOB: prompt-evals, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report

@@ -5961,3 +5961,87 @@ viewer sees the tab read-only.
 - *A (process map).* It shows the process well and gives the work nowhere to go.
 - *B (board first).* It is good for a sprint and leaves no room for the process
   it is supposedly following.
+
+## D-136 — Concourse's verdict on a TheHub commit is a GitHub check run, posted by MyKronos
+
+**2026-10-11.** **Status:** Decided by the operator on 2026-10-11, including
+this new use of the GitHub App's credential; implemented (TheHub #60509)
+
+**The decision.** TheHub's Concourse pipeline reports a job's start and end to
+`POST /api/ingest/check-runs`, and MyKronos posts one GitHub check run on that
+commit, named `Concourse / thehub`. It is `in_progress` from the start and
+`success` or `failure` at the end. MyKronos posts it through the
+`mykronos-platform` App (app_id 4551328, installation 152755402) and its
+existing `checks: write`, with an installation token MyKronos mints itself
+from the App key. The token is held in memory only and minted again five
+minutes before it expires (`InstallationTokenCache`). It is the same posting
+path as `Mykronos / risk decision` and `independent-review`, extended with an
+`update_check_run` so a commit keeps one check run.
+
+**Why MyKronos posts and Concourse does not.** The only GitHub credential the
+pipeline holds is `((github-token))`, which dies an hour after
+`set-pipeline`. A check posted with it would stop working the same afternoon.
+Concourse already authenticates to MyKronos with `thehub-ingestion-token`, so
+the endpoint uses that. It accepts only the token's own repository, and needs
+no capability grant, for the same reason as `/lane-failure`.
+
+**Which jobs post, and why `oracle-gate`.** `unit` reports the start, because
+it is the first lane on a commit. `oracle-gate` reports success as its last
+step. It is the job whose success means the commit cleared verification:
+`passed: [deploy-demo]` waits on the six scanning lanes, they wait on `unit`
+and `build`, and the gate adds the risk decision on top. Every job up to and
+including the gate (`unit`, `build`, `secrets`, `sast`, `dependencies`,
+`containers`, `prompt-evals`, `iac`, `deploy-demo`, `oracle-gate`) reports
+failure from `on_failure:` and `on_error:`. So a red lane is a red check, not
+silence. `qa`, `insider` and the DAST lanes are not wired, because the gate
+does not wait on them.
+
+**One check run per commit.** The platform keeps a `ci_check_runs` row per
+(repository, sha, name). The first report creates the check run and every
+later one updates it. A start never reopens a verdict, and the re-run's own
+end replaces it, so a lane that fails and then passes on a re-run ends as one
+green check. Every report writes an `audit_log` entry: `ci_check_run.posted`,
+`.unchanged` or `.post_failed`.
+
+**A missing report or credential means no check run.** No App credential, no
+installation for the repository, or no report from the pipeline means GitHub
+has nothing under this name, and a required check with nothing under its name
+blocks. A report that could not be posted is a 409 (no installation) or a 502
+(GitHub refused or timed out), never a 200. The pipeline sends it with
+`curl --fail-with-body`, so the build log shows a red step and the reason.
+GitHub's own error text goes only to the platform log and the audit log.
+
+**Limitations, accepted.**
+- *Develop commits only.* Concourse never sees a pull request's head, so a
+  pull request never carries this check.
+- *Requiring it on develop does not gate what an admin pushes.* The check can
+  exist only after a commit is on develop. With `enforce_admins` off, the
+  operator's pushes and merges bypass it. For anyone else, including
+  Dependabot pull requests, develop would accept no merge at all. That is the
+  reason the command below is recorded and not run.
+- *Versions Concourse skips stay in progress.* When two commits land close
+  together, the downstream jobs take the newest one. The older commit keeps
+  `in_progress`, which reads as blocking.
+- *A start that cannot be reported fails `unit`.* That is the visible failure
+  this asked for. It also means a GitHub or App outage stops TheHub's lanes
+  until it is fixed.
+
+**Requiring the check (not run; the operator's decision).** This pins the
+check to the App, so a status with the same name from anything else cannot
+satisfy it:
+
+```bash
+gh api -X PATCH repos/ToddGBenson/TheHub/branches/develop/protection/required_status_checks \
+  --input - <<'JSON'
+{"strict": false, "checks": [{"context": "Concourse / thehub", "app_id": 4551328}]}
+JSON
+```
+
+**Rejected.**
+- *Concourse posts the check itself with `((github-token))`.* That token dies
+  an hour after `set-pipeline`, and a pipeline holding a long-lived GitHub
+  write credential is the thing CNC-2 avoided.
+- *Commit statuses.* The App has `checks: write` and no `statuses`, and adding
+  a permission means re-approving the installation.
+- *Posting a new check run per report.* GitHub would show a red and a green
+  under one name until somebody worked out which one was newer.

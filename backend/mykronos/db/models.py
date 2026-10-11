@@ -1138,3 +1138,33 @@ class PoBacklogRank(Base):
     rank: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     updated_by: Mapped[str] = mapped_column(String(255), default="")
+
+
+class CiCheckRun(Base):
+    """The check run a CI pipeline's verdict on one commit is shown as (D-136).
+
+    One row per (repository, commit, check name), so every report about a
+    commit updates the same GitHub check run instead of adding another. An
+    editable statement about the present, which is why it is operational
+    rather than in the append-only lake; its history is in the audit log.
+    """
+
+    __tablename__ = "ci_check_runs"
+    __table_args__ = (
+        UniqueConstraint("repo_full_name", "head_sha", "name", name="uq_ci_check_run"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    head_sha: Mapped[str] = mapped_column(String(40), default="")
+    name: Mapped[str] = mapped_column(String(100), default="")
+    #: GitHub's id for the check run.
+    external_id: Mapped[str] = mapped_column(String(64), default="")
+    #: in_progress | completed
+    status: Mapped[str] = mapped_column(String(16), default="")
+    #: success | failure, or None while in progress.
+    conclusion: Mapped[str | None] = mapped_column(String(16), default=None)
+    #: The job whose report last changed it.
+    last_job: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

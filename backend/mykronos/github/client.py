@@ -344,6 +344,22 @@ class GitHubClient(Protocol):
         summary is the product, not a log line.
         """
 
+    async def update_check_run(
+        self,
+        repo_full_name: str,
+        check_run_id: str,
+        *,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> None:
+        """Complete an existing Check Run with `conclusion` (D-136).
+
+        Updating rather than posting again keeps one check per commit, so a
+        lane that fails and then passes on a re-run ends as one green check
+        rather than a red and a green under the same name.
+        """
+
     async def get_branch_protection(
         self, repo_full_name: str, branch: str
     ) -> dict[str, Any] | None:
@@ -789,6 +805,23 @@ class FakeGitHubClient:
             }
         )
         return check_id
+
+    async def update_check_run(
+        self,
+        repo_full_name: str,
+        check_run_id: str,
+        *,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> None:
+        self.calls.append(("update_check_run", f"{repo_full_name}#{check_run_id}"))
+        self._require("checks", "write", "Updating a check run")
+        for run in self._repo(repo_full_name).check_runs:
+            if run["id"] == check_run_id:
+                run.update(conclusion=conclusion, title=title, summary=summary)
+                return
+        raise GitHubError(f"Check run {check_run_id} not found", status=404)
 
     async def get_branch_protection(
         self, repo_full_name: str, branch: str
@@ -1503,6 +1536,25 @@ class RestGitHubClient:
             },
         )
         return str(item["id"])
+
+    async def update_check_run(
+        self,
+        repo_full_name: str,
+        check_run_id: str,
+        *,
+        conclusion: str,
+        title: str,
+        summary: str,
+    ) -> None:
+        await self._json(
+            "PATCH",
+            f"/repos/{repo_full_name}/check-runs/{check_run_id}",
+            json={
+                "status": "completed",
+                "conclusion": conclusion,
+                "output": {"title": title, "summary": summary[:60000]},
+            },
+        )
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         """Installation metadata, for the daily reconciliation (spec 02 §5.6).

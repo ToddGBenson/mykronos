@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # --------------------------------------------------------------------------
 # Enums — spec 05 §3
@@ -713,6 +713,43 @@ class LaneFailure(BaseModel):
 class LaneFailureAccepted(BaseModel):
     notified: bool
     detail: str
+
+
+class CheckRunReport(BaseModel):
+    """A CI job's start or end, to be shown as one check run per commit (D-136).
+
+    Concourse sends this; the platform posts the check run, because Concourse
+    holds no GitHub credential that outlives the hour after set-pipeline.
+    `repo_full_name` must match the token's own repository.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_full_name: str = Field(min_length=3, max_length=255, pattern=r"^[^/\s]+/[^/\s]+$")
+    #: The full sha. A short or symbolic ref could name a different commit
+    #: tomorrow, and a check run on the wrong commit is worse than none.
+    commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    job: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    phase: Literal["start", "end"]
+    conclusion: Literal["success", "failure"] | None = None
+
+    @model_validator(mode="after")
+    def _conclusion_matches_phase(self) -> CheckRunReport:
+        if self.phase == "start" and self.conclusion is not None:
+            raise ValueError("a start has no conclusion yet")
+        if self.phase == "end" and self.conclusion is None:
+            raise ValueError("an end must say success or failure")
+        return self
+
+
+class CheckRunAccepted(BaseModel):
+    name: str
+    check_run_id: str
+    #: in_progress | completed
+    status: str
+    conclusion: str | None
+    #: created | updated | unchanged
+    outcome: str
 
 
 class HealthResponse(BaseModel):
