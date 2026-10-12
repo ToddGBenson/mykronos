@@ -28,6 +28,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-157 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-157-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
 - [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
 - [D-159 — The deploy refuses only what the gate refuses](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md)
+- [D-160 — A Concourse build-dir path is stripped, and the findings stored under it are re-keyed, not fixed](decisions/D-160-a-concourse-build-path-is-re-keyed-not-fixed.md)
 
 <!-- decisions-index:end -->
 

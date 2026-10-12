@@ -492,9 +492,17 @@ def v2_identity(
     symbol: str | None,
     v2_snippet: str | None,
     v2_symbol: str | None,
+    v2_file_path: str | None = None,
 ) -> dict[str, Any]:
     """`raw` with the `v3-snippet` marker, and the `v2-snippet` inputs where
     they differ from the ones submitted.
+
+    `v2_file_path` is the path the finding was stored under before its
+    normaliser learned to strip a Concourse build directory (TheHub #60734,
+    D-160). When it is given, `v2_snippet` and `v2_symbol` are what resolving
+    *that* path produced, because those are the inputs of the id the finding
+    actually has in the lake -- the predecessor is whatever was stored, not
+    what an older rule would have computed from the corrected path.
 
     The finding's id is still computed only by the API (spec 05 §5); this
     carries the two inputs it cannot recompute, because computing the old
@@ -511,4 +519,6 @@ def v2_identity(
         marker["v2_symbol"] = v2_symbol
     if v2_snippet != snippet:
         marker["v2_code_snippet"] = v2_snippet
+    if v2_file_path is not None:
+        marker["v2_file_path"] = v2_file_path
     return {**(raw if isinstance(raw, dict) else {}), IDENTITY_KEY: marker}

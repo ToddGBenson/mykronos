@@ -251,22 +251,27 @@ def v2_predecessor_id(
         return None
     v2_symbol = marker.get("v2_symbol", symbol)
     v2_snippet = marker.get("v2_code_snippet", code_snippet)
+    # The path the finding was stored under before a Concourse build-dir
+    # prefix was stripped from it (TheHub #60734, D-160). Absent for every
+    # finding whose path did not change.
+    v2_path = marker.get("v2_file_path")
     old_id, new_id = (
         compute_finding_id(
             repo_full_name=repo_full_name,
             capability=capability,
             rule_id=rule_id,
-            file_path=file_path,
+            file_path=path,
             line_start=line_start,
             symbol=sym,
             code_snippet=snip,
         )[0]
-        for sym, snip in (
+        for path, sym, snip in (
             (
+                v2_path if isinstance(v2_path, str) and v2_path else file_path,
                 v2_symbol if isinstance(v2_symbol, str) else None,
                 v2_snippet if isinstance(v2_snippet, str) else None,
             ),
-            (symbol, code_snippet),
+            (file_path, symbol, code_snippet),
         )
     )
     return None if old_id == new_id else old_id
