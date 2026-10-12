@@ -24,6 +24,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-153 — The Product Owner's rank is TheHub's `po_rank`](decisions/D-153-the-product-owners-rank-is-thehubs-po-rank.md)
 - [D-154 — The public edge is scanned as its own DAST tool, `zap-edge`](decisions/D-154-the-public-edge-is-its-own-dast-tool.md)
 - [D-155 — Each DAST environment is its own lane and its own identity](decisions/D-155-each-dast-environment-is-its-own-lane-and-identity.md)
+- [D-156 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels](decisions/D-156-a-github-issues-backlog-is-read-only-and-its-sprint-is-its-label.md)
 - [D-157 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-157-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
 - [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
 

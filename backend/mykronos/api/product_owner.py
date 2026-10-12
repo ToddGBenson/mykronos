@@ -22,7 +22,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from mykronos import governance
+from mykronos import governance, po_issues
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep
 from mykronos.db.models import RepoGovernance, RepoOnboarding
@@ -100,6 +100,13 @@ class StoryOut(BaseModel):
     #: Oracle risk points this story would remove (spec 35 §7.4). Backlog
     #: stories only.
     risk: StoryRiskOut | None = None
+    #: How the tab shows the story: `#<id>`. For a GitHub issue (B-072) `id`
+    #: is the issue number and `ref` is `#<number>`.
+    ref: str | None = None
+    #: The issue on GitHub, for a GitHub-Issues backlog.
+    url: str | None = None
+    #: open | closed, for a GitHub issue. TheHub stories carry `bucket`.
+    state: str | None = None
 
 
 class ManifestOut(BaseModel):
@@ -143,6 +150,19 @@ class ObservationOut(BaseModel):
     status: str
     owner: str
     detail: str
+
+
+class IssuesSourceOut(BaseModel):
+    """How a `github_issues` backlog was read (spec 35 §9, D-156)."""
+
+    labels: list[str]
+    project: int | None
+    gate_field: str
+    sprint_labels: list[str]
+    #: project | labels: where the gates shown came from.
+    gate_source: str
+    #: Why the gates are not from the project, when one was named.
+    gate_note: str | None
 
 
 class SprintProgressOut(BaseModel):
@@ -211,6 +231,11 @@ class ProductOwnerOut(BaseModel):
     #: Backlog story ids in the 'by risk removed' order. A view, never written:
     #: the manual rank is unchanged by it.
     backlog_by_risk: list[int]
+    #: thehub | github_issues
+    backlog_source: str = "thehub"
+    #: Set when this source takes no writes from the tab, with the reason.
+    writes_refused: str | None = None
+    issues: IssuesSourceOut | None = None
 
 
 class PoActionOut(BaseModel):
@@ -382,8 +407,13 @@ async def _observations(
 
 
 def _membership(state: po.ManifestState, repo_full_name: str) -> tuple[str, bool, str]:
-    if state.manifest is not None:
-        return state.manifest.backlog.tag, state.manifest.backlog.include_untagged, "manifest"
+    backlog = state.manifest.backlog if state.manifest is not None else None
+    if isinstance(backlog, po.GithubIssuesBacklog):
+        # Its backlog is GitHub's. TheHub reads elsewhere (retro, trace)
+        # still match the repository's default tag.
+        return po.default_tag(repo_full_name), False, "github_issues"
+    if backlog is not None:
+        return backlog.tag, backlog.include_untagged, "manifest"
     return po.default_tag(repo_full_name), False, "default"
 
 
@@ -431,6 +461,23 @@ def _story_out(
         updated_at=story.get("updated_at"),
         check=_check_out(check),
         dod=_check_out(dod) if dod is not None else None,
+    )
+
+
+def _issues_out(
+    manifest: po.ProcessManifest | None, read: po_issues.IssuesRead | None
+) -> IssuesSourceOut | None:
+    if manifest is None or read is None or not po_issues.is_issues(manifest):
+        return None
+    backlog = manifest.backlog
+    assert isinstance(backlog, po.GithubIssuesBacklog)
+    return IssuesSourceOut(
+        labels=list(backlog.labels),
+        project=backlog.project,
+        gate_field=backlog.gate_field,
+        sprint_labels=list(backlog.sprint_labels),
+        gate_source=read.gate_source,
+        gate_note=read.gate_note,
     )
 
 
@@ -690,6 +737,45 @@ def _audit(
         )
 
 
+async def _read_issues(
+    request: Request,
+    repo_full_name: str,
+    installation_id: int | None,
+    manifest: po.ProcessManifest | None,
+) -> po_issues.IssuesRead | None:
+    """The GitHub-Issues backlog (B-072), or None when TheHub is the source."""
+    if manifest is None or not po_issues.is_issues(manifest):
+        return None
+    factory = getattr(request.app.state, "github_factory", None)
+    github = (
+        factory.for_installation(installation_id)
+        if factory is not None and installation_id is not None
+        else None
+    )
+    return await po_issues.read_backlog(github, repo_full_name, manifest)
+
+
+async def _refuse_read_only_source(
+    request: Request, principal: Any, repo_id: str, story_id: int, action: str
+) -> None:
+    """Refuse a write to a GitHub-Issues backlog, and record that it was tried
+    (D-156). Checked before TheHub is asked anything."""
+    repo_full_name, branch, installation = _onboarding(request, repo_id)
+    state = await _read_manifest(request, repo_full_name, branch, installation)
+    if not po_issues.is_issues(state.manifest):
+        return
+    _audit(
+        request,
+        principal,
+        action=action,
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        story_id=story_id,
+        outcome="refused_read_only_source",
+    )
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=po_issues.WRITES_REFUSED)
+
+
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
@@ -707,8 +793,11 @@ async def product_owner(
 
     backlog_raw: list[dict[str, Any]] = []
     sprint_raw: list[dict[str, Any]] = []
+    issues_read = await _read_issues(request, repo_full_name, installation, manifest)
     hub = _hub(request)
-    if hub is None:
+    if issues_read is not None:
+        hub_out = HubOut(connected=issues_read.ok, error=issues_read.error)
+    elif hub is None:
         hub_out = HubOut(connected=False, error="TheHub is not connected.")
     else:
         try:
@@ -738,6 +827,9 @@ async def product_owner(
     )
     sprint = [_story_out(s, manifest, None, dod.get(int(s["id"]))) for s in sprint_raw]
     sprint.sort(key=lambda s: (po.SPINE.index(s.spine), s.id))
+    if issues_read is not None:
+        backlog = [StoryOut.model_validate(s) for s in issues_read.backlog]
+        sprint = [StoryOut.model_validate(s) for s in issues_read.sprint]
 
     observations = await _observations(request, repo_full_name, branch, installation, manifest)
 
@@ -806,7 +898,7 @@ async def product_owner(
         repo_id=repo_id,
         repo_full_name=repo_full_name,
         default_branch=branch,
-        can_write=bool(principal.may_write),
+        can_write=bool(principal.may_write) and issues_read is None,
         manifest=ManifestOut(
             state=state.state,
             path=po.MANIFEST_PATH,
@@ -844,6 +936,9 @@ async def product_owner(
             done=sum(1 for s in sprint if s.spine == "done"), committed=len(sprint)
         ),
         oracle=_oracle(request, repo_full_name),
+        backlog_source="github_issues" if issues_read is not None else "thehub",
+        writes_refused=po_issues.WRITES_REFUSED if issues_read is not None else None,
+        issues=_issues_out(manifest, issues_read),
         backlog=backlog,
         sprint=sprint,
         risk_model=RiskModelOut(
@@ -872,6 +967,7 @@ async def pull_into_sprint(
     autonomy armed. TheHub's refusal is shown verbatim and never retried.
     """
     _require_writer(principal, "Pulling a story into the sprint")
+    await _refuse_read_only_source(request, principal, repo_id, story_id, "po.sprint_pull")
     hub = _require_hub(request)
     repo_full_name = await _require_member(request, hub, repo_id, story_id)
 
@@ -928,6 +1024,7 @@ async def return_to_backlog(
     backlog story is not dispatched, and switching it back on is a decision
     this tab does not make."""
     _require_writer(principal, "Returning a story to the backlog")
+    await _refuse_read_only_source(request, principal, repo_id, story_id, "po.return_to_backlog")
     hub = _require_hub(request)
     repo_full_name = await _require_member(request, hub, repo_id, story_id)
 
@@ -976,6 +1073,7 @@ async def rank_story(
     the one stored.
     """
     _require_writer(principal, "Ranking the backlog")
+    await _refuse_read_only_source(request, principal, repo_id, body.story_id, "po.rank")
     repo_full_name, branch, installation = _onboarding(request, repo_id)
     hub = _require_hub(request)
     state = await _read_manifest(request, repo_full_name, branch, installation)

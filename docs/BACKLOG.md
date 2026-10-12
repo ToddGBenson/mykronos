@@ -57,8 +57,8 @@ that will have moved on.
 
 **B-068 to B-072 are not from a sweep.** They are what spec 35 (the Product
 Owner tab) left out of phase 1 on purpose, filed when phase 1 was built so the
-exclusions are tracked rather than remembered. They are at the end of this
-section.
+exclusions are tracked rather than remembered. The open ones are at the end of
+this section; B-068, B-071 and B-072 are in Closed.
 
 **The nine that needed the operator rather than code were decided on
 2026-09-05, as D-108 to D-116.** Three stay open as execution and each carries
@@ -1315,26 +1315,6 @@ declaration without the drift reads as reassurance.
 
 **Provenance:** spec 35 §5.
 
-### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — TheHub #60570
-
-**Size:** M **State:** open **Verified:** 2026-10-11
-
-Phase 1 accepts `backlog.source: thehub` and refuses anything else. keel's work
-items live in GitHub Issues, so keel's tab can show its process (keel has the
-clearest model in the estate) and no backlog until this lands, or until keel's
-work moves into TheHub under D-133.
-
-**Acceptance criteria**
-
-- `backlog.source: github_issues` is accepted, with a label selector in place
-  of the tag.
-- Issues are read through the existing GitHub client; gate and size come from
-  labels the manifest names.
-- Writes are refused for this source until somebody decides what a sprint pull
-  means for an issue. It is read-only until then.
-
-**Provenance:** spec 35 §5.
-
 ---
 
 ## Watching, not filed
@@ -1375,6 +1355,42 @@ into entries here:
 ---
 
 ## Closed
+
+### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — **done** (spec 35 §9, D-156)
+
+**Size:** M **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60570)
+
+`backlog.source: github_issues` is accepted, with a label selector in place of
+the tag. The issues are read through the platform's GitHub App client; the gate
+comes from the manifest's Projects board when the App can read it, otherwise
+from `gate:G<n>` labels, and the header says which and why. Size comes from a
+`size:` label. The Sprint view is the issues carrying a `sprint_labels` label
+(`ready` or `sprint` for keel). Every write is refused with `./keel sprint` named, and audited.
+
+Two things changed from the criteria below, and are recorded rather than
+absorbed. Gate comes from the board first, as the Hub story asks, and from
+labels only as the fallback. And "until somebody decides what a sprint pull
+means for an issue" is decided: nothing, from this tab (D-156). keel's sprint
+stays its own.
+
+The App permission check found the installation holds **no `issues`
+permission**, although `REQUIRED_PERMISSIONS` lists `issues: write`. keel's
+issues are readable only because keel is public. The App sees no Projects, so
+keel's gates will come from labels. Switching keel's manifest to
+`github_issues` is a keel pull request, not this one.
+
+**Acceptance criteria**
+
+- `backlog.source: github_issues` is accepted, with a label selector in place
+  of the tag.
+- Issues are read through the existing GitHub client; gate and size come from
+  labels the manifest names.
+- Writes are refused for this source until somebody decides what a sprint pull
+  means for an issue. It is read-only until then.
+
+**Provenance:** spec 35 §5.
+
+---
 
 ### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — **done** (D-153)
 

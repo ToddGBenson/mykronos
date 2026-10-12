@@ -157,10 +157,35 @@ class Gate(_Strict):
 
 
 class Backlog(_Strict):
-    #: Phase 1 reads TheHub only. A keel GitHub-Issues adapter is B-072.
+    #: TheHub `dev_stories`, the system of record (D-133).
     source: Literal["thehub"]
     tag: str = Field(min_length=1, max_length=128)
     include_untagged: bool = False
+
+
+class GithubIssuesBacklog(_Strict):
+    """The repository's own GitHub Issues, read only (B-072, D-156).
+
+    Read by `mykronos.po_issues`. A label selector takes the place of the tag:
+    an issue is this repository's backlog when it carries every label named.
+    """
+
+    source: Literal["github_issues"]
+    labels: list[str] = Field(default_factory=list, max_length=10)
+    #: A Projects (v2) board owned by the repository's owner. When it is
+    #: readable, its single-select gate field wins over the gate labels.
+    project: int | None = Field(default=None, ge=1)
+    gate_field: str = Field(default="Gate", min_length=1, max_length=64)
+    #: `gate:G1` -> gate `G1`, when there is no readable project.
+    gate_label_prefix: str = Field(default="gate:", min_length=1, max_length=32)
+    #: `size:S` -> size `S`.
+    size_label_prefix: str = Field(default="size:", min_length=1, max_length=32)
+    #: Issues carrying any of these labels are the Sprint view. keel's are
+    #: `ready` (the unattended runner's work list) and `sprint` (the issues
+    #: the supervised runner opens).
+    sprint_labels: list[str] = Field(
+        default_factory=lambda: ["ready"], min_length=1, max_length=10
+    )
 
 
 class Delivery(_Strict):
@@ -218,7 +243,7 @@ class ProcessManifest(_Strict):
     name: str = Field(min_length=1, max_length=128)
     spine_map: dict[str, SpineStep] = Field(default_factory=dict)
     gates: list[Gate] = Field(default_factory=list)
-    backlog: Backlog
+    backlog: Backlog | GithubIssuesBacklog = Field(discriminator="source")
     delivery: Delivery | None = None
     automation_policy: list[PolicyItem] = Field(default_factory=list)
     docs: list[DocLink] = Field(default_factory=list)

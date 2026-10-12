@@ -2467,10 +2467,11 @@ export interface paths {
          * Rank Story
          * @description Move one backlog story up or down a place.
          *
-         *     The order is computed from what TheHub returns now, so a story that left
-         *     the backlog since the page loaded cannot hold a place. The whole visible
-         *     order is written, which ranks every story on the page once one has been
-         *     moved -- the ordering a person sees is the one stored.
+         *     The order is computed from what TheHub returns now, ranks included, so a
+         *     story that left the backlog since the page loaded cannot hold a place. The
+         *     whole visible order is written to TheHub's `po_rank`, which ranks every
+         *     story on the page once one has been moved -- the ordering a person sees is
+         *     the one stored.
          */
         post: operations["rank_story_api_dashboard_repos__repo_id__product_owner_rank_post"];
         delete?: never;
@@ -3466,15 +3467,15 @@ export interface paths {
          * @description For infrastructure only. Deliberately reveals nothing about the
          *     lake — the authenticated /api/ingest/health is what workflows call.
          *
-         *     `build.sha` is the one thing here that is not liveness. It is the
-         *     commit this *image* was built from, and it is unauthenticated on
-         *     purpose: whatever asks "is the fix running yet?" has to be able to
-         *     ask it from outside, of the process actually serving traffic. On
-         *     2026-09-13 twenty-six merged PRs sat undeployed for eight days with
-         *     every indicator green, because the platform compared scans to `main`
-         *     and nothing compared the running artifact to anything (#361). A
-         *     commit SHA is not a secret — it names a public commit in a public
-         *     repository, and TheHub has served its own from `/health` throughout.
+         *     [D-157, TheHub #60722] The public body is `{"status": "ok"}` and
+         *     nothing else. `/healthz` is exempt from the perimeter gate, so every
+         *     key here is published to the internet, and `build.sha` (#361) told
+         *     anyone which commit to diff to find what is not yet patched.
+         *
+         *     `build` is still served to a caller that presents the perimeter token
+         *     (`X-Hub-Token`, `hub_token` cookie, `?_token=`). deploy.ps1 does not
+         *     need it: it reads `MYKRONOS_BUILD_SHA` from the container itself. The
+         *     status code is 200 for every caller.
          *
          *     `build.source` exists so the absent case cannot be misread. An image
          *     built without the build-arg reports `sha: null, source: "unknown"`
@@ -5494,6 +5495,24 @@ export interface components {
              */
             ai_authorship_flag?: boolean | null;
         };
+        /**
+         * IssuesSourceOut
+         * @description How a `github_issues` backlog was read (spec 35 §9, D-156).
+         */
+        IssuesSourceOut: {
+            /** Labels */
+            labels: string[];
+            /** Project */
+            project: number | null;
+            /** Gate Field */
+            gate_field: string;
+            /** Sprint Labels */
+            sprint_labels: string[];
+            /** Gate Source */
+            gate_source: string;
+            /** Gate Note */
+            gate_note: string | null;
+        };
         /** JobHealthOut */
         JobHealthOut: {
             /** Name */
@@ -6755,6 +6774,14 @@ export interface components {
             risk_model: components["schemas"]["RiskModelOut"];
             /** Backlog By Risk */
             backlog_by_risk: number[];
+            /**
+             * Backlog Source
+             * @default thehub
+             */
+            backlog_source: string;
+            /** Writes Refused */
+            writes_refused?: string | null;
+            issues?: components["schemas"]["IssuesSourceOut"] | null;
         };
         /**
          * ProfileProposalOut
@@ -7956,6 +7983,12 @@ export interface components {
             check: components["schemas"]["GateCheckOut"];
             dod?: components["schemas"]["GateCheckOut"] | null;
             risk?: components["schemas"]["StoryRiskOut"] | null;
+            /** Ref */
+            ref?: string | null;
+            /** Url */
+            url?: string | null;
+            /** State */
+            state?: string | null;
         };
         /** StoryRiskOut */
         StoryRiskOut: {

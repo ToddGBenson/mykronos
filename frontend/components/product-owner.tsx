@@ -77,6 +77,17 @@ const SPINE_LABEL: Record<string, string> = {
   done: "Done",
 };
 
+/** Where the backlog is read from, for the empty states (B-072). */
+function sourceLabel(data: ProductOwnerView, bucket: "backlog" | "sprint"): string {
+  if (data.issues) {
+    const labels = data.issues.labels.length ? ` labelled ${data.issues.labels.join(", ")}` : "";
+    return bucket === "sprint"
+      ? `No issue${labels} carries ${data.issues.sprint_labels.join(" or ")}.`
+      : `No open issue${labels} is outside the sprint.`;
+  }
+  return `No TheHub ${bucket} story carries ${data.backlog_tag}.`;
+}
+
 function fileUrl(data: ProductOwnerView, path: string): string {
   // Paths are validated server-side as relative and inside the repository, so
   // this cannot become a link off GitHub. Encoded per segment regardless.
@@ -115,7 +126,11 @@ export function ProductOwnerTab({
             {entry.label}
           </Link>
         ))}
-        {!data.can_write ? (
+        {data.writes_refused ? (
+          <span className="ml-auto self-center font-mono text-[11px] text-ink-3">
+            read-only: GitHub Issues
+          </span>
+        ) : !data.can_write ? (
           <span className="ml-auto self-center font-mono text-[11px] text-ink-3">
             read-only: writes need the admin role
           </span>
@@ -167,12 +182,29 @@ function Header({ data }: { data: ProductOwnerView }) {
         ) : (
           <span className="font-mono text-[11px] text-ink-3">{data.manifest.path}</span>
         )}
-        <span className="font-mono text-[11px] text-ink-3">
-          backlog: TheHub, tag {data.backlog_tag}
-          {data.include_untagged ? " + untagged" : ""}
-          {data.membership_source === "default" ? " (default)" : ""}
-        </span>
+        {data.issues ? (
+          <span className="font-mono text-[11px] text-ink-3">
+            backlog: GitHub Issues
+            {data.issues.labels.length ? `, labels ${data.issues.labels.join(", ")}` : ""} ·
+            gates from{" "}
+            {data.issues.gate_source === "project"
+              ? `Project #${data.issues.project} (${data.issues.gate_field})`
+              : "labels"}
+          </span>
+        ) : (
+          <span className="font-mono text-[11px] text-ink-3">
+            backlog: TheHub, tag {data.backlog_tag}
+            {data.include_untagged ? " + untagged" : ""}
+            {data.membership_source === "default" ? " (default)" : ""}
+          </span>
+        )}
       </div>
+      {data.issues?.gate_note ? (
+        <p className="max-w-prose text-[12px] text-ink-2">{data.issues.gate_note}</p>
+      ) : null}
+      {data.writes_refused ? (
+        <p className="max-w-prose text-[12px] text-ink-2">{data.writes_refused}</p>
+      ) : null}
       {data.manifest.state === "absent" ? (
         <p className="max-w-prose text-[12px] text-ink-2">
           This repository declares no process. The spine below is a default, labelled as one,
@@ -182,7 +214,12 @@ function Header({ data }: { data: ProductOwnerView }) {
       {data.manifest.state === "invalid" || data.manifest.state === "unreadable" ? (
         <p className="max-w-prose text-[12px] text-critical">{data.manifest.error}</p>
       ) : null}
-      {!data.hub.connected ? (
+      {!data.hub.connected && data.issues ? (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-ink-2">
+          <strong className="text-high">The issues could not be read.</strong> {data.hub.error}{" "}
+          The declared process is shown; the backlog and sprint are not.
+        </p>
+      ) : !data.hub.connected ? (
         <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-ink-2">
           <strong className="text-high">TheHub is not connected.</strong>{" "}
           {data.hub.error && data.hub.error !== "TheHub is not connected." ? data.hub.error : null}{" "}
@@ -307,7 +344,20 @@ function DodBadge({ story }: { story: PoStory }) {
 function StoryRow({ story, children }: { story: PoStory; children?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-t border-rule-soft px-3 py-1.5">
-      <span className="font-mono text-[11px] tabular text-ink-3">#{story.id}</span>
+      {story.url ? (
+        <a
+          href={story.url}
+          rel="noreferrer"
+          className="font-mono text-[11px] tabular text-ink-3 hover:text-accent"
+        >
+          {story.ref ?? `#${story.id}`}
+        </a>
+      ) : (
+        <span className="font-mono text-[11px] tabular text-ink-3">
+          {story.ref ?? `#${story.id}`}
+        </span>
+      )}
+      {story.state === "closed" ? <Pill tone="muted">closed</Pill> : null}
       <span className="text-[13px] text-ink">{story.title}</span>
       <span className="font-mono text-[11px] text-ink-2">
         {story.gate_name ?? story.gate}
@@ -327,7 +377,7 @@ function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
     return (
       <EmptyState
         title="Nothing in the backlog"
-        detail={`No TheHub backlog story carries ${data.backlog_tag}.`}
+        detail={sourceLabel(data, "backlog")}
       />
     );
   }
@@ -410,7 +460,7 @@ function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
     return (
       <EmptyState
         title="Nothing in the sprint"
-        detail={`No TheHub sprint story carries ${data.backlog_tag}.`}
+        detail={sourceLabel(data, "sprint")}
       />
     );
   }
