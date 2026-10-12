@@ -606,6 +606,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    gate_liveness_interval_seconds: int = Field(
+        default=3_600,
+        ge=600,
+        description=(
+            "How often the gate-liveness check (mykronos.gate_liveness) asks "
+            "whether main's commits are still reaching a risk decision, and "
+            "names the red lane upstream of oracle-gate when they are not "
+            "(TheHub #60731). Scheduled only when concourse_url is set."
+        ),
+    )
+
+    gate_liveness_stale_hours: float = Field(
+        default=6.0,
+        gt=0,
+        description=(
+            "How long the oldest commit after the last decided one may wait "
+            "for a gate decision before gate-liveness raises it. The gate "
+            "answers about 30 minutes after Delivery, so six hours is many "
+            "missed runs, not one slow one."
+        ),
+    )
+
     pipeline_definitions_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "deploy" / "concourse" / "pipelines",

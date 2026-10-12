@@ -27,6 +27,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-156 — A GitHub-Issues backlog is read only; its sprint is the `ready` label, and its gate comes from the project when the App can read it, otherwise from labels](decisions/D-156-a-github-issues-backlog-is-read-only-and-its-sprint-is-its-label.md)
 - [D-157 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-157-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
 - [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
+- [D-159 — The deploy refuses only what the gate refuses](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md)
 
 <!-- decisions-index:end -->
 
