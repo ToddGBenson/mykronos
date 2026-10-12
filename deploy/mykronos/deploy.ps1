@@ -295,6 +295,59 @@ function Get-RiskVerdict {
     }
 }
 
+function Find-NearestScored {
+    <#
+        The nearest ancestor of an unjudged sha that the gate DID score, and
+        what it said (#60731). Concourse scores only the newest commit that
+        passed every lane, so a sha it skipped is unjudged even when main is
+        green. "Nothing scored this" is then less useful than "the commit two
+        before it scored go". That is the newest judgement of code this deploy
+        contains. It says nothing about the commits after it, and the banner
+        says so.
+
+        Walks `git rev-list` in the checkout this script sits in and asks the
+        same by-commit route for each ancestor. Stops at the first answer, and
+        at the first "could not ask", because that will not get better one
+        commit further back. Never throws: this only adds to a banner, and the
+        deploy fails open either way (D-126).
+    #>
+    param([string]$Sha, [string]$BaseUrl, [string]$Token, [string]$RepoPath, [int]$Depth = 25)
+    try {
+        $ancestors = @(git -C $RepoPath rev-list --max-count=$($Depth + 1) $Sha 2>$null)
+        $listed = ($LASTEXITCODE -eq 0)
+    } catch {
+        $listed = $false
+    }
+    if (-not $listed -or $ancestors.Count -eq 0) {
+        return @{ Found = $false; Reason = "$Sha is not in the checkout at $RepoPath (git fetch?), so its ancestors could not be listed." }
+    }
+    $asked = 0
+    foreach ($ancestor in @($ancestors | Select-Object -Skip 1)) {
+        $asked++
+        $answer = Get-RiskVerdict -Sha $ancestor -BaseUrl $BaseUrl -Token $Token
+        if ($answer.State -eq "unasked") {
+            return @{ Found = $false; Reason = "stopped asking at $($ancestor.Substring(0, 12)): $($answer.Reason)" }
+        }
+        if ($answer.State -eq "unjudged") { continue }
+        $said = "$($answer.Decision.effective_recommendation)"
+        if ($answer.State -eq "refused") {
+            $said = if ($answer.Floor) { "refused (it introduced an open critical or high)" } else { "refused (no_go)" }
+        }
+        return @{ Found = $true; Sha = $ancestor; Distance = $asked; Verdict = $said;
+            Score = $answer.Decision.overall_risk_score }
+    }
+    return @{ Found = $false; Reason = "none of the $asked commit(s) before $Sha has a risk decision." }
+}
+
+function Format-NearestScored {
+    param([hashtable]$Nearest, [string]$Sha)
+    if (-not $Nearest.Found) { return "Nearest scored commit: none found - $($Nearest.Reason)" }
+    $short = $Nearest.Sha.Substring(0, 12)
+    return ("Nearest scored commit: $short, $($Nearest.Distance) commit(s) before ${Sha}: " +
+        "$($Nearest.Verdict) (score $($Nearest.Score)). It does not cover the " +
+        "$($Nearest.Distance) commit(s) after it.")
+}
+
 if ($Force -and -not $ForceReason) {
     throw "-Force needs -ForceReason. Overriding a no_go without recording why is the thing #60487 exists to prevent."
 }
@@ -360,6 +413,9 @@ switch ($verdict.State) {
     }
 
     "unjudged" {
+        $nearest = Find-NearestScored -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken `
+            -RepoPath (Join-Path $here "..\..")
+        $nearestLine = Format-NearestScored -Nearest $nearest -Sha $Tag
         Write-RiskBanner -Color Yellow `
             -Heading "NOT JUDGED - NO RISK DECISION EXISTS FOR $Tag" `
             -Lines @(
@@ -370,12 +426,16 @@ switch ($verdict.State) {
                 "fact from 'asked, and it was fine'. Most likely the oracle gate did",
                 "not run for this commit, or its decision never reached the lake.",
                 "",
+                $nearestLine,
+                "",
                 "Proceeding: the decided posture is fail open (#60487, D-126). A check",
                 "that cannot answer must not be worse than the no check before it."
             )
-        $riskSummary = "Risk gate: NOT JUDGED - nothing has ever scored $Tag. It shipped unassessed."
+        $riskSummary = "Risk gate: NOT JUDGED - nothing has ever scored $Tag. It shipped unassessed. $nearestLine"
         Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unjudged";
-            waited_minutes = $GateWaitMinutes } | Out-Null
+            waited_minutes = $GateWaitMinutes;
+            nearest_scored = $(if ($nearest.Found) { $nearest.Sha } else { $null });
+            nearest_verdict = $(if ($nearest.Found) { $nearest.Verdict } else { $null }) } | Out-Null
         Start-Sleep -Seconds 5
     }
 

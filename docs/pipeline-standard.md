@@ -147,6 +147,19 @@ does not pass its own tests." Five of TheHub's lanes had no `passed:` at all,
 so they spent the single shared worker producing findings about code already
 known not to work.
 
+**What it costs, and how that is watched.** A red quality gate also stops
+every commit reaching `oracle-gate`, so nothing is judged. From 2026-10-05 to
+10-12 a red `lint-and-types` let eight deploys ship unjudged. The backend's
+`gate-liveness` job (`mykronos.gate_liveness`, hourly, TheHub #60731) walks
+`mykronos/source` versions back to the newest commit with a risk decision. If
+the oldest commit after it has waited more than `gate_liveness_stale_hours`
+(6 by default), it sends a Slack warning. The warning names every job
+upstream of `oracle-gate` whose latest build failed, errored or is paused, or
+says none is. The wait is measured from the first build of that oldest
+commit. When Concourse or the decision store cannot be read, the run is
+recorded as failed with `could not check`, never as live. `deploy.ps1` names
+the nearest scored ancestor of an unjudged sha and its verdict.
+
 ### PS-5 — A capability is granted, or it has a lane, or it has neither
 
 `no_job` — the repository believes a capability is covered and nothing produces

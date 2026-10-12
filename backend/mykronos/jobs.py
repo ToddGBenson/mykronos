@@ -20,14 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import httpx2
 from sqlalchemy import select
 
-from mykronos import timeout_audit
+from mykronos import gate_liveness, timeout_audit
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
@@ -1550,5 +1550,77 @@ async def audit_pipeline_timeouts(
             "Timeout audit: clean, %s capped job(s) across %s pipeline(s)",
             report.capped_jobs,
             len(report.pipelines),
+        )
+    return report
+
+
+class GateLivenessIncompleteError(RuntimeError):
+    """The gate-liveness check could not read what it needs, so it has no verdict.
+
+    Raised for `TimeoutAuditIncompleteError`'s reason: `_every` records the run
+    as FAILED and platform health shows `could not check`. A return would
+    record a success, and a success is what a live gate looks like.
+    """
+
+
+async def check_gate_liveness(
+    concourse_url: str,
+    lookup: gate_liveness.Lookup,
+    *,
+    threshold_hours: float,
+    team: str = "main",
+    notifier: Notifier | None = None,
+    fetch: gate_liveness.Fetch | None = None,
+    now: datetime | None = None,
+    already_sent: str | None = None,
+) -> gate_liveness.GateLivenessReport:
+    """Say when main's commits stop reaching a gate decision (TheHub #60731).
+
+    Three outcomes:
+
+    * **Stale.** The oldest commit after the last decided one has waited more
+      than `threshold_hours`. One `warning` notification names it, the newest
+      judged commit, and every job upstream of `oracle-gate` whose latest build
+      failed, errored or is paused, or says that none is. The job succeeds,
+      because it ran and answered. It does not re-post a signature equal to
+      `already_sent`. Hourly repeats of the same news are how a channel stops
+      being read.
+    * **Could not check.** Concourse or the decision store could not be read.
+      `GateLivenessIncompleteError` is raised, after any stale notification has
+      been sent, so the run is recorded as failed. It is never reported as live.
+    * **Live.** Logged at info.
+    """
+    report = await asyncio.to_thread(
+        gate_liveness.check,
+        fetch or _concourse_fetch(concourse_url),
+        lookup,
+        threshold_hours=threshold_hours,
+        now=now or datetime.now(UTC),
+        team=team,
+    )
+
+    if report.stale:
+        lines = report.lines()
+        logger.warning("Gate liveness: stale: %s", " ".join(lines))
+        if notifier is not None and report.signature != already_sent:
+            await notifier.send(
+                Notification(
+                    title="MyKronos commits are not reaching the risk gate",
+                    detail="\n".join(lines),
+                    repo_full_name="",
+                    level="warning",
+                )
+            )
+
+    if not report.complete:
+        raise GateLivenessIncompleteError(
+            "could not check: " + "; ".join(scrub(entry) for entry in report.unreadable)
+        )
+
+    if not report.stale:
+        logger.info(
+            "Gate liveness: live, newest judged %s, %s commit(s) waiting",
+            (report.last_judged or "none")[:12],
+            len(report.unjudged),
         )
     return report

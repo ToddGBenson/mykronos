@@ -63,6 +63,7 @@ from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     AcceptanceSweepResult,
     audit_pipeline_timeouts,
+    check_gate_liveness,
     close_superseded_fixes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -608,6 +609,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 notifier=app.state.notifier,
             )
 
+        # The last signature sent, so a gate that stays stale is posted once
+        # and again only when what it would say changes.
+        gate_liveness_sent: dict[str, str | None] = {"signature": None}
+
+        async def _gate_liveness() -> None:
+            # Are main's commits still reaching a gate decision (TheHub
+            # #60731)? Stale notifies and names the red upstream lane;
+            # unreadable raises, so `job_runs` reads `could not check`.
+            oracle = OracleService(
+                app.state.catalog, app.state.buffer, app.state.oracle_policy
+            )
+            report = await check_gate_liveness(
+                settings.concourse_url,
+                oracle.decision_for_commit,
+                threshold_hours=settings.gate_liveness_stale_hours,
+                team=settings.concourse_team,
+                notifier=app.state.notifier,
+                already_sent=gate_liveness_sent["signature"],
+            )
+            gate_liveness_sent["signature"] = report.signature if report.stale else None
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -668,6 +690,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # unscheduled, platform health reads it as disabled instead.
             *(
                 [("timeout-audit", settings.timeout_audit_interval_seconds, _timeout_audit)]
+                if settings.concourse_url
+                else []
+            ),
+            *(
+                [("gate-liveness", settings.gate_liveness_interval_seconds, _gate_liveness)]
                 if settings.concourse_url
                 else []
             ),
