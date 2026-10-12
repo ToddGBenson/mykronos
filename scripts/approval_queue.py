@@ -248,6 +248,17 @@ def summary(request: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]
 # -- CLI ----------------------------------------------------------------------------
 
 
+def _as_list(value: Any) -> list[Any]:
+    """PowerShell's ConvertTo-Json writes a one-element array as its element:
+    one PR number arrives as `782`, one PR as an object. `approval-queue.ps1
+    782` crashed on that (2026-10-11). Absent is empty."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         sys.stderr.write(__doc__ or "")
@@ -269,10 +280,14 @@ def main(argv: list[str]) -> int:
     else:
         data = json.loads(Path(argv[2]).read_text(encoding="utf-8-sig"))
         if command == "order":
-            out = order(data.get("prs") or [], data.get("numbers") or None)
+            out = order(
+                _as_list(data.get("prs")), _as_list(data.get("numbers")) or None
+            )
         elif command == "route":
             out = route(
-                data["tier"], data.get("reviewer_mode"), data.get("delegations") or []
+                data["tier"],
+                data.get("reviewer_mode"),
+                _as_list(data.get("delegations")),
             )
         elif command == "summary":
             out = summary(data["request"], data["evidence"])

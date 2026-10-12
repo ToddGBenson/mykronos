@@ -146,10 +146,30 @@ function Invoke-Api([string] $Path, [string] $Method = 'Get', $Body = $null) {
 
 # -- GitHub and git ----------------------------------------------------------------------
 $PrFields = 'number,title,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,createdAt'
+function Get-RemoteHead([string] $Branch) {
+  <# The branch tip as the remote has it, asked of git rather than GitHub's
+     API: right after a push, `gh pr view` went on reporting the old head. #>
+  $out = & git -C $RepoPath ls-remote origin "refs/heads/$Branch" 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $out) { return '' }
+  return ((@($out)[0] -split "\s+")[0]).Trim()
+}
 function Get-Pr([int] $n) {
   $j = gh pr view $n --repo $Repo --json $PrFields
   if ($LASTEXITCODE -ne 0) { return $null }
-  return (($j -join "`n") | ConvertFrom-Json)
+  $p = (($j -join "`n") | ConvertFrom-Json)
+  # GitHub's PR object lags a push. On 2026-10-11 the queue pushed #781
+  # 3321e159 -> 635ad80c and then polled thirty minutes for a request on
+  # 3321e159, the head GitHub still reported, until it gave up. The branch
+  # tip from the remote is the head: the poll, the evidence match, the
+  # "head moved" check and --match-head-commit all read it from here.
+  if ($p -and -not $p.isCrossRepository) {
+    $tip = Get-RemoteHead $p.headRefName
+    if ($tip -and $tip -ne $p.headRefOid) {
+      Log ("  #{0}: GitHub still reports head {1}; the branch is at {2}, which is what counts" -f $n, "$($p.headRefOid)".Substring(0, [Math]::Min(8, "$($p.headRefOid)".Length)), $tip.Substring(0, 8)) 'DarkGray'
+      $p.headRefOid = $tip
+    }
+  }
+  return $p
 }
 function Invoke-Git([string[]] $GitArgs, [string] $Dir = $RepoPath) {
   $out = & git -C $Dir @GitArgs 2>&1
@@ -333,7 +353,13 @@ if ($SamplesOnly) { Invoke-SampleReview; return }
 if (-not $All -and -not $Pr) { throw 'Name the PRs in order (approval-queue.ps1 770 773 774), or pass -All.' }
 $open = gh pr list --repo $Repo --state open --limit 100 --json $PrFields
 if ($LASTEXITCODE -ne 0) { throw 'gh pr list failed' }
-$plan = Invoke-Helper 'order' @{ prs = @(($open -join "`n") | ConvertFrom-Json); numbers = $(if ($All) { @() } else { @($Pr) }) }
+# Typed arrays, not `$(if ...)`: a subexpression unrolls a one-element array,
+# so `approval-queue.ps1 782` sent `"numbers": 782` and the helper crashed
+# iterating an int (2026-10-11). approval_queue.py also accepts the collapsed
+# shapes, so a copy of either side out of step with the other still works.
+[int[]] $wanted = if ($All) { @() } else { @($Pr) }
+[object[]] $openPrs = @(($open -join "`n") | ConvertFrom-Json)
+$plan = Invoke-Helper 'order' @{ prs = $openPrs; numbers = $wanted }
 $results = [ordered]@{}
 foreach ($s in @($plan.skipped)) { $results["#$($s.number)"] = "skipped: $($s.reason)"; Log "#$($s.number): skipped - $($s.reason)" 'Yellow' }
 $remaining = [System.Collections.Generic.List[int]]::new()

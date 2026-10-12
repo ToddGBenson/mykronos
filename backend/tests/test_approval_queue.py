@@ -15,6 +15,7 @@ D-136 and later renamed it D-137, and union kept both headings.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -436,3 +437,65 @@ def test_a_union_merged_index_is_repaired_by_regenerating_it(tmp_path: Path) -> 
     assert decisions_index.check(r) == []
     script = (ROOT / "scripts" / "approval-queue.ps1").read_text(encoding="utf-8")
     assert "& $Python $indexer --check --root $wt" in script
+
+
+# -- One PR (2026-10-11: `approval-queue.ps1 782` crashed) ------------------------------
+
+
+def _cli_order(tmp_path: Path, payload: str) -> dict:
+    path = tmp_path / "in.json"
+    path.write_text(payload, encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "approval_queue.py"), "order", str(path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+def test_a_single_pr_in_powershells_collapsed_shape_is_ordered(tmp_path: Path) -> None:
+    """ConvertTo-Json wrote one PR as an object and one number as `782`;
+    `order` iterated the int and raised TypeError."""
+    one = json.dumps({"number": 782, "headRefName": "feat/x", "baseRefName": "main"})
+    plan = _cli_order(tmp_path, '{"prs": ' + one + ', "numbers": 782}')
+    assert plan == {"queue": [782], "skipped": []}
+
+
+def test_all_with_no_numbers_takes_every_open_pr(tmp_path: Path) -> None:
+    one = json.dumps({"number": 782, "headRefName": "feat/x", "baseRefName": "main"})
+    assert _cli_order(tmp_path, '{"prs": [' + one + '], "numbers": null}')["queue"] == [782]
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not on PATH")
+def test_the_queue_sends_one_pr_as_a_list(tmp_path: Path) -> None:
+    """The script's own lines, run for `approval-queue.ps1 782`, then handed
+    to `order` as the queue hands them."""
+    script = (ROOT / "scripts" / "approval-queue.ps1").read_text(encoding="utf-8")
+    lines = [
+        line
+        for line in script.splitlines()
+        if line.startswith(("[int[]] $wanted = ", "[object[]] $openPrs = "))
+    ]
+    assert len(lines) == 2, "the plan's input lines moved"
+    program = "\n".join(
+        [
+            "$All = $false",
+            "$Pr = @(782)",
+            """$open = '[{"number":782,"headRefName":"feat/x","baseRefName":"main"}]'""",
+            *lines,
+            "ConvertTo-Json -InputObject @{ prs = $openPrs; numbers = $wanted } -Depth 5 -Compress",
+        ]
+    )
+    sent = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", program],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+
+    assert json.loads(sent)["numbers"] == [782]
+    assert isinstance(json.loads(sent)["prs"], list)
+    assert _cli_order(tmp_path, sent)["queue"] == [782]
