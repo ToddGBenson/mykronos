@@ -423,7 +423,8 @@ async def story_evidence(
         if name == "runs":
             evidence.runs = [r for r in body.get("runs") or [] if isinstance(r, dict)]
         elif name == "notes":
-            docs = body.get("phase_docs") if isinstance(body.get("phase_docs"), dict) else {}
+            raw_docs = body.get("phase_docs")
+            docs = raw_docs if isinstance(raw_docs, dict) else {}
             block = docs.get("verification")
             evidence.verification = block if isinstance(block, dict) else None
         else:
