@@ -62,6 +62,7 @@ from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     AcceptanceSweepResult,
+    audit_pipeline_timeouts,
     close_superseded_fixes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -596,6 +597,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
+        async def _timeout_audit() -> None:
+            # Live Concourse history against the committed caps (TheHub
+            # #60729). A finding notifies; unread history raises, so this
+            # job's row in `job_runs` reads `could not audit` and not clean.
+            await audit_pipeline_timeouts(
+                settings.concourse_url,
+                settings.pipeline_definitions_dir,
+                team=settings.concourse_team,
+                notifier=app.state.notifier,
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -651,6 +663,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("governance", settings.governance_sweep_interval_seconds, _governance),
             ("pull-request-stamps", 120, _pull_request_stamps),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
+            # Only with a Concourse to read. Without one the job would fail
+            # every day for a reason that is configuration, not a finding;
+            # unscheduled, platform health reads it as disabled instead.
+            *(
+                [("timeout-audit", settings.timeout_audit_interval_seconds, _timeout_audit)]
+                if settings.concourse_url
+                else []
+            ),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (

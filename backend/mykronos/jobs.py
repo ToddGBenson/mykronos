@@ -17,15 +17,17 @@ that repo exactly as it was for the next run to retry.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import httpx2
 from sqlalchemy import select
 
+from mykronos import timeout_audit
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
@@ -1461,3 +1463,92 @@ async def sweep_governance(
             session.commit()
 
     return result
+
+
+class TimeoutAuditIncompleteError(RuntimeError):
+    """The timeout audit could not read Concourse, so it has no verdict.
+
+    Raised rather than returned so `_every` records the run as FAILED in
+    `job_runs` and platform health shows `could not audit` beside the job. A
+    return would record a success, and a success is what a clean estate looks
+    like.
+    """
+
+
+def _concourse_fetch(concourse_url: str, *, timeout: float = 20.0) -> timeout_audit.Fetch:
+    base = concourse_url.rstrip("/")
+
+    def fetch(path: str) -> Any:
+        response = httpx2.get(f"{base}{path}", timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+
+    return fetch
+
+
+async def audit_pipeline_timeouts(
+    concourse_url: str,
+    pipeline_dir: Path,
+    *,
+    team: str = "main",
+    notifier: Notifier | None = None,
+    fetch: timeout_audit.Fetch | None = None,
+) -> timeout_audit.TimeoutAuditReport:
+    """Grade every committed task cap against live Concourse history (TheHub #60729).
+
+    `test_timeout_audit.py` used to be the only automatic run of this audit,
+    and it graded LIVE history from the unit tier -- so `main` went red the
+    day one job had a slow run. That test is hermetic now, and this is where
+    the live verdict went: a daily job, off every build lane, that cannot turn
+    an unrelated lane red.
+
+    Three outcomes, and they stay three:
+
+    * **Caps to raise.** One notification naming each `pipeline/job`, its
+      current cap and the suggested one, at `warning`. The job itself
+      succeeds: the audit ran and answered.
+    * **Could not audit.** Concourse, a pipeline, or a job's builds could not
+      be read. `TimeoutAuditIncompleteError` is raised, after any findings from the
+      readable part have been sent, so the run is recorded as failed with
+      `could not audit` as its error. Not paged, for `self_check`'s reason: a
+      stopped Concourse fails loudly at its next build.
+    * **Clean.** Logged at info. Quiet when healthy.
+    """
+    report = await asyncio.to_thread(
+        timeout_audit.audit,
+        pipeline_dir,
+        fetch or _concourse_fetch(concourse_url),
+        team=team,
+    )
+
+    if report.unwaived:
+        lines = [problem.line() for problem in report.unwaived]
+        logger.warning("Timeout audit: caps to raise: %s", "; ".join(lines))
+        if notifier is not None:
+            await notifier.send(
+                Notification(
+                    title="Pipeline timeout caps to raise",
+                    detail=(
+                        "A task cap sits below, or within 30% of, what its job "
+                        "has actually taken. A cap that fires kills a working "
+                        "build and reads as the job's own failure (PS-7).\n"
+                        + "\n".join(lines)
+                        + "\nFull table: python scripts/audit_pipeline_timeouts.py"
+                    ),
+                    repo_full_name="",
+                    level="warning",
+                )
+            )
+
+    if not report.complete:
+        raise TimeoutAuditIncompleteError(
+            "could not audit: " + "; ".join(scrub(entry) for entry in report.unreadable)
+        )
+
+    if not report.unwaived:
+        logger.info(
+            "Timeout audit: clean, %s capped job(s) across %s pipeline(s)",
+            report.capped_jobs,
+            len(report.pipelines),
+        )
+    return report

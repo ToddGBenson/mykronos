@@ -182,6 +182,15 @@ Numbers come from measurement — comfortably above the worst observed run — n
 from a target. The point is that a hung task releases the worker, not that a
 slow one is punished.
 
+**How it stays measured.** The backend's `timeout-audit` job
+(`mykronos.timeout_audit`, daily, TheHub #60729) grades every committed task
+cap against live Concourse history. A cap below, or within 30% of, its job's
+worst run raises a Slack notification naming `pipeline/job`, the cap and a
+suggested one. When Concourse cannot be read the run is recorded as failed with
+`could not audit`, which platform health shows beside the job; it is never
+reported as clean. `python scripts/audit_pipeline_timeouts.py` prints the full
+table by hand.
+
 ### PS-8 — Pin the bytes, not just the version
 
 Any binary a task downloads and executes is checksummed. Any installer is a
