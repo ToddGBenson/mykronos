@@ -185,6 +185,7 @@ def build_trace(
         "scan": any(c.scans for c, _ in out),
         "deploy": any(went_out for _, went_out in out),
     }
+    first_missing: str | None
     if commits is None:
         first_missing = "commits could not be read from GitHub"
     else:
