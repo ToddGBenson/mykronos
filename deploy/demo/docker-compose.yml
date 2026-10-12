@@ -121,9 +121,17 @@ services:
         # production compose, in a second file, which is the argument for
         # the image declaring its own healthcheck and compose not overriding
         # it at all.
+        #
+        # `/api/healthz`, not `/` (TheHub #60735). `MYKRONOS_GATE_TOKEN` is
+        # set above, so since #753 every other path is behind the perimeter
+        # gate and answers a token-less healthcheck with 401: the frontend
+        # sat at `unhealthy` and Demo and DAST failed on every main commit
+        # from 2026-10-05. `/api/healthz` is the gate's one exemption, and
+        # the image's own HEALTHCHECK. Kept as an override only for the
+        # faster interval; `test_demo_healthcheck.py` holds it to that path.
         - /nodejs/bin/node
         - -e
-        - "fetch('http://localhost:3100/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - "fetch('http://localhost:3100/api/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 5s
       timeout: 3s
       retries: 24
