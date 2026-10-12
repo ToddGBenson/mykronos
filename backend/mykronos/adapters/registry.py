@@ -107,6 +107,12 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         AdapterSpec("dast", "zap-demo", dast_zap.normalize, "*.json", "OWASP ZAP (demo)"),
         AdapterSpec("dast", "zap-prod", dast_zap.normalize, "*.json", "OWASP ZAP (production)"),
         AdapterSpec("dast", "zap-staging", dast_zap.normalize, "*.json", "OWASP ZAP (staging)"),
+        # The same scanner through the public edge (TheHub #60708). Its own
+        # tool, not a flag on `zap`: reconciliation partitions on the tool, and
+        # an edge scan's silence about an origin-only finding is not evidence.
+        AdapterSpec(
+            "dast", "zap-edge", dast_zap.normalize_edge, "*.json", "OWASP ZAP (public edge)"
+        ),
         AdapterSpec("cloud", "prowler", cloud_generic.normalize, "*.json", "Prowler"),
         AdapterSpec("cloud", "generic", cloud_generic.normalize, "*.json", "Generic OCSF"),
         # Two tools, one adapter: nmap says a port is open, nuclei says a

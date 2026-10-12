@@ -30,6 +30,14 @@ thehub-demo-url: http://192.168.0.14:8002
 thehub-prod-url: http://192.168.0.14:8000
 thehub-staging-url: http://192.168.0.14:8081
 
+# The public hostnames, through Cloudflare, for `dast-edge` (TheHub #60708).
+# HTTPS names rather than addresses, on purpose: the point is to go out to the
+# edge and back through the tunnel, which an address on the LAN never does.
+# Garden resolves through 1.1.1.1, so the host's hosts-file pin of
+# mykronos.toddbenson.net to 127.0.0.1 does not reach a task.
+thehub-public-url: https://hub.toddbenson.net
+mykronos-public-url: https://mykronos.toddbenson.net
+
 # TheHub's own API, where this pipeline reports its stages back to.
 thehub-url: http://192.168.0.14:8000
 thehub-release-bucket: thehub-releases

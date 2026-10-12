@@ -166,6 +166,12 @@ EXPLAINED_DIVERGENCE = {
         "would make that permanent. This entry is NOT interim any more; it "
         "stands until TheHub's copy changes to match"
     ),
+    "dast-edge": (
+        "ours only, added by TheHub #60708 (D-154): production scanned through "
+        "Cloudflare at the public hostname, beside `dast-prod` at the origin. "
+        "Time-triggered and ungated for `dast-prod`'s reason. TheHub's copy "
+        "predates it; this stands until that copy gains the job or is retired"
+    ),
     "deploy-prod": (
         "ours deleted it; TheHub's copy still has it. DECIDED 2026-09-18 by "
         "the operator (#59990/#59999/#60063): the job last ran 2026-08-19 and "

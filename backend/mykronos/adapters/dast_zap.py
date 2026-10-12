@@ -161,15 +161,21 @@ _UUID_SEGMENT = re.compile(
 _HEX_SEGMENT = re.compile(r"\A[0-9a-fA-F]{12,}\Z")
 
 
-def _route_of(uri: str) -> str:
+def _route_of(uri: str, *, keep_origin: bool = False) -> str:
     """Reduce a scanned URI to the route it exercised (see module docstring).
 
     Drops the query string and templates ephemeral path segments. Everything
     that survives is a decision the *application* made about its own shape, so
     it changes when the endpoint changes and not before.
+
+    `keep_origin` prefixes the scheme and host, for `normalize_edge`.
     """
+    origin = ""
     try:
-        path = urlparse(uri).path or "/"
+        parsed = urlparse(uri)
+        path = parsed.path or "/"
+        if keep_origin and parsed.scheme and parsed.netloc:
+            origin = f"{parsed.scheme}://{parsed.netloc}".lower()
     except ValueError:
         path = uri
 
@@ -179,7 +185,7 @@ def _route_of(uri: str) -> str:
         else segment
         for segment in path.split("/")
     ]
-    return "/".join(segments) or "/"
+    return origin + ("/".join(segments) or "/")
 
 
 #: The alert's own name opening with the scanner's name. ZAP titles say what
@@ -249,6 +255,33 @@ def _rule_id(alert_ref: str, cwe: str) -> str:
 
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     """Parse a ZAP baseline JSON report."""
+    return _normalize(raw_output, context, keep_origin=False)
+
+
+def normalize_edge(raw_output: bytes, context: ScanContext) -> AdapterResult:
+    """Parse a ZAP baseline report taken through a public edge (TheHub #60708).
+
+    The same report, the same rules, one difference: the location keeps the
+    scheme and host, so `https://hub.example.net/` and the origin lane's `/`
+    are two findings rather than one.
+
+    The origin lanes key on the route alone, and that is right for them --
+    demo, staging and prod serve one application at addresses that are not
+    properties of it. The edge is different in kind. Cloudflare sits between
+    the scanner and the application and can add, strip or rewrite a header the
+    origin sends, so "the edge and the origin disagree about this route" is the
+    result the edge lane exists to produce. With a shared identity that
+    disagreement would be one row, re-described by whichever lane ran last.
+
+    Registered as its own tool (`zap-edge`) rather than as a flag, because
+    absence reconciliation, carry-forward and stranding all partition on the
+    tool: two `zap-edge` scans that do not see an origin-only finding are not
+    evidence that it was fixed, and with one tool name they would be.
+    """
+    return _normalize(raw_output, context, keep_origin=True)
+
+
+def _normalize(raw_output: bytes, context: ScanContext, *, keep_origin: bool) -> AdapterResult:
     result = AdapterResult()
 
     try:
@@ -341,7 +374,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             for instance in instances:
                 uri = str(instance.get("uri") or "")
                 method = str(instance.get("method") or "GET").upper()
-                route = _route_of(uri)
+                route = _route_of(uri, keep_origin=keep_origin)
 
                 result.findings.append(
                     FindingSubmission(
