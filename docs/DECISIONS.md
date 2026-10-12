@@ -23,6 +23,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
 - [D-153 — The Product Owner's rank is TheHub's `po_rank`](decisions/D-153-the-product-owners-rank-is-thehubs-po-rank.md)
 - [D-157 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-157-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
+- [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
 
 <!-- decisions-index:end -->
 
