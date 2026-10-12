@@ -488,6 +488,46 @@ class TestRetiredTables:
         db.create_all()
         assert open_db().drop_retired_tables() == []
 
+    def test_a_hostile_name_cannot_ride_the_table_retirement_path(self, open_db) -> None:
+        """`DROP TABLE` interpolates the name too (TheHub #60733).
+
+        SAST's avoid-sqlalchemy-text finding on this statement was dispositioned
+        false_positive on the strength of `_identifier`; this is the test that
+        disposition rests on, as `..._the_retirement_path` is for columns.
+
+        The table has to really exist, or the "is it there?" guard skips it
+        before any SQL is built and the check proves nothing. Every statement
+        the engine sends is recorded, so "refused before any SQL runs" is
+        measured rather than inferred from the exception.
+        """
+        from sqlalchemy import event
+
+        hostile = "x; DROP TABLE repo_onboardings; --"
+        db = open_db()
+        db.create_all()
+        with db.engine.begin() as connection:
+            connection.execute(text(f'CREATE TABLE "{hostile}" (id INTEGER)'))
+
+        sent: list[str] = []
+
+        def record(_conn: object, _cursor: object, statement: str, *_args: object) -> None:
+            sent.append(statement)
+
+        event.listen(db.engine, "before_cursor_execute", record)
+        try:
+            with (
+                patch("mykronos.db.session.RETIRED_TABLES", (hostile,)),
+                pytest.raises(ValueError, match="not a plain SQL identifier"),
+            ):
+                db.drop_retired_tables()
+        finally:
+            event.remove(db.engine, "before_cursor_execute", record)
+
+        assert not [s for s in sent if "DROP" in s.upper()]
+        tables = inspect(db.engine).get_table_names()
+        assert "repo_onboardings" in tables
+        assert hostile in tables
+
     def test_every_retired_table_is_gone_from_the_models(self) -> None:
         """Declared and retired at once would create it and drop it on every
         start, taking its rows each time."""
