@@ -4425,7 +4425,7 @@ jobs:
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
                 python3 -m mykronos.upload \
-                  --capability dast --tool zap \
+                  --capability dast --tool zap-demo \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
@@ -4923,7 +4923,7 @@ jobs:
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
                 python3 -m mykronos.upload \
-                  --capability dast --tool zap \
+                  --capability dast --tool zap-prod \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
@@ -5207,7 +5207,7 @@ jobs:
 
 
                 python3 -m mykronos.upload \
-                  --capability dast --tool zap \
+                  --capability dast --tool zap-staging \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \

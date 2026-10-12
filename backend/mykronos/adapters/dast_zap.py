@@ -94,6 +94,22 @@ lane-quality signal and not a release blocker.
 For the same reason the rule identity comes from `alertRef`, not `pluginid`:
 several alerts can share a plugin *and* a CWE, and only `alertRef` tells them
 apart.
+
+**One environment per lane (D-155, TheHub #60723).** TheHub's three LAN lanes
+-- `dast-demo`, `dast-prod`, `dast-staging` -- all uploaded as `zap`, and the
+route carries no host, so a route all three serve was one finding, and absence
+reconciliation (which partitions on the tool) treated their runs as one lane:
+two prod runs closed a staging-only finding as `fixed` and the next staging
+run reopened it. Each lane now uploads under its own tool name
+(`fingerprint.DAST_ENVIRONMENT_TOOLS`), which separates the cleanup lanes, and
+the environment becomes the finding's `symbol`, which separates the
+identities. The environment, not the host: these are one application at LAN
+addresses that are not properties of it, and a port that moves (WinNAT
+reservations have moved them) must not re-key every finding the way the
+query string did in #274. The finding records that its old symbol was none
+(`IDENTITY_KEY`), which is how the API recovers the id it had as `zap` and
+moves the decision made about it (D-139's mechanism). Under plain `zap` --
+`mykronos.yml`'s lane -- nothing changes.
 """
 
 from __future__ import annotations
@@ -105,6 +121,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mykronos.adapters.base import AdapterResult, ScanContext
+from mykronos.fingerprint import DAST_ENVIRONMENT_TOOLS, FINGERPRINT_V3_ROUTE_ENV, IDENTITY_KEY
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
 logger = logging.getLogger(__name__)
@@ -257,6 +274,14 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     #: `deploy/concourse/pipelines/thehub.yml` passes no `--tool-version`, and
     #: `detect_tool_version` only recovers one from SARIF, which ZAP is not.
     running_version = str(document.get("@version") or "").strip()
+    #: The environment this lane scans, from the tool it uploads under (D-155).
+    #: None for plain `zap`, whose identity is left exactly as it was.
+    environment = DAST_ENVIRONMENT_TOOLS.get(context.tool_name)
+    identity = (
+        {IDENTITY_KEY: {"rule": FINGERPRINT_V3_ROUTE_ENV, "v2_symbol": None}}
+        if environment
+        else {}
+    )
 
     for site in document.get("site") or []:
         if not isinstance(site, dict):
@@ -336,9 +361,13 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                         # and changes when it does. Deliberately not the
                         # matched evidence, which varies per response.
                         code_snippet=f"{method} {route}",
+                        # The environment that served the route (D-155). It
+                        # is what encloses the location, so it is the symbol.
+                        symbol=environment,
                         raw_finding_json={
                             **{k: v for k, v in alert.items() if k != "instances"},
                             "instance": instance,
+                            **identity,
                         },
                     )
                 )
