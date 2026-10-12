@@ -61,12 +61,9 @@ function Read-EnvValue {
     return $line.Line.Split('=', 2)[1].Trim()
 }
 
-$mc = Join-Path $here "..\concourse\bin\mc.exe"
-if (-not (Test-Path $mc)) {
-    Write-Host "Fetching mc.exe..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri "https://dl.min.io/client/mc/release/windows-amd64/mc.exe" `
-        -OutFile $mc -UseBasicParsing
-}
+# Pinned and digest-verified; dl.min.io returns 410 Gone. See Get-PinnedMc.ps1.
+. (Join-Path $here "..\concourse\Get-PinnedMc.ps1")
+$mc = Get-PinnedMc
 
 $uri = [System.Uri]$Endpoint
 $creds = "{0}:{1}" -f

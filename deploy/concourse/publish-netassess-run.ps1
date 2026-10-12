@@ -91,12 +91,9 @@ $version = "{0}.{1}.{2}" -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3]
 $objectName = "netassess-$version.zip"
 
 # --- mc -----------------------------------------------------------------
-$mc = Join-Path $PSScriptRoot "bin\mc.exe"
-if (-not (Test-Path $mc)) {
-    Write-Host "Fetching mc.exe..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri "https://dl.min.io/client/mc/release/windows-amd64/mc.exe" `
-        -OutFile $mc -UseBasicParsing
-}
+# Pinned and digest-verified; dl.min.io returns 410 Gone. See Get-PinnedMc.ps1.
+. (Join-Path $PSScriptRoot "Get-PinnedMc.ps1")
+$mc = Get-PinnedMc
 
 $user = Read-EnvValue $stackEnv "MINIO_ROOT_USER"
 $password = Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD"
