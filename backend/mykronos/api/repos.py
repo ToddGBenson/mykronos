@@ -558,8 +558,10 @@ class DeploymentProbeUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    #: An unauthenticated GET returning JSON with a string at `build.sha`.
-    #: mykronos serves it at /healthz and TheHub at /health. Empty clears the
+    #: A GET returning JSON with a string at `build.sha`. The probe sends no
+    #: credential, and neither mykronos's /healthz (D-157) nor TheHub's
+    #: /health (#60709) publishes the sha any more, so either reports
+    #: `unparsed` until the probe can authenticate. Empty clears the
     #: probe and returns the repository to `not_configured`, which is a real
     #: state and not a failure: most repositories have no deployment this
     #: platform can reach.
