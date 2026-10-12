@@ -52,7 +52,15 @@ def severity_from_security_score(score: float) -> Severity:
     return Severity.INFO
 
 
-def _clean_uri(uri: str, workspace: Path | None = None) -> str:
+#: Concourse runs a task in `/tmp/build/<handle>/` with each input mounted
+#: beside it by name, and every pipeline here names the checkout `source`. The
+#: handle differs per container, so the analyser's task and the upload's task
+#: need not share one, and `--workspace` cannot be relied on to match it
+#: (TheHub #60734).
+_CONCOURSE_BUILD_DIR = re.compile(r"^tmp/build/[0-9a-f]+/source/(?P<rest>.+)$")
+
+
+def _clean_uri(uri: str, workspace: Path | None = None, *, strip_build_dir: bool = True) -> str:
     """Normalise a SARIF artifact URI to a repo-relative path.
 
     This used to only strip the scheme, which left an absolute path absolute.
@@ -90,7 +98,30 @@ def _clean_uri(uri: str, workspace: Path | None = None) -> str:
     if match:
         uri = match.group("rest")
 
+    # The same fallback for Concourse. Before it, PSScriptAnalyzer findings
+    # were stored as `tmp/build/e542859e/source/scripts/...`: not a path in
+    # the repository, so no snippet could be read and every one of them was
+    # keyed on its line. `strip_build_dir=False` reproduces that path, which
+    # is the identity those findings already have in the lake (see
+    # `legacy_file_path`).
+    if strip_build_dir:
+        build = _CONCOURSE_BUILD_DIR.match(uri)
+        if build:
+            uri = build.group("rest")
+
     return uri
+
+
+def legacy_file_path(uri: str, workspace: Path | None, file_path: str | None) -> str | None:
+    """The path this URI was stored under before the Concourse prefix was
+    stripped, when that differs from `file_path` (TheHub #60734).
+
+    An adapter records it so ingestion can link the finding to the id it
+    already has, rather than the lake counting one finding fixed and the same
+    one introduced (`snippet.v2_identity`, D-160).
+    """
+    legacy = _clean_uri(uri, workspace, strip_build_dir=False) or None
+    return legacy if legacy != file_path else None
 
 
 def _rule_index(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -421,7 +452,9 @@ def _convert_result(
         physical = locations[0].get("physicalLocation") or {}
 
     artifact = physical.get("artifactLocation") or {}
-    file_path = _clean_uri(str(artifact.get("uri") or ""), context.workspace) or None
+    raw_uri = str(artifact.get("uri") or "")
+    file_path = _clean_uri(raw_uri, context.workspace) or None
+    legacy_path = legacy_file_path(raw_uri, context.workspace, file_path)
 
     region = physical.get("region") or {}
     context_region = physical.get("contextRegion") or {}
@@ -438,6 +471,19 @@ def _convert_result(
     )
 
     symbol, v2_symbol = resolved.symbol, resolved.v2_symbol
+    v2_snippet = resolved.v2_snippet
+    if legacy_path:
+        # Stored under Concourse's build directory until TheHub #60734. The
+        # predecessor is the id it has in the lake, so resolve it as it was.
+        before = best_snippet(
+            context_region_snippet=(context_region.get("snippet") or {}).get("text"),
+            region_snippet=(region.get("snippet") or {}).get("text"),
+            workspace=context.workspace,
+            file_path=legacy_path,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        v2_symbol, v2_snippet = before.symbol, before.snippet
 
     # A logical location from the tool beats our heuristic every time — under
     # either identity rule, so it is never a reason for a finding to re-key.
@@ -463,7 +509,8 @@ def _convert_result(
             raw,
             snippet=resolved.snippet,
             symbol=symbol,
-            v2_snippet=resolved.v2_snippet,
+            v2_snippet=v2_snippet,
             v2_symbol=v2_symbol,
+            v2_file_path=legacy_path,
         ),
     )

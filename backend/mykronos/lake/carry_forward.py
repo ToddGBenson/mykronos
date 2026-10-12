@@ -144,6 +144,11 @@ class _Finding:
             self.tool_name,
         )
 
+    @property
+    def lane(self) -> tuple[str, ...]:
+        """`group` without the file: where an exact link may reach (D-160)."""
+        return (self.asset_id, self.capability, self.rule_id, self.branch, self.tool_name)
+
 
 @dataclass(frozen=True)
 class Carried:
@@ -253,8 +258,12 @@ def _rows(catalog: Catalog) -> list[Any]:
                f.last_seen_scan_run_id = n.scan_run_id AS reported_now,
                f.repo_full_name, f.symbol, f.line_start,
                -- Only a re-keyed row can name a predecessor; reading the
-               -- raw record of every other row would be wasted I/O.
+               -- raw record of every other row would be wasted I/O. A
+               -- `v1-line` row names one only when its path was re-keyed
+               -- out of a Concourse build directory (TheHub #60734).
                CASE WHEN f.fingerprint_version IN ('v3-snippet', 'v3-route-env')
+                      OR (f.fingerprint_version = 'v1-line'
+                          AND contains(f.raw_finding_json, '"v2_file_path"'))
                     THEN f.raw_finding_json END AS raw_finding_json
         FROM findings f
         JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
@@ -423,39 +432,47 @@ def match(
     pairs: list[tuple[_Finding, _Finding, float, float]] = []
     refusals: list[tuple[_Finding, str]] = []
 
+    # Exact links first (D-139): the successor's adapter recorded this
+    # predecessor's id. One claimant is the same finding, re-keyed. Two are
+    # findings the old rule had collapsed into one row, and the decision about
+    # that row cannot be placed on either without someone looking — the
+    # narrow rule `rekey_containers` follows too.
+    #
+    # Across the whole lane, not within one file: a finding re-keyed out of a
+    # Concourse build directory (TheHub #60734, D-160) changed its path, and
+    # the path is what `group` adds to the lane. The link is still exact —
+    # the predecessor's id is hashed from the inputs the adapter recorded —
+    # so nothing about it is a similarity judgement across files.
+    claims: dict[str, list[_Finding]] = {}
+    for successor in sorted(present, key=lambda f: f.finding_id):
+        if successor.predecessor_id:
+            claims.setdefault(successor.predecessor_id, []).append(successor)
+    linked: set[str] = set()
+    for predecessor in sorted(gone, key=lambda f: f.finding_id):
+        claimants = [
+            c for c in claims.get(predecessor.finding_id, []) if c.lane == predecessor.lane
+        ]
+        if len(claimants) == 1:
+            pairs.append((predecessor, claimants[0], 1.0, 0.0))
+            linked |= {predecessor.finding_id, claimants[0].finding_id}
+        elif claimants:
+            linked.add(predecessor.finding_id)
+            if predecessor.status in HUMAN_DISPOSITIONS:
+                refusals.append((predecessor, _COLLAPSED.format(len(claimants))))
+
     by_group: dict[tuple[str, ...], list[_Finding]] = {}
     for finding in present:
-        by_group.setdefault(finding.group, []).append(finding)
+        if finding.finding_id not in linked:
+            by_group.setdefault(finding.group, []).append(finding)
 
     grouped_gone: dict[tuple[str, ...], list[_Finding]] = {}
     for finding in gone:
-        grouped_gone.setdefault(finding.group, []).append(finding)
+        if finding.finding_id not in linked:
+            grouped_gone.setdefault(finding.group, []).append(finding)
 
     for group, missing in sorted(grouped_gone.items()):
         free = sorted(by_group.get(group, []), key=lambda f: f.finding_id)
         outstanding = sorted(missing, key=lambda f: f.finding_id)
-
-        # Exact links first (D-139): the successor's adapter recorded this
-        # predecessor's id. One claimant is the same finding, re-keyed. Two
-        # are findings the old rule had collapsed into one row, and the
-        # decision about that row cannot be placed on either without someone
-        # looking — the narrow rule `rekey_containers` follows too.
-        claims: dict[str, list[_Finding]] = {}
-        for successor in free:
-            if successor.predecessor_id:
-                claims.setdefault(successor.predecessor_id, []).append(successor)
-        linked: set[str] = set()
-        for predecessor in outstanding:
-            claimants = claims.get(predecessor.finding_id, [])
-            if len(claimants) == 1:
-                pairs.append((predecessor, claimants[0], 1.0, 0.0))
-                linked |= {predecessor.finding_id, claimants[0].finding_id}
-            elif claimants:
-                linked.add(predecessor.finding_id)
-                if predecessor.status in HUMAN_DISPOSITIONS:
-                    refusals.append((predecessor, _COLLAPSED.format(len(claimants))))
-        free = [f for f in free if f.finding_id not in linked]
-        outstanding = [f for f in outstanding if f.finding_id not in linked]
 
         scores: dict[tuple[str, str], float] = {}
         for predecessor in outstanding:

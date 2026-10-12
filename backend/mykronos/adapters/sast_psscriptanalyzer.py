@@ -34,7 +34,7 @@ import logging
 from typing import Any
 
 from mykronos.adapters.base import AdapterResult, ScanContext
-from mykronos.adapters.sarif import _clean_uri
+from mykronos.adapters.sarif import _clean_uri, legacy_file_path
 from mykronos.adapters.snippet import best_snippet, v2_identity
 from mykronos.schemas import FindingSubmission, ScanStatus, Severity
 
@@ -106,6 +106,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         # reimplemented, so the knowledge of what a runner path looks like
         # lives in one place.
         file_path = _clean_uri(raw_path, context.workspace)
+        legacy_path = legacy_file_path(raw_path, context.workspace, file_path)
 
         line = record.get("Line")
         line_start = line if isinstance(line, int) else None
@@ -119,6 +120,20 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             file_path=file_path,
             start_line=line_start,
             end_line=line_start,
+        )
+        # The id this finding already has, if it was stored under Concourse's
+        # build directory (TheHub #60734): resolved exactly as it was then.
+        before = (
+            best_snippet(
+                context_region_snippet=None,
+                region_snippet=None,
+                workspace=context.workspace,
+                file_path=legacy_path,
+                start_line=line_start,
+                end_line=line_start,
+            )
+            if legacy_path
+            else None
         )
 
         result.findings.append(
@@ -139,8 +154,9 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                     record,
                     snippet=resolved.snippet,
                     symbol=resolved.symbol,
-                    v2_snippet=resolved.v2_snippet,
-                    v2_symbol=resolved.v2_symbol,
+                    v2_snippet=before.snippet if before else resolved.v2_snippet,
+                    v2_symbol=before.symbol if before else resolved.v2_symbol,
+                    v2_file_path=legacy_path,
                 ),
             )
         )
