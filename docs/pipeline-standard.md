@@ -55,7 +55,7 @@ spec'd, and neither is a drift to fix:
 | | `mykronos` | `thehub` |
 |---|---|---|
 | Where the gate sits | after the static + container scans, before `promote` | after DAST, so runtime findings reach the score (spec 16 §3) |
-| Where `aegis` sits | **before** the gate, so insider risk is an Oracle input | **after** the gate, as the last check before a human promotes (spec 16 §3) |
+| Where `aegis` sits | **before** the gate, so insider risk is an Oracle input | **nowhere** — the `insider` lane is deleted ([D-150](DECISIONS.md)); it sat after the gate (spec 16 §3) |
 
 TheHub's ordering buys runtime findings in the score and pays for it by
 dropping insider risk out of the score. Spec 16 §3 states that trade. It is
@@ -444,7 +444,8 @@ These are named rather than done, each with the reason.
    `v3`. That is the check working. TheHub's new `qa` lane and its
    `prompt-evals` reporting need the new tag before they turn green; the
    mykronos lanes run their reporter from the checkout and do not.
-3. **Aegis is not an Oracle input for TheHub.** Moving `insider` alongside the
+3. **Closed by [D-150](DECISIONS.md): TheHub has no insider lane at all.**
+   What follows is kept as the record. **Aegis is not an Oracle input for TheHub.** Moving `insider` alongside the
    security lanes and into `oracle-gate`'s `passed:` would give TheHub both —
    insider risk in the score *and* a gate before the human promotes, since
    `deploy-prod` would then pass from `oracle-gate`. It contradicts spec 16 §3

@@ -21,7 +21,11 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 
 - [D-149 — Pull requests go through one approval queue; each decision is its own file](decisions/D-149-approval-queue-and-one-file-per-decision.md)
 - [D-152 — A pull request's evidence is compared against its base branch as it is now](decisions/D-152-pull-request-evidence-is-compared-against-the-current-base.md)
+- [D-153 — The Product Owner's rank is TheHub's `po_rank`](decisions/D-153-the-product-owners-rank-is-thehubs-po-rank.md)
 - [D-154 — The public edge is scanned as its own DAST tool, `zap-edge`](decisions/D-154-the-public-edge-is-its-own-dast-tool.md)
+- [D-155 — Each DAST environment is its own lane and its own identity](decisions/D-155-each-dast-environment-is-its-own-lane-and-identity.md)
+- [D-157 — `/healthz` serves the build SHA only with the perimeter token](decisions/D-157-healthz-serves-the-build-sha-only-with-the-perimeter-token.md)
+- [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
 
 <!-- decisions-index:end -->
 
@@ -5935,6 +5939,9 @@ the Product Owner's ordering is MyKronos's `po_backlog_rank` table, keyed by
 repository and story id. Moving it into TheHub needs a migration there, which
 ships alone, so it is B-068.
 
+> **Superseded by D-153 (2026-10-11):** rank is now TheHub's `po_rank`, and
+> `po_backlog_rank` is backfilled and dropped.
+
 **A sprint pull switches autonomy off first.** A sprint move arms autonomous
 dispatch in TheHub. The pull calls `toggle-autonomy` first and moves the
 story only if that succeeded, so a failure between the two calls leaves the
@@ -6543,6 +6550,43 @@ schema", because that would hide the procedural files this exists to keep.
 - *Putting PLpgSQL in `NOT_SOURCE` wholesale.* It would hide the 34
   procedural files along with the DDL.
 
+## D-150 — TheHub's pipeline has no insider-risk lane
+
+**2026-10-11.** **Status:** Decided, implemented (TheHub #60653, operator option A)
+**Spec:** [16 §6](../specs/16-thehub-delivery-pipeline.md)
+
+**The rule.** `deploy/concourse/pipelines/thehub.yml` carries no `insider`
+job. Nothing in it gates on one, no group lists one, and
+`test_pipeline_gate_wiring.py::test_a_retired_lane_stays_retired` keeps it
+that way. The deepest job in the chain is `oracle-gate`, still
+`passed: [deploy-demo]`, so every scanning lane still precedes it.
+`mykronos.yml`'s `insider` job is untouched: this is about TheHub only.
+
+**Why.** For a one-user Hub the lane modelled a threat that does not exist:
+there is one insider and it is the operator. It cost ~2.1 minutes a run, and
+#60571 found it blind — its `commits/{sha}/pulls` call 403'd, the
+`|| echo '[]'` fallback read that as "no pull request", and the job exited
+green having assessed nothing. A green light that means nothing is worse than
+no light, because it is read as coverage.
+
+**Options the operator was given.** (A) delete the job — chosen; (B) fix #60571
+and keep it, restoring a signal about a second human the Hub does not have;
+(C) `fly pause-job`, cheap but leaving the YAML and the applied pipeline
+disagreeing about intent. #60571 closes as superseded.
+
+**What follows from it.**
+- `((github-token))` is no longer read by anything in `thehub.yml`.
+  `set-thehub-pipeline.ps1` still mints and passes it; an unused var is
+  harmless, and removing it from the script is a separate change.
+- `TIMEOUT_WAIVERS` loses its only entry and `ACKNOWLEDGED_UNMAPPED_JOBS`
+  drops `thehub/insider`; both are held to "the job must exist".
+- TheHub's `concourse/pipelines/thehub.yml` is a read-only mirror re-exported
+  after set-pipeline, so it keeps `insider` until the operator next applies and
+  exports. `EXPLAINED_DIVERGENCE["insider"]` says so until then.
+
+**What would reverse it.** A second human committing to TheHub. Then
+`mykronos.yml`'s `insider` job is the template, and #60571's 403 must be fixed
+first, or the lane comes back blind.
 ## D-151 — `Concourse / <repo>` for keel and personal-soc; binnacle has nothing to report it; none of them is required
 
 **2026-10-11.** **Status:** Decided by the operator on 2026-10-11 (option B

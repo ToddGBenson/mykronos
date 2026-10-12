@@ -22,7 +22,7 @@ Three layers, deliberately, because they fail for different reasons:
   deepest gate job", so a rename or a re-plumbing of the middle of the chain
   does not quietly drop a lane.
 
-**The deepest gate job is `insider`, and it is no longer a promotion gate**
+**The deepest gate job is `oracle-gate`, and it is no longer a promotion gate**
 (operator decision 2026-09-18, #59990/#59999/#60063). `deploy-prod` is deleted:
 it last ran 2026-08-19 and production ships through TheHub's own
 `scripts/deploy.sh` from `develop` under ADR 0072 Path A. This file was written
@@ -35,6 +35,10 @@ strictly the stronger claim. The old test said "these lanes must gate the
 production deploy"; the new one says "there is no production deploy here to
 gate", and if one ever comes back it fails until somebody rebuilds the gate
 deliberately.
+
+It was `insider` until #60653 deleted that job (operator option A,
+2026-10-11); the transitive layer moved one edge up to `oracle-gate`, and
+`RETIRED_JOBS` keeps `insider` from returning half-wired.
 
 * **The cross-repo check** -- our copy against the repository that owns it,
   over `gh`.
@@ -93,20 +97,25 @@ REQUIRED_GATE: dict[str, dict[str, list[str]]] = {
     "oracle-gate": {"source": ["deploy-demo"]},
     "api-inventory": {"source": ["deploy-demo"]},
     "dast-demo": {"source": ["deploy-demo"]},
-    # `[oracle-gate]` and not the three-job list, because `deploy-prod` is
-    # deleted and there is no promotion left for this list to gate
-    # (#59990/#59999/#60063). `oracle-gate` carries `passed: [deploy-demo]`,
-    # so `insider` still transitively requires all six analysers AND requires
-    # the version to have reached an environment -- which is why narrowing
-    # this list does not narrow what must pass before `insider` runs. See
-    # `MUST_PRECEDE_THE_DEEPEST_GATE` below, which is unchanged by this.
-    "insider": {"source": ["oracle-gate"]},
 }
 
 #: The deepest job in the promotion chain. Named once, because three tests
 #: below depend on which job that is and a rename should move all of them
 #: together.
-DEEPEST_GATE = "insider"
+#:
+#: `oracle-gate` since #60653. It was `insider`, which sat one edge below it
+#: with `passed: [oracle-gate]`; `insider` is deleted (see RETIRED_JOBS), so
+#: the deepest job is the one it used to hang off. The transitive set below
+#: loses only `oracle-gate` itself -- a job cannot precede itself -- and
+#: keeps every analyser and `deploy-demo`.
+DEEPEST_GATE = "oracle-gate"
+
+#: Jobs deleted from thehub.yml by operator decision, with nothing allowed to
+#: gate on them afterwards. `insider` (#60653, option A, 2026-10-11): for a
+#: one-user Hub it models a threat that does not exist -- the one insider is
+#: the operator -- and #60571 found it blind: its GitHub call 403'd, was read
+#: as "no pull request", and it reported green while assessing nothing.
+RETIRED_JOBS = ("insider",)
 
 #: A job whose success would mean "production now runs this commit". None
 #: exists, and `test_no_job_here_deploys_production` is what keeps it that way.
@@ -114,17 +123,17 @@ DEEPEST_GATE = "insider"
 #: (ADR 0072 Path A), out of band, with nothing in this pipeline observing it.
 RETIRED_DEPLOY_JOBS = ("deploy-prod",)
 
-#: Must have passed before `insider` can run. Asserted against the transitive
-#: closure of `passed:` edges rather than against one job's list, so the
-#: property survives the chain being re-plumbed.
+#: Must have passed before `oracle-gate` can run. Asserted against the
+#: transitive closure of `passed:` edges rather than against one job's list, so
+#: the property survives the chain being re-plumbed.
 #:
 #: `api-inventory` and `dast-demo` are deliberately NOT here. They were, while
 #: `deploy-prod` existed and `insider` gated it. They still run, still upload
 #: and still go red; what they no longer do is block a promotion, because
-#: nothing here promotes. Putting them back is a one-line change to
-#: REQUIRED_GATE and this set, and the condition for making it is written above
-#: `insider` in the pipeline file.
-MUST_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", "oracle-gate", *ANALYSERS})
+#: nothing here promotes. If delivery ever returns to Concourse, #55167's
+#: reasoning (recorded above `oracle-gate` in the pipeline file) is the
+#: specification for rebuilding the gate.
+MUST_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", *ANALYSERS})
 
 #: Differences between our copy and TheHub's that are deliberate, with the
 #: reason. Anything NOT in here fails the cross-repo check, which is the point:
@@ -172,11 +181,12 @@ EXPLAINED_DIVERGENCE = {
         "does this is the difference"
     ),
     "insider": (
-        "ours gates on `[oracle-gate]` where TheHub's gates on "
-        "`[api-inventory, dast-demo, oracle-gate]`. Same decision as "
-        "`deploy-prod` above and downstream of it: with the promotion deleted "
-        "the wide list gates nothing. Not a reversion of #55167, whose "
-        "reasoning still holds for any pipeline that does promote"
+        "ours deleted it (#60653, operator option A, 2026-10-11): a one-user "
+        "Hub has no second human for insider risk to model, and #60571 found "
+        "the job blind -- its GitHub call 403'd and read as 'no pull "
+        "request'. TheHub's `concourse/pipelines/thehub.yml` is a read-only "
+        "mirror re-exported after set-pipeline, so it drops the job on the "
+        "next export; until then this is the difference"
     ),
 }
 
@@ -303,6 +313,32 @@ class TestTheCommittedGate:
             f"{dangling} still gate on a retired deploy job, so they can never "
             "run. Concourse does not report this: the job simply waits."
         )
+
+    @pytest.mark.parametrize("job", RETIRED_JOBS)
+    def test_a_retired_lane_stays_retired(self, job: str) -> None:
+        """#60653: `insider` is gone, and so is everything that pointed at it.
+
+        A half-applied deletion is the failure worth a test: a `passed:` entry
+        naming a deleted job makes the job carrying it wait forever, and a
+        `groups:` entry naming one is rejected by `fly set-pipeline`.
+        """
+        config = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+        jobs = [j["name"] for j in config.get("jobs") or []]
+        assert len(jobs) >= 20, f"only {len(jobs)} jobs read from {THEHUB.name}"
+        assert job not in jobs, f"`{job}` is back in {THEHUB.name} (#60653)"
+
+        grouped = sorted(
+            group["name"] for group in config.get("groups") or [] if job in group.get("jobs", [])
+        )
+        assert not grouped, f"groups {grouped} still list the retired `{job}`"
+
+        dangling = sorted(
+            name
+            for name, resources in committed_gates().items()
+            for upstreams in resources.values()
+            if job in upstreams
+        )
+        assert not dangling, f"{dangling} still gate on the retired `{job}`"
 
 
 class TestTheCrossRepoCheckRuns:

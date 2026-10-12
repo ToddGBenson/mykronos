@@ -112,6 +112,7 @@ duties:
         - "backend/mykronos/agents.py"
         - "scripts/approval-queue.ps1"        # the operator's approval queue (D-149)
         - "scripts/approval_queue.py"         # ...and the logic it routes and checks with
+        - "scripts/check_decision_numbers.py" # ...and its decision-number guard (D-158)
         - "scripts/enable-agent-reviewer.ps1" # grants the reviewer its delegation
       routine:
         - "docs/**"

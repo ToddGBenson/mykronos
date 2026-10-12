@@ -7,9 +7,9 @@ admin-only and every one is audit-logged, including the ones TheHub refuses:
 an audit log that records only what worked cannot answer "who tried to pull
 that into the sprint?".
 
-TheHub owns the stories (D-133). Nothing here edits a story's content; the two
-Hub writes are a bucket move and the autonomy switch, and rank is MyKronos's
-own table because TheHub has no field for it (B-068).
+TheHub owns the stories (D-133). Nothing here edits a story's content; the
+three Hub writes are a bucket move, the autonomy switch and the rank, which is
+TheHub's `po_rank` (B-068, D-153).
 """
 
 from __future__ import annotations
@@ -21,12 +21,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
 from mykronos import governance
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep
-from mykronos.db.models import PoBacklogRank, RepoGovernance, RepoOnboarding
+from mykronos.db.models import RepoGovernance, RepoOnboarding
 from mykronos.github.client import GitHubError, PermissionDeniedError
 from mykronos.process_templates import TEMPLATES
 from mykronos.schemas import utcnow
@@ -388,12 +387,9 @@ def _membership(state: po.ManifestState, repo_full_name: str) -> tuple[str, bool
     return po.default_tag(repo_full_name), False, "default"
 
 
-def _ranks(request: Request, repo_id: str) -> dict[int, int]:
-    with request.app.state.db.session() as session:
-        rows = session.execute(
-            select(PoBacklogRank).where(PoBacklogRank.repo_id == repo_id)
-        ).scalars()
-        return {row.story_id: row.rank for row in rows}
+def _ranks(stories: list[dict[str, Any]]) -> dict[int, int]:
+    """The Product Owner's rank, as TheHub holds it (`po_rank`, B-068)."""
+    return {int(s["id"]): int(s["po_rank"]) for s in stories if s.get("po_rank") is not None}
 
 
 def _check_out(check: po.GateCheck) -> GateCheckOut:
@@ -727,7 +723,7 @@ async def product_owner(
     if hub is not None and hub_out.connected and manifest is not None and wants_dod:
         dod = await _dod_checks(request, hub, repo_id, repo_full_name, manifest, done_raw)
 
-    ranks = _ranks(request, repo_id)
+    ranks = _ranks(backlog_raw)
     ordered = po.order_backlog(backlog_raw, ranks)
     model = po.risk_model(_portfolio_decision(request, repo_full_name))
     risks = _story_risks(request, repo_full_name, ordered, model)
@@ -973,10 +969,11 @@ async def rank_story(
 ) -> PoActionOut:
     """Move one backlog story up or down a place.
 
-    The order is computed from what TheHub returns now, so a story that left
-    the backlog since the page loaded cannot hold a place. The whole visible
-    order is written, which ranks every story on the page once one has been
-    moved -- the ordering a person sees is the one stored.
+    The order is computed from what TheHub returns now, ranks included, so a
+    story that left the backlog since the page loaded cannot hold a place. The
+    whole visible order is written to TheHub's `po_rank`, which ranks every
+    story on the page once one has been moved -- the ordering a person sees is
+    the one stored.
     """
     _require_writer(principal, "Ranking the backlog")
     repo_full_name, branch, installation = _onboarding(request, repo_id)
@@ -990,7 +987,8 @@ async def rank_story(
     except po.HubUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    current = [int(s["id"]) for s in po.order_backlog(backlog, _ranks(request, repo_id))]
+    ranks = _ranks(backlog)
+    current = [int(s["id"]) for s in po.order_backlog(backlog, ranks)]
     if body.story_id not in current:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -998,39 +996,46 @@ async def rank_story(
         )
     order = po.moved(current, body.story_id, body.direction)
 
-    database = request.app.state.db
-    with database.session() as session:
-        existing = {
-            row.story_id: row
-            for row in session.execute(
-                select(PoBacklogRank).where(PoBacklogRank.repo_id == repo_id)
-            ).scalars()
-        }
-        for position, story_id in enumerate(order, start=1):
-            row = existing.get(story_id)
-            if row is None:
-                session.add(
-                    PoBacklogRank(
-                        repo_id=repo_id,
-                        story_id=story_id,
-                        rank=position,
-                        updated_by=principal.actor,
-                    )
-                )
-            elif row.rank != position:
-                row.rank = position
-                row.updated_by = principal.actor
-        database.audit(
-            session,
-            actor=principal.actor,
-            action="po.rank",
-            entity_type="hub_story",
-            entity_id=str(body.story_id),
-            repo_id=repo_id,
-            repo_full_name=repo_full_name,
-            story_id=body.story_id,
-            direction=body.direction,
-            position=order.index(body.story_id) + 1,
+    # Only the positions that changed are written, one PATCH each, in order.
+    # The first refusal stops the rest and is shown in TheHub's words: asking
+    # again does not change a rule. The stories written before it keep their
+    # new rank, the audit row lists them, and the page re-reads TheHub, so it
+    # shows the order that was actually stored rather than the one intended.
+    written: list[int] = []
+    outcome = "ranked"
+    refusal: str | None = None
+    for position, story_id in enumerate(order, start=1):
+        if ranks.get(story_id) == position:
+            continue
+        try:
+            result = await hub.set_rank(story_id, position)
+        except po.HubUnavailableError as exc:
+            outcome, refusal = "unreachable", str(exc)
+            break
+        if not result.ok:
+            outcome, refusal = "refused", result.detail
+            break
+        written.append(story_id)
+
+    _audit(
+        request,
+        principal,
+        action="po.rank",
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        story_id=body.story_id,
+        direction=body.direction,
+        position=order.index(body.story_id) + 1,
+        outcome=outcome,
+        written=written,
+        hub_detail=refusal,
+    )
+    if outcome == "unreachable":
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=refusal)
+    if outcome == "refused":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"TheHub refused the rank: {refusal}",
         )
     return PoActionOut(story_id=body.story_id, action="rank", moved=order != current)
 

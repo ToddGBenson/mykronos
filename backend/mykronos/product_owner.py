@@ -11,8 +11,8 @@ Three things live here, and none of them owns a story:
   against the Hub story; one that names none is *manual* -- neither passed nor
   failed, because nothing here can see whether a person did it.
 - **The Hub client.** TheHub's `dev_stories` is the system of record (D-133).
-  This module reads stories and asks the Hub to move them. It never edits a
-  story's content.
+  This module reads stories, asks the Hub to move them and sets their rank
+  (`po_rank`, B-068). It never edits a story's content.
 
 The sprint pull's order is the safety property of the whole module and is
 written once, in `pull_into_sprint`: autonomy is switched off first, and the
@@ -1024,7 +1024,8 @@ def refusal_text(body: Any, status_code: int) -> str:
 
 
 class HubClient:
-    """A thin client for the three Hub calls spec 35 uses, and one read."""
+    """A thin client for the Hub writes spec 35 uses -- a bucket move, the
+    autonomy switch and the rank -- and its reads."""
 
     def __init__(
         self,
@@ -1126,7 +1127,13 @@ class HubClient:
         return self._body(response)
 
     async def _write(self, path: str, payload: dict[str, Any]) -> HubResult:
-        response = await self._request("POST", path, json=payload)
+        return await self._send("POST", path, payload)
+
+    async def _patch(self, path: str, payload: dict[str, Any]) -> HubResult:
+        return await self._send("PATCH", path, payload)
+
+    async def _send(self, method: str, path: str, payload: dict[str, Any]) -> HubResult:
+        response = await self._request(method, path, json=payload)
         body = self._body(response)
         if 200 <= response.status_code < 300:
             return HubResult(ok=True, status=response.status_code, body=body)
@@ -1150,6 +1157,13 @@ class HubClient:
 
     async def move(self, story_id: int, bucket: Literal["sprint", "backlog"]) -> HubResult:
         return await self._write(f"/api/dev/stories/{story_id}/move", {"bucket": bucket})
+
+    async def set_rank(self, story_id: int, rank: int | None) -> HubResult:
+        """The Product Owner's rank, TheHub's `po_rank` (B-068). The body is
+        that one field and nothing else: a PATCH to a story can edit its
+        content, and ADR 0093 limits MyKronos to the bucket, the autonomy
+        switch and the rank."""
+        return await self._patch(f"/api/dev/stories/{story_id}", {"po_rank": rank})
 
 
 @dataclass

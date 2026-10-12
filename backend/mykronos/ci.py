@@ -1621,8 +1621,9 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     ),
     # Driven from inside Mykronos, and argued at length above
     # `CAPABILITY_BY_JOB` and beside `NON_SCANNING`/`GATE_JOBS`.
+    # mykronos only: thehub's `insider` job was deleted by #60653.
     (
-        (MYKRONOS, THEHUB),
+        (MYKRONOS,),
         "insider",
         "Aegis assesses a pull request and posts to /api/ingest/aegis; these "
         "pipelines run on pushes, where there is correctly no assessment",

@@ -33,6 +33,16 @@ RETIRED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("repo_onboardings", "auto_merge_workflow_prs"),
 )
 
+#: Tables deliberately retired. Dropped on start by
+#: `Database.drop_retired_tables` once no model declares them -- the same rule
+#: as `RETIRED_COLUMNS`, for the same reason: a table goes only when somebody
+#: named it, never because a model stopped mentioning it.
+#:
+#: - `po_backlog_rank` (D-153, B-068): the Product Owner's rank is TheHub's
+#:   `po_rank` now. Run `python -m mykronos.backfill_po_rank` against a
+#:   database that still holds rows before an image carrying this drop starts.
+RETIRED_TABLES: tuple[str, ...] = ("po_backlog_rank",)
+
 
 class Database:
     """Owns the engine and hands out sessions."""
@@ -58,6 +68,7 @@ class Database:
         Base.metadata.create_all(self.engine)
         self.add_missing_columns()
         self.drop_retired_columns()
+        self.drop_retired_tables()
 
     def add_missing_columns(self) -> list[str]:
         """Add columns the models declare and the database does not.
@@ -170,6 +181,24 @@ class Database:
 
         if dropped:
             logger.warning("Schema upgrade: dropped %s", ", ".join(dropped))
+        return dropped
+
+    def drop_retired_tables(self) -> list[str]:
+        """Drop the tables in `RETIRED_TABLES`. Idempotent, like
+        `drop_retired_columns`, and for the same reason runs on every start."""
+        existing_tables = set(inspect(self.engine).get_table_names())
+        dropped: list[str] = []
+
+        with self.engine.begin() as connection:
+            for table_name in RETIRED_TABLES:
+                if table_name not in existing_tables:
+                    continue
+                # Same interpolation rule as `add_missing_columns`.
+                connection.execute(text(f"DROP TABLE {_identifier(table_name)}"))
+                dropped.append(table_name)
+
+        if dropped:
+            logger.warning("Schema upgrade: dropped table %s", ", ".join(dropped))
         return dropped
 
     def _add_column_sql(self, table_name: str, column: Column[Any]) -> str:

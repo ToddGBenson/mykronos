@@ -1696,6 +1696,17 @@ class TestZapEdge:
         assert origin.file_path == "/frontend/app.js"
         assert _dast_identity(edge) != _dast_identity(origin)
 
+    @pytest.mark.parametrize("lane", ["zap", "zap-demo", "zap-prod", "zap-staging"])
+    def test_it_never_collides_with_a_lan_lane(self, lane: str) -> None:
+        """D-155 put each LAN environment on its own tool; the edge is a fourth."""
+        from dataclasses import replace
+
+        report = _edge_report()
+        edge = zap_edge_normalize(report, replace(context("dast"), tool_name="zap-edge"))
+        lan = get_adapter("dast", lane).normalize(report, replace(context("dast"), tool_name=lane))
+
+        assert _dast_identity(edge.findings[0]) != _dast_identity(lan.findings[0])
+
     def test_two_public_hostnames_are_two_findings(self) -> None:
         hub = zap_edge_normalize(_edge_report("https://hub.example.net"), context("dast"))
         other = zap_edge_normalize(_edge_report("https://other.example.net"), context("dast"))

@@ -225,25 +225,28 @@ class TestTheConfiguredSource:
         #           (ADR 0072 Path A). With the job deleted there is no
         #           promotion, so there is nothing for the wide list to gate.
         #
-        # What would move it a fourth time is written above `insider` in the
-        # pipeline file: a job in that file whose success means "production now
-        # runs this commit". #55167's reasoning is the specification for
-        # rebuilding the gate if one appears, and none of the three revisions
-        # above disputes it.
+        #   #60653  deletes `insider` itself (operator option A, 2026-10-11):
+        #           a one-user Hub has no second human for it to model, and
+        #           #60571 found it blind. The deepest gated job is now
+        #           `oracle-gate`, pinned below at `[deploy-demo]`.
+        #
+        # What would move it again: a job in that file whose success means
+        # "production now runs this commit". #55167's reasoning is the
+        # specification for rebuilding the gate if one appears, and none of
+        # the revisions above disputes it.
         #
         # The gate itself is asserted in full, with the transitive property it
         # stands for, in `test_pipeline_gate_wiring.py`. What is asserted here
         # is the thing THIS test exists for: the extractor finds a real gate in
         # the real file. A refactor that made `gates()` return nothing would
         # pass every test above and fail this one.
-        assert gates["insider"]["source"] == ["oracle-gate"], (
-            "insider gates on oracle-gate alone, because `deploy-prod` is "
-            "retired and there is no promotion left to guard (#59990/#59999/"
-            "#60063). `oracle-gate` still carries `passed: [deploy-demo]`, so "
-            "this is not an ungated `insider`."
+        assert "insider" not in gates, "insider was deleted by #60653"
+        assert gates["oracle-gate"]["source"] == ["deploy-demo"], (
+            "oracle-gate gates on deploy-demo, which itself waits on the six "
+            "scanning lanes (#59999)."
         )
         # The floor, and it is the assertion that makes the one above mean
-        # something: `gates()` returning `{"insider": {"source": []}}` for a
-        # file it failed to parse would otherwise read as agreement.
-        assert gates["insider"]["source"], "insider has no `passed:` at all"
+        # something: `gates()` returning `{"oracle-gate": {"source": []}}`
+        # for a file it failed to parse would otherwise read as agreement.
+        assert gates["oracle-gate"]["source"], "oracle-gate has no `passed:` at all"
         assert sum(1 for job in gates.values() if job) >= 10
