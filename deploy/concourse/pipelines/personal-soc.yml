@@ -783,7 +783,17 @@ jobs:
       - *preflight
       - task: gitleaks
         # PS-7. 10m from 6 observed run(s): median 78s, slowest 169s.
-        timeout: 10m
+        # Raised to 16m on 2026-10-11 from 8 successful runs: build #14 took
+        # 516s (8.6m) against the 10m cap -- under 1.3x headroom, so the audit
+        # flagged it -- while thehub/unit, mykronos/unit and lint-and-types
+        # were running at the same time; the other seven ran 15s-179s. It
+        # SUCCEEDED, so this is load on apt, the gitleaks download and a
+        # full-history scan, not a hang, and a bigger cap is the right fix.
+        # `cap >= max(p90 x OUTLIER_RATIO, worst x HEADROOM_FLOOR)` from
+        # scripts/audit_pipeline_timeouts.py, taking the routine worst (179s)
+        # as p90 since 8 samples cannot resolve one: max(179s x 5.10,
+        # 516s x 1.3) = max(15.2m, 11.2m), rounded up to 16m.
+        timeout: 16m
         image: python
         params:
           MYKRONOS_URL: ((mykronos-url))

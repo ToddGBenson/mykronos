@@ -226,7 +226,7 @@ for path in sorted(PIPELINE_DIR.glob('*.yml')):
                     f'{name:<18}{total_cap:<8}{"never ok":<11}{0:<5}'
                     f'!! {len(near_cap)} failed build(s) ran to the cap'
                 )
-                problems.append((pipeline, name, total_cap, round(max(near_cap) / 60)))
+                problems.append((pipeline, name, total_cap, round(max(near_cap) / 60), "timeout"))
             else:
                 print(f'{name:<18}{total_cap:<8}{"no data":<11}{0:<5}-')
             continue
