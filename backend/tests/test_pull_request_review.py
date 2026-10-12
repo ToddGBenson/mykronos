@@ -104,6 +104,7 @@ class TestTheChangeClassIsComputed:
             ("backend/mykronos/adminauth.py", "governance"),
             ("scripts/approval-queue.ps1", "governance"),
             ("scripts/approval_queue.py", "governance"),
+            ("scripts/check_decision_numbers.py", "governance"),
             ("scripts/enable-agent-reviewer.ps1", "governance"),
             ("scripts/check_links.py", "production"),
             ("docs/DECISIONS.md", "routine"),

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Warn before pushing a decision number that main or another open PR already
+# uses (D-158). A hint, never a block: it needs `gh` and the network, and the
+# approval queue refuses a colliding PR anyway. This only moves the news to
+# the moment the renumbering is one edit.
+#
+# Install: python scripts/install_hooks.py   (or: git config core.hooksPath scripts/hooks)
+#
+# Pays nothing unless the branch adds or edits a decision.
+
+set -uo pipefail
+
+git fetch --quiet origin main 2>/dev/null || exit 0
+if ! git diff --name-only origin/main...HEAD 2>/dev/null \
+    | grep -qE '^docs/(decisions/D-[0-9]+-.*\.md|DECISIONS\.md)$'; then
+  exit 0
+fi
+if ! command -v gh >/dev/null 2>&1; then
+  echo "[pre-push] This branch adds a decision; install gh to check its number against open PRs."
+  exit 0
+fi
+python scripts/check_decision_numbers.py --head HEAD \
+  || echo "[pre-push] Renumber before opening the PR (the push goes ahead)."
+exit 0

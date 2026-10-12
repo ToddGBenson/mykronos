@@ -100,6 +100,13 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         # --- Bespoke: not SARIF ---
         AdapterSpec("secrets", "gitleaks", secrets_gitleaks.normalize, "*.json", "Gitleaks"),
         AdapterSpec("dast", "zap", dast_zap.normalize, "*.json", "OWASP ZAP"),
+        # One tool per environment TheHub scans (D-155, TheHub #60723).
+        # Reconciliation partitions on the tool, so a staging scan's silence
+        # says nothing about a production finding. Same adapter: it reads the
+        # environment from the tool name and keys the finding on it.
+        AdapterSpec("dast", "zap-demo", dast_zap.normalize, "*.json", "OWASP ZAP (demo)"),
+        AdapterSpec("dast", "zap-prod", dast_zap.normalize, "*.json", "OWASP ZAP (production)"),
+        AdapterSpec("dast", "zap-staging", dast_zap.normalize, "*.json", "OWASP ZAP (staging)"),
         AdapterSpec("cloud", "prowler", cloud_generic.normalize, "*.json", "Prowler"),
         AdapterSpec("cloud", "generic", cloud_generic.normalize, "*.json", "Generic OCSF"),
         # Two tools, one adapter: nmap says a port is open, nuclei says a

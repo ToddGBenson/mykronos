@@ -58,7 +58,7 @@ that will have moved on.
 **B-068 to B-072 are not from a sweep.** They are what spec 35 (the Product
 Owner tab) left out of phase 1 on purpose, filed when phase 1 was built so the
 exclusions are tracked rather than remembered. The open ones are at the end of
-this section; B-071 and B-072 are in Closed.
+this section; B-068, B-071 and B-072 are in Closed.
 
 **The nine that needed the operator rather than code were decided on
 2026-09-05, as D-108 to D-116.** Three stay open as execution and each carries
@@ -1273,27 +1273,6 @@ nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
 
-### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — TheHub #60566
-
-**Size:** S **State:** open **Verified:** 2026-10-11
-
-TheHub's `dev_stories` has no rank field, so spec 35 phase 1 stores the
-Product Owner's backlog ordering in MyKronos's `po_backlog_rank` table, keyed
-by repository and story id (D-133). That is a second place a fact about a story
-lives, which is the thing D-133 exists to avoid. It is acceptable for one
-operator and one reader. It stops being acceptable the day TheHub's own Mission
-Control shows a backlog in a different order from this tab.
-
-**Acceptance criteria**
-
-- TheHub's `dev_stories` carries a rank, added by a migration that ships alone
-  (TheHub's commit rules).
-- The Product Owner tab reads and writes that field through the Hub API, and
-  `po_backlog_rank` is migrated across and then retired.
-- Mission Control and this tab show one backlog in one order.
-
-**Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
-
 ### B-069 — A repository with no manifest is told so, and offered nothing — TheHub #60567
 
 **Size:** S **State:** done (spec 35 §7.2, D-141) **Verified:** 2026-10-11
@@ -1412,6 +1391,36 @@ keel's gates will come from labels. Switching keel's manifest to
 **Provenance:** spec 35 §5.
 
 ---
+
+### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — **done** (D-153)
+
+**Size:** S **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60566)
+
+TheHub migration 329 added `dev_stories.po_rank`. The tab now reads the rank
+from the Hub stories and writes it with a PATCH carrying `po_rank` alone, one
+call per changed position (D-153). `python -m mykronos.backfill_po_rank` copies
+`po_backlog_rank` across: it skips stories TheHub no longer has and reports,
+without resolving, a story ranked by two repositories. The table is then
+dropped through `RETIRED_TABLES`. Production held 0 rows on 2026-10-11.
+Mission Control and the tab read one field. A cross-repository view orders by
+each repository's own positions (D-153).
+
+TheHub's `dev_stories` has no rank field, so spec 35 phase 1 stores the
+Product Owner's backlog ordering in MyKronos's `po_backlog_rank` table, keyed
+by repository and story id (D-133). That is a second place a fact about a story
+lives, which is the thing D-133 exists to avoid. It is acceptable for one
+operator and one reader. It stops being acceptable the day TheHub's own Mission
+Control shows a backlog in a different order from this tab.
+
+**Acceptance criteria**
+
+- TheHub's `dev_stories` carries a rank, added by a migration that ships alone
+  (TheHub's commit rules).
+- The Product Owner tab reads and writes that field through the Hub API, and
+  `po_backlog_rank` is migrated across and then retired.
+- Mission Control and this tab show one backlog in one order.
+
+**Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
 
 ### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-144, D-145)
 

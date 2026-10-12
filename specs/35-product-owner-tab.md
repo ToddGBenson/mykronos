@@ -115,7 +115,7 @@ Route: `/repos/[repoId]?tab=product-owner&view=<overview|backlog|sprint|process>
 |---|---|---|
 | Pull into sprint | `POST /api/devops/autonomy/stories/{id}/toggle-autonomy {autonomy_disabled: true}`, **then** `POST /api/dev/stories/{id}/move {bucket: sprint}` | A sprint move arms autonomous dispatch in TheHub. Autonomy is switched off **first**, so a failure between the two calls leaves the story in the backlog with autonomy off, never in the sprint with autonomy armed. |
 | Back to backlog | `POST /api/dev/stories/{id}/move {bucket: backlog}` | — |
-| Rank | none — MyKronos `po_backlog_rank` table | TheHub has no rank field. Rank is the Product Owner's ordering, stored in MyKronos, keyed by (repo id, story id). Moving rank into TheHub is follow-up B-068. |
+| Rank | `PATCH /api/dev/stories/{id} {po_rank: n}`, one per changed position | Rank is TheHub's `po_rank` (migration 329, B-068, D-153). The body is that one field, built by the client, so the PATCH cannot edit content. The first refusal stops the rest and is shown verbatim. MyKronos's former `po_backlog_rank` table is backfilled and dropped. |
 
 - All writes need the **admin** token. A viewer sees the tab read-only. Every write is recorded in `audit_log`
   with the actor, repository, story id and action.
@@ -139,7 +139,7 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 
 ## 5. Out of scope for phase 1 (backlog entries)
 
-- B-068: rank stored in TheHub (a migration, which ships alone).
+- B-068: rank stored in TheHub (a migration, which ships alone). Done: D-153.
 - B-069: a template pull request for a repository with no manifest (built in phase 2, §7.2).
 - B-070: **declared-vs-observed drift findings** (built in phase 2, §7.1). For example, the manifest declares required review but
   branch protection is off, or it declares the inception gate but the flag is off.
@@ -158,7 +158,8 @@ no token, the tab says "TheHub is not connected" and shows the manifest only.
 - **Sprint pull order:** the autonomy toggle runs before the move. If the toggle fails, no move happens. If the
   move fails, autonomy stays off and the Hub's refusal is surfaced.
 - **Auth:** a viewer cannot write, and every write is audit-logged.
-- **Rank:** rank persists and orders the backlog.
+- **Rank:** rank is stored in TheHub and orders the backlog; only changed positions are PATCHed, with
+  `po_rank` alone; a refusal is shown verbatim and not retried.
 
 ## 7. Phase 2 (B-069, B-070, Definition of Done, risk-ranked backlog)
 
