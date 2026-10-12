@@ -1154,9 +1154,35 @@ enforced" including the ones that were on.
 
 ---
 
-### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **half done** — TheHub #60581 (and #59082)
+### B-065 — Two applied pipelines carry live credentials that `fly get-pipeline` hands back — **exposure closed, rotation open** — TheHub #60581 (and #59082)
 
-**Size:** S **State:** open **Verified:** 2026-09-05
+**Size:** S **State:** open **Verified:** 2026-10-11
+
+**Where it stands, 2026-10-11.** No applied pipeline hands back a credential
+with a value in it any more. What is left is proving the two values that were
+exposed are dead. Checked by presence and form only, never by value:
+
+- **`personal-soc` / `personal-soc-ingestion-token`: done (TheHub #59082).**
+  The token is in Vault and `personal-soc` has been re-applied.
+  `fly get-pipeline -p personal-soc` shows every `MYKRONOS_TOKEN:` assignment as
+  `((personal-soc-ingestion-token))`. Every other line that mentions the token
+  is a `$MYKRONOS_TOKEN` shell reference or an `if` guard, and none of them
+  holds a token-shaped string.
+- **`thehub` / `anthropic-api-key`: done.** The 2026-09-10 17:44 re-apply
+  (re-exported in TheHub 29ed8751) picked the key up from Vault, as this entry
+  predicted. `check_applied_pipelines.py` now lists it under "resolved from
+  Vault", not "supplied but empty".
+- **`check_applied_pipelines.py` across all three pipelines: no
+  `CREDENTIALS INLINE` line.** `personal-soc` matches the committed file.
+  `thehub` shows drift (7 differences) unrelated to credentials. That is a
+  re-apply question, not this entry's.
+- **Rotation: not done. TheHub #60581 is open.** The operator reported
+  rotating the ingestion token on 2026-10-11 with `repair-personal-soc-token.ps1`
+  (TheHub 29d39934). That script deliberately keeps the previous token valid
+  for an overlap window, so a rotation is not yet proof the old value is
+  refused. #60581 asks for that proof, and for the Anthropic key, a rotation
+  at the issuer or a dated record that it was replaced after 2026-09-05.
+  Neither is recorded yet.
 
 PS-9 says a credential belongs in the credential manager rather than in a
 `((vars))` file, because Concourse stores pipeline configuration verbatim and
@@ -1252,19 +1278,21 @@ answer.
 
 **Acceptance criteria**
 
-- `thehub` re-applied, and `((anthropic-api-key))` intact in the applied
-  config. **Half:** the literal is gone, and it resolves to an empty string
-  rather than from Vault.
-- `personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
-  three `MYKRONOS_TOKEN` assignments reading as placeholders. **Not done**, and
-  it is now the estate's only inline credential with a value in it.
+- ~~`thehub` re-applied, and `((anthropic-api-key))` intact in the applied
+  config.~~ Resolved on the 2026-09-10 re-apply, and it resolves from Vault
+  as of 2026-10-11.
+- ~~`personal-soc-ingestion-token` in Vault, `personal-soc` re-applied, and its
+  three `MYKRONOS_TOKEN` assignments reading as placeholders.~~ Done
+  2026-10-11 (TheHub #59082).
 - ~~`check_applied_pipelines.py` distinguishes an inline credential with a
   value from an inline empty string, and says which.~~
 - ~~`github-token`'s exclusion is recorded where the check reports it.~~
 - The two keys that were inline are treated as exposed and rotated. **Not
-  done.** Every apply between 2026-09-05 and whenever `thehub` was re-applied
-  stored the Anthropic key somewhere readable, and the ingestion token is
-  still there now.
+  done: TheHub #60581.** The Anthropic key was readable in the applied config
+  from at least 2026-09-05 to the 2026-09-10 re-apply. The ingestion token
+  was readable until 2026-10-11. The operator reports the ingestion token was
+  rotated on 2026-10-11, but nothing yet shows the old value is refused, and
+  there is no record of the Anthropic key being rotated at the issuer.
 
 **Provenance:** found on 2026-09-05 while verifying that D-113's coverage flag
 had reached the running `mykronos` pipeline. `check_applied_pipelines.py`
