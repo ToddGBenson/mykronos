@@ -89,17 +89,10 @@ OUTLIER_RATIO = 5.10
 #: `ACKNOWLEDGED_UNMAPPED_JOBS` is held to -- every waiver must name a job that
 #: exists in a pipeline file. A waiver outliving its job starts excusing a
 #: future job that reuses the name.
-TIMEOUT_WAIVERS = {
-    ("thehub", "insider"): (
-        "build #25 ran 15.3m against the 15m cap, but the log says "
-        "`Are you sure you want to continue connecting (yes/no/[fingerprint])? "
-        "timeout exceeded` -- it was waiting at an SSH host-key prompt, not "
-        "working. Fixed by #496 (merged as #499) with StrictHostKeyChecking, "
-        "not by a bigger number. Successful runs are p50 2.0m / p90 3.4m / "
-        "worst 6.1m against 15m, so there is no evidence the task needs more "
-        "time. Remove this when build #25 ages out of the sampled window."
-    ),
-}
+#:
+#: Empty since #60653. Its one entry waived `thehub/insider` (build #25 hung
+#: at an SSH host-key prompt, fixed by #496/#499), and that job is deleted.
+TIMEOUT_WAIVERS: dict[tuple[str, str], str] = {}
 
 
 def _observed_label(kind):

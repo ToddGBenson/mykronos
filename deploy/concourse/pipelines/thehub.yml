@@ -3,7 +3,7 @@
 # It was scanning only, then for a while it took a commit all the way to
 # production, and as of #59100 it is scanning only again:
 #
-#   quality + build -> static security -> Oracle -> insider
+#   quality + build -> static security -> Oracle
 #
 # plus three standing environments scanned on a daily timer (prod, staging)
 # and the cloud subscription.
@@ -21,11 +21,18 @@
 # serves comes from the Trivy scan inside `deploy.sh`; `dast-prod` below
 # scans the running production perimeter on a clock.
 #
-# Oracle still sits at the end of the static lanes and `insider` after it, but
-# neither gates a deploy any more -- there is no deploy here to gate. Read a
-# green `oracle-gate` as "this commit's findings score clean", not as
-# "this commit is cleared to ship". The note above `insider` is explicit
-# about what it stopped being.
+# Oracle still sits at the end of the static lanes, but it no longer gates a
+# deploy -- there is no deploy here to gate. Read a green `oracle-gate` as
+# "this commit's findings score clean", not as "this commit is cleared to
+# ship".
+#
+# `insider` used to sit after Oracle. It is deleted (#60653, operator option
+# A, 2026-10-11): for a one-user Hub it modelled a threat that does not exist
+# -- the one insider is the operator -- cost ~2.1 min a run, and #60571 found
+# it blind, its GitHub call 403ing and being read as "no pull request", so it
+# went green having assessed nothing. A green light that means nothing is
+# worse than no light. If a second human ever commits to TheHub, mykronos.yml's
+# `insider` job is the template for bringing it back.
 #
 # Two things about this file are worth knowing before reading it.
 #
@@ -88,11 +95,11 @@ groups:
   - name: quality
     jobs: [unit, qa, prompt-evals, post-merge]
   - name: security
-    jobs: [secrets, sast, dependencies, iac, containers, ai-models, insider, cloud-posture, dast-staging]
+    jobs: [secrets, sast, dependencies, iac, containers, ai-models, cloud-posture, dast-staging]
   - name: build
     jobs: [build, containers]
   - name: gate
-    jobs: [oracle-gate, insider]
+    jobs: [oracle-gate]
   - name: demo
     jobs: [deploy-demo, api-inventory, dast-demo]
   - name: prod
@@ -837,8 +844,7 @@ anchors:
   # Failure notification. curl rather than a slack-notification resource type:
   # this pipeline already carries no third-party resource types, and adding
   # one to a security pipeline to send a chat message is a poor trade. It also
-  # keeps the payload under this file's control, which the insider job depends
-  # on - see the note there about what must never be sent.
+  # keeps the payload under this file's control.
   #
   # `notify` is an *optional* input. A job that knows more than "it failed"
   # writes a single line to notify/message.txt and that is used verbatim;
@@ -998,27 +1004,20 @@ jobs:
   # non-secret half of that file, committed so this job can supply it. Every
   # secret still resolves from Vault at build time and none of them is here.
   #
-  # Five are in neither place, and the first automatic run of this job will
-  # take them away from the two jobs that read them:
+  # Four are in neither place, and the first automatic run of this job will
+  # take them away from the one job that reads them:
   #
   #   azure-client-id, azure-client-secret, azure-tenant-id,
   #   azure-subscription-id   -> `cloud-posture` (currently paused). They are
   #                              secrets and PS-9 says Vault; nothing has moved
   #                              them yet. Import them and this is closed.
-  #   github-token            -> `insider`. This one cannot be closed the same
-  #                              way. It is a GitHub App installation token
-  #                              minted fresh on every apply and dead in an
-  #                              hour (CNC-2), and set-thehub-pipeline.ps1
-  #                              argues -- correctly -- that a stale secret
-  #                              resolving in place of a live one is worse than
-  #                              the config holding something already expiring.
   #
-  # So applying this job is a decision about `insider`, not a tidy-up. It has
-  # succeeded on its last twelve builds. After the first self-apply it errors
-  # on an unresolvable var until the next hand-apply, unless a long-lived
-  # read-only GitHub credential is put in Vault as `github-token` first. That
-  # trade is deliberately not made here: this job changes nothing until an
-  # operator applies it once by hand, which is the moment to make it.
+  # There was a fifth, `github-token`, read only by `insider`; #60653 deleted
+  # that job, so nothing in this file reads `((github-token))` any more and a
+  # self-apply that drops it costs nothing. set-thehub-pipeline.ps1 still mints
+  # and passes it; an unused var is harmless, and removing it from the script
+  # is a separate change. This job still changes nothing until an operator
+  # applies it once by hand.
   #
   # Not `public: true`, unlike keel's. `ecfec31` (#386) removed `public` from
   # personal-soc's netassess jobs four days ago because anonymous readers could
@@ -2659,7 +2658,8 @@ jobs:
                 # and then waits for demo to report the commit it is serving.
                 # Demo answered `unknown` every time, so the job timed out after
                 # 25 minutes -- and oracle-gate, api-inventory, dast-demo and
-                # insider all sit behind it. They last ran 2026-09-10. TheHub
+                # (until #60653 deleted it) insider all sat behind it. They
+                # last ran 2026-09-10. TheHub
                 # merged roughly thirty pull requests after that date with its
                 # risk gate dark, and nothing said so (TheHub#343).
                 #
@@ -3461,302 +3461,6 @@ jobs:
                     --severity-threshold low --blocking false
 
 
-  # Insider risk, without a pull-request event to hang it on. Spec 16 section 6
-  # is the whole explanation; the short version is that Concourse sees a branch
-  # and Aegis is built around a `pull_request`, so the missing context is
-  # recovered by asking GitHub which pull request introduced this commit.
-  # **THIS JOB IS NOT A PROMOTION GATE, BECAUSE THERE IS NO PROMOTION.**
-  # Decided by the operator 2026-09-18 (#59990/#59999/#60063). The list has now
-  # reversed three times, so the reasoning is written down here in full rather
-  # than remembered -- and the condition that would reverse it a fourth time is
-  # stated at the bottom, because the previous two reversals each turned on a
-  # premise nobody had written down.
-  #
-  # WHAT THE GATE WAS FOR. `insider` used to be the last job a version cleared
-  # before `deploy-prod` became reachable, so its `passed:` list WAS the gate.
-  # #55167 widened it from `[oracle-gate]` to
-  # `[oracle-gate, api-inventory, dast-demo]` for a measured reason: those two
-  # hung off `deploy-demo` with nothing downstream requiring them, so a commit
-  # whose demo DAST failed was still eligible for production. On 2026-08-20
-  # `api-inventory` failed builds #14-#19 while `oracle-gate` #20 went green
-  # and the version stayed promotable. A security scan that cannot stop a
-  # release is advisory decoration, and B-055 later caught our copy of this
-  # file having silently reverted the widening --
-  # `scripts/check_pipeline_gates.py` exists because of it.
-  #
-  # #59100 narrowed it back to `[oracle-gate]` on the premise that Path B was
-  # retired. #59999 (PR #493) widened it again on the finding that every clause
-  # of that premise had expired: #491 had restored `api-inventory` and
-  # `dast-demo`, `deploy-demo` was succeeding, and `deploy-prod` was still a
-  # job in this file whose own `passed:` was `[insider]`.
-  #
-  # WHAT THE OPERATOR DECIDED, AND WHY IT IS NOT A THIRD FLIP-FLOP. #59999 was
-  # right that `deploy-prod` was reachable and wrong to conclude the gate was
-  # therefore needed. The alternative it did not take is that a reachable job
-  # nobody triggers is not a lane to guard, it is a lane to delete.
-  # `thehub/deploy-prod` last ran 2026-08-19 (build 8) -- a month of silence --
-  # and under ADR 0072 Path A production ships through TheHub's own
-  # `scripts/deploy.sh` from `develop`. So the job is retired, and with it the
-  # only thing this list could gate. `passed: [oracle-gate]` is not a weakening
-  # of the gate; it is what is left of it once the promotion is gone.
-  #
-  # WHAT IS NOT LOST. `api-inventory` and `dast-demo` still run, still upload,
-  # and still go red when they fail. What they no longer do is block a
-  # promotion, because nothing here promotes. `oracle-gate` keeps
-  # `passed: [deploy-demo]` (#59999), which transitively requires the six lanes
-  # `deploy-demo` gates on AND requires the version reached an environment, so
-  # `insider` is still downstream of every scanning lane in this pipeline.
-  #
-  # WHAT WOULD REVERSE THIS, stated so the next reader does not have to infer
-  # it: **a job in this file whose success means "production now runs this
-  # commit".** If delivery comes back to Concourse, #55167's reasoning above is
-  # the specification for rebuilding the gate, and `api-inventory` and
-  # `dast-demo` go back in this list. Absent such a job, adding them back gates
-  # nothing and only makes `insider` harder to schedule.
-  - name: insider
-    public: true
-    serial_groups: [worker]
-    on_success:
-      do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: insider_risk, STATUS: success, TARGET_ENV: prod }
-    on_failure:
-      do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: insider }
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: insider_risk, STATUS: failed, TARGET_ENV: prod }
-    on_error:
-      do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: insider }
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: insider_risk, STATUS: errored, TARGET_ENV: prod }
-    on_abort:
-      do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: insider_risk, STATUS: aborted, TARGET_ENV: prod }
-    plan:
-      - get: source
-        attempts: *retry_fetch
-        trigger: true
-        passed: [oracle-gate]
-      - get: python
-        attempts: *retry_fetch
-      - *preflight
-      - task: aegis
-        # 15m, DELIBERATELY NOT RAISED (#60002), and this is the entry worth
-        # reading before raising any of the others.
-        #
-        # `audit_pipeline_timeouts.py` flags this job: build #25 failed after
-        # 15.3m against this 15m cap, which is the signature of a task killed by
-        # its own clock. The obvious fix is a bigger number and it would have
-        # been the wrong one. Reading the build log rather than the duration:
-        #
-        #     Are you sure you want to continue connecting
-        #     (yes/no/[fingerprint])? timeout exceeded
-        #
-        # The task was not slow. It was sitting at an SSH host-key prompt with
-        # no answer coming, and it would have sat there for whatever number this
-        # line contained. That defect is FIXED -- #496, merged as #499 -- and
-        # the fix is a `StrictHostKeyChecking` setting, not a cap.
-        #
-        # Raising this to clear a hang would have deleted the only signal that
-        # caught it: a job that hangs against a 15m cap fails in 15m, and a job
-        # that hangs against a 40m cap burns a worker for 40m and still fails.
-        # MEASURED over the last 24 successful builds: p50 2.0m, p90 3.4m,
-        # worst 6.1m -- 2.4x headroom, comfortably inside the estate's spread.
-        # There is no evidence this task needs more time, only evidence that it
-        # once waited for input that never came.
-        #
-        # The waiver is recorded in `TIMEOUT_WAIVERS` in
-        # `scripts/audit_pipeline_timeouts.py` with the same reason, and it
-        # expires on its own terms: it names build #25, so once that build ages
-        # out of the sampled window the waiver stops being needed and the test
-        # that checks waivers are still earned will say so.
-        timeout: 15m
-        image: python
-        params:
-          MYKRONOS_URL: ((mykronos-url))
-          MYKRONOS_TOKEN: ((thehub-ingestion-token))
-          MYKRONOS_REF: ((mykronos-ref))
-          # Read-only, and the same installation token the git resource uses.
-          # Aegis never needs to write: spec 06 section 6 requires that it can
-          # never merge, close or force-push.
-          GITHUB_TOKEN: ((github-token))
-          SLACK_BOT_TOKEN: ((slack-bot-token))
-          SLACK_CHANNEL: ((slack-alert-channel))
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -uo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
-                cd source
-                git config --global --add safe.directory "$PWD"
-
-                SHA=$(git rev-parse HEAD)
-                API=https://api.github.com/repos/ToddGBenson/TheHub
-
-                curl --fail --silent --show-error --max-time 30 \
-                  -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$API/commits/$SHA/pulls" > pulls.json || echo '[]' > pulls.json
-
-                PR=$(jq -r 'if type == "array" and length > 0 then .[0].number else "" end' pulls.json)
-
-                if [ -z "$PR" ] || [ "$PR" = "null" ]; then
-                  echo "=================================================="
-                  echo "NO PULL REQUEST FOR $SHA."
-                  echo "This commit reached ${SCANNED_BRANCH:-the branch}"
-                  echo "without one, so there are no reviews to have"
-                  echo "integrity, no base ref to measure an author baseline"
-                  echo "against, and no description to check for AI"
-                  echo "disclosure."
-                  echo ""
-                  echo "NO INSIDER-RISK ASSESSMENT WAS RECORDED. That is"
-                  echo "deliberate: submitting one anyway would score 0/100"
-                  echo "for exactly the case Aegis exists to notice - the"
-                  echo "change nobody reviewed reading as the safest change"
-                  echo "in the repository."
-                  echo "=================================================="
-                  exit 0
-                fi
-
-                # Errexit from here on. Up to this point a failed fetch is a
-                # tolerated outcome that takes the no-pull-request path; past
-                # it, every call is one whose failure would produce an
-                # assessment built from an empty payload - a null author and no
-                # signals, which posts as a clean 0/100.
-                set -e
-
-                echo "Assessing pull request #$PR"
-                curl --fail --silent --show-error --max-time 30 \
-                  -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$API/pulls/$PR" > pr.json
-
-                AUTHOR=$(jq -r '.user.login' pr.json)
-                BASE=$(jq -r '.base.ref' pr.json)
-                # A PR description is attacker-controlled text. Written to a
-                # file and passed by path, never interpolated into a command.
-                jq -r '.body // ""' pr.json > pr-body.txt
-
-                # A failed fetch costs the review-integrity signals, not the
-                # whole assessment.
-                curl --fail --silent --show-error --max-time 30 \
-                  -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$API/pulls/$PR/reviews" > reviews.json || echo '[]' > reviews.json
-
-                # The author's role on this repo, for `privilege_adjacent`.
-                # Tolerated failure: the endpoint needs push access, and a
-                # token without it must cost this one signal rather than the
-                # whole assessment. An empty ROLE means "not established",
-                # which the scorer treats as absent, not as ordinary access.
-                ROLE=""
-                if curl --fail --silent --show-error --max-time 30                   -H "Accept: application/vnd.github.v3+json"                   "$API/collaborators/$AUTHOR/permission" > perm.json; then
-                  # `role_name` distinguishes maintain from write; the older
-                  # `permission` field collapses them, and maintain is exactly
-                  # the case this signal is about.
-                  ROLE=$(jq -r '.role_name // .permission // ""' perm.json)
-                fi
-
-                # The git resource clones with full history by default, but the
-                # base branch is not fetched, and the author-baseline signal
-                # compares against it. Without this the signal is skipped
-                # rather than guessed (spec 06 section 7) - which is safe, and
-                # is still less than this could see.
-                # [#496] BatchMode, because `|| true` does not protect against
-                # a PROMPT. The `source` resource clones over SSH with a deploy
-                # key (see the resource above for why), so this fetch speaks SSH
-                # in a task container that has no known_hosts. ssh then asks
-                #
-                #   The authenticity of host 'github.com' can't be established.
-                #   Are you sure you want to continue connecting (yes/no)?
-                #
-                # on a terminal nobody is attached to, and waits. The build does
-                # not fail — it HANGS to the task timeout, which is the failure
-                # shape that cost deploy-demo ~26 minutes a build before #388.
-                # `|| true` catches a non-zero exit; it cannot catch a question.
-                #
-                # BatchMode=yes turns the question into an immediate non-zero
-                # exit, so `|| true` does what its author intended: skip the
-                # author-baseline signal rather than guess it (spec 06 §7).
-                #
-                # This makes the failure fast and honest. It does NOT make the
-                # fetch succeed — that needs github.com's host keys in the task
-                # image, which is infrastructure rather than a pipeline edit and
-                # is left to #496.
-                GIT_SSH_COMMAND='ssh -o BatchMode=yes'                   git fetch --quiet origin "$BASE" || true
-
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-
-                python -m mykronos.aegis_signals \
-                  --pr-number "$PR" \
-                  --commit-sha "$SHA" \
-                  --author "$AUTHOR" \
-                  --base-ref "FETCH_HEAD" \
-                  --head-ref "$SHA" \
-                  --pr-body-file pr-body.txt \
-                  --reviews-file reviews.json                   ${ROLE:+--author-role "$ROLE"} \
-                  --sensitive-path '**/auth/**' \
-                  --sensitive-path '**/*secret*' \
-                  --sensitive-path '**/.github/workflows/**' \
-                  --sensitive-path '**/iam/**' \
-                  > signals.json
-
-                echo "Signals observed:"
-                jq -r '.signals[] | "  \(.key): \(.rationale)"' signals.json
-
-                curl --fail --silent --show-error --max-time 60 \
-                  -X POST "$MYKRONOS_URL/api/ingest/aegis" \
-                  -H "Authorization: Bearer $MYKRONOS_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d @signals.json > result.json
-
-                echo "Aegis: $(jq -r '.recommendation' result.json) at $(jq -r '.insider_risk_score' result.json)/100"
-
-                # Slack gets a pull request number and a link. Nothing else.
-                #
-                # spec 06 section 9 treats an insider-risk row as personal
-                # data about a named colleague - kept because it is useful
-                # while reviewing the pull request it concerns, and purged
-                # after retention_days. A Slack channel is a broadcast with
-                # its own retention that no purge job can reach, so the score,
-                # the signal breakdown and the author's login stay out of it.
-                # They live in the check run, where the person they are about
-                # can read them and argue with them.
-                if [ "$(jq -r '.recommendation' result.json)" != "pass" ] \
-                   && [ -n "${SLACK_BOT_TOKEN:-}" ]; then
-                  printf '{"channel":"%s","text":"*TheHub / insider risk*: pull request #%s is flagged for closer review.\\nDetail is in the check run: https://github.com/ToddGBenson/TheHub/pull/%s"}' \
-                    "$SLACK_CHANNEL" "$PR" "$PR" > slack.json
-                  curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
-                    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-                    -H 'Content-Type: application/json; charset=utf-8' \
-                    -d @slack.json \
-                    || echo "Slack post failed - not failing the assessment over a notification."
-                fi
-
-                # Advisory unless this repository opted into blocking
-                # (spec 06 section 4). Even then a human decides; this is a
-                # prompt to review the change carefully, not a judgement about
-                # the person who wrote it.
-                if [ "$(jq -r '.blocking' result.json)" = "true" ] \
-                   && [ "$(jq -r '.recommendation' result.json)" = "block_recommended" ]; then
-                  echo "::error::Aegis recommends blocking and blocking is enabled for this repository."
-                  exit 1
-                fi
-
   # == Stage 4: the gate ====================================================
   #
   # After every security lane, never alongside them. Oracle scores the whole
@@ -3810,8 +3514,7 @@ jobs:
         # the rewrite cost -- "DAST no longer precedes the gate at all" -- and
         # gating on the six directly is what let Oracle score a build that had
         # never been deployed anywhere. This puts `oracle-gate`, `api-inventory`
-        # and `dast-demo` back on one footing downstream of `deploy-demo`,
-        # which is the shape `insider` now requires all three of.
+        # and `dast-demo` back on one footing downstream of `deploy-demo`.
         passed: [deploy-demo]
       - get: python
         attempts: *retry_fetch
@@ -3931,7 +3634,7 @@ jobs:
                   # Written for the on_failure hook, which otherwise knows
                   # only the job name. Counts of findings a commit introduced
                   # describe the change, not a person, so this is safe to
-                  # broadcast - unlike anything the insider lane produces.
+                  # broadcast.
                   printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Nothing is deployed.' \
                     "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
 
