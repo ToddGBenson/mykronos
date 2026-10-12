@@ -594,6 +594,30 @@ class Settings(BaseSettings):
         description="Concourse team whose pipelines cover these repositories.",
     )
 
+    timeout_audit_interval_seconds: int = Field(
+        default=86_400,
+        ge=3_600,
+        description=(
+            "How often the pipeline timeout audit (mykronos.timeout_audit) reads "
+            "live Concourse history and raises any cap that sits too close to "
+            "its job's observed worst run (TheHub #60729). Daily: a cap goes "
+            "tight over weeks of slower builds, not by the hour. Scheduled only "
+            "when concourse_url is set."
+        ),
+    )
+
+    pipeline_definitions_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "deploy" / "concourse" / "pipelines",
+        description=(
+            "The committed Concourse pipeline files whose task caps the timeout "
+            "audit grades. Read from disk because Concourse refuses an "
+            "anonymous read of a pipeline's config (HTTP 401). The image copies "
+            "them in; an empty or missing directory is reported as "
+            "'could not audit', never as clean."
+        ),
+    )
+
     # --- TheHub, the system of record for work items (spec 35, D-133) ----
 
     hub_api_url: str = Field(

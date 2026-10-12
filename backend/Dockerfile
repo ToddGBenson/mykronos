@@ -100,6 +100,10 @@ COPY --chown=mykronos:mykronos workflow-templates /app/workflow-templates
 # 'no score computed' and carried on with an empty weight table.
 COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml \
      governance-policy-v1.yaml stride-map-v1.yaml approval-policy-v1.yaml /app/
+# The pipeline files the `timeout-audit` job grades (TheHub #60729). Concourse
+# answers 401 to an anonymous config read, so the caps come from the commit
+# this image was built from. No secrets: every credential is a `((var))`.
+COPY --chown=mykronos:mykronos deploy/concourse/pipelines /app/deploy/concourse/pipelines
 
 USER mykronos
 WORKDIR /app
@@ -131,6 +135,7 @@ ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA} \
     MYKRONOS_GOVERNANCE_POLICY_PATH=/app/governance-policy-v1.yaml \
     MYKRONOS_STRIDE_MAP_PATH=/app/stride-map-v1.yaml \
     MYKRONOS_APPROVAL_POLICY_PATH=/app/approval-policy-v1.yaml \
+    MYKRONOS_PIPELINE_DEFINITIONS_DIR=/app/deploy/concourse/pipelines \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8100

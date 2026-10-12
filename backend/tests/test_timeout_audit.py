@@ -20,8 +20,9 @@ pass, a tight cap must be named and fail the run, and a job killed by the clock
 must be reported rather than crash the report. These tests used to read LIVE
 Concourse and assert the estate had no finding, which turned `main` red the
 day `personal-soc/secrets` had one slow run: a unit test grading live data.
-The live verdict still needs a caller, and a scheduled lane is the place for
-it, not the unit tier: until one exists, run the script by hand.
+The live verdict has its own caller: the backend's daily `timeout-audit` job
+(`mykronos.jobs.audit_pipeline_timeouts`, TheHub #60729), graded in
+`test_scheduled_timeout_audit.py`.
 The waivers, the constants, and the fact that the script parses every pipeline
 file and finds real caps in them are checked offline, from the committed files.
 
@@ -306,3 +307,20 @@ class TestTheAuditActuallyRuns:
         assert result.returncode == 1, result.stdout[-4000:]
         assert "personal-soc/secrets: cap " in result.stdout
         assert "a failed build ran" in result.stdout
+
+    def test_an_unreachable_concourse_is_could_not_audit_and_never_clean(self) -> None:
+        """It used to print "could not read", then "every cap clears", and exit 0.
+
+        With nothing observed every job read as `no data`, which is not a
+        finding, so the closing line was the one a healthy estate gets.
+        """
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            closed = probe.getsockname()[1]
+        result = run_audit(f"http://127.0.0.1:{closed}")
+        assert "Traceback" not in result.stderr, result.stderr[-2000:]
+        assert result.returncode == 2, result.stdout[-4000:]
+        assert "could not audit" in result.stdout
+        assert "every cap clears" not in result.stdout
