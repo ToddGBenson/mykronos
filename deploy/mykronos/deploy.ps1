@@ -42,8 +42,8 @@
     THE MACHINE SAYS NO AGAIN (#60487, D-126). Retiring the tag left nothing
     mechanical between a `no_go` and production - the exact hole D-047 existed
     to close. This script now asks the platform what the risk gate decided
-    about the sha before it pulls anything, and REFUSES a `no_go` unless
-    -Force is passed with a reason that is recorded.
+    about the sha before it pulls anything, and REFUSES a commit the gate
+    refused unless -Force is passed with a reason that is recorded.
 
     IT FAILS OPEN, DELIBERATELY. If the platform cannot be reached it warns
     and proceeds. That is never worse than the state it replaces: with no
@@ -79,6 +79,13 @@
     is now a refusal here too, with the same -Force -ForceReason override,
     and a recorded override on the decision clears it.
 
+    AND ONLY THE FLOOR REFUSES (D-159, TheHub #60732). This script used to
+    refuse a backlog `no_go` as well, which the gate job never did, so the
+    two disagreed about the same decision. A `no_go` with
+    `introduced_blocking` false is the standing backlog, not this change: it
+    is now a yellow banner with the score and recommendation, and the deploy
+    proceeds. -Force is for what the gate refused, and nothing else.
+
     SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
     default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
     and still retags `:latest` on the LAN registry (192.168.0.14:5000). If you
@@ -111,7 +118,7 @@
     unrecorded exception.
 
 .PARAMETER ForceReason
-    Why this `no_go` ships anyway. Recorded, not just printed.
+    Why this refused sha ships anyway. Recorded, not just printed.
 
 .PARAMETER MigrateFrom
     Copy an existing lake and operational database into the volume before
@@ -227,7 +234,10 @@ function Get-RiskVerdict {
     <#
         Four outcomes, and the caller must be able to tell all four apart:
           clean    - asked, and the answer permits a deploy
-          refused  - asked, and the answer is no_go
+          refused  - asked, and the commit INTRODUCED an open critical or
+                     high (`introduced_blocking`, D-048) - the gate's floor
+          backlog  - asked, and the recommendation is no_go but the commit
+                     introduced nothing blocking. Warns, proceeds (D-159)
           unjudged - asked, and NOTHING has ever scored this commit
           unasked  - could not ask at all
 
@@ -270,16 +280,18 @@ function Get-RiskVerdict {
     }
 
     if (-not $answer.found) { return @{ State = "unjudged"; Decision = $answer } }
-    if ($answer.effective_recommendation -eq "no_go") {
-        return @{ State = "refused"; Decision = $answer }
-    }
-    # The floor the gate job actually refuses on (#735, D-048). Only an
-    # explicit true counts: a backend older than the field answers nothing,
-    # and that falls through to the recommendation exactly as before. A
-    # recorded override on the decision is the human call, and clears it -
-    # which is what -Force records below.
+    # The floor the gate job actually refuses on (#735, D-048), and the ONLY
+    # refusal here (D-159). Only an explicit true counts. A recorded override
+    # on the decision is the human call, and clears it - which is what -Force
+    # records below.
     if ($answer.introduced_blocking -eq $true -and -not $answer.overridden) {
         return @{ State = "refused"; Decision = $answer; Floor = $true }
+    }
+    # The backlog, not this change. The gate job warns on it and passes, so
+    # this script does the same: a refusal the gate never made would make
+    # -Force routine, and a routine override records nothing worth reading.
+    if ($answer.effective_recommendation -eq "no_go") {
+        return @{ State = "backlog"; Decision = $answer }
     }
     # An allow-list, not "anything that is not no_go". A verdict this script
     # does not recognise - a null, an empty string, a word a later policy
@@ -330,9 +342,8 @@ function Find-NearestScored {
         }
         if ($answer.State -eq "unjudged") { continue }
         $said = "$($answer.Decision.effective_recommendation)"
-        if ($answer.State -eq "refused") {
-            $said = if ($answer.Floor) { "refused (it introduced an open critical or high)" } else { "refused (no_go)" }
-        }
+        if ($answer.State -eq "refused") { $said = "refused (it introduced an open critical or high)" }
+        if ($answer.State -eq "backlog") { $said = "no_go on the backlog, nothing blocking introduced" }
         return @{ Found = $true; Sha = $ancestor; Distance = $asked; Verdict = $said;
             Score = $answer.Decision.overall_risk_score }
     }
@@ -349,7 +360,7 @@ function Format-NearestScored {
 }
 
 if ($Force -and -not $ForceReason) {
-    throw "-Force needs -ForceReason. Overriding a no_go without recording why is the thing #60487 exists to prevent."
+    throw "-Force needs -ForceReason. Overriding a refusal without recording why is the thing #60487 exists to prevent."
 }
 if ($ForceReason -and $ForceReason.Trim().Length -lt 10) {
     throw "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
@@ -412,6 +423,26 @@ switch ($verdict.State) {
             decision_id = $decision.decision_id; score = $decision.overall_risk_score } | Out-Null
     }
 
+    "backlog" {
+        # Visible, and no pause and no refusal: this is the standing backlog,
+        # which the gate job reports and passes (D-048, D-159).
+        Write-RiskBanner -Color Yellow `
+            -Heading "BACKLOG NO_GO - $Tag IS NOT REFUSED (D-159)" `
+            -Lines @(
+                "Recommendation $($decision.recommendation), effective $($decision.effective_recommendation), score $($decision.overall_risk_score), policy $($decision.policy_version).",
+                "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
+                "",
+                "This commit introduced no open critical or high, so the gate passed it.",
+                "The no_go describes the standing backlog, not this change. Deploying."
+            )
+        $riskSummary = "Risk gate: BACKLOG no_go for $Tag (score $($decision.overall_risk_score)) - nothing blocking introduced, so not refused (D-159)."
+        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "backlog_no_go";
+            recommendation = $decision.recommendation;
+            effective = $decision.effective_recommendation;
+            decision_id = $decision.decision_id; score = $decision.overall_risk_score;
+            introduced_blocking = $false } | Out-Null
+    }
+
     "unjudged" {
         $nearest = Find-NearestScored -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken `
             -RepoPath (Join-Path $here "..\..")
@@ -463,11 +494,7 @@ switch ($verdict.State) {
         $intro = $decision.introduced
         $newCritical = if ($intro -and $intro.critical) { $intro.critical } else { 0 }
         $newHigh = if ($intro -and $intro.high) { $intro.high } else { 0 }
-        $why = if ($verdict.Floor) {
-            "The risk gate refused ${Tag}: it introduced $newCritical critical and $newHigh high open finding(s) (D-048)."
-        } else {
-            "The risk gate scored $Tag no_go."
-        }
+        $why = "The risk gate refused ${Tag}: it introduced $newCritical critical and $newHigh high open finding(s) (D-048)."
         $detail = @(
             "Score $($decision.overall_risk_score), policy $($decision.policy_version), decided $($decision.evaluated_at).",
             "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
