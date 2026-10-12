@@ -40,6 +40,39 @@ a pipeline pins, so the API cannot assume which rule produced a submission.
 #: `v2-snippet` inputs that differ from the submitted ones (D-139).
 IDENTITY_KEY = "mykronos_identity"
 
+FINGERPRINT_V3_ROUTE_ENV = "v3-route-env"
+"""A DAST route, in the environment that served it (D-155, TheHub #60723).
+
+The same `code` digest as `v2-snippet`, with the environment as the symbol:
+the route is the location and the environment is what encloses it. Under
+`v2-snippet` a ZAP finding had no symbol, so demo, staging and production
+reporting one route were one row, and each lane's runs re-described or closed
+the others'. The `v2-snippet` id is recoverable from the same inputs with the
+symbol taken away, which is what `v2_predecessor_id` computes.
+"""
+
+#: The DAST lanes that each scan one environment, by the tool name they upload
+#: under, and the environment each one is (D-155). A tool absent from here --
+#: `zap` itself, which `mykronos.yml` still uploads under -- keeps the
+#: `v2-snippet` identity it always had.
+DAST_ENVIRONMENT_TOOLS: dict[str, str] = {
+    "zap-demo": "demo",
+    "zap-prod": "prod",
+    "zap-staging": "staging",
+}
+
+#: A lane whose findings moved to other lanes by a change of tool name, and
+#: the lanes they moved to (D-155). Absence reconciliation and carry-forward
+#: partition on the tool, so the old lane never scans again; this is what lets
+#: `carry_forward` withdraw a finding stranded in it once every lane that could
+#: claim it has scanned.
+LANE_SUCCESSORS: dict[str, tuple[str, ...]] = {
+    "zap": tuple(sorted(DAST_ENVIRONMENT_TOOLS)),
+}
+
+#: Identity rules whose adapter records the `v2-snippet` inputs it changed.
+_REKEYED_RULES = (FINGERPRINT_V3_SNIPPET, FINGERPRINT_V3_ROUTE_ENV)
+
 FINGERPRINT_V1_LINE = "v1-line"
 """Degraded fallback when an adapter supplies no snippet or symbol.
 
@@ -204,8 +237,9 @@ def v2_predecessor_id(
 
     Computed from the inputs the adapter recorded (`IDENTITY_KEY`), with the
     submitted value standing in for any it did not — it records only what
-    changed. None for anything that is not a `v3-snippet` code finding, and
-    for one whose identity the new rule left alone.
+    changed. None for anything that is not a `v3-snippet` code finding (or a
+    `v3-route-env` DAST finding, D-155, which records its old symbol: none),
+    and for one whose identity the new rule left alone.
 
     This is the exact link D-139 rests on: no similarity, no threshold. It is
     what lets a decision move to the re-keyed finding even when the two
@@ -213,7 +247,7 @@ def v2_predecessor_id(
     `lake/carry_forward.py` would rightly refuse.
     """
     marker = _identity_marker(raw_finding_json)
-    if not marker or marker.get("rule") != FINGERPRINT_V3_SNIPPET or not file_path:
+    if not marker or marker.get("rule") not in _REKEYED_RULES or not file_path:
         return None
     v2_symbol = marker.get("v2_symbol", symbol)
     v2_snippet = marker.get("v2_code_snippet", code_snippet)
@@ -316,8 +350,8 @@ def compute_finding_id(
                 _digest(
                     "code", repo_full_name, capability, rule_id, file_path, symbol, normalized
                 ),
-                FINGERPRINT_V3_SNIPPET
-                if identity_rule == FINGERPRINT_V3_SNIPPET
+                identity_rule
+                if identity_rule is not None and identity_rule in _REKEYED_RULES
                 else FINGERPRINT_V2_SNIPPET,
             )
         # Degraded: no anchor in the code itself, so identity is positional and
