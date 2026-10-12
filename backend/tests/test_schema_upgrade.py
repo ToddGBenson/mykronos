@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import inspect, text
 
 from mykronos.db.models import Base, RepoOnboarding
-from mykronos.db.session import RETIRED_COLUMNS, Database
+from mykronos.db.session import RETIRED_COLUMNS, RETIRED_TABLES, Database
 
 
 @pytest.fixture
@@ -456,3 +456,42 @@ class TestARetiredColumn:
             db.drop_retired_columns()
 
         assert "repo_onboardings" in inspect(db.engine).get_table_names()
+
+
+class TestRetiredTables:
+    """`po_backlog_rank` (D-153): the rank moved to TheHub's `po_rank`."""
+
+    @staticmethod
+    def add_rank_table(db: Database) -> None:
+        with db.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE po_backlog_rank (repo_id VARCHAR(36), "
+                    "story_id INTEGER, rank INTEGER, PRIMARY KEY (repo_id, story_id))"
+                )
+            )
+
+    def test_create_all_drops_it_and_says_so(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        self.add_rank_table(db)
+
+        assert open_db().drop_retired_tables() == ["po_backlog_rank"]
+        assert "po_backlog_rank" not in inspect(db.engine).get_table_names()
+
+        self.add_rank_table(db)
+        open_db().create_all()
+        assert "po_backlog_rank" not in inspect(db.engine).get_table_names()
+
+    def test_a_database_without_it_is_left_alone(self, open_db) -> None:
+        db = open_db()
+        db.create_all()
+        assert open_db().drop_retired_tables() == []
+
+    def test_every_retired_table_is_gone_from_the_models(self) -> None:
+        """Declared and retired at once would create it and drop it on every
+        start, taking its rows each time."""
+        for table_name in RETIRED_TABLES:
+            assert table_name not in Base.metadata.tables, (
+                f"{table_name} is declared by a model and listed in RETIRED_TABLES."
+            )

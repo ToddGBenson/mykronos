@@ -2479,6 +2479,200 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Template Pr
+         * @description Open a draft pull request adding a starter `.sdlc/process.yaml`
+         *     (spec 35 §7.2, B-069).
+         *
+         *     Only for a repository whose default branch has no manifest: an invalid one
+         *     is fixed in the repository, not replaced from here, and an unreadable one
+         *     may well exist. Every attempt is audit-logged, including the refusals.
+         */
+        post: operations["open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Delivery
+         * @description What shipped, by sha, joined to the Oracle decision and the running
+         *     revision (spec 35 §8.1).
+         */
+        get: operations["delivery_api_dashboard_repos__repo_id__product_owner_delivery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Approvals
+         * @description This repository's pending spec 34 requests (spec 35 §8.2).
+         */
+        get: operations["approvals_api_dashboard_repos__repo_id__product_owner_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/approvals/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide In Place
+         * @description Decide one of this repository's requests through the approvals engine.
+         *
+         *     `approvals.engine.decide` runs every rule the duty's tier names, exactly as
+         *     `/api/approvals/{id}/decisions` does (D-144). Its refusal is returned
+         *     verbatim, and is audited like a decision that stood.
+         */
+        post: operations["decide_in_place_api_dashboard_repos__repo_id__product_owner_approvals__request_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Roles
+         * @description Who the manifest says recommends and approves each gate, beside what
+         *     the platform enforces and the delegations that exist (spec 35 §8.3).
+         */
+        get: operations["roles_api_dashboard_repos__repo_id__product_owner_roles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/retro": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retro
+         * @description A computed retrospective of the stories closed in the window, and the
+         *     gates they failed on the way (spec 35 §8.4, D-145).
+         */
+        get: operations["retro_api_dashboard_repos__repo_id__product_owner_retro_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trace
+         * @description One story's chain: commit, pull request, scan, deploy (spec 35 §8.5).
+         *     Commits are the ones whose `Stories:` trailer names the story (D-146).
+         */
+        get: operations["trace_api_dashboard_repos__repo_id__product_owner_trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/product-owner/fleet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fleet
+         * @description What the agents did for this repository: autonomy runs, verification
+         *     verdicts, cost, and the RACI owner of each gate failure (spec 35 §8.6).
+         */
+        get: operations["fleet_api_dashboard_repos__repo_id__product_owner_fleet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/product-owner/estate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estate
+         * @description Every active repository's Product Owner read, one row each, summed.
+         */
+        get: operations["estate_api_dashboard_product_owner_estate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -5490,6 +5684,8 @@ export interface components {
             title: string;
             /** Reason */
             reason: string;
+            /** Owner */
+            owner?: string | null;
         };
         /** NetassessAccepted */
         NetassessAccepted: {
@@ -5558,6 +5754,29 @@ export interface components {
             input: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * ObservationOut
+         * @description One declaration beside its observation (spec 35 §7.1). The two are
+         *     separate fields so the view never merges them into one word.
+         */
+        ObservationOut: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Declared */
+            declared: string;
+            /** Observed */
+            observed: string;
+            /** Status */
+            status: string;
+            /** Owner */
+            owner: string;
+            /** Detail */
+            detail: string;
         };
         /** OnboardRequest */
         OnboardRequest: {
@@ -5740,6 +5959,595 @@ export interface components {
             autonomy_disabled?: boolean | null;
             /** Detail */
             detail?: string | null;
+        };
+        /** PoApproverNeedOut */
+        PoApproverNeedOut: {
+            /** Kind */
+            kind: string;
+            /** Delegation Required */
+            delegation_required: boolean;
+        };
+        /** PoDecideIn */
+        PoDecideIn: {
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+        };
+        /** PoDecideOut */
+        PoDecideOut: {
+            /** Request Id */
+            request_id: string;
+            /** State */
+            state: string;
+            /** Decision Id */
+            decision_id: string;
+            /** Same Person */
+            same_person: boolean;
+            /** Sampled */
+            sampled: boolean;
+        };
+        /** PoDeclaredGateOut */
+        PoDeclaredGateOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Recommends */
+            recommends: string;
+            /** Approves */
+            approves: string;
+            /** Story Gates */
+            story_gates: string[];
+            /** Doc */
+            doc: string | null;
+        };
+        /** PoDelegationRefOut */
+        PoDelegationRefOut: {
+            /** Id */
+            id: string;
+            /** Families */
+            families: string[];
+            /** Expires At */
+            expires_at: string | null;
+            /** Sampling */
+            sampling: number;
+        };
+        /** PoDeliveryDecisionOut */
+        PoDeliveryDecisionOut: {
+            /** Decision Type */
+            decision_type: string | null;
+            /** Recommendation */
+            recommendation: string | null;
+            /** Score */
+            score: number | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Gate Outcome */
+            gate_outcome: string | null;
+            /** Human Override */
+            human_override: string | null;
+        };
+        /** PoDeliveryOut */
+        PoDeliveryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Default Branch */
+            default_branch: string;
+            /** Days */
+            days: number;
+            deployment: components["schemas"]["PoDeploymentOut"];
+            /** Shipped */
+            shipped: components["schemas"]["PoDeliveryRowOut"][];
+            /** Not Shipped */
+            not_shipped: components["schemas"]["PoDeliveryRowOut"][];
+            /** Error */
+            error: string | null;
+        };
+        /** PoDeliveryRowOut */
+        PoDeliveryRowOut: {
+            /** Sha */
+            sha: string;
+            /** Commit Url */
+            commit_url: string;
+            /** Shipped */
+            shipped: boolean;
+            /** Shipped Reason */
+            shipped_reason: string | null;
+            /** Branches */
+            branches: string[];
+            /** Pr Numbers */
+            pr_numbers: number[];
+            /** First Seen */
+            first_seen: string | null;
+            /** Last Seen */
+            last_seen: string | null;
+            /** Scans */
+            scans: components["schemas"]["PoScanOut"][];
+            /** Scan Failures */
+            scan_failures: number;
+            decision: components["schemas"]["PoDeliveryDecisionOut"] | null;
+            /** Deployed */
+            deployed: string;
+        };
+        /** PoDeploymentOut */
+        PoDeploymentOut: {
+            /** Probe Status */
+            probe_status: string;
+            /** Running Revision */
+            running_revision: string | null;
+            /** Observed At */
+            observed_at: string | null;
+        };
+        /** PoEnforcedTierOut */
+        PoEnforcedTierOut: {
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Approvers */
+            approvers: string[];
+            /** Quorum */
+            quorum: number;
+            /** Independence */
+            independence: string[];
+            /** Cooling Off Hours */
+            cooling_off_hours: number;
+            /** Agent Now */
+            agent_now: string;
+            /** Delegations */
+            delegations: components["schemas"]["PoDelegationRefOut"][];
+        };
+        /** PoEstateOut */
+        PoEstateOut: {
+            /** Rows */
+            rows: components["schemas"]["PoEstateRowOut"][];
+            totals: components["schemas"]["PoEstateTotalsOut"];
+        };
+        /** PoEstateRowOut */
+        PoEstateRowOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Manifest State */
+            manifest_state: string;
+            /** Process */
+            process: string;
+            /** Manifest Name */
+            manifest_name: string | null;
+            /** Sprint Done */
+            sprint_done: number | null;
+            /** Sprint Committed */
+            sprint_committed: number | null;
+            /** Needs Human */
+            needs_human: number | null;
+            /** Oracle Recommendation */
+            oracle_recommendation: string | null;
+            /** Oracle Score */
+            oracle_score: number | null;
+            /** Hub Connected */
+            hub_connected: boolean;
+            /** Link */
+            link: string;
+            /** Error */
+            error: string | null;
+        };
+        /** PoEstateTotalsOut */
+        PoEstateTotalsOut: {
+            /** Repos */
+            repos: number;
+            /** Declared */
+            declared: number;
+            /** Declares No Process */
+            declares_no_process: number;
+            /** Invalid Or Unreadable */
+            invalid_or_unreadable: number;
+            /** Sprint Done */
+            sprint_done: number;
+            /** Sprint Committed */
+            sprint_committed: number;
+            /** Needs Human */
+            needs_human: number;
+            /** Rows Without Hub */
+            rows_without_hub: number;
+        };
+        /**
+         * PoFleetEstateOut
+         * @description TheHub's estate-wide autonomy state, from its dashboard.
+         */
+        PoFleetEstateOut: {
+            /** Kill Switch Active */
+            kill_switch_active: boolean | null;
+            /** Dry Run Default */
+            dry_run_default: boolean | null;
+            /** Daily Cost Used Usd */
+            daily_cost_used_usd: number | null;
+            /** Daily Cost Cap Usd */
+            daily_cost_cap_usd: number | null;
+            /** In Flight */
+            in_flight: components["schemas"]["PoFleetInFlightOut"][];
+        };
+        /** PoFleetInFlightOut */
+        PoFleetInFlightOut: {
+            /** Run Id */
+            run_id: number | null;
+            /** Story Id */
+            story_id: number | null;
+            /** Story Title */
+            story_title: string | null;
+            /** Elapsed Seconds */
+            elapsed_seconds: number | null;
+            /** Cost Usd */
+            cost_usd: number | null;
+        };
+        /** PoFleetOut */
+        PoFleetOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Days */
+            days: number;
+            estate: components["schemas"]["PoFleetEstateOut"] | null;
+            /** Estate Error */
+            estate_error: string | null;
+            /** Runs */
+            runs: components["schemas"]["PoFleetRunOut"][];
+            /** Outcomes */
+            outcomes: {
+                [key: string]: number;
+            } | null;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Verdicts */
+            verdicts: components["schemas"]["PoFleetVerdictOut"][];
+            /** Failures */
+            failures: components["schemas"]["PoGateFailureOut"][];
+            /** Stories Read */
+            stories_read: number;
+            /** Unread */
+            unread: number[];
+            /** Not Read */
+            not_read: number;
+        };
+        /** PoFleetRunOut */
+        PoFleetRunOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Run Id */
+            run_id: number | string | null;
+            /** Status */
+            status: string | null;
+            /** Status As Written */
+            status_as_written: string | null;
+            /** Dry Run */
+            dry_run: boolean;
+            /** Shipped */
+            shipped: boolean;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Started At */
+            started_at: string | null;
+        };
+        /** PoFleetVerdictOut */
+        PoFleetVerdictOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Implementer Agent */
+            implementer_agent: string | null;
+            /** Verifier Agent */
+            verifier_agent: string | null;
+            /** Reason */
+            reason: string | null;
+            /** Decided At */
+            decided_at: string | null;
+        };
+        /** PoGateFailureOut */
+        PoGateFailureOut: {
+            /** Story Id */
+            story_id: number;
+            /** Title */
+            title: string;
+            /** Kind */
+            kind: string;
+            /** Hub Gate */
+            hub_gate: string;
+            /** Gate Name */
+            gate_name: string | null;
+            /** Detail */
+            detail: string;
+            /** At */
+            at: string | null;
+            /** Activity */
+            activity: string | null;
+            /** Accountable */
+            accountable: string | null;
+            /** Owner */
+            owner: string;
+        };
+        /** PoHubStateOut */
+        PoHubStateOut: {
+            /** Connected */
+            connected: boolean;
+            /** Error */
+            error: string | null;
+        };
+        /** PoInboxDecisionOut */
+        PoInboxDecisionOut: {
+            /** Approver */
+            approver: string;
+            /** Approver Kind */
+            approver_kind: string;
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Created At */
+            created_at: string | null;
+        };
+        /** PoInboxItemOut */
+        PoInboxItemOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Summary */
+            summary: string;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Kind */
+            requester_kind: string;
+            /** Requester Statement */
+            requester_statement: string;
+            /** Created At */
+            created_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Overdue */
+            overdue: boolean;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Decisions */
+            decisions: components["schemas"]["PoInboxDecisionOut"][];
+            needs: components["schemas"]["PoTierNeedsOut"] | null;
+        };
+        /** PoInboxOut */
+        PoInboxOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Can Decide */
+            can_decide: boolean;
+            /** Pending */
+            pending: components["schemas"]["PoInboxItemOut"][];
+            /** Estate Wide Pending */
+            estate_wide_pending: number;
+            /** Policy Version */
+            policy_version: string | null;
+        };
+        /** PoRetroOut */
+        PoRetroOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Days */
+            days: number;
+            /** Closed */
+            closed: number | null;
+            /** Sizes */
+            sizes: {
+                [key: string]: number;
+            };
+            /** Median Cycle Days */
+            median_cycle_days: number | null;
+            /** Failed Stories */
+            failed_stories: number | null;
+            /** Failures */
+            failures: components["schemas"]["PoGateFailureOut"][];
+            /** No Acceptance Criteria */
+            no_acceptance_criteria: number[];
+            /** No Retrospective Note */
+            no_retrospective_note: number[];
+            /** Carried Over */
+            carried_over: number[];
+            /** Dry Runs */
+            dry_runs: number | null;
+            /** Shipped Runs */
+            shipped_runs: number | null;
+            /** Unread */
+            unread: number[];
+            /** Not Read */
+            not_read: number;
+            /** Summary */
+            summary: string[];
+            /** Limitation */
+            limitation: string;
+            /** Stories */
+            stories: components["schemas"]["PoRetroStoryOut"][];
+        };
+        /** PoRetroStoryOut */
+        PoRetroStoryOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Size */
+            size: string | null;
+            /** Closed At */
+            closed_at: string | null;
+            /** Unread */
+            unread: string[];
+            /** Failed Gates */
+            failed_gates: string[];
+        };
+        /** PoRolesOut */
+        PoRolesOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Manifest State */
+            manifest_state: string;
+            /** Declared */
+            declared: components["schemas"]["PoDeclaredGateOut"][];
+            /** Enforced */
+            enforced: components["schemas"]["PoEnforcedTierOut"][];
+            /** Policy Version */
+            policy_version: string | null;
+            /** Single Operator */
+            single_operator: boolean | null;
+            /** Active Delegations */
+            active_delegations: number;
+            /** Error */
+            error: string | null;
+        };
+        /** PoScanOut */
+        PoScanOut: {
+            /** Capability */
+            capability: string | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Run Url */
+            run_url: string | null;
+        };
+        /** PoTierNeedsOut */
+        PoTierNeedsOut: {
+            /** Approvers */
+            approvers: components["schemas"]["PoApproverNeedOut"][];
+            /** Quorum */
+            quorum: number;
+            /** Independence */
+            independence: string[];
+            /** Cooling Off Hours */
+            cooling_off_hours: number;
+        };
+        /** PoTraceCommitOut */
+        PoTraceCommitOut: {
+            /** Sha */
+            sha: string;
+            /** Url */
+            url: string;
+            /** Subject */
+            subject: string;
+            /** Committed At */
+            committed_at: string | null;
+            /** Prs */
+            prs: components["schemas"]["PoTracePrOut"][];
+            /** Scans */
+            scans: components["schemas"]["PoTraceScanOut"][];
+            /** Deploys */
+            deploys: components["schemas"]["PoTraceDeployOut"][];
+            /** Running */
+            running: boolean;
+            /** Missing */
+            missing: string | null;
+        };
+        /** PoTraceDeployOut */
+        PoTraceDeployOut: {
+            /** Source */
+            source: string;
+            /** Id */
+            id: string | number | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Sha */
+            sha: string | null;
+        };
+        /** PoTraceLinksOut */
+        PoTraceLinksOut: {
+            /** Commit */
+            commit: boolean;
+            /** Pr */
+            pr: boolean;
+            /** Scan */
+            scan: boolean;
+            /** Deploy */
+            deploy: boolean;
+        };
+        /** PoTraceOut */
+        PoTraceOut: {
+            story: components["schemas"]["PoTraceStoryOut"];
+            /** Commits */
+            commits: components["schemas"]["PoTraceCommitOut"][];
+            /** Prose Mentions */
+            prose_mentions: number;
+            /** Commits Read */
+            commits_read: number | null;
+            links: components["schemas"]["PoTraceLinksOut"];
+            /** First Missing */
+            first_missing: string | null;
+            /** Github Error */
+            github_error: string | null;
+            /** Deploys Error */
+            deploys_error: string | null;
+        };
+        /** PoTracePickOut */
+        PoTracePickOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Bucket */
+            bucket: string;
+            /** Gate */
+            gate: string;
+        };
+        /** PoTracePrOut */
+        PoTracePrOut: {
+            /** Number */
+            number: number;
+            /** Url */
+            url: string;
+            /** Source */
+            source: string;
+        };
+        /** PoTraceScanOut */
+        PoTraceScanOut: {
+            /** Of */
+            of: string;
+            /** Capability */
+            capability: string | null;
+            /** Status */
+            status: string | null;
+            /** At */
+            at: string | null;
+            /** Run Url */
+            run_url: string | null;
+        };
+        /** PoTraceStoryOut */
+        PoTraceStoryOut: {
+            /** Id */
+            id: number;
+            /** Title */
+            title: string;
+            /** Bucket */
+            bucket: string;
+            /** Gate */
+            gate: string;
+            /** Created At */
+            created_at: string | null;
+        };
+        /** PoTraceViewOut */
+        PoTraceViewOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            hub: components["schemas"]["PoHubStateOut"];
+            /** Stories */
+            stories: components["schemas"]["PoTracePickOut"][];
+            trace: components["schemas"]["PoTraceOut"] | null;
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -5930,6 +6738,10 @@ export interface components {
             hub: components["schemas"]["HubOut"];
             /** Needs Human */
             needs_human: components["schemas"]["NeedsHumanOut"][];
+            /** Observations */
+            observations: components["schemas"]["ObservationOut"][];
+            /** Templates */
+            templates: components["schemas"]["TemplateOut"][];
             /** Counts */
             counts: {
                 [key: string]: number;
@@ -5940,6 +6752,9 @@ export interface components {
             backlog: components["schemas"]["StoryOut"][];
             /** Sprint */
             sprint: components["schemas"]["StoryOut"][];
+            risk_model: components["schemas"]["RiskModelOut"];
+            /** Backlog By Risk */
+            backlog_by_risk: number[];
         };
         /**
          * ProfileProposalOut
@@ -6640,6 +7455,24 @@ export interface components {
             reason: string;
         };
         /**
+         * RiskModelOut
+         * @description What the 'by risk removed' order ranked by (the B-033 rule).
+         */
+        RiskModelOut: {
+            /** Available */
+            available: boolean;
+            /** Decision Id */
+            decision_id: string | null;
+            /** Evaluated At */
+            evaluated_at: string | null;
+            /** Policy Version */
+            policy_version: string | null;
+            /** Risk Profile Available */
+            risk_profile_available: boolean;
+            /** Statement */
+            statement: string;
+        };
+        /**
          * RiskProfileOut
          * @description What this application is, as an asset (spec 21 §1).
          *
@@ -7121,6 +7954,23 @@ export interface components {
             /** Updated At */
             updated_at: string | null;
             check: components["schemas"]["GateCheckOut"];
+            dod?: components["schemas"]["GateCheckOut"] | null;
+            risk?: components["schemas"]["StoryRiskOut"] | null;
+        };
+        /** StoryRiskOut */
+        StoryRiskOut: {
+            /** Linked */
+            linked: boolean;
+            /** Points */
+            points: number | null;
+            /** Findings Linked */
+            findings_linked: number;
+            /** Findings Open */
+            findings_open: number;
+            /** Controls Linked */
+            controls_linked: string[];
+            /** Note */
+            note: string;
         };
         /**
          * SubSignal
@@ -7228,6 +8078,36 @@ export interface components {
             unknowns: number;
             /** Complete */
             complete: boolean;
+        };
+        /** TemplateOut */
+        TemplateOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Summary */
+            summary: string;
+        };
+        /** TemplatePrOut */
+        TemplatePrOut: {
+            /** Template */
+            template: string;
+            /** Created */
+            created: boolean;
+            /** Pr Number */
+            pr_number: number;
+            /** Pr Url */
+            pr_url: string;
+            /** Branch */
+            branch: string;
+        };
+        /** TemplateRequest */
+        TemplateRequest: {
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "keel" | "thehub" | "lightweight";
         };
         /**
          * TestEstateOut
@@ -10582,6 +11462,291 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_template_pr_api_dashboard_repos__repo_id__product_owner_template_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplatePrOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delivery_api_dashboard_repos__repo_id__product_owner_delivery_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approvals_api_dashboard_repos__repo_id__product_owner_approvals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoInboxOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_in_place_api_dashboard_repos__repo_id__product_owner_approvals__request_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoDecideIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDecideOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    roles_api_dashboard_repos__repo_id__product_owner_roles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoRolesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retro_api_dashboard_repos__repo_id__product_owner_retro_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoRetroOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trace_api_dashboard_repos__repo_id__product_owner_trace_get: {
+        parameters: {
+            query?: {
+                story_id?: number | null;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoTraceViewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fleet_api_dashboard_repos__repo_id__product_owner_fleet_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoFleetOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    estate_api_dashboard_product_owner_estate_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoEstateOut"];
                 };
             };
         };

@@ -85,18 +85,9 @@ def pipelines() -> list[Path]:
 #: the property the check exists for. Each line is work, and B-059 carries the
 #: order.
 KNOWN_GAPS: dict[str, str] = {
-    "personal-soc.yml:secrets PS-2": (
-        "reports without a preflight probe; the lane predates PS-2 and the fix "
-        "is the same three lines the other pipelines carry"
-    ),
-    "personal-soc.yml:iac PS-2": (
-        "reports without a preflight probe. Added 2026-09-04 and written to "
-        "match the lanes beside it, which is how a gap reproduces itself"
-    ),
-    "personal-soc.yml:oracle PS-2": (
-        "asks Oracle for a decision without probing first, so an unreachable "
-        "platform reads as a risk verdict rather than as an outage"
-    ),
+    # The three personal-soc PS-2 gaps (secrets, iac, oracle) closed with D-151:
+    # their check-run hooks talk to Mykronos, so they carry the `preflight`
+    # anchor now.
     "personal-soc.yml:secrets PS-3": (
         "a failing gitleaks would skip its own upload, so a broken scan reports "
         "nothing rather than reporting that it broke"

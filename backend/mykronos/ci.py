@@ -1630,6 +1630,12 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "the Oracle gate asks for a decision and produces no scan run (B-061)",
     ),
     (
+        (PERSONAL_SOC,),
+        "all-lanes",
+        "gathers the verifying lanes and posts `Concourse / personal-soc` "
+        "(D-151); it scans nothing and files nothing",
+    ),
+    (
         (MYKRONOS, THEHUB),
         "oracle-gate",
         "the Oracle gate asks for a decision and produces no scan run (B-061)",

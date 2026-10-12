@@ -7,25 +7,28 @@ admin-only and every one is audit-logged, including the ones TheHub refuses:
 an audit log that records only what worked cannot answer "who tried to pull
 that into the sprint?".
 
-TheHub owns the stories (D-133). Nothing here edits a story's content; the two
-Hub writes are a bucket move and the autonomy switch, and rank is MyKronos's
-own table because TheHub has no field for it (B-068).
+TheHub owns the stories (D-133). Nothing here edits a story's content; the
+three Hub writes are a bucket move, the autonomy switch and the rank, which is
+TheHub's `po_rank` (B-068, D-153).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
+from mykronos import governance
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep
-from mykronos.db.models import PoBacklogRank, RepoOnboarding
+from mykronos.db.models import RepoGovernance, RepoOnboarding
+from mykronos.github.client import GitHubError, PermissionDeniedError
+from mykronos.process_templates import TEMPLATES
+from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,19 @@ class GateCheckOut(BaseModel):
     items: list[CheckItemOut]
 
 
+class StoryRiskOut(BaseModel):
+    #: False when the story carries no `finding:` or `control:` tag.
+    linked: bool
+    #: Points removed, or null when not linked or no risk model exists.
+    points: float | None
+    findings_linked: int
+    #: Of the linked findings, how many are open under the decision's scope.
+    #: Only these remove points.
+    findings_open: int
+    controls_linked: list[str]
+    note: str
+
+
 class StoryOut(BaseModel):
     id: int
     title: str
@@ -77,6 +93,13 @@ class StoryOut(BaseModel):
     created_at: str | None
     updated_at: str | None
     check: GateCheckOut
+    #: The manifest's Definition of Done against this story (spec 35 §7.3).
+    #: Only for a story at a done-equivalent gate, and only when the manifest
+    #: declares one; null otherwise.
+    dod: GateCheckOut | None = None
+    #: Oracle risk points this story would remove (spec 35 §7.4). Backlog
+    #: stories only.
+    risk: StoryRiskOut | None = None
 
 
 class ManifestOut(BaseModel):
@@ -96,11 +119,30 @@ class HubOut(BaseModel):
 
 
 class NeedsHumanOut(BaseModel):
-    #: invalid_manifest | sprint_gate_failed | ready_manual_item
+    #: invalid_manifest | sprint_gate_failed | ready_manual_item | process_drift
+    #: | dod_failed
     kind: str
     story_id: int | None
     title: str
     reason: str
+    #: Who fixes it, where the item is a finding with an owner (drift).
+    owner: str | None = None
+
+
+class ObservationOut(BaseModel):
+    """One declaration beside its observation (spec 35 §7.1). The two are
+    separate fields so the view never merges them into one word."""
+
+    id: str
+    #: branch_control | gate_switch
+    kind: str
+    subject: str
+    declared: str
+    observed: str
+    #: consistent | drift | unobserved. Only drift is a finding.
+    status: str
+    owner: str
+    detail: str
 
 
 class SprintProgressOut(BaseModel):
@@ -114,6 +156,25 @@ class OracleOut(BaseModel):
     overall_risk_score: float | None
     evaluated_at: str | None
     commit_sha: str | None
+
+
+class RiskModelOut(BaseModel):
+    """What the 'by risk removed' order ranked by (the B-033 rule)."""
+
+    available: bool
+    decision_id: str | None
+    evaluated_at: str | None
+    policy_version: str | None
+    #: False means the ranking carries no business context.
+    risk_profile_available: bool
+    #: The sentence the view shows, so every surface says the same thing.
+    statement: str
+
+
+class TemplateOut(BaseModel):
+    id: str
+    label: str
+    summary: str
 
 
 class ProductOwnerOut(BaseModel):
@@ -134,11 +195,22 @@ class ProductOwnerOut(BaseModel):
     membership_source: str
     hub: HubOut
     needs_human: list[NeedsHumanOut]
+    #: Every declaration the platform can compare with what it observes,
+    #: including the consistent and unobserved ones (B-070).
+    observations: list[ObservationOut]
+    #: Starter manifests on offer. Only when the repository declares none
+    #: (spec 35 §7.2); empty otherwise, so a declared process is never offered
+    #: a replacement.
+    templates: list[TemplateOut]
     counts: dict[str, int]
     sprint_progress: SprintProgressOut
     oracle: OracleOut | None
     backlog: list[StoryOut]
     sprint: list[StoryOut]
+    risk_model: RiskModelOut
+    #: Backlog story ids in the 'by risk removed' order. A view, never written:
+    #: the manual rank is unchanged by it.
+    backlog_by_risk: list[int]
 
 
 class PoActionOut(BaseModel):
@@ -148,6 +220,21 @@ class PoActionOut(BaseModel):
     moved: bool
     autonomy_disabled: bool | None = None
     detail: str | None = None
+
+
+class TemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template: Literal["keel", "thehub", "lightweight"]
+
+
+class TemplatePrOut(BaseModel):
+    template: str
+    #: False when a template pull request was already open and is returned.
+    created: bool
+    pr_number: int
+    pr_url: str
+    branch: str
 
 
 class RankRequest(BaseModel):
@@ -227,22 +314,105 @@ async def _read_manifest(
     return po.parse_manifest(text)
 
 
+def _governance_states(request: Request, repo_full_name: str) -> tuple[dict[str, str] | None, str]:
+    """The stored governance reading's per-control states, or None with the
+    reason when there is no current one (spec 35 §7.1).
+
+    Stored, not read live: the governance sweep and the Insider Threat panel
+    already keep this row current, and B-070 is a comparison against data the
+    platform holds, not a second GitHub client. Stale is unobserved for the
+    reason `governance.stored` gives -- a six-week-old reading of a setting is
+    a claim about a repository that may have been reconfigured since.
+    """
+    with request.app.state.db.session() as session:
+        row = session.get(RepoGovernance, repo_full_name)
+        if row is None or not row.control_states:
+            return None, "No governance reading is stored for this repository yet."
+        cutoff = utcnow() - timedelta(days=governance.STALE_AFTER_DAYS)
+        if row.read_at is None or row.read_at < cutoff:
+            return None, (
+                f"The last governance reading is older than {governance.STALE_AFTER_DAYS} days."
+            )
+        return dict(row.control_states), ""
+
+
+async def _read_repo_files(
+    request: Request,
+    repo_full_name: str,
+    branch: str,
+    installation_id: int | None,
+    paths: list[str],
+) -> dict[str, str | None]:
+    """Each path's text at `branch`, or None when absent or unreadable. The
+    same client and call the manifest is read with."""
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation_id is None or not paths:
+        return {path: None for path in paths}
+    github = factory.for_installation(installation_id)
+    out: dict[str, str | None] = {}
+    for path in paths:
+        try:
+            out[path] = await github.get_file(repo_full_name, path, branch)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not read %s from %s", path, repo_full_name)
+            out[path] = None
+    return out
+
+
+async def _observations(
+    request: Request,
+    repo_full_name: str,
+    branch: str,
+    installation_id: int | None,
+    manifest: po.ProcessManifest | None,
+) -> list[po.Observation]:
+    if manifest is None:
+        return []
+    observations: list[po.Observation] = []
+    if manifest.branch_controls is not None:
+        states, reason = _governance_states(request, repo_full_name)
+        observations += po.branch_control_observations(
+            manifest, branch, states, unobserved_reason=reason
+        )
+    files = await _read_repo_files(
+        request, repo_full_name, branch, installation_id, po.switch_files(manifest)
+    )
+    observations += po.gate_switch_observations(manifest, files)
+    return observations
+
+
 def _membership(state: po.ManifestState, repo_full_name: str) -> tuple[str, bool, str]:
     if state.manifest is not None:
         return state.manifest.backlog.tag, state.manifest.backlog.include_untagged, "manifest"
     return po.default_tag(repo_full_name), False, "default"
 
 
-def _ranks(request: Request, repo_id: str) -> dict[int, int]:
-    with request.app.state.db.session() as session:
-        rows = session.execute(
-            select(PoBacklogRank).where(PoBacklogRank.repo_id == repo_id)
-        ).scalars()
-        return {row.story_id: row.rank for row in rows}
+def _ranks(stories: list[dict[str, Any]]) -> dict[int, int]:
+    """The Product Owner's rank, as TheHub holds it (`po_rank`, B-068)."""
+    return {int(s["id"]): int(s["po_rank"]) for s in stories if s.get("po_rank") is not None}
+
+
+def _check_out(check: po.GateCheck) -> GateCheckOut:
+    return GateCheckOut(
+        gate_id=check.gate_id,
+        gate_name=check.gate_name,
+        passed=check.passed,
+        failed=check.failed,
+        manual=check.manual,
+        unavailable=check.unavailable,
+        total=check.total,
+        items=[
+            CheckItemOut(id=i.id, text=i.text, evidence=i.evidence, status=i.status)
+            for i in check.items
+        ],
+    )
 
 
 def _story_out(
-    story: dict[str, Any], manifest: po.ProcessManifest | None, rank: int | None
+    story: dict[str, Any],
+    manifest: po.ProcessManifest | None,
+    rank: int | None,
+    dod: po.GateCheck | None = None,
 ) -> StoryOut:
     check = po.check_story(story, manifest)
     return StoryOut(
@@ -259,19 +429,8 @@ def _story_out(
         rank=rank,
         created_at=story.get("created_at"),
         updated_at=story.get("updated_at"),
-        check=GateCheckOut(
-            gate_id=check.gate_id,
-            gate_name=check.gate_name,
-            passed=check.passed,
-            failed=check.failed,
-            manual=check.manual,
-            unavailable=check.unavailable,
-            total=check.total,
-            items=[
-                CheckItemOut(id=i.id, text=i.text, evidence=i.evidence, status=i.status)
-                for i in check.items
-            ],
-        ),
+        check=_check_out(check),
+        dod=_check_out(dod) if dod is not None else None,
     )
 
 
@@ -297,6 +456,180 @@ def _oracle(request: Request, repo_full_name: str) -> OracleOut | None:
         evaluated_at=evaluated.isoformat() if isinstance(evaluated, datetime) else evaluated,
         commit_sha=latest.get("commit_sha"),
     )
+
+
+def _scanned_commits(request: Request, repo_full_name: str, commits: list[str]) -> list[str] | None:
+    """Which of `commits` have a successful scan run in the lake, as the lake
+    spells them. None when the lake could not be read."""
+    candidates = [c for c in commits if len(c) >= po.MIN_SHA]
+    if not candidates:
+        return []
+    clause = " OR ".join(
+        "starts_with(lower(commit_sha), ?) OR starts_with(?, lower(commit_sha))"
+        for _ in candidates
+    )
+    params: list[Any] = [repo_full_name]
+    for sha in candidates:
+        params += [sha.lower(), sha.lower()]
+    try:
+        rows = request.app.state.catalog.query(
+            f"""
+            SELECT DISTINCT commit_sha FROM scan_runs
+            WHERE repo_full_name = ? AND scan_status = 'success'
+              AND length(commit_sha) >= {po.MIN_SHA} AND ({clause})
+            """,
+            params,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read scan runs for %s", repo_full_name)
+        return None
+    return [str(row[0]) for row in rows]
+
+
+def _deployed_revision(request: Request, repo_id: str) -> str | None:
+    with request.app.state.db.session() as session:
+        row = session.get(RepoOnboarding, repo_id)
+        return row.deployed_revision if row is not None else None
+
+
+async def _dod_checks(
+    request: Request,
+    hub: po.HubClient,
+    repo_id: str,
+    repo_full_name: str,
+    manifest: po.ProcessManifest,
+    stories: list[dict[str, Any]],
+) -> dict[int, po.GateCheck]:
+    """The Definition of Done for each done-equivalent story (spec 35 §7.3)."""
+    ids = [int(s["id"]) for s in stories]
+    deploys = await asyncio.gather(*(hub.story_deploys(sid) for sid in ids))
+    evidence = {sid: po.evidence_from_deploys(rows) for sid, rows in zip(ids, deploys, strict=True)}
+    every_commit = sorted({c for commits, _ in evidence.values() for c in commits or []})
+    scanned = _scanned_commits(request, repo_full_name, every_commit)
+    revision = _deployed_revision(request, repo_id)
+    out: dict[int, po.GateCheck] = {}
+    for sid, (commits, deployed) in evidence.items():
+        check = po.check_dod(
+            manifest,
+            po.DoneEvidence(
+                commits=commits, deployed=deployed, scanned=scanned, deployed_revision=revision
+            ),
+        )
+        if check is not None:
+            out[sid] = check
+    return out
+
+
+def _portfolio_decision(request: Request, repo_full_name: str) -> dict[str, Any] | None:
+    try:
+        from mykronos.api.oracle import _service
+
+        decisions = _service(request).recent_decisions(
+            repo_full_name, decision_type="portfolio", limit=1
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read the portfolio decision for %s", repo_full_name)
+        return None
+    return decisions[0] if decisions else None
+
+
+def _findings(
+    request: Request, repo_full_name: str, finding_ids: list[str]
+) -> dict[str, tuple[str, str]]:
+    """finding id -> (severity, status), the latest row of each."""
+    if not finding_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in finding_ids)
+    try:
+        rows = request.app.state.catalog.query(
+            f"""
+            SELECT finding_id, severity, status FROM findings
+            WHERE asset_id = ? AND finding_id IN ({placeholders})
+            ORDER BY last_seen_at
+            """,
+            [repo_full_name, *finding_ids],
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read linked findings for %s", repo_full_name)
+        return {}
+    return {str(fid): (str(sev or ""), str(state or "")) for fid, sev, state in rows}
+
+
+def _risk_statement(model: po.RiskModel) -> str:
+    if not model.available:
+        return model.reason
+    when = (model.evaluated_at or "")[:10]
+    text = (
+        f"Ranked by the Oracle's portfolio decision of {when} (policy "
+        f"{model.policy_version or 'unknown'}): finding bands and the governance term."
+    )
+    if not model.risk_profile_available:
+        text += (
+            " This repository has no risk profile, so the ranking carries no business "
+            "context: it is finding severity and governance only (B-033)."
+        )
+    return text
+
+
+def _story_risks(
+    request: Request,
+    repo_full_name: str,
+    stories: list[dict[str, Any]],
+    model: po.RiskModel,
+) -> dict[int, StoryRiskOut]:
+    linked = {int(s["id"]): po.links(s) for s in stories}
+    every_finding = sorted({f for fids, _ in linked.values() for f in fids})
+    findings = _findings(request, repo_full_name, every_finding) if model.available else {}
+    states, _ = (
+        _governance_states(request, repo_full_name)
+        if any(controls for _, controls in linked.values())
+        else (None, "")
+    )
+    policy = request.app.state.oracle_policy.governance
+    out: dict[int, StoryRiskOut] = {}
+    for sid, (fids, controls) in linked.items():
+        if not fids and not controls:
+            out[sid] = StoryRiskOut(
+                linked=False, points=None, findings_linked=0, findings_open=0,
+                controls_linked=[], note="not linked",
+            )
+            continue
+        if not model.available:
+            out[sid] = StoryRiskOut(
+                linked=True, points=None, findings_linked=len(fids), findings_open=0,
+                controls_linked=controls, note="no risk model",
+            )
+            continue
+        by_severity: dict[str, int] = {}
+        open_count = 0
+        for fid in fids:
+            found = findings.get(fid)
+            if found is None or found[1] not in model.statuses_considered:
+                continue
+            open_count += 1
+            by_severity[found[0]] = by_severity.get(found[0], 0) + 1
+        points = po.band_points(model, by_severity) + po.control_points(
+            model,
+            states,
+            controls,
+            weights=governance.weights(),
+            good_enough=policy.good_enough,
+            points_at_zero=policy.points_at_zero,
+        )
+        notes = []
+        if len(fids) > open_count:
+            notes.append(f"{len(fids) - open_count} linked finding(s) not open")
+        if controls and not model.governance_available:
+            notes.append("governance was not in the decision")
+        out[sid] = StoryRiskOut(
+            linked=True,
+            points=round(points, 2),
+            findings_linked=len(fids),
+            findings_open=open_count,
+            controls_linked=controls,
+            note="; ".join(notes),
+        )
+    return out
 
 
 async def _repo_stories(
@@ -384,13 +717,29 @@ async def product_owner(
         except po.HubUnavailableError as exc:
             hub_out = HubOut(connected=False, error=str(exc))
 
-    ranks = _ranks(request, repo_id)
+    dod: dict[int, po.GateCheck] = {}
+    done_raw = [s for s in backlog_raw + sprint_raw if po.is_done(s, manifest)]
+    wants_dod = manifest is not None and bool(manifest.definition_of_done) and bool(done_raw)
+    if hub is not None and hub_out.connected and manifest is not None and wants_dod:
+        dod = await _dod_checks(request, hub, repo_id, repo_full_name, manifest, done_raw)
+
+    ranks = _ranks(backlog_raw)
+    ordered = po.order_backlog(backlog_raw, ranks)
+    model = po.risk_model(_portfolio_decision(request, repo_full_name))
+    risks = _story_risks(request, repo_full_name, ordered, model)
     backlog = [
-        _story_out(s, manifest, ranks.get(int(s["id"])))
-        for s in po.order_backlog(backlog_raw, ranks)
+        _story_out(s, manifest, ranks.get(int(s["id"])), dod.get(int(s["id"])))
+        for s in ordered
     ]
-    sprint = [_story_out(s, manifest, None) for s in sprint_raw]
+    for story_out in backlog:
+        story_out.risk = risks.get(story_out.id)
+    by_risk = po.risk_order(
+        ordered, {sid: risk.points for sid, risk in risks.items() if risk.linked}
+    )
+    sprint = [_story_out(s, manifest, None, dod.get(int(s["id"]))) for s in sprint_raw]
     sprint.sort(key=lambda s: (po.SPINE.index(s.spine), s.id))
+
+    observations = await _observations(request, repo_full_name, branch, installation, manifest)
 
     needs: list[NeedsHumanOut] = []
     if state.state == "invalid":
@@ -402,6 +751,17 @@ async def product_owner(
                 reason=state.error or "The manifest is invalid.",
             )
         )
+    for observation in observations:
+        if observation.status == "drift":
+            needs.append(
+                NeedsHumanOut(
+                    kind="process_drift",
+                    story_id=None,
+                    title=f"Declared, not observed: {observation.subject}",
+                    reason=observation.detail,
+                    owner=observation.owner,
+                )
+            )
     for story in sprint:
         if story.check.failed:
             needs.append(
@@ -411,6 +771,18 @@ async def product_owner(
                     title=story.title,
                     reason=f"{story.check.failed} of {story.check.total} checks fail "
                     f"at {story.check.gate_name}.",
+                )
+            )
+    for story in backlog + sprint:
+        if story.dod is not None and story.dod.failed:
+            failing = [i.text for i in story.dod.items if i.status == "failed"]
+            needs.append(
+                NeedsHumanOut(
+                    kind="dod_failed",
+                    story_id=story.id,
+                    title=story.title,
+                    reason=f"Done, but {story.dod.failed} of {story.dod.total} "
+                    f"Definition-of-Done checks fail: {'; '.join(failing)}.",
                 )
             )
     for story in backlog + sprint:
@@ -449,6 +821,24 @@ async def product_owner(
         membership_source=membership_source,
         hub=hub_out,
         needs_human=needs,
+        observations=[
+            ObservationOut(
+                id=o.id,
+                kind=o.kind,
+                subject=o.subject,
+                declared=o.declared,
+                observed=o.observed,
+                status=o.status,
+                owner=o.owner,
+                detail=o.detail,
+            )
+            for o in observations
+        ],
+        templates=(
+            [TemplateOut(id=t.id, label=t.label, summary=t.summary) for t in TEMPLATES.values()]
+            if state.state == "absent"
+            else []
+        ),
         counts=counts,
         sprint_progress=SprintProgressOut(
             done=sum(1 for s in sprint if s.spine == "done"), committed=len(sprint)
@@ -456,6 +846,15 @@ async def product_owner(
         oracle=_oracle(request, repo_full_name),
         backlog=backlog,
         sprint=sprint,
+        risk_model=RiskModelOut(
+            available=model.available,
+            decision_id=model.decision_id,
+            evaluated_at=model.evaluated_at,
+            policy_version=model.policy_version,
+            risk_profile_available=model.risk_profile_available,
+            statement=_risk_statement(model),
+        ),
+        backlog_by_risk=by_risk,
     )
 
 
@@ -570,10 +969,11 @@ async def rank_story(
 ) -> PoActionOut:
     """Move one backlog story up or down a place.
 
-    The order is computed from what TheHub returns now, so a story that left
-    the backlog since the page loaded cannot hold a place. The whole visible
-    order is written, which ranks every story on the page once one has been
-    moved -- the ordering a person sees is the one stored.
+    The order is computed from what TheHub returns now, ranks included, so a
+    story that left the backlog since the page loaded cannot hold a place. The
+    whole visible order is written to TheHub's `po_rank`, which ranks every
+    story on the page once one has been moved -- the ordering a person sees is
+    the one stored.
     """
     _require_writer(principal, "Ranking the backlog")
     repo_full_name, branch, installation = _onboarding(request, repo_id)
@@ -587,7 +987,8 @@ async def rank_story(
     except po.HubUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    current = [int(s["id"]) for s in po.order_backlog(backlog, _ranks(request, repo_id))]
+    ranks = _ranks(backlog)
+    current = [int(s["id"]) for s in po.order_backlog(backlog, ranks)]
     if body.story_id not in current:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -595,38 +996,131 @@ async def rank_story(
         )
     order = po.moved(current, body.story_id, body.direction)
 
-    database = request.app.state.db
-    with database.session() as session:
-        existing = {
-            row.story_id: row
-            for row in session.execute(
-                select(PoBacklogRank).where(PoBacklogRank.repo_id == repo_id)
-            ).scalars()
-        }
-        for position, story_id in enumerate(order, start=1):
-            row = existing.get(story_id)
-            if row is None:
-                session.add(
-                    PoBacklogRank(
-                        repo_id=repo_id,
-                        story_id=story_id,
-                        rank=position,
-                        updated_by=principal.actor,
-                    )
-                )
-            elif row.rank != position:
-                row.rank = position
-                row.updated_by = principal.actor
-        database.audit(
-            session,
-            actor=principal.actor,
-            action="po.rank",
-            entity_type="hub_story",
-            entity_id=str(body.story_id),
-            repo_id=repo_id,
-            repo_full_name=repo_full_name,
-            story_id=body.story_id,
-            direction=body.direction,
-            position=order.index(body.story_id) + 1,
+    # Only the positions that changed are written, one PATCH each, in order.
+    # The first refusal stops the rest and is shown in TheHub's words: asking
+    # again does not change a rule. The stories written before it keep their
+    # new rank, the audit row lists them, and the page re-reads TheHub, so it
+    # shows the order that was actually stored rather than the one intended.
+    written: list[int] = []
+    outcome = "ranked"
+    refusal: str | None = None
+    for position, story_id in enumerate(order, start=1):
+        if ranks.get(story_id) == position:
+            continue
+        try:
+            result = await hub.set_rank(story_id, position)
+        except po.HubUnavailableError as exc:
+            outcome, refusal = "unreachable", str(exc)
+            break
+        if not result.ok:
+            outcome, refusal = "refused", result.detail
+            break
+        written.append(story_id)
+
+    _audit(
+        request,
+        principal,
+        action="po.rank",
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        story_id=body.story_id,
+        direction=body.direction,
+        position=order.index(body.story_id) + 1,
+        outcome=outcome,
+        written=written,
+        hub_detail=refusal,
+    )
+    if outcome == "unreachable":
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=refusal)
+    if outcome == "refused":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"TheHub refused the rank: {refusal}",
         )
     return PoActionOut(story_id=body.story_id, action="rank", moved=order != current)
+
+
+@router.post("/repos/{repo_id}/product-owner/template", response_model=TemplatePrOut)
+async def open_template_pr(
+    request: Request, repo_id: str, body: TemplateRequest, principal: PrincipalDep
+) -> TemplatePrOut:
+    """Open a draft pull request adding a starter `.sdlc/process.yaml`
+    (spec 35 §7.2, B-069).
+
+    Only for a repository whose default branch has no manifest: an invalid one
+    is fixed in the repository, not replaced from here, and an unreadable one
+    may well exist. Every attempt is audit-logged, including the refusals.
+    """
+    _require_writer(principal, "Opening a template pull request")
+    repo_full_name, branch, installation = _onboarding(request, repo_id)
+    database = request.app.state.db
+
+    def audit(outcome: str, **detail: Any) -> None:
+        with database.session() as session:
+            database.audit(
+                session,
+                actor=principal.actor,
+                action="po.template_pr",
+                entity_type="repo_onboarding",
+                entity_id=repo_id,
+                repo_id=repo_id,
+                repo_full_name=repo_full_name,
+                template=body.template,
+                outcome=outcome,
+                **detail,
+            )
+
+    state = await _read_manifest(request, repo_full_name, branch, installation)
+    if state.state != "absent":
+        audit(f"refused_{state.state}")
+        reason = {
+            "valid": "already declares a process",
+            "invalid": "has a manifest that is invalid; fix it in the repository",
+            "unreadable": "has a manifest MyKronos could not read",
+        }[state.state]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{repo_full_name} {reason}, so no template is offered.",
+        )
+
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:  # pragma: no cover - absent implies readable
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No GitHub installation to open the pull request with.",
+        )
+    template = TEMPLATES[body.template]
+    try:
+        result = await po.open_template_pr(
+            factory.for_installation(installation),
+            repo_full_name,
+            branch,
+            template,
+            now=utcnow(),
+        )
+    except PermissionDeniedError as exc:
+        # Our own sentence, naming the permission the App lacks.
+        audit("failed", reason="permission")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except GitHubError as exc:
+        logger.warning("Template PR failed for %s (HTTP %s)", repo_full_name, exc.status)
+        audit("failed", reason=f"http_{exc.status}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub refused the pull request (HTTP {exc.status}).",
+        ) from exc
+
+    pull_request = result.pull_request
+    audit(
+        "opened" if result.created else "reused",
+        pr_number=pull_request.number,
+        pr_url=pull_request.url,
+        branch=result.branch,
+    )
+    return TemplatePrOut(
+        template=body.template,
+        created=result.created,
+        pr_number=pull_request.number,
+        pr_url=pull_request.url,
+        branch=result.branch,
+    )

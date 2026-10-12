@@ -135,7 +135,14 @@ async def snapshot(
         raise ApprovalError(f"{repo}#{number} is {'merged' if pr.merged else pr.state}.")
     if not pr.head_sha:
         raise ApprovalError(f"GitHub reported no head commit for {repo}#{number}.")
-    listed = await github.pull_request_files(repo, number)
+    # What the head changes against its base branch as it is NOW, not
+    # `/pulls/{n}/files`: that diffs against GitHub's `base.sha`, which does
+    # not always move with the branch. After the approval queue merged main
+    # into #775 it listed 42 files, main's among them, for a 9-file change,
+    # and the operator was asked to approve main's changes as the PR's (D-152).
+    base = pr.base_branch or str((await github.get_repo(repo)).get("default_branch") or "main")
+    comparison = await github.compare(repo, base, pr.head_sha)
+    listed = comparison.files
 
     files: list[dict[str, Any]] = []
     budget = MAX_TOTAL_PATCH_CHARS
@@ -159,7 +166,9 @@ async def snapshot(
             }
         )
 
-    incomplete = pr.changed_files is not None and pr.changed_files > len(listed)
+    # GitHub's `changed_files` shares `base.sha`'s staleness, so it cannot
+    # say the listing is short; the comparison's own cap can.
+    incomplete = comparison.truncated
     classes = [f["class"] for f in files]
     if incomplete or not classes:
         # Files nobody saw are not assumed routine, and an empty listing is
@@ -172,8 +181,9 @@ async def snapshot(
         "title": pr.title,
         "head_sha": pr.head_sha,
         "head_branch": pr.head_branch,
+        "base_branch": base,
+        "merge_base_sha": comparison.merge_base_sha,
         "change_class": _most_restrictive(duty, classes),
-        "changed_files": pr.changed_files,
         "files_listed": len(listed),
         "files_listing_incomplete": incomplete,
         "files": files,

@@ -1004,6 +1004,12 @@ reason. The amendment on D-110 carries the live table and the three choices;
 no setting was changed, because branch protection is outward-facing and this
 is a decision rather than an execution.
 
+**2026-10-11 — 1.1.9 for keel, personal-soc and binnacle is a decision now
+(D-151, TheHub #60580).** keel and personal-soc post `Concourse / <repo>` on
+`main` commits through D-136's endpoint. Neither is required, because no pull
+request can carry a check that only lands after the merge. binnacle has no
+pipeline to report one. The require-check commands are in D-151, not run.
+
 **Three gaps are estate-wide**, and they are the ones that matter most:
 
 - **No repository requires an approving review (1.1.3).** TheHub asks for one,
@@ -1267,30 +1273,9 @@ nothing in `docs/` tracked — PS-9 appears nowhere in this file. The
 empty-versus-real split was found by reading the applied configs rather than by
 trusting the label.
 
-### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — TheHub #60566
-
-**Size:** S **State:** open **Verified:** 2026-10-11
-
-TheHub's `dev_stories` has no rank field, so spec 35 phase 1 stores the
-Product Owner's backlog ordering in MyKronos's `po_backlog_rank` table, keyed
-by repository and story id (D-133). That is a second place a fact about a story
-lives, which is the thing D-133 exists to avoid. It is acceptable for one
-operator and one reader. It stops being acceptable the day TheHub's own Mission
-Control shows a backlog in a different order from this tab.
-
-**Acceptance criteria**
-
-- TheHub's `dev_stories` carries a rank, added by a migration that ships alone
-  (TheHub's commit rules).
-- The Product Owner tab reads and writes that field through the Hub API, and
-  `po_backlog_rank` is migrated across and then retired.
-- Mission Control and this tab show one backlog in one order.
-
-**Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
-
 ### B-069 — A repository with no manifest is told so, and offered nothing — TheHub #60567
 
-**Size:** S **State:** open **Verified:** 2026-10-11
+**Size:** S **State:** done (spec 35 §7.2, D-141) **Verified:** 2026-10-11
 
 Spec 35 §2.3: when the default branch has no `.sdlc/process.yaml`, the tab says
 "This repository declares no process" and shows the default spine, labelled as
@@ -1309,7 +1294,7 @@ correct, but it leaves the next step to the person reading.
 
 ### B-070 — Declared process versus observed process — TheHub #60568
 
-**Size:** M **State:** open **Verified:** 2026-10-11
+**Size:** M **State:** done (spec 35 §7.1, D-140) **Verified:** 2026-10-11
 
 A manifest is a declaration. Phase 1 shows it and never checks it. The two
 gaps already known are the reason this matters: TheHub's inception gate is
@@ -1329,27 +1314,6 @@ declaration without the drift reads as reassurance.
   and never merges the two into one word.
 
 **Provenance:** spec 35 §5.
-
-### B-071 — The rest of the Product Owner console — TheHub #60569
-
-**Size:** L **State:** open **Verified:** 2026-10-11
-
-D-135 chose a console over a single page so that later views have somewhere to
-go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
-deliberately left out are listed here.
-
-**Acceptance criteria**
-
-- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
-  deploy ledger.
-- **Approvals inbox:** this repository's pending approval requests from
-  spec 34, read-only from here, decided in the approvals engine.
-- **Roles & agents:** who recommends and approves each gate, against the
-  delegations that actually exist.
-- **Retro:** a generated sprint retrospective from the stories that closed
-  and the gates they failed on the way.
-
-**Provenance:** spec 35 §5, D-135.
 
 ### B-072 — keel's backlog is GitHub Issues, and the tab reads TheHub only — TheHub #60570
 
@@ -1411,6 +1375,66 @@ into entries here:
 ---
 
 ## Closed
+
+### B-068 — The Product Owner's rank lives in MyKronos, not in TheHub — **done** (D-153)
+
+**Size:** S **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60566)
+
+TheHub migration 329 added `dev_stories.po_rank`. The tab now reads the rank
+from the Hub stories and writes it with a PATCH carrying `po_rank` alone, one
+call per changed position (D-153). `python -m mykronos.backfill_po_rank` copies
+`po_backlog_rank` across: it skips stories TheHub no longer has and reports,
+without resolving, a story ranked by two repositories. The table is then
+dropped through `RETIRED_TABLES`. Production held 0 rows on 2026-10-11.
+Mission Control and the tab read one field. A cross-repository view orders by
+each repository's own positions (D-153).
+
+TheHub's `dev_stories` has no rank field, so spec 35 phase 1 stores the
+Product Owner's backlog ordering in MyKronos's `po_backlog_rank` table, keyed
+by repository and story id (D-133). That is a second place a fact about a story
+lives, which is the thing D-133 exists to avoid. It is acceptable for one
+operator and one reader. It stops being acceptable the day TheHub's own Mission
+Control shows a backlog in a different order from this tab.
+
+**Acceptance criteria**
+
+- TheHub's `dev_stories` carries a rank, added by a migration that ships alone
+  (TheHub's commit rules).
+- The Product Owner tab reads and writes that field through the Hub API, and
+  `po_backlog_rank` is migrated across and then retired.
+- Mission Control and this tab show one backlog in one order.
+
+**Provenance:** spec 35 §4 and §5, deliberately out of phase 1.
+
+### B-071 — The rest of the Product Owner console — **done** (spec 35 §8, D-144, D-145)
+
+**Size:** L **Verified:** 2026-10-11 **Closed:** 2026-10-11 (TheHub #60569)
+
+Delivery, the Approvals inbox, Roles & agents and the computed retro are
+sub-views of the console (`view=delivery|approvals|roles|retro`), each with its
+own read. Two of the criteria below changed while being built, and the changes
+are recorded rather than absorbed. The inbox decides in place, as the Hub
+story asks, where this entry said "read-only from here", and it decides only
+through `approvals.engine.decide` (D-144). The deploy ledger MyKronos holds is
+the probe's running revision, so Delivery says "not recorded" for every other
+commit (D-145).
+
+D-135 chose a console over a single page so that later views have somewhere to
+go. Phase 1 ships Overview, Backlog, Sprint and Process. The four views it
+deliberately left out are listed here.
+
+**Acceptance criteria**
+
+- **Delivery:** what shipped, by sha, joined to the Oracle decision and the
+  deploy ledger.
+- **Approvals inbox:** this repository's pending approval requests from
+  spec 34, read-only from here, decided in the approvals engine.
+- **Roles & agents:** who recommends and approves each gate, against the
+  delegations that actually exist.
+- **Retro:** a generated sprint retrospective from the stories that closed
+  and the gates they failed on the way.
+
+**Provenance:** spec 35 §5, D-135.
 
 **2026-09-14 — two, both of which had been finished for days and were still
 filed under Open.** B-054, where the image registry the deploy path pulls from
