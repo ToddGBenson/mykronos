@@ -92,6 +92,10 @@ deploy/thehub/.deploy-lock-*
 # not configuration: it exists so a silent agent is distinguishable from a
 # stopped one without a marker on every cycle.
 deploy/thehub/.pull-deploy-heartbeat
+# [#60737] Former home of the personal-soc installed-skills SHA. The state now
+# lives under %LOCALAPPDATA%/mykronos/personal-soc; the old file is ignored so
+# a checkout that still has it is not dirtied by it.
+deploy/personal-soc/.installed-skills
 
 # Vault unseal task log (#60474). Timestamps and outcomes, no key material.
 deploy/concourse/vault-unseal.log
