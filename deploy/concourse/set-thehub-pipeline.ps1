@@ -459,7 +459,7 @@ try {
         # backend that forbade extra keys and 422'd the whole batch. See the
         # ordering rule in set-pipeline.ps1: deploy the backend first, then
         # move the pin.
-        "mykronos-ref: v12",
+        "mykronos-ref: v13",
         "thehub-branch: $Branch",
         # Whether Oracle's no_go stops the deploy.
         #
