@@ -1,0 +1,73 @@
+# Backend tests on the pull request head, before the merge (TheHub #60747, D-162).
+#
+# Until this file, nothing tested a backend change before it merged. Concourse
+# `unit` tracks `main` only (deploy/concourse/pipelines/mykronos.yml, the
+# `source` resource), so pytest ran after the merge and a red suite was
+# main's problem. `frontend-pr.yml` covers frontend/** and nothing else.
+#
+# The check is named `backend-tests`, after the job. That name is the context
+# a branch-protection rule would require. Keep it stable.
+#
+# Advisory, not required (D-162). It makes the answer visible before somebody
+# clicks merge. Requiring it is a branch-protection change the operator makes
+# once the runs show it is not flaky.
+#
+# No path filter, on purpose. The suite reads far more than backend/: the
+# decision index, the Concourse pipelines, compose, workflow-templates and
+# specs are all under test. A docs/decisions-only change can turn it red. A
+# filter would also leave a required check pending forever on a PR that
+# skipped it, which is D-110's deadlock.
+name: Backend PR check
+
+# `pull_request`, never `pull_request_target`. A PR from a fork then gets a
+# read-only token and no repository secrets. This workflow names no secret,
+# and `tests/test_backend_pr_workflow.py` holds both of those true.
+on:
+  pull_request:
+
+# A new push supersedes the answer from the old one.
+concurrency:
+  group: backend-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: backend-tests
+    runs-on: ubuntu-latest
+    # The suite takes about 9 minutes at -n auto on the development host and
+    # about 4 minutes at -n 6 on the Concourse worker. Thirty minutes is room
+    # for a slow runner, not a target.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # Matches the Concourse `unit` lane and delivery.yml.
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      # The same install the Concourse `unit` lane does.
+      - name: Install the backend with its dev extras
+        working-directory: backend
+        run: python -m pip install --quiet -e ".[dev]"
+
+      # -n auto: the suite is dominated by per-test fixture setup, a fresh
+      # DuckDB catalog per test, and parallelises without changes (it went from
+      # 32 minutes to 6 on the Concourse worker). A hosted runner has 4 vCPUs.
+      #
+      # MYKRONOS_PERF_MULTIPLIER is 3, the value the Concourse lane uses and
+      # for its reason: the spec 05 section 9 budgets describe a developer's
+      # machine, and a shared runner is not one. The lane prints it, so a
+      # relaxed budget is never a silent one.
+      - name: pytest
+        working-directory: backend
+        env:
+          MYKRONOS_PERF_MULTIPLIER: "3"
+        run: |
+          echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER} on this runner."
+          python -m pytest -q -n auto -p no:cacheprovider

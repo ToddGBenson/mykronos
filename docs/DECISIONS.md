@@ -29,6 +29,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-158 — Decision numbers are checked across open pull requests, and the queue refuses a duplicate](decisions/D-158-decision-numbers-are-checked-across-open-pull-requests.md)
 - [D-159 — The deploy refuses only what the gate refuses](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md)
 - [D-160 — A Concourse build-dir path is stripped, and the findings stored under it are re-keyed, not fixed](decisions/D-160-a-concourse-build-path-is-re-keyed-not-fixed.md)
+- [D-162 — Backend tests run on every pull request as `backend-tests`, advisory until two weeks of runs show they are steady](decisions/D-162-backend-tests-run-on-every-pull-request-and-are-advisory-until-shown-steady.md)
 
 <!-- decisions-index:end -->
 
