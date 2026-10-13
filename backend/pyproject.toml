@@ -61,10 +61,22 @@ dev = [
     "types-defusedxml>=0.7",
     "ruff>=0.7",
     "mypy>=1.13",
+    # The MCP server's tests and types run on every lane that installs `dev`,
+    # so `dev` pulls the extra rather than repeating its pin.
+    "mykronos[mcp]",
+]
+# The agent's MCP server (spec 36 §4, #319). An extra, not a dependency: the
+# server runs beside an agent, never in the backend image, so the image and
+# its scanned dependency set do not change. Pinned exactly because it is the
+# whole protocol surface an agent reaches the platform through, and the SDK
+# has renamed its public API before (FastMCP became MCPServer in 2.0).
+mcp = [
+    "mcp==2.2.0",
 ]
 
 [project.scripts]
 mykronos = "mykronos.cli:main"
+mykronos-mcp = "mykronos.mcp_server.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]
