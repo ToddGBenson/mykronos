@@ -54,8 +54,9 @@ it, because work on a frozen finding cannot be observed. That ordering is the br
 
 ## 2. The work queue — `GET /api/agent/work` (phase 1)
 
-A read. It does nothing, starts nothing, and is safe to call on every loop. Any principal may read it; the
-actions it lists are filtered by nothing, because the routes they name enforce their own rules.
+A read. It does nothing, starts nothing, and is safe to call on every loop. Any principal may read it. The
+actions it lists are not filtered by permission, because the routes they name enforce their own rules; a
+finding another principal has claimed is left out, because working it would duplicate theirs.
 
 ### 2.1 The response
 
@@ -84,7 +85,7 @@ WorkItem
 with no lane items and `unknown: [concourse]` says "I could not ask CI", which is a different sentence from
 "CI is fine". The briefing already makes that distinction internally; this is where it reaches an agent.
 
-**`governed_by` names the duty and tier the action will be routed through for *this* principal**, for
+**`governed_by` names the duty the action will be routed through for *this* principal**, for
 example `finding_disposition` when an agent would close a high finding, or `null` when the route is a direct
 write. It is computed with the same function the route uses (`finding_disposition.governed`), so the two
 cannot disagree. The agent learns before it asks whether a person will be involved.
@@ -113,6 +114,10 @@ show until the lane is repaired.
 
 **`waiting`** holds findings already absent from their lane's newest successful scan (`awaiting_closure`) and
 the principal's own requests still pending a decision. Both need nothing; touching either is wasted work.
+
+**Every path can be called.** Repository-scoped routes take the onboarding id, not `owner/repo`. The briefing
+prints its lane actions with the full name, which cannot route (TheHub #60739); the queue rewrites them, and
+offers no action for a repository with no onboarding row rather than a dead one.
 
 ### 2.3 What the queue does not include, yet
 
